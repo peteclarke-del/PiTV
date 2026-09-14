@@ -3,6 +3,9 @@ __pycache__/
 .venv/
 *.db
 *.sqlite
+.claude
+.codex
+.agents
 .pytest_cache/
 build/
 dist/

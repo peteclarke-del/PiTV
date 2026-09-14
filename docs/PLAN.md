@@ -11,7 +11,7 @@ agree before implementation starts.
 
 | Requirement | Decision |
 |---|---|
-| Hardware | Raspberry Pi 4, 4 GB, HDMI to a TV, IR receiver on GPIO (or HDMI-CEC), wired Ethernet to the NAS |
+| Hardware | Raspberry Pi 4, 4 GB, HDMI to a TV, IR receiver on GPIO (or HDMI-CEC), wired Ethernet to the Synology NAS (SMB) |
 | OS | Raspberry Pi OS Lite 64-bit (Bookworm), no desktop, boots straight into the player |
 | Boot | Target ~15 s from power to picture; test card shown while the NAS mounts |
 | Channels | 1 and 2: programmes only. 3 and 4: programme, 2 adverts, programme, 2 adverts ... |
@@ -47,18 +47,21 @@ Consequences:
 
 ## 3. Content library
 
-### 3.1 Sources (all on the Synology NAS)
+### 3.1 Sources (all on the Synology NAS, over SMB)
 
 | Share | Expected layout | Notes |
 |---|---|---|
-| `TV Shows` | `Show Name (1984)/Season 02/Show Name - S02E05 - Title.mkv` | Season/episode from `SxxEyy` (also `2x05`, `Season 2/05 - Title`). Show year from folder |
-| `Movies` | `Title (1985)/Title (1985).mkv` | Year from folder, then file name |
-| `PiTV` (new) | `Adverts/1984/Product.mp4`, `Idents/ch1/*.mp4`, `Static/static.mp4`, `TestCard/testcard.png` | Advert year from sub-folder or a leading `1984 - ` in the file name |
+| `smb://synologynas/tvshows/` | `Show Name (1984)/Season 02/Show Name - S02E05 - Title.mkv` | Season/episode from `SxxEyy` (also `2x05`, `Season 2/05 - Title`). Show year from folder |
+| `smb://synologynas/movies/` | `Title (1985)/Title (1985).mkv` | Year from folder, then file name |
+| `smb://synologynas/pitv/` (new, or a folder inside an existing share) | `Adverts/1984/Product.mp4`, `Idents/ch1/*.mp4`, `Static/static.mp4`, `TestCard/testcard.png` | Advert year from sub-folder or a leading `1984 - ` in the file name |
 
-Mounting: NFS is lighter than CIFS on the Pi and the NAS already serves NFS, so the plan
-is to add NFS exports for the three shares to the Pi's IP, mounted with systemd automount
-units so boot never blocks on the network. (SMB with credentials is the fallback if NFS
-exports are not wanted.)
+Both shares require authentication (guest access is denied), so the Pi mounts them with
+CIFS using a root-only credentials file at `/etc/pitv/smb-credentials`, via systemd
+automount units so boot never blocks on the network. Recommended mount options:
+`vers=3.0,ro,noserverino,cache=loose,actimeo=60,_netdev,x-systemd.automount,x-systemd.idle-timeout=0`.
+Read-only mounts protect the library; the adverts share is read-only too since the Pi
+never writes there. NFS would be marginally lighter on the Pi and can be swapped in by
+changing the mount units only.
 
 ### 3.2 Scanner (`pitv scan`)
 
@@ -254,8 +257,8 @@ live.
 - Disable: bluetooth, hciuart, avahi, triggerhappy, ModemManager, apt timers,
   rpi-eeprom-update, man-db, dphys-swapfile.
 - `pitv-splash.service` shows the test card on the DRM console as soon as the kernel is
-  up (a few seconds in), then `pitv-player.service` takes over once the NFS automount and
-  time sync are ready. Expected: ~10–12 s to test card, ~15 s to programme.
+  up (a few seconds in), then `pitv-player.service` takes over once the CIFS automounts
+  (`/mnt/tvshows`, `/mnt/movies`, `/mnt/pitv`) and time sync are ready. Expected: ~10–12 s to test card, ~15 s to programme.
 - Data lives in `/var/lib/pitv/pitv.db`; logs to journald with a size cap.
 - Optional later: read-only root overlay so pulling the plug never corrupts the SD card.
 
@@ -300,16 +303,17 @@ Database tables: `media`, `shows`, `episodes`, `show_cursor`, `schedule`, `histo
 | 3 | Player core: mpv IPC, live-offset channel switching, keyboard input, channel badge | Runs on desktop in a window |
 | 4 | Guide overlay with teletext rendering and navigation | Desktop |
 | 5 | IR remote via ir-keytable/evdev, volume, mute, pause | On the Pi |
-| 6 | Pi provisioning: install script, systemd units, NFS automount, boot trimming, test card splash | Cold boot to picture ≈ 15 s |
+| 6 | Pi provisioning: install script, systemd units, CIFS automounts, boot trimming, test card splash | Cold boot to picture ≈ 15 s |
 | 7 | Polish: static on channel change, idents, mid-programme ad breaks, read-only root | Optional |
 
 ---
 
 ## 9. Open questions (assumptions used until answered)
 
-1. **NAS shares**: exact share names/paths and whether NFS exports for the Pi are OK.
-   Assumed `TV Shows`, `Movies`, plus a new `PiTV` share holding `Adverts/`, `Idents/`.
-   Assumed Kodi/Plex naming; the parsers are tolerant, but a sample listing would help.
+1. **NAS shares**: confirmed as `smb://synologynas/tvshows/` and `smb://synologynas/movies/`.
+   Still needed: an SMB account for the Pi (read-only is enough), where the adverts folder
+   will live (assumed a new `pitv` share), and ideally a sample directory listing of each
+   share so the name parsers can be checked against the real convention.
 2. **Pause semantics**: assumed "pause holds, play resumes where you paused, changing
    channel rejoins live". The alternative is real-TV behaviour where resume jumps to live.
    "Restart" is read as play/resume; a separate "restart programme from the beginning" key
