@@ -259,6 +259,19 @@ hardware deinterlacer. Audio passes through untouched.
 The admin library page shows each file's codec and whether it will hardware-decode, and
 the "needs attention" list flags anything the Pi may struggle with (e.g. 1080p MPEG-2).
 
+**Using the hardware encoder.** The same block encodes H.264 up to 1080p30
+(`h264_v4l2m2m` in ffmpeg). Two optional uses, neither needed for basic playback:
+
+- *Transcode queue*: files the Pi cannot hardware-decode (MPEG-2, VC-1, MPEG-4 ASP) can
+  be re-encoded to H.264 overnight, on the Pi itself, into a local cache or a writable
+  NAS folder, so that everything on air takes the hardware decode path. Queued from the
+  library page, one file at a time in idle hours, with progress in the admin dashboard.
+  The scheduler prefers the transcoded copy once it exists.
+- *Live preview*: a low-bitrate H.264 stream of what is currently on air, shown in the
+  web UI's Now & Next page. Deferred to Phase 8 because it competes with the decoder for
+  the same hardware and the phone would then show a stream of the TV you are sitting in
+  front of.
+
 ### 5.3 Remote control mapping
 
 Kernel IR (`dtoverlay=gpio-ir,gpio_pin=18` + `ir-keytable`) turns any IR remote into a
