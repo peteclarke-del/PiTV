@@ -1,9 +1,10 @@
 # PiTV — Design Plan
 
-A Raspberry Pi 4 that behaves like a 1980s UK television: four continuously "broadcasting"
-channels, a weekly schedule built from the NAS library, an infra-red remote, and a
-teletext-style programme guide. Nothing here is code yet; this document is the design to
-agree before implementation starts.
+A Raspberry Pi 4 that behaves like a 1980s UK television: four (or more) continuously
+"broadcasting" channels, a weekly schedule built from the NAS library, an infra-red remote,
+a teletext-style on-screen guide, and a web interface for viewing the schedule and
+administering everything. Nothing here is code yet; this document is the design to agree
+before implementation starts.
 
 ---
 
@@ -13,14 +14,16 @@ agree before implementation starts.
 |---|---|
 | Hardware | Raspberry Pi 4, 4 GB, HDMI to a TV, IR receiver on GPIO (or HDMI-CEC), wired Ethernet to the Synology NAS (SMB) |
 | OS | Raspberry Pi OS Lite 64-bit (Bookworm), no desktop, boots straight into the player |
+| Video decode | Pi 4 hardware H.264 (and HEVC) via V4L2 M2M; see §5.2 |
 | Boot | Target ~15 s from power to picture; test card shown while the NAS mounts |
-| Channels | 1 and 2: programmes only. 3 and 4: programme, 2 adverts, programme, 2 adverts ... |
+| Channels | Defined in the admin UI. Default four: 1 and 2 programmes only, 3 and 4 with adverts in a `show, ad, ad` pattern |
 | Broadcast day | 08:00–00:00 scheduled; 00:00–08:00 replays that day's schedule from 08:00 (see §4.6) |
-| Era | 1980s core, occasional 1990s; per-item year from folder/file names, NFO, or overrides |
+| Era | 1980s core, occasional 1990s; per-item year from folder/file names, NFO, or overrides; weights editable per channel |
 | Watershed | 21:00. UK certificate rules: U/PG any time, 12 not before 20:00, 15 not before 21:00, 18 not before 22:00 |
 | Horizon | 7 days generated at a time; episodes advance in order per show; minimal repeats week to week |
 | Remote | Channel 1–4 direct, channel +/−, volume +/−, mute, pause/play, guide (menu), up/down/left/right/OK/back |
-| Overhead | One mpv process, one small Python daemon, SQLite. No X, no Kodi, no web stack at runtime |
+| Web | Fast, reactive, clean: public schedule view plus an admin area for sources, channels, schedules, weighting, patterns, player control |
+| Overhead | One mpv process, one small Python player daemon, one small Python web service, SQLite. No X, no Kodi |
 
 ---
 
@@ -34,12 +37,13 @@ load that channel's current file in mpv and seek to `now − slot.start + slot.o
 
 Consequences:
 
-- All four channels appear to run all the time, even while the Pi is off. Turn it on at
-  19:42 and channel 1 is 12 minutes into whatever started at 19:30.
+- All channels appear to run all the time, even while the Pi is off. Turn it on at 19:42
+  and channel 1 is 12 minutes into whatever started at 19:30.
 - A programme split into parts (for a mid-programme ad break) is just two slots pointing
   at the same file with different offsets. The model supports that from day one even if
   v1 only puts adverts between programmes.
-- The guide is read straight from the schedule table, so it is always "real time".
+- The on-screen guide and the web schedule both read the same schedule table, so they are
+  always "real time" and always agree.
 - The Pi has no real-time clock, so NTP must succeed on boot for the clock to be right.
   If the network is late the player still runs; it just realigns when time syncs.
 
@@ -49,48 +53,48 @@ Consequences:
 
 ### 3.1 Sources (all on the Synology NAS, over SMB)
 
-| Share | Expected layout | Notes |
-|---|---|---|
-| `smb://synologynas/tvshows/` | `Show Name (1984)/Season 02/Show Name - S02E05 - Title.mkv` | Season/episode from `SxxEyy` (also `2x05`, `Season 2/05 - Title`). Show year from folder |
-| `smb://synologynas/movies/` | `Title (1985)/Title (1985).mkv` | Year from folder, then file name |
-| `smb://synologynas/pitv/` (new, or a folder inside an existing share) | `Adverts/1984/Product.mp4`, `Idents/ch1/*.mp4`, `Static/static.mp4`, `TestCard/testcard.png` | Advert year from sub-folder or a leading `1984 - ` in the file name |
+Sources are rows in the database, managed in the admin UI, not hard-coded paths.
+Each source has a type (`tv`, `movie`, `advert`, `ident`), a mount path, an enabled flag
+and a last-scanned time. Initial sources:
+
+| Share | Type | Expected layout | Notes |
+|---|---|---|---|
+| `smb://synologynas/tvshows/` | tv | `Show Name (1984)/Season 02/Show Name - S02E05 - Title.mkv` | Season/episode from `SxxEyy` (also `2x05`, `Season 2/05 - Title`). Show year from folder |
+| `smb://synologynas/movies/` | movie | `Title (1985)/Title (1985).mkv` | Year from folder, then file name |
+| `smb://synologynas/pitv/` (new, or a folder inside an existing share) | advert / ident | `Adverts/1984/Product.mp4`, `Idents/ch1/*.mp4`, `Static/static.mp4` | Advert year from sub-folder or a leading `1984 - ` in the file name |
 
 Both shares require authentication (guest access is denied), so the Pi mounts them with
 CIFS using a root-only credentials file at `/etc/pitv/smb-credentials`, via systemd
 automount units so boot never blocks on the network. Recommended mount options:
 `vers=3.0,ro,noserverino,cache=loose,actimeo=60,_netdev,x-systemd.automount,x-systemd.idle-timeout=0`.
-Read-only mounts protect the library; the adverts share is read-only too since the Pi
-never writes there. NFS would be marginally lighter on the Pi and can be swapped in by
-changing the mount units only.
+Adding a source in the admin UI records the SMB path; the mount unit for it is generated
+by the install tooling (mounting needs root, the web service does not run as root).
 
 ### 3.2 Scanner (`pitv scan`)
 
-- Walks the shares, parses show/season/episode/year from names.
+- Walks every enabled source, parses show/season/episode/year from names.
 - Reads Kodi-style `tvshow.nfo` / `<movie>.nfo` when present for premiered year,
   certificate (`mpaa`), genres, and plot.
-- Probes duration with `ffprobe` once per file; cached in SQLite keyed on path, size,
-  mtime so re-scans are fast.
-- Applies `overrides.yaml` last: per-show or per-movie year, certificate, genre,
-  daypart preference, exclude flag, "strip" vs "weekly" scheduling hint.
-- Runs nightly (systemd timer) and on demand. New content is only used for future days.
+- Probes duration **and video codec** with `ffprobe` once per file; cached in SQLite keyed
+  on path, size, mtime so re-scans are fast. Codec is recorded so the admin UI can show
+  which files will hardware-decode (H.264/HEVC) and which will fall back to software.
+- Overrides (year, certificate, genre, daypart preference, exclude, strip/weekly hint,
+  home channel) are edited in the admin UI and stored in the database; a YAML import/export
+  exists for backup.
+- Runs nightly (systemd timer), on demand from the admin UI (with live progress), and
+  after a source is added. New content is only used for future days.
 
 ### 3.3 Classification rules
 
 | Attribute | Source order | Default when unknown |
 |---|---|---|
-| Year | folder → file name → NFO → overrides | excluded (not date-appropriate) |
-| Certificate | NFO → overrides → filename tag `[15]` | Movies: treat as 15 (post-watershed). TV: treat as PG |
-| Genre / audience | NFO genres → overrides | "general" |
+| Year | folder → file name → NFO → override | excluded (not date-appropriate), flagged in admin "needs attention" list |
+| Certificate | NFO → override → filename tag `[15]` | Movies: treat as 15 (post-watershed). TV: treat as PG |
+| Genre / audience | NFO genres → override | "general" |
 | Kids content | genre Animation/Children/Family or override | no |
 
-Era eligibility is configurable; proposed default:
-
-```yaml
-eras:
-  - years: [1980, 1989]   # weight 0.85
-  - years: [1990, 1999]   # weight 0.15
-```
-
+Era eligibility and weights are global defaults with per-channel overrides, all editable
+in the admin UI. Proposed default: 1980–1989 weight 0.85, 1990–1999 weight 0.15.
 A show counts as 80s if it premiered in the window; a per-show override handles long
 runners (e.g. a show that started in 1978 and ran to 1986).
 
@@ -98,23 +102,60 @@ runners (e.g. a show that started in 1978 and ran to 1986).
 
 ## 4. Scheduler (`pitv schedule`)
 
-Builds 7 days × 4 channels into the `schedule` table. Never rewrites slots in the past or
-the one currently airing. Runs when the remaining horizon drops below 2 days (weekly in
-practice), and can be re-run manually.
+Builds 7 days for every enabled channel into the `schedule` table. Never rewrites slots in
+the past, the one currently airing, or slots an admin has locked. Runs when the remaining
+horizon drops below 2 days (weekly in practice), and on demand from the admin UI for a
+whole week, one day, or one channel.
 
-### 4.1 Channel personalities
+### 4.1 Channels are data
 
-| Ch | Style | Adverts | Content lean |
+A channel row holds: number, name, short name, logo, enabled, **pattern**, **era weights**,
+**genre weights**, **daypart profile**, ads enabled, advert count per break, ident
+behaviour, and a colour for the guide. Defaults ship for four channels:
+
+| Ch | Style | Pattern | Content lean |
 |---|---|---|---|
-| 1 | Mainstream (BBC1-ish) | none, optional idents between programmes | Drama, sitcom, light entertainment, afternoon films |
-| 2 | Alternative (BBC2-ish) | none | Documentaries, cult, older films, comedy |
-| 3 | Commercial (ITV-ish) | 2 between programmes | Soaps, quiz, action drama, kids' teatime |
-| 4 | Commercial (C4-ish) | 2 between programmes | Alternative comedy, imports, films, late night |
+| 1 | Mainstream (BBC1-ish) | `show` | Drama, sitcom, light entertainment, afternoon films |
+| 2 | Alternative (BBC2-ish) | `show` | Documentaries, cult, older films, comedy |
+| 3 | Commercial (ITV-ish) | `show, ad, ad` | Soaps, quiz, action drama, kids' teatime |
+| 4 | Commercial (C4-ish) | `show, ad, ad` | Alternative comedy, imports, films, late night |
 
 Leans are soft weights, not hard rules; with a small library they relax automatically.
-Channel names are configurable (the "PiTV" branding is the user's choice).
 
-### 4.2 Dayparts (weekday defaults, all configurable)
+### 4.2 Patterns
+
+A pattern is an ordered list of tokens the channel cycles through when filling gaps:
+
+| Token | Meaning |
+|---|---|
+| `show` | any programme (TV episode or movie, chosen by daypart and weights) |
+| `tv` | a TV episode specifically |
+| `movie` | a movie specifically |
+| `ad` | one advert |
+| `ident` | a channel ident / continuity clip |
+| `break` | shorthand for the channel's configured advert count (e.g. 2 ads) |
+
+Examples: `show, ad, ad` (ITV-style), `show, show, movie, ad, ad`, `tv, tv, ident, movie`.
+Anchored shows (§4.3) are placed first and count as a `show` token where they land, so the
+pattern resumes cleanly after them. If a token cannot be satisfied (no adverts in the
+library, no movie fits the gap) the scheduler skips that token and notes it in the run log.
+
+### 4.3 Anchors: strips and weekly slots
+
+Real 80s scheduling is about regularity, and it also gives episode order for free.
+
+- **Strip**: a show airs every weekday at the same time on its home channel
+  (soaps, kids shows, daytime sitcoms). One episode per day, in order.
+- **Weekly**: a show airs once a week, same day and time (prime-time drama, sitcoms).
+- Each show is assigned a *home channel* (automatically, or pinned in the admin UI) so
+  the same series never appears on two channels.
+- A persistent per-show cursor (`show_cursor` table) records the next episode; it advances
+  every time an episode is placed. When a series ends it rests for a configurable number
+  of weeks, then restarts from S01E01. The cursor can be reset or moved in the admin UI.
+
+The scheduler first pins anchors into the week, then fills the remaining gaps.
+
+### 4.4 Dayparts (weekday defaults, editable per channel)
 
 | Time | Daypart | Prefers |
 |---|---|---|
@@ -131,52 +172,42 @@ Channel names are configurable (the "PiTV" branding is the user's choice).
 Hard rules override any daypart: certificate vs. time, and "no kids-only content after
 21:00".
 
-### 4.3 Anchors: strips and weekly slots
+### 4.5 Gap filling
 
-Real 80s scheduling is about regularity, and it also gives episode order for free.
-
-- **Strip**: a show airs every weekday at the same time on its home channel
-  (soaps, kids shows, daytime sitcoms). One episode per day, in order.
-- **Weekly**: a show airs once a week, same day and time (prime-time drama, sitcoms).
-- Each show is assigned a *home channel* so the same series never appears on two channels.
-- A persistent per-show cursor (`show_cursor` table) records the next episode; it advances
-  every time an episode is placed. When a series ends it rests for a configurable number
-  of weeks, then restarts from S01E01.
-
-The scheduler first pins anchors into the week, then fills the remaining gaps.
-
-### 4.4 Gap filling
-
-For each channel and day, walk from 08:00 to 00:00:
+For each channel and day, walk from 08:00 to 00:00 following the channel's pattern:
 
 1. If an anchor starts here, place it.
-2. Otherwise pick a candidate for the gap up to the next anchor: eligible era, certificate
-   OK for the start time, daypart weight, duration fits (with a tolerance so a 52-minute
-   drama can overrun a 50-minute gap and push the next unanchored item), not the same
-   show already today on this channel, not the same genre as the previous item.
-3. Score candidates by days-since-last-aired (from `history`), variety, and daypart fit;
-   pick with weighted randomness seeded per week so re-runs are reproducible.
-4. On channels 3 and 4 insert two adverts after every programme, choosing adverts whose
-   year is within ±3 of the programme's year when possible.
+2. Otherwise take the next pattern token and pick a candidate for the gap up to the next
+   anchor: eligible era, certificate OK for the start time, daypart weight, duration fits
+   (with a tolerance so a 52-minute drama can overrun a 50-minute gap and push the next
+   unanchored item), not the same show already today on this channel, not the same genre
+   as the previous item.
+3. Score candidates by days-since-last-aired (from `history`), variety, daypart fit and
+   the channel's weights; pick with weighted randomness seeded per week so re-runs are
+   reproducible.
+4. Adverts are chosen with a year within ±3 of the surrounding programme when possible.
 5. Small leftover gaps (< shortest eligible item) are filled with idents/adverts or simply
    absorbed: 80s schedules happily started programmes at 19:35.
 
 Start times are rounded to 5 minutes where padding allows, because "19:35" reads right in
 a listing and "19:37" does not.
 
-### 4.5 Repeat control
+### 4.6 Repeat control and overnight
 
 - Movies: never twice in one week; across weeks, weighted by time since last airing.
 - Episodes: only ever advance; repeats only happen when a series wraps.
 - The `history` table logs every slot that actually aired (written by the player) so the
   scheduler knows what was really shown, not just what was planned.
+- From 00:00 to 08:00 each channel replays that day's schedule starting from the 08:00
+  slot, cut off at 08:00 when the new day begins. The replay start time is a per-channel
+  setting (e.g. replay from 19:00 instead).
 
-### 4.6 Overnight
+### 4.7 Manual editing
 
-From 00:00 to 08:00 each channel replays that day's schedule starting from the 08:00 slot,
-cut off at 08:00 when the new day begins. This is what "once we get to midnight, the shows
-repeat until 8am" is taken to mean. Alternative (replay the evening from 19:00 instead) is a
-one-line config change.
+In the admin UI a slot can be: locked (regeneration leaves it alone), replaced with a
+chosen item (following items shift), removed, or moved to another time; a specific show
+can be dropped into a time on a day, and "regenerate from here" rebuilds the rest of that
+day. Edits touching the past or the current slot are refused.
 
 ---
 
@@ -189,14 +220,13 @@ controller (state machine, 1 Hz tick)
  ├─ clock → schedule lookup → "what should be on channel N right now"
  ├─ mpv via JSON IPC socket (loadfile, seek, pause, volume, mute, overlays)
  ├─ input: evdev (IR remote via kernel gpio-ir + ir-keytable; keyboard for dev; CEC optional)
+ ├─ control socket (/run/pitv/player.sock): the web service sends the same commands the remote does
  ├─ OSD: channel badge, volume bar, guide (Pillow → BGRA → mpv overlay-add)
- └─ history writer (logs what aired)
+ └─ history writer (logs what aired) + state publisher (channel, slot, position, volume)
 ```
 
-- One long-lived mpv process, started once with `--vo=gpu --gpu-context=drm` (no X),
-  `--hwdec=auto-safe` (Pi 4 hardware decodes H.264 and HEVC; the mostly SD 80s content
-  decodes fine in software anyway), `--input-ipc-server=/run/pitv/mpv.sock`, OSD enabled,
-  audio via ALSA to HDMI.
+- One long-lived mpv process started once with no X, driven over
+  `--input-ipc-server=/run/pitv/mpv.sock`, OSD enabled, audio via ALSA to HDMI.
 - Channel change = `loadfile <path> replace start=<offset>`; a short local "static"
   clip (or a 300 ms burst overlay) covers the seek latency and looks the part.
 - Slot boundaries: on each tick, if the current slot has ended, load the next slot. If
@@ -204,17 +234,42 @@ controller (state machine, 1 Hz tick)
 - Drift check: if the schedule position and mpv position differ by more than a few
   seconds while not paused, re-seek.
 
-### 5.2 Remote control mapping
+### 5.2 Hardware decoding on the Pi 4
+
+The Pi 4 decodes H.264 (up to 1080p60) and HEVC (up to 4K) in hardware through the
+kernel V4L2 memory-to-memory interface (`bcm2835-codec` and `rpivid`). MPEG-2 and VC-1
+hardware decode is **not** available on the Pi 4, so DVD-sourced MPEG-2 rips decode in
+software; at SD resolution that is a light load on the Pi 4's CPU.
+
+mpv configuration, in order of preference, verified on the Pi during Phase 7:
+
+1. `--vo=gpu --gpu-context=drm --hwdec=drm-prime` — zero-copy: decoded frames go straight
+   to the display without touching the CPU. Needs the Raspberry Pi ffmpeg build (in
+   Raspberry Pi OS Bookworm's own `ffmpeg`/`mpv` packages this is present).
+2. `--vo=gpu --gpu-context=drm --hwdec=v4l2m2m-copy` — hardware decode with one frame
+   copy; works with any ffmpeg that has V4L2 M2M enabled.
+3. `--hwdec=no` software fallback, automatic per file when the codec is unsupported.
+
+`--hwdec` is set per file from the codec recorded by the scanner, so an H.264 file gets
+the hardware path and an MPEG-2 file goes straight to software without a failed attempt.
+Deinterlacing (`--deinterlace=yes`, `--vf=bwdif`) is enabled only for files the scanner
+reports as interlaced, because most 80s rips are interlaced SD and the Pi has no
+hardware deinterlacer. Audio passes through untouched.
+
+The admin library page shows each file's codec and whether it will hardware-decode, and
+the "needs attention" list flags anything the Pi may struggle with (e.g. 1080p MPEG-2).
+
+### 5.3 Remote control mapping
 
 Kernel IR (`dtoverlay=gpio-ir,gpio_pin=18` + `ir-keytable`) turns any IR remote into a
 normal Linux input device, so no LIRC daemon is needed and the same code path handles a
-keyboard or CEC. If a classic `lircd` setup is preferred, the input module is the only
-piece that changes.
+keyboard, CEC, or the web virtual remote. If a classic `lircd` setup is preferred, the
+input module is the only piece that changes.
 
 | Key | Action |
 |---|---|
-| 1–4 | Select channel |
-| CH+ / CH− | Next / previous channel (wraps 4→1) |
+| 1–9 | Select channel |
+| CH+ / CH− | Next / previous enabled channel (wraps) |
 | VOL+ / VOL− | mpv volume ±5, on-screen bar |
 | MUTE | Toggle mute |
 | PLAY/PAUSE | Pause holds the frame; play resumes from the paused point (that channel runs behind live until you change channel, at which point you rejoin live). See open question 2 |
@@ -225,7 +280,7 @@ piece that changes.
 | BACK / EXIT | Close guide |
 | INFO | Show the channel badge (what's on, start–end, what's next) |
 
-### 5.3 On-screen guide
+### 5.4 On-screen guide
 
 Teletext / Ceefax look: block font, 8-colour palette, black background, rendered by Pillow
 and pushed to mpv as an image overlay so playback continues underneath. Layout:
@@ -248,67 +303,123 @@ live.
 
 ---
 
-## 6. Boot and system setup
+## 6. Web interface (`pitv-web`, second systemd service)
+
+### 6.1 Stack
+
+- **Backend**: Python, FastAPI on uvicorn, one worker, async SQLite. Same package as the
+  scheduler, so the admin UI calls the scanner and scheduler in-process (as background
+  tasks with progress events) instead of shelling out. Talks to the player over its Unix
+  control socket. Runs as the `pitv` user, not root.
+- **Frontend**: Svelte 5 + Vite, built on the desktop into static files committed to the
+  repo (`pitv/web/static/`), served by FastAPI. The Pi never runs Node. Bundles are tens of
+  kilobytes, first paint is immediate, and every view is reactive to live data.
+- **Live data**: one Server-Sent Events stream (`/api/events`) pushing player state,
+  now-playing changes, scan/schedule progress and schedule edits. No polling.
+- **Auth**: the schedule view is open on the LAN; the admin area is behind a single
+  password (set on first run), session cookie, HTTPS optional via a reverse proxy if
+  ever exposed. Rate-limited login.
+- **Look**: clean and minimal by default with a subtle 80s accent (the PiTV logo, a
+  teletext-style clock); optional full "Ceefax mode" theme for the public guide page.
+  Works on a phone: the phone is the second remote.
+
+### 6.2 Public pages
+
+| Page | Content |
+|---|---|
+| `/` Now & Next | Every channel: what's on with a progress bar, what's next, live via SSE. Tap a channel to tune the TV |
+| `/guide` | EPG grid: channels as rows, time across, now-line, scrolls back to the start of the current programme and forward through the whole generated week; day picker; click for details (episode, year, certificate, plot) |
+| `/remote` | Virtual remote: channels, ch±, vol±, mute, pause, guide keys; same commands as the IR remote |
+
+### 6.3 Admin area (`/admin`)
+
+| Section | What you can do |
+|---|---|
+| Dashboard | Player state, schedule horizon, last scan, items needing attention, quick actions (scan now, build week, restart player) |
+| Sources | Add/edit/remove tv, movie, advert and ident sources (path, type, enabled); scan one or all with live progress and results |
+| Library | Browse shows, episodes, movies, adverts; search/filter; edit per-item overrides (year, certificate, genre, kids, exclude, home channel, strip/weekly, rest weeks); reset episode cursor; see codec and hardware-decode status; "needs attention" list (no year, no certificate, unsupported codec) |
+| Channels | Add/remove/reorder channels; name, number, logo, colour, enabled; ads on/off and ads per break; pattern editor (drag tokens: show/tv/movie/ad/ident/break); era weights; genre weights; daypart profile editor; overnight replay start |
+| Weighting | Global defaults for era weights, movie/TV balance, repeat penalties, variety rules, watershed certificate times, start-time rounding; per-channel overrides live in Channels |
+| Schedule | The same EPG grid, editable: lock, replace, remove, move, insert a specific show/movie, regenerate a day/channel/week from here; diff preview before applying; run log with skipped tokens and constraint warnings |
+| Player | Now playing with position; virtual remote; volume; restart player; view recent history (what actually aired) |
+| System | Time sync status, mounts and free space, service status, journal tail, backup/restore of the database and overrides export, software update |
+
+### 6.4 API
+
+All UI actions go through a JSON API (`/api/...`) so a script or Home Assistant can do the
+same things: `GET /api/now`, `GET /api/schedule?channel=&from=&to=`, `POST /api/player/key`,
+`POST /api/scan`, `POST /api/schedule/build`, CRUD for sources/channels/overrides. OpenAPI
+docs are served automatically by FastAPI at `/api/docs`.
+
+---
+
+## 7. Boot and system setup
 
 - Raspberry Pi OS Lite 64-bit. Static IP on Ethernet (no DHCP wait). NTP via
   `systemd-timesyncd` pointed at the NAS or router.
 - `config.txt`: `boot_delay=0`, `disable_splash=1`, `dtoverlay=disable-bt`,
-  `dtoverlay=gpio-ir,gpio_pin=18`, `hdmi_drive=2`, KMS driver on.
+  `dtoverlay=gpio-ir,gpio_pin=18`, `hdmi_drive=2`, `dtoverlay=vc4-kms-v3d`,
+  `gpu_mem` left at default (KMS does not use it).
 - Disable: bluetooth, hciuart, avahi, triggerhappy, ModemManager, apt timers,
   rpi-eeprom-update, man-db, dphys-swapfile.
-- `pitv-splash.service` shows the test card on the DRM console as soon as the kernel is
-  up (a few seconds in), then `pitv-player.service` takes over once the CIFS automounts
-  (`/mnt/tvshows`, `/mnt/movies`, `/mnt/pitv`) and time sync are ready. Expected: ~10–12 s to test card, ~15 s to programme.
+- Services: `pitv-splash` (test card within seconds), `pitv-player` (after CIFS
+  automounts and time sync), `pitv-web` (starts in parallel, does not delay the picture),
+  `pitv-scan.timer`, `pitv-schedule.timer`. Expected: ~10–12 s to test card, ~15 s to
+  programme.
 - Data lives in `/var/lib/pitv/pitv.db`; logs to journald with a size cap.
-- Optional later: read-only root overlay so pulling the plug never corrupts the SD card.
+- Optional later: read-only root overlay so pulling the plug never corrupts the SD card
+  (the database moves to a small writable partition).
 
 ---
 
-## 7. Code layout
+## 8. Code layout
 
 ```
 PiTV/
-├── pitv/                      Python package (3.11+, stdlib + python-mpv-jsonipc-free IPC, evdev, Pillow, PyYAML)
-│   ├── config.py              load/validate config.yaml + overrides.yaml
-│   ├── db.py                  SQLite schema and helpers
-│   ├── library/               scanner.py, naming.py (regexes), nfo.py, probe.py (ffprobe cache)
-│   ├── scheduler/             build.py (week builder), anchors.py, fill.py, rules.py (era/cert/daypart), overnight.py
-│   ├── player/                controller.py, mpv_ipc.py, input_evdev.py, osd/ (badge.py, guide.py, teletext.py)
-│   └── cli.py                 `pitv scan | schedule | listing | play | simulate`
-├── assets/                    testcard.png, static.mp4, fonts/ (a free teletext-style bitmap font)
-├── config/                    config.example.yaml, overrides.example.yaml, keymap.example.toml
-├── systemd/                   pitv-player.service, pitv-splash.service, pitv-scan.timer, pitv-schedule.timer, mount units
-├── setup/                     install.sh (Pi provisioning), boot-trim.sh, ir-keytable setup
+├── pitv/                      Python package (3.11+): FastAPI, uvicorn, aiosqlite, evdev, Pillow, PyYAML
+│   ├── config.py              bootstrap settings only (db path, sockets, web port); everything else lives in the DB
+│   ├── db.py                  SQLite schema, migrations, helpers
+│   ├── library/               scanner.py, naming.py (regexes), nfo.py, probe.py (ffprobe cache: duration, codec, interlace)
+│   ├── scheduler/             build.py (week builder), patterns.py, anchors.py, fill.py, rules.py (era/cert/daypart), overnight.py, edit.py
+│   ├── player/                controller.py, mpv_ipc.py, hwdec.py, input_evdev.py, control_socket.py, osd/ (badge.py, guide.py, teletext.py)
+│   ├── web/                   app.py (FastAPI), api/ (now, schedule, player, sources, library, channels, settings, system), events.py (SSE), auth.py, static/ (built frontend)
+│   └── cli.py                 `pitv scan | schedule | listing | play | web | simulate`
+├── web/                       Svelte + Vite source; `npm run build` writes to pitv/web/static/
+├── assets/                    testcard.png, static.mp4, fonts/ (a free teletext-style bitmap font), logo
+├── systemd/                   pitv-player.service, pitv-web.service, pitv-splash.service, timers, mount unit templates
+├── setup/                     install.sh (Pi provisioning), boot-trim.sh, ir-keytable setup, add-source-mount.sh
 ├── tests/                     unit tests; a fake-library generator makes tiny ffmpeg clips so everything runs on a desktop
 └── docs/PLAN.md               this file
 ```
 
 Development happens on the desktop (mpv, ffprobe and Python 3.12 are already here) with a
 generated fake library and a `--now` clock override so a week can be built and inspected
-without the NAS. `pitv listing` prints a Radio Times style listing for checking the
-scheduler's output before it ever touches the Pi.
+without the NAS. `pitv listing` prints a Radio Times style listing, and the web UI runs
+locally against the same database.
 
-Database tables: `media`, `shows`, `episodes`, `show_cursor`, `schedule`, `history`,
-`probe_cache`.
+Database tables: `settings`, `sources`, `channels`, `media`, `shows`, `episodes`,
+`overrides`, `show_cursor`, `schedule`, `schedule_locks`, `history`, `probe_cache`,
+`run_log`.
 
 ---
 
-## 8. Build phases
+## 9. Build phases
 
 | Phase | Deliverable | Checkpoint |
 |---|---|---|
-| 0 | Scaffold, config loading, DB schema, fake-library generator, test harness | `pytest` green on desktop |
-| 1 | Scanner: naming parsers, NFO, ffprobe cache, overrides | `pitv scan` on the fake library and on the real NAS |
-| 2 | Scheduler: anchors, gap fill, ads, watershed, overnight, history | `pitv listing` shows a believable week with no rule violations |
-| 3 | Player core: mpv IPC, live-offset channel switching, keyboard input, channel badge | Runs on desktop in a window |
-| 4 | Guide overlay with teletext rendering and navigation | Desktop |
-| 5 | IR remote via ir-keytable/evdev, volume, mute, pause | On the Pi |
-| 6 | Pi provisioning: install script, systemd units, CIFS automounts, boot trimming, test card splash | Cold boot to picture ≈ 15 s |
-| 7 | Polish: static on channel change, idents, mid-programme ad breaks, read-only root | Optional |
+| 0 | Scaffold, DB schema and migrations, bootstrap config, fake-library generator, test harness | `pytest` green on desktop |
+| 1 | Scanner: naming parsers, NFO, ffprobe cache (duration, codec, interlace), overrides | `pitv scan` on the fake library and on the real NAS |
+| 2 | Scheduler: channels-as-data, patterns, anchors, gap fill, ads, watershed, overnight, history, manual edits | `pitv listing` shows a believable week with no rule violations |
+| 3 | Web: FastAPI API + SSE, Svelte app: Now & Next, guide, admin for sources/library/channels/weighting/schedule | Runs on desktop against the fake library |
+| 4 | Player core: mpv IPC, per-file hwdec selection, live-offset channel switching, keyboard input, channel badge, control socket, web remote | Runs on desktop in a window |
+| 5 | On-screen guide overlay with teletext rendering and navigation | Desktop |
+| 6 | IR remote via ir-keytable/evdev, volume, mute, pause | On the Pi |
+| 7 | Pi provisioning: install script, systemd units, CIFS automounts, boot trimming, test card splash, hwdec verification (drm-prime vs v4l2m2m) | Cold boot to picture ≈ 15 s; 1080p H.264 plays with low CPU |
+| 8 | Polish: static on channel change, idents, mid-programme ad breaks, Ceefax web theme, read-only root | Optional |
 
 ---
 
-## 9. Open questions (assumptions used until answered)
+## 10. Open questions (assumptions used until answered)
 
 1. **NAS shares**: confirmed as `smb://synologynas/tvshows/` and `smb://synologynas/movies/`.
    Still needed: an SMB account for the Pi (read-only is enough), where the adverts folder
@@ -318,12 +429,14 @@ Database tables: `media`, `shows`, `episodes`, `show_cursor`, `schedule`, `histo
    channel rejoins live". The alternative is real-TV behaviour where resume jumps to live.
    "Restart" is read as play/resume; a separate "restart programme from the beginning" key
    is easy to add if wanted.
-3. **Overnight**: assumed replay of the day from 08:00. Alternative: replay from 19:00.
-4. **Ratings and genres**: are the shares scraped with NFO files? If not, the overrides
-   file is the only source of certificates, and unknown movies default to post-watershed.
+3. **Overnight**: assumed replay of the day from 08:00, per-channel setting.
+4. **Ratings and genres**: are the shares scraped with NFO files? If not, the admin
+   overrides are the only source of certificates, and unknown movies default to
+   post-watershed.
 5. **Remote**: which IR remote and receiver? Assumed a TSOP-type receiver on GPIO 18 with
    the kernel IR driver. HDMI-CEC (using the TV's own remote) can be added as a second input.
-6. **Channel names** for the on-screen guide and badges.
-7. **Mid-programme ad breaks** on channels 3 and 4: v1 places adverts only between
-   programmes; the data model already allows a split at the halfway point later.
-8. **Era weights**: assumed 85% 1980s / 15% 1990s.
+6. **Channel names** for the on-screen guide and badges (editable in admin anyway).
+7. **Mid-programme ad breaks** on ad channels: v1 places adverts only between programmes;
+   the data model already allows a split at the halfway point later.
+8. **Era weights**: assumed 85% 1980s / 15% 1990s, editable.
+9. **Web exposure**: assumed LAN only; the admin password is the only protection.
