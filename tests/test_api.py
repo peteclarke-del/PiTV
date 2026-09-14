@@ -68,7 +68,7 @@ def test_library_and_shows(client):
     att = client.get("/api/library/attention").json()
     assert any("Mystery" in a["title"] for a in att)
     summary = client.get("/api/library/summary").json()
-    assert summary["kinds"]["movie"] == 25
+    assert summary["kinds"]["movie"] == 32
 
 
 def test_channels_and_settings(client):

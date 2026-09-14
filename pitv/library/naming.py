@@ -21,6 +21,7 @@ _TITLE_YEAR_DOTTED = re.compile(rf"^(?P<title>.+?)[\.\s_-]+(?P<year>{_YEAR})(?:[
 _LEADING_YEAR = re.compile(rf"^(?P<year>{_YEAR})\s*[-_. ]+\s*(?P<title>.+)$")
 
 _SXXEYY = re.compile(r"[Ss](?P<s>\d{1,2})\s*[Ee](?P<e>\d{1,3})(?:[-Ee]+\d{1,3})*")
+_DATED = re.compile(r"(?<!\d)(?P<y>19[3-9]\d|20[0-4]\d)[-. ](?P<m>0[1-9]|1[0-2])[-. ](?P<d>0[1-9]|[12]\d|3[01])(?!\d)")
 _NXNN = re.compile(r"(?<!\d)(?P<s>\d{1,2})[xX](?P<e>\d{1,3})(?!\d)")
 _SEASON_DIR = re.compile(r"^(?:season|series|s)\s*_?(?P<s>\d{1,2})$", re.IGNORECASE)
 _SPECIALS_DIR = re.compile(r"^specials?$", re.IGNORECASE)
@@ -75,9 +76,15 @@ def parse_episode(file_path: PurePath, show_title: str | None = None) -> Episode
     title = stem
 
     m = _SXXEYY.search(stem) or _NXNN.search(stem)
+    dm = _DATED.search(stem)
     if m:
         season, episode = int(m.group("s")), int(m.group("e"))
         title = stem[m.end():]
+    elif dm:
+        # Date-based programmes (Grandstand, Match of the Day): season = year, episode = MMDD,
+        # which keeps them in broadcast order.
+        season, episode = int(dm.group("y")), int(dm.group("m")) * 100 + int(dm.group("d"))
+        title = stem[dm.end():] or f"{dm.group('d')}/{dm.group('m')}/{dm.group('y')}"
     else:
         parent = file_path.parent.name
         sm = _SEASON_DIR.match(parent)

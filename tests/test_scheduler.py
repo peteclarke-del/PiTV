@@ -24,6 +24,7 @@ def conn(tmp_path_factory):
         for stype, name, p in (("tv", "TV", lib["tv"]), ("movie", "Movies", lib["movies"]),
                                ("advert", "Ads", lib["pitv"] / "Adverts"), ("ident", "Idents", lib["pitv"] / "Idents")):
             c.execute("INSERT INTO sources(type, name, path) VALUES (?,?,?)", (stype, name, str(p)))
+        c.execute("INSERT INTO sources(type, name, path, category) VALUES ('tv', 'Sport', ?, 'sport')", (str(lib["sport"]),))
     scan_all(c)
     now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(c))
     r = build_horizon(c, start_day=parse_day("2026-09-14"), days=7, now=now, seed=42)
@@ -133,3 +134,49 @@ def test_rebuild_from_keeps_past_and_locked(conn):
     assert evening["id"] in ids_after, "locked slot must survive a rebuild"
     starts = [r["start_ts"] for r in after]
     assert starts == sorted(starts)
+
+
+def test_no_same_show_back_to_back(conn):
+    """Consecutive programmes on a channel (ads in between are fine, overnight replays count)
+    are never episodes of the same series."""
+    from datetime import datetime
+    tz = tz_of(conn)
+    rows = conn.execute("SELECT s.channel_id, s.start_ts, s.replay, m.show_id, sh.category FROM schedule s JOIN media m ON m.id = s.media_id"
+                        " LEFT JOIN shows sh ON sh.id = m.show_id WHERE s.kind = 'programme' ORDER BY s.channel_id, s.start_ts").fetchall()
+    for a, b in zip(rows, rows[1:]):
+        if a["channel_id"] == b["channel_id"] and a["show_id"] is not None and not (a["replay"] and b["replay"]):
+            if a["category"] == "sport" and datetime.fromtimestamp(b["start_ts"], tz).weekday() >= 5:
+                continue  # sport may run back to back at weekends
+            assert a["show_id"] != b["show_id"], f"same show back to back at {b['start_ts']} (replay={b['replay']})"
+
+
+def test_subtitle_is_episode_title(conn):
+    row = conn.execute("SELECT s.subtitle FROM schedule s JOIN media m ON m.id = s.media_id"
+                       " WHERE m.kind = 'episode' LIMIT 1").fetchone()
+    assert row["subtitle"] and not row["subtitle"].startswith("S0")
+
+
+def test_healthy_mix_of_eras_and_adverts_only_80s_90s(conn):
+    years = [r["year"] for r in conn.execute("SELECT m.year FROM schedule s JOIN media m ON m.id = s.media_id"
+                                             " WHERE s.replay = 0 AND s.kind = 'programme' AND m.year IS NOT NULL")]
+    pre = sum(1 for y in years if y < 1980)
+    assert 0.2 < pre / len(years) < 0.7, f"pre-1980 share {pre / len(years):.2f}"
+    ad_years = [r["year"] for r in conn.execute("SELECT m.year FROM schedule s JOIN media m ON m.id = s.media_id WHERE s.kind = 'advert'")]
+    assert ad_years and all(1980 <= y <= 1999 for y in ad_years)
+
+
+def test_weekend_afternoons_carry_sport(conn):
+    """Saturday 19th and Sunday 20th afternoons should be largely sport; weekday daytime should not."""
+    from datetime import datetime
+    tz = tz_of(conn)
+
+    def share(days, hours):
+        rows = conn.execute("SELECT s.start_ts, s.end_ts, sh.category FROM schedule s JOIN media m ON m.id = s.media_id"
+                            " LEFT JOIN shows sh ON sh.id = m.show_id WHERE s.replay = 0 AND s.kind = 'programme'"
+                            f" AND s.day IN ({','.join('?' * len(days))})", days).fetchall()
+        rows = [r for r in rows if hours[0] <= datetime.fromtimestamp(r["start_ts"], tz).hour < hours[1]]
+        total = sum(r["end_ts"] - r["start_ts"] for r in rows) or 1
+        return sum(r["end_ts"] - r["start_ts"] for r in rows if r["category"] == "sport") / total
+
+    assert share(["2026-09-19", "2026-09-20"], (12, 17)) > 0.3
+    assert share(["2026-09-15", "2026-09-16"], (8, 22)) < 0.2

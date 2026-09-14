@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS sources (
     name TEXT NOT NULL,
     path TEXT NOT NULL,            -- local mount path
     remote TEXT,                   -- e.g. smb://synologynas/tvshows/ (informational)
+    category TEXT NOT NULL DEFAULT 'general',   -- general | sport | kids ; shows inherit it
     enabled INTEGER NOT NULL DEFAULT 1,
     last_scanned_at INTEGER,
     last_scan_summary TEXT
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS shows (
     genres TEXT,                   -- JSON list
     plot TEXT,
     kids INTEGER NOT NULL DEFAULT 0,
+    category TEXT NOT NULL DEFAULT 'general',   -- general | sport | kids
     home_channel_id INTEGER REFERENCES channels(id) ON DELETE SET NULL,
     mode TEXT NOT NULL DEFAULT 'auto' CHECK (mode IN ('auto', 'strip', 'weekly')),
     anchor_time TEXT,              -- 'HH:MM' for strip/weekly
@@ -131,7 +133,7 @@ CREATE TABLE IF NOT EXISTS schedule (
     replay INTEGER NOT NULL DEFAULT 0,    -- 1 for overnight replays
     locked INTEGER NOT NULL DEFAULT 0,
     title TEXT NOT NULL DEFAULT '',       -- denormalised for fast guide rendering
-    subtitle TEXT NOT NULL DEFAULT ''     -- e.g. 'S02E05 Episode title' or '1983  PG'
+    subtitle TEXT NOT NULL DEFAULT ''     -- episode title, or '(1983) PG' for a film
 );
 CREATE INDEX IF NOT EXISTS schedule_lookup ON schedule(channel_id, start_ts);
 CREATE INDEX IF NOT EXISTS schedule_day ON schedule(day);
@@ -203,16 +205,42 @@ CREATE TABLE IF NOT EXISTS run_log (
 );
 """
 
+# Weekday pattern of a mid-1980s UK schedule. Weights: tv/movie by kind, kids and sport by
+# category (sport weight below 1 discourages it, above 1 builds a block).
 DEFAULT_DAYPARTS = [
-    {"name": "Breakfast", "start": "08:00", "tv": 1.0, "movie": 0.1, "kids": 1.5, "max_minutes": 40},
-    {"name": "Morning", "start": "09:30", "tv": 1.0, "movie": 0.3, "kids": 0.5},
-    {"name": "Lunchtime", "start": "12:00", "tv": 1.0, "movie": 0.2, "kids": 0.3, "max_minutes": 40},
-    {"name": "Matinee", "start": "13:30", "tv": 0.4, "movie": 2.0, "kids": 0.5},
-    {"name": "Children's", "start": "15:30", "tv": 1.0, "movie": 0.1, "kids": 6.0, "max_minutes": 35},
-    {"name": "Early evening", "start": "17:30", "tv": 1.0, "movie": 0.1, "kids": 0.4, "max_minutes": 40},
-    {"name": "Prime time", "start": "19:00", "tv": 1.0, "movie": 0.6, "kids": 0.05},
-    {"name": "Post-watershed", "start": "21:00", "tv": 1.0, "movie": 1.2, "kids": 0.0},
-    {"name": "Late", "start": "23:00", "tv": 0.6, "movie": 2.0, "kids": 0.0},
+    {"name": "Breakfast", "start": "08:00", "tv": 1.0, "movie": 0.1, "kids": 1.5, "sport": 0.1, "max_minutes": 40},
+    {"name": "Morning", "start": "09:30", "tv": 1.0, "movie": 0.3, "kids": 0.5, "sport": 0.1},
+    {"name": "Lunchtime", "start": "12:00", "tv": 1.0, "movie": 0.2, "kids": 0.3, "sport": 0.2, "max_minutes": 40},
+    {"name": "Matinee", "start": "13:30", "tv": 0.4, "movie": 2.0, "kids": 0.5, "sport": 0.3},
+    {"name": "Children's", "start": "15:30", "tv": 1.0, "movie": 0.1, "kids": 6.0, "sport": 0.05, "max_minutes": 35},
+    {"name": "Early evening", "start": "17:30", "tv": 1.0, "movie": 0.1, "kids": 0.4, "sport": 0.2, "max_minutes": 40},
+    {"name": "Prime time", "start": "19:00", "tv": 1.0, "movie": 0.6, "kids": 0.05, "sport": 0.3},
+    {"name": "Post-watershed", "start": "21:00", "tv": 1.0, "movie": 1.2, "kids": 0.0, "sport": 0.5},
+    {"name": "Late", "start": "22:30", "tv": 0.8, "movie": 1.5, "kids": 0.0, "sport": 2.5},   # Sportsnight / Midweek Sports Special
+]
+
+# Saturday: children's television all morning, Grandstand / World of Sport all afternoon,
+# family entertainment early evening, prime-time variety, Match of the Day late.
+DEFAULT_DAYPARTS_SATURDAY = [
+    {"name": "Saturday morning", "start": "08:00", "tv": 1.0, "movie": 0.1, "kids": 6.0, "sport": 0.1, "max_minutes": 60},
+    {"name": "Saturday lunchtime", "start": "12:00", "tv": 1.0, "movie": 0.2, "kids": 1.0, "sport": 2.0},
+    {"name": "Saturday sport", "start": "12:30", "tv": 0.3, "movie": 0.3, "kids": 0.2, "sport": 8.0},
+    {"name": "Saturday teatime", "start": "17:15", "tv": 1.0, "movie": 0.3, "kids": 1.5, "sport": 0.4},
+    {"name": "Saturday prime time", "start": "19:00", "tv": 1.0, "movie": 0.8, "kids": 0.05, "sport": 0.3},
+    {"name": "Saturday post-watershed", "start": "21:00", "tv": 1.0, "movie": 1.2, "kids": 0.0, "sport": 0.5},
+    {"name": "Saturday late", "start": "22:15", "tv": 0.6, "movie": 1.5, "kids": 0.0, "sport": 4.0},   # Match of the Day
+]
+
+# Sunday: quiet morning, lunchtime light entertainment, afternoon sport (The Big Match) or
+# the Sunday afternoon film, classic serial at teatime, drama in the evening, late film.
+DEFAULT_DAYPARTS_SUNDAY = [
+    {"name": "Sunday morning", "start": "08:00", "tv": 1.0, "movie": 0.2, "kids": 2.5, "sport": 0.1, "max_minutes": 60},
+    {"name": "Sunday lunchtime", "start": "12:00", "tv": 1.0, "movie": 0.3, "kids": 0.5, "sport": 0.5},
+    {"name": "Sunday afternoon", "start": "14:00", "tv": 0.5, "movie": 1.5, "kids": 0.3, "sport": 5.0},
+    {"name": "Sunday teatime", "start": "17:00", "tv": 1.0, "movie": 0.5, "kids": 1.0, "sport": 2.0},
+    {"name": "Sunday evening", "start": "19:00", "tv": 1.0, "movie": 0.6, "kids": 0.05, "sport": 0.2},
+    {"name": "Sunday post-watershed", "start": "21:00", "tv": 1.0, "movie": 1.2, "kids": 0.0, "sport": 0.3},
+    {"name": "Sunday late", "start": "22:30", "tv": 0.6, "movie": 1.5, "kids": 0.0, "sport": 1.0},
 ]
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -221,7 +249,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "day_end": "00:00",
     "horizon_days": 7,
     "rebuild_when_days_left": 2,
-    "era_weights": {"1980-1989": 0.85, "1990-1999": 0.15},
+    # Programmes: anything goes, with a healthy mix either side of 1980. Adverts: 80s/90s only.
+    "era_weights": {"1920-1979": 0.45, "1980-1989": 0.40, "1990-1999": 0.15},
+    "unknown_year_weight": 0.2,        # programmes with no year found still get scheduled, at this weight
+    "advert_era_weights": {"1980-1989": 0.85, "1990-1999": 0.15},
     "watershed": {"U": "00:00", "PG": "00:00", "12": "20:00", "12A": "20:00", "15": "21:00", "18": "22:00"},
     "tv_watershed": {"15": "21:00", "18": "22:00"},
     "show_daily_limit": 2,
@@ -231,6 +262,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "kids_cutoff": "21:00",
     "kind_weights": {"tv": 0.7, "movie": 0.3},
     "dayparts": DEFAULT_DAYPARTS,
+    "dayparts_saturday": DEFAULT_DAYPARTS_SATURDAY,
+    "dayparts_sunday": DEFAULT_DAYPARTS_SUNDAY,
+    "era_pool_normalise": 0.5,         # 0 = weight per item; 1 = eras share airtime by weight regardless of library size
+    "sport_back_to_back_weekends": True,
     "movie_repeat_days": 21,
     "episode_recency_days": 7,
     "same_slot_bonus": 3.0,
@@ -249,13 +284,17 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "nav_keys_change_channel": True,   # up/down = channel +/- when the guide is closed (OSMC remote has no channel keys)
     "nav_keys_change_volume": True,    # left/right = volume when the guide is closed
     "badge_seconds": 5,
+    "osd_safe_margin": 0.07,           # fraction of the screen kept clear on every edge (CRT overscan)
+    "osd_scale": 1.25,                 # text size multiplier; 1.25 suits a small 4:3 CRT at 576 lines
+    "drm_connector": "",               # e.g. "Composite-1" or "HDMI-A-1"; empty = mpv default
     "pi_hwdec": "drm-prime,v4l2m2m-copy",
     "audio_device": "auto",
     # local cache on the attached drive
     "cache_dir": "",                   # e.g. /mnt/cache/pitv ; empty = disabled
-    "cache_max_gb": 200,
+    "cache_max_gb": 600,
     "cache_copy_mbps": 0,              # 0 = unlimited
-    "prefetch_hours": 4,
+    "prefetch_hours": 4,               # always keep at least this far ahead cached
+    "prefetch_days": 1,                # and everything through the end of the next N broadcast days
     # acquisition of missing programmes and transcoding (see docs/PLAN.md §7)
     "acquire_enabled": False,
     "acquire_dir": "",                 # empty = <cache_dir>/acquired
@@ -303,6 +342,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     """Create tables and seed defaults. Safe to call on every start."""
     conn.executescript(SCHEMA)  # executescript commits on its own; seed inside a tx after
     _migrate(conn)
+    _migrate_settings(conn)
     with tx(conn):
         conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
                      (str(SCHEMA_VERSION),))
@@ -321,6 +361,8 @@ def init_db(conn: sqlite3.Connection) -> None:
 # Columns added after the first release: (table, column, DDL). Applied when missing.
 MIGRATIONS: list[tuple[str, str, str]] = [
     ("schedule", "subtitle", "TEXT NOT NULL DEFAULT ''"),
+    ("sources", "category", "TEXT NOT NULL DEFAULT 'general'"),
+    ("shows", "category", "TEXT NOT NULL DEFAULT 'general'"),
 ]
 
 
@@ -329,6 +371,30 @@ def _migrate(conn: sqlite3.Connection) -> None:
         cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
+def _migrate_settings(conn: sqlite3.Connection) -> None:
+    """Fill in keys added to stored daypart rows since they were saved (e.g. `sport`)."""
+    for key, defaults in (("dayparts", DEFAULT_DAYPARTS), ("dayparts_saturday", DEFAULT_DAYPARTS_SATURDAY),
+                          ("dayparts_sunday", DEFAULT_DAYPARTS_SUNDAY)):
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        if not row:
+            continue
+        try:
+            stored = json.loads(row["value"])
+        except ValueError:
+            continue
+        if not isinstance(stored, list):
+            continue
+        by_name = {d.get("name"): d for d in defaults}
+        changed = False
+        for dp in stored:
+            if isinstance(dp, dict) and "sport" not in dp:
+                dp["sport"] = by_name.get(dp.get("name"), {}).get("sport", 0.2)
+                changed = True
+        if changed:
+            with tx(conn):
+                conn.execute("UPDATE settings SET value = ? WHERE key = ?", (json.dumps(stored), key))
 
 
 @contextmanager

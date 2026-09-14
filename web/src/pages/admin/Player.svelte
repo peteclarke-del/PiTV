@@ -81,6 +81,22 @@
       </div>
 
       <div class="card">
+        <div class="card-title"><h3>Stream</h3></div>
+        {#if !s.online}<p class="muted small">Unknown while the player is offline.</p>
+        {:else if !s.file && !s.stream}<p class="muted small">Nothing is playing.</p>
+        {:else}
+          {#if s.file}<div class="tiny muted mono" style="word-break:break-all">{s.file}</div>{/if}
+          {#if s.stream && Object.keys(s.stream).length}
+            <dl class="kv small mt">
+              {#each Object.entries(s.stream) as [k, v] (k)}
+                <dt>{k}</dt><dd>{#if k === 'hwdec'}<span class="badge {v ? 'ok' : 'warn'}">{v || 'software'}</span>{:else}{v === null || v === undefined || v === '' ? '–' : String(v)}{/if}</dd>
+              {/each}
+            </dl>
+          {:else}<p class="muted small mt">Stream details not reported yet.</p>{/if}
+        {/if}
+      </div>
+
+      <div class="card">
         <div class="card-title"><h3>Cache</h3></div>
         {#if !s.online}<p class="muted small">Unknown while the player is offline.</p>
         {:else if !cache.enabled}<p class="muted small">Local cache disabled. Set a cache directory under Weighting → Cache.</p>

@@ -14,8 +14,28 @@ set_cfg disable_splash 1
 set_cfg hdmi_drive 2            # HDMI audio
 set_cfg disable_overscan 1
 add_overlay disable-bt
-add_overlay vc4-kms-v3d
 grep -q "^max_framebuffers" "$CONFIG" || echo "max_framebuffers=2" >> "$CONFIG"
+
+# Display: DISPLAY_MODE=composite (PAL 4:3 on the Pi 4's 3.5 mm AV jack, the default for a
+# 1980s 14" set), hdmi43 (HDMI forced to a 4:3 mode, e.g. through an HDMI-to-SCART box) or hdmi.
+DISPLAY_MODE="${DISPLAY_MODE:-composite}"
+sed -i '/^dtoverlay=vc4-kms-v3d/d; /^enable_tvout/d; /^sdtv_mode/d; /^sdtv_aspect/d; /^hdmi_group/d; /^hdmi_mode/d' "$CONFIG"
+case "$DISPLAY_MODE" in
+  composite)
+    echo "enable_tvout=1" >> "$CONFIG"
+    echo "sdtv_mode=2" >> "$CONFIG"          # PAL
+    echo "sdtv_aspect=1" >> "$CONFIG"        # 4:3
+    echo "dtoverlay=vc4-kms-v3d,composite=1" >> "$CONFIG"
+    ;;
+  hdmi43)
+    echo "hdmi_group=2" >> "$CONFIG"
+    echo "hdmi_mode=16" >> "$CONFIG"         # 1024x768 60 Hz, 4:3
+    echo "dtoverlay=vc4-kms-v3d" >> "$CONFIG"
+    ;;
+  *)
+    echo "dtoverlay=vc4-kms-v3d" >> "$CONFIG"
+    ;;
+esac
 
 # Quiet kernel, no rainbow, no cursor blink, no plymouth.
 if ! grep -q "quiet" "$CMDLINE"; then sed -i 's/$/ quiet/' "$CMDLINE"; fi

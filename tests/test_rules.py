@@ -14,6 +14,15 @@ def test_era_weight_span():
     assert era_weight(1995, ew) == 0.15
     assert era_weight(1978, ew) == 0.0
     assert era_weight(1978, ew, end_year=1981) == 0.85
+    assert era_weight(None, ew) == 0.0
+    assert era_weight(None, ew, unknown=0.2) == 0.2
+
+
+def test_default_eras_allow_old_programmes_but_not_old_adverts():
+    prog = DEFAULT_SETTINGS["era_weights"]
+    ads = DEFAULT_SETTINGS["advert_era_weights"]
+    assert era_weight(1942, prog) > 0 and era_weight(1985, prog) > 0
+    assert era_weight(1975, ads) == 0.0 and era_weight(1985, ads) > 0
 
 
 def test_watershed_movie_vs_tv():

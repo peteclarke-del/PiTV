@@ -65,7 +65,9 @@ def _player_subscriber(app: FastAPI, stop: threading.Event) -> None:
 
 
 def create_app(cfg: Config) -> FastAPI:
+    from ..logsetup import setup_logging
     cfg.ensure_dirs()
+    setup_logging(cfg, "web")
     conn = dbm.connect(cfg.db_path)
     dbm.init_db(conn)
     conn.close()

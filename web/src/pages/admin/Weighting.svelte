@@ -13,6 +13,7 @@
   let providers = $state({ archive: true, url: false });
   async function load() {
     s = await tryApi(get('/api/settings'));
+    if (s) { s.dayparts_saturday ??= []; s.dayparts_sunday ??= []; }
     if (s) providers = { archive: (s.acquire_providers ?? []).includes('archive'), url: (s.acquire_providers ?? []).includes('url') };
   }
   onMount(load);
@@ -23,12 +24,19 @@
     for (const k of ['horizon_days', 'rebuild_when_days_left', 'show_daily_limit', 'movie_repeat_days', 'episode_recency_days',
                      'duration_tolerance_minutes', 'start_rounding_minutes', 'end_of_day_overrun_minutes', 'advert_year_window',
                      'advert_repeat_penalty_hours', 'series_rest_weeks', 'badge_seconds', 'cache_max_gb', 'cache_copy_mbps',
-                     'prefetch_hours', 'transcode_max_height', 'transcode_bitrate_kbps', 'scan_hour', 'history_keep_days']) body[k] = parseInt(body[k], 10) || 0;
+                     'prefetch_hours', 'prefetch_days', 'transcode_max_height', 'transcode_bitrate_kbps', 'scan_hour', 'history_keep_days']) body[k] = parseInt(body[k], 10) || 0;
     body.acquire_providers = ['archive', 'url'].filter((p) => providers[p]);
-    for (const k of ['show_repeat_penalty', 'same_slot_bonus', 'genre_repeat_penalty']) body[k] = Number(body[k]) || 0;
+    for (const k of ['show_repeat_penalty', 'same_slot_bonus', 'genre_repeat_penalty', 'unknown_year_weight', 'osd_safe_margin', 'osd_scale']) body[k] = Number(body[k]) || 0;
     body.kind_weights = { tv: Number(s.kind_weights.tv), movie: Number(s.kind_weights.movie) };
-    body.dayparts = s.dayparts.map((d) => ({ ...d, tv: Number(d.tv), movie: Number(d.movie), kids: Number(d.kids), ...(d.max_minutes ? { max_minutes: Number(d.max_minutes) } : {}) }))
-      .map((d) => { if (!d.max_minutes) delete d.max_minutes; return d; });
+    const cleanDp = (rows) => (rows ?? []).map((d) => {
+      const o = { name: d.name, start: d.start, tv: Number(d.tv) || 0, movie: Number(d.movie) || 0, kids: Number(d.kids) || 0, sport: Number(d.sport) || 0 };
+      if (d.max_minutes) o.max_minutes = Number(d.max_minutes);
+      return o;
+    });
+    body.dayparts = cleanDp(s.dayparts);
+    body.dayparts_saturday = cleanDp(s.dayparts_saturday);
+    body.dayparts_sunday = cleanDp(s.dayparts_sunday);
+    body.era_pool_normalise = Math.max(0, Math.min(1, Number(s.era_pool_normalise) || 0));
     const r = await tryApi(put('/api/settings', body), { success: 'Settings saved' });
     saving = false;
     if (r) { s = r; savedOnce = true; providers = { archive: (s.acquire_providers ?? []).includes('archive'), url: (s.acquire_providers ?? []).includes('url') }; }
@@ -68,6 +76,12 @@
         <div class="card-title"><h3>Era weights</h3></div>
         <p class="help small muted">Relative preference for programme years. Channels can override this.</p>
         <WeightRows value={s.era_weights} onchange={(v) => (s.era_weights = v)} keyLabel="Years" keyPlaceholder="1980-1989" addLabel="Add era" />
+        <label class="field">Unknown year weight<input type="number" min="0" max="2" step="0.05" bind:value={s.unknown_year_weight} /><span class="help">Programmes with no year found still air at this weight; 0 excludes them.</span></label>
+        <label class="field">Era pool normalisation <span class="mono">{Number(s.era_pool_normalise ?? 0).toFixed(2)}</span><input type="range" min="0" max="1" step="0.05" bind:value={s.era_pool_normalise} /><span class="help">0 weights every title equally; 1 makes each era's share of airtime follow the era weights regardless of how many titles it has.</span></label>
+        <hr />
+        <div class="card-title"><h3>Advert era weights</h3></div>
+        <p class="help small muted">Adverts outside these years are never shown.</p>
+        <WeightRows value={s.advert_era_weights} onchange={(v) => (s.advert_era_weights = v)} keyLabel="Years" keyPlaceholder="1980-1989" addLabel="Add era" />
         <hr />
         <div class="card-title"><h3>TV / movie balance</h3></div>
         <p class="help small muted">Global balance between episodes and films; dayparts and channels modify it.</p>
@@ -105,6 +119,7 @@
           <label class="field">Same slot bonus<input type="number" step="0.5" min="0" bind:value={s.same_slot_bonus} /><span class="help">Multiplier favouring a show at the time it aired yesterday, so regulars keep their slot.</span></label>
           <label class="field">Genre repeat penalty<input type="number" step="0.05" min="0" max="1" bind:value={s.genre_repeat_penalty} /><span class="help">Multiplier when the previous programme shared a genre.</span></label>
           <label class="field">Series rest weeks<input type="number" min="0" bind:value={s.series_rest_weeks} /><span class="help">Default weeks a series rests after its last episode before starting again.</span></label>
+          <label class="check"><input type="checkbox" bind:checked={s.sport_back_to_back_weekends} /> Sport back to back at weekends<span class="help">Let sport programmes follow each other through weekend afternoons.</span></label>
         </div>
       </div>
 
@@ -130,7 +145,10 @@
           <label class="field">Channel badge seconds<input type="number" min="0" max="60" bind:value={s.badge_seconds} /><span class="help">How long the channel badge stays on screen after a change.</span></label>
           <label class="check"><input type="checkbox" bind:checked={s.channel_switch_static} /> Static burst on channel change</label>
           <label class="field">Pi hardware decoders<input class="mono" bind:value={s.pi_hwdec} /><span class="help">mpv <code>--hwdec</code> list tried in order on the Pi, e.g. drm-prime,v4l2m2m-copy.</span></label>
-          <label class="field">Audio device<input class="mono" bind:value={s.audio_device} /><span class="help">mpv audio device name; <code>auto</code> picks HDMI.</span></label>
+          <label class="field">Audio device<input class="mono" bind:value={s.audio_device} /><span class="help">mpv audio device name; <code>auto</code> picks the default output.</span></label>
+          <label class="field">Overscan-safe margin<input type="number" min="0" max="0.2" step="0.01" bind:value={s.osd_safe_margin} /><span class="help">Fraction of each screen edge kept clear of overlays; a CRT hides about 5–8%.</span></label>
+          <label class="field">On-screen text scale<input type="number" min="0.5" max="2" step="0.05" bind:value={s.osd_scale} /><span class="help">1.25 suits a 14" 4:3 set at 576 lines.</span></label>
+          <label class="field">DRM connector<input class="mono" bind:value={s.drm_connector} /><span class="help">Force the output, e.g. <code>Composite-1</code> or <code>HDMI-A-1</code>; empty lets mpv choose.</span></label>
         </div>
       </div>
 
@@ -140,7 +158,8 @@
           <label class="field">Cache directory<input class="mono" bind:value={s.cache_dir} placeholder="/mnt/cache/pitv" /><span class="help">Folder on the attached drive for local copies of upcoming programmes; empty disables the cache.</span></label>
           <label class="field">Maximum size (GB)<input type="number" min="0" bind:value={s.cache_max_gb} /><span class="help">Oldest copies are removed once the cache exceeds this.</span></label>
           <label class="field">Copy speed limit (Mbit/s)<input type="number" min="0" bind:value={s.cache_copy_mbps} /><span class="help">0 = unlimited. Throttle to keep the NAS responsive while a programme plays.</span></label>
-          <label class="field">Prefetch hours<input type="number" min="0" max="48" bind:value={s.prefetch_hours} /><span class="help">Copy programmes scheduled within this many hours ahead.</span></label>
+          <label class="field">Prefetch hours<input type="number" min="0" max="48" bind:value={s.prefetch_hours} /><span class="help">Always keep at least this many hours of programmes cached ahead.</span></label>
+          <label class="field">Prefetch days<input type="number" min="0" max="7" bind:value={s.prefetch_days} /><span class="help">Also cache everything through the end of the next N broadcast days, so tomorrow is local before 08:00.</span></label>
         </div>
       </div>
 
@@ -173,8 +192,13 @@
 
     <div class="card">
       <div class="card-title"><h3>Dayparts</h3></div>
-      <p class="help small muted">Weights by time of day: TV and movie multipliers, a kids multiplier, and an optional maximum programme length. Channels may define their own profile.</p>
+      <p class="help small muted">Weights by time of day: TV, movie, kids and sport multipliers plus an optional maximum programme length. Weekdays, Saturday and Sunday each have their own table; channels may override any of them.</p>
+      <h4>Weekday</h4>
       <DaypartTable bind:rows={s.dayparts} />
+      <h4 class="mt">Saturday</h4>
+      <DaypartTable bind:rows={s.dayparts_saturday} />
+      <h4 class="mt">Sunday</h4>
+      <DaypartTable bind:rows={s.dayparts_sunday} />
     </div>
 
     <div class="row"><button class="primary" onclick={save} disabled={saving}>Save settings</button></div>

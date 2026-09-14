@@ -15,7 +15,7 @@
     show = s;
     form = {
       title: s.title ?? '', year: s.year ?? '', certificate: s.certificate ?? '', genres: (s.genres ?? []).join(', '),
-      plot: s.plot ?? '', kids: !!s.kids, home_channel_id: s.home_channel_id ?? '', mode: s.mode ?? 'auto',
+      plot: s.plot ?? '', kids: !!s.kids, category: s.category || 'general', home_channel_id: s.home_channel_id ?? '', mode: s.mode ?? 'auto',
       anchor_time: s.anchor_time ?? '', anchor_days: new Set(s.anchor_days ?? []), rest_weeks: s.rest_weeks ?? 4, excluded: !!s.excluded,
     };
     if (s.cursor) cursorForm = { season: s.cursor.next_season, episode: s.cursor.next_episode };
@@ -27,7 +27,7 @@
     return {
       title: form.title, year: form.year === '' ? null : Number(form.year), certificate: form.certificate || null,
       genres: genres.length ? genres : null, plot: form.plot, kids: form.kids ? 1 : 0,
-      home_channel_id: form.home_channel_id === '' ? null : Number(form.home_channel_id), mode: form.mode,
+      category: form.category, home_channel_id: form.home_channel_id === '' ? null : Number(form.home_channel_id), mode: form.mode,
       anchor_time: form.mode === 'auto' ? null : form.anchor_time || null,
       anchor_days: form.mode === 'auto' ? null : [...form.anchor_days].sort(),
       rest_weeks: Number(form.rest_weeks), excluded: form.excluded,
@@ -76,6 +76,10 @@
       </div>
       <hr />
       <div class="form-grid">
+        <label class="field">Category
+          <select bind:value={form.category}><option value="general">General</option><option value="sport">Sport</option><option value="kids">Children's</option></select>
+          <span class="help">Sport gets weekend afternoon and midweek late slots.</span>
+        </label>
         <label class="field">Home channel
           <select bind:value={form.home_channel_id}><option value="">(unassigned)</option>{#each channels as c (c.id)}<option value={c.id}>{c.number} {c.name}</option>{/each}</select>
         </label>

@@ -19,6 +19,15 @@
 5. Reboot. Within ~15 s the test card shows, then channel 1. Open `http://pitv/` for the
    web UI, set the admin password, run **Scan**, then **Build schedule**.
 
+### The television
+
+The target set is a 14" 4:3 colour CRT. By default the installer configures the Pi 4's
+composite output (PAL, 4:3) on the 3.5 mm AV jack; use a TRRS-to-phono lead into the set's
+SCART or AV input. If the set is fed through an HDMI-to-SCART converter instead, install with
+`DISPLAY_MODE=hdmi43 sudo ./setup/install.sh` (HDMI forced to 1024x768, 4:3). Overlays keep a
+7% overscan margin and use larger type; both are adjustable in Admin → Weighting → Player.
+If mpv picks the wrong output, set `drm_connector` there (e.g. `Composite-1`).
+
 Updating later: `cd ~/PiTV && git pull && sudo ./setup/install.sh` then
 `sudo systemctl restart pitv-player pitv-web`.
 

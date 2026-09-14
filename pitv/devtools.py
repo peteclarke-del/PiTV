@@ -38,6 +38,11 @@ FAKE_SHOWS = [
     ("Robin of Sherwood", 1984, 3, 7, 50, ["Adventure", "Drama"], "PG", False),
     ("Willo the Wisp", 1981, 1, 26, 5, ["Animation", "Children"], "U", True),
     ("Cracker", 1993, 2, 5, 100, ["Crime", "Drama"], "18", False),
+    ("Dad's Army", 1968, 5, 8, 30, ["Comedy"], "U", False),
+    ("The Prisoner", 1967, 1, 17, 50, ["Drama", "Science Fiction"], "PG", False),
+    ("Fawlty Towers", 1975, 2, 6, 30, ["Comedy"], "PG", False),
+    ("The Clangers", 1969, 2, 13, 10, ["Animation", "Children"], "U", True),
+    ("The Sweeney", 1975, 4, 13, 50, ["Crime", "Drama"], "15", False),
 ]
 
 # (title, year, minutes, certificate, genres)
@@ -66,6 +71,13 @@ FAKE_MOVIES = [
     ("Four Weddings and a Funeral", 1994, 117, "15", ["Comedy", "Romance"]),
     ("The Untouchables", 1987, 119, "15", ["Crime", "Drama"]),
     ("Big", 1988, 104, "PG", ["Comedy", "Fantasy"]),
+    ("Casablanca", 1942, 102, "U", ["Drama", "Romance"]),
+    ("Some Like It Hot", 1959, 121, "PG", ["Comedy"]),
+    ("The Italian Job", 1969, 99, "PG", ["Crime", "Comedy"]),
+    ("Jason and the Argonauts", 1963, 104, "U", ["Fantasy", "Adventure"]),
+    ("Carry On Camping", 1969, 88, "PG", ["Comedy"]),
+    ("Get Carter", 1971, 112, "18", ["Crime", "Thriller"]),
+    ("The Wicker Man", 1973, 88, "15", ["Horror", "Mystery"]),
     ("Mystery Movie", None, 95, None, []),  # deliberately incomplete metadata
 ]
 
@@ -78,6 +90,18 @@ FAKE_ADVERTS = [
     ("Guinness Surfer", 1999), ("Crunchie", 1988), ("Bounty", 1984), ("Ready Brek", 1982),
     ("Hofmeister", 1985), ("Access Card", 1987), ("Weetabix", 1983), ("Findus Crispy Pancakes", 1984),
     ("Oxo Family", 1986), ("Persil", 1981), ("Prudential", 1988), ("Nescafe Gold Blend", 1989),
+]
+
+# Sport on PiTV is wrestling, snooker, motorcycle racing and strongman competitions.
+# (title, year, dated?, episodes, minutes) - dated shows get one file per week of 1985
+FAKE_SPORT = [
+    ("World of Sport Wrestling", 1965, True, 24, 55),
+    ("Pot Black", 1969, False, 16, 30),
+    ("World Snooker Championship", 1985, False, 14, 110),
+    ("Motorcycle Grand Prix", 1980, True, 16, 60),
+    ("British Superbike Championship", 1988, False, 10, 50),
+    ("World's Strongest Man", 1977, False, 8, 50),
+    ("Britain's Strongest Man", 1979, False, 6, 45),
 ]
 
 _DURATION_TEMPLATES: dict[int, Path] = {}
@@ -139,6 +163,23 @@ def build_fake_library(root: Path, seed: int = 1, with_nfo: bool = True,
                 _make_video(f, (minutes + jitter) * 60, f"{title} S{s}E{e}")
                 count += 1
 
+    import datetime as _dt
+    sport = root / "tvsports"
+    sport.mkdir(exist_ok=True)
+    for title, year, dated, eps, minutes in FAKE_SPORT:
+        show_dir = sport / f"{title} ({year})"
+        show_dir.mkdir(exist_ok=True)
+        if with_nfo:
+            _nfo(show_dir / "tvshow.nfo", "tvshow", {"title": title, "year": year, "mpaa": "UK:U"}, ["Sport"])
+        if dated:
+            day = _dt.date(1985, 1, 5)
+            for _i in range(eps):
+                _make_video(show_dir / "Season 1985" / f"{title} - {day.isoformat()}.mp4", minutes * 60, title)
+                day += _dt.timedelta(days=7)
+        else:
+            for e in range(1, eps + 1):
+                _make_video(show_dir / "Season 01" / f"{title} - S01E{e:02d} - Episode {e}.mp4", minutes * 60, title)
+
     for title, year, minutes, cert, genres in FAKE_MOVIES:
         safe = title.replace(":", "").replace("/", "-")
         folder = movies / (f"{safe} ({year})" if year else safe)
@@ -157,4 +198,4 @@ def build_fake_library(root: Path, seed: int = 1, with_nfo: bool = True,
         for i in (1, 2):
             _make_video(pitv / "Idents" / f"ch{ch}" / f"Ident {i}.mp4", rnd.choice([8, 10, 15]), f"ch{ch}")
     _make_video(pitv / "Static" / "static.mp4", 2, "static")
-    return {"tv": tv, "movies": movies, "pitv": pitv}
+    return {"tv": tv, "movies": movies, "pitv": pitv, "sport": sport}

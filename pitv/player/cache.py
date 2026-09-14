@@ -85,6 +85,7 @@ class MediaCache:
         self._make_room(size)
         tmp = dest.with_suffix(dest.suffix + ".part")
         self.current_copy = {"media_id": media_id, "name": src.name, "size": size, "done": 0}
+        log.info("caching %s (%.0f MB)", src.name, size / 1e6)
         chunk = 8 * 1024 * 1024
         limit = self.copy_mbps * 1024 * 1024 / 8 if self.copy_mbps > 0 else 0
         started = time.time()
@@ -156,10 +157,11 @@ class PrefetchWorker:
     """Copies programmes airing in the next few hours into the cache, current channel first."""
 
     def __init__(self, cache: MediaCache, db_path: Path, hours: float, current_channel: Callable[[], int | None],
-                 clock: Callable[[], int]) -> None:
+                 clock: Callable[[], int], days: int = 1) -> None:
         self.cache = cache
         self.db_path = db_path
         self.hours = hours
+        self.days = days
         self.current_channel = current_channel
         self.clock = clock
         self._stop = threading.Event()
@@ -177,9 +179,23 @@ class PrefetchWorker:
     def poke(self) -> None:
         self._wake.set()
 
+    def _horizon(self, conn: sqlite3.Connection, now: int) -> int:
+        """At least `hours` ahead, and through the end of the next `days` broadcast days, so
+        tomorrow's television is on the local drive before it starts at 08:00."""
+        from datetime import timedelta
+        from ..db import all_settings
+        from ..scheduler.rules import broadcast_day_for, day_bounds, tz_of
+        horizon = now + int(self.hours * 3600)
+        if self.days > 0:
+            settings = all_settings(conn)
+            tz = tz_of(conn)
+            day = broadcast_day_for(now, settings, tz) + timedelta(days=self.days)
+            horizon = max(horizon, day_bounds(day, settings, tz)[2])
+        return horizon
+
     def _upcoming(self, conn: sqlite3.Connection) -> list[dict[str, Any]]:
         now = self.clock()
-        horizon = now + int(self.hours * 3600)
+        horizon = self._horizon(conn, now)
         rows = conn.execute(
             "SELECT s.channel_id, s.start_ts, m.id, m.path, m.transcoded_path, m.size FROM schedule s"
             " JOIN media m ON m.id = s.media_id WHERE s.kind = 'programme' AND s.end_ts > ? AND s.start_ts < ?"

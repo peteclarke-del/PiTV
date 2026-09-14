@@ -80,6 +80,8 @@ class Player:
         self.hwdec_current: str | None = None
         self.stopping = False
         self._last_drift_check = 0.0
+        self._stream_info_at = 0.0
+        self.stream_info: dict[str, Any] = {}
         self._state_cache: str = ""
         self.keyboard = keyboard
         self.initial_channel = channel or 1
@@ -96,7 +98,8 @@ class Player:
         self.evdev = EvdevInput(self._on_key, self.settings.get("keymap") or {})
         self.tty = TerminalInput(self._on_key) if keyboard else None
         self.prefetch = PrefetchWorker(self.cache, cfg.db_path, float(self.settings.get("prefetch_hours", 4)),
-                                       lambda: self.channel["id"] if self.channel else None, self.clock)
+                                       lambda: self.channel["id"] if self.channel else None, self.clock,
+                                       days=int(self.settings.get("prefetch_days", 1)))
         self.maintenance = Maintenance(cfg.db_path, cfg.ffprobe_binary, self.clock, self._schedule_changed)
         self.acquire = AcquisitionWorker(cfg.db_path, self.clock, self.on_pi, cfg.ffprobe_binary, self._schedule_changed)
 
@@ -110,6 +113,9 @@ class Player:
         dev = self.settings.get("audio_device") or "auto"
         if dev != "auto":
             args.append(f"--audio-device={dev}")
+        conn_name = self.settings.get("drm_connector") or ""
+        if conn_name and self.on_pi and not self.cfg.windowed:
+            args.append(f"--drm-connector={conn_name}")
         return args + self.cfg.mpv_extra_args
 
     def _load_channels(self) -> None:
@@ -144,7 +150,10 @@ class Player:
     # --- lifecycle -------------------------------------------------------------------------
 
     def run(self) -> int:
-        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+        from ..logsetup import setup_logging
+        setup_logging(self.cfg, "player")
+        log.info("player starting: pi=%s windowed=%s mpv=%s data=%s", self.on_pi, self.cfg.windowed,
+                 self.cfg.mpv_binary, self.cfg.data_dir)
         self._load_channels()
         if not self.channels:
             log.error("no enabled channels")
@@ -157,6 +166,10 @@ class Player:
             return 1
         for key, action in WINDOW_KEYS.items():
             self.mpv.keybind(key, f"pitv {action}")
+        try:
+            self.mpv.command("request_log_messages", "warn")  # surface mpv's own warnings/errors in our log
+        except MpvError:
+            pass
         try:
             self.mpv.set("volume", self.volume)
             self.mpv.set("mute", self.muted)
@@ -280,6 +293,9 @@ class Player:
                 self.play_live()
         if self.guide_open and time.time() - self.guide_loaded_at > 30:
             self._render_guide()
+        if self._stream_info_at and time.time() >= self._stream_info_at:
+            self._stream_info_at = 0.0
+            self._log_stream_info()
 
     # --- playback -----------------------------------------------------------------------------
 
@@ -351,8 +367,29 @@ class Player:
         self.last_error = None
         self.mpv.overlay_remove(OVERLAY_MESSAGE)
         self._start_history(slot)
-        log.info("ch%s %s %s +%.0fs (%s)", self.channel["number"], slot["kind"], slot["title"], offset,
-                 "cache" if self.cache.cached_path(media["id"], media["path"] or "") else "source")
+        origin = "cache" if self.cache.cached_path(media["id"], media["path"] or "") else (
+            "transcoded" if path == media.get("transcoded_path") else "source")
+        log.info("ch%s %s '%s' start=+%.0fs origin=%s hwdec=%s deint=%s file=%s", self.channel["number"], slot["kind"],
+                 slot["title"], offset, origin, opts.get("hwdec"), opts.get("deinterlace"), path)
+        self._stream_info_at = time.time() + 2.0  # log codec/stream details once mpv has opened the file
+
+    def _log_stream_info(self) -> None:
+        """One line per programme with what mpv actually ended up doing."""
+        try:
+            vp = self.mpv.get("video-params") or {}
+            info = {
+                "vcodec": self.mpv.get("current-tracks/video/codec") or self.mpv.get("video-codec"),
+                "acodec": self.mpv.get("audio-codec-name"), "vcodec_desc": self.mpv.get("video-codec"),
+                "hwdec": self.mpv.get("hwdec-current"), "size": f"{vp.get('w')}x{vp.get('h')}",
+                "fps": self.mpv.get("container-fps"), "aspect": vp.get("aspect"),
+                "interlaced": self.mpv.get("deinterlace"), "vo": self.mpv.get("current-vo"),
+                "ao": self.mpv.get("current-ao"), "cache_s": (self.mpv.get("demuxer-cache-duration") or 0),
+                "dropped": self.mpv.get("frame-drop-count"), "pos": self.mpv.get("time-pos"),
+            }
+            self.stream_info = info
+            log.info("stream: %s", " ".join(f"{k}={v}" for k, v in info.items()))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not read stream info: %s", exc)
 
     def _show_testcard(self, text: str, sub: str) -> None:
         try:
@@ -368,9 +405,13 @@ class Player:
         if name == "end-file":
             reason = ev.get("reason")
             if reason == "eof" and self.playing_path not in (None, "testcard"):
+                log.info("end of file reached (%s)", self.playing_path)
                 self.actions.put(("eof", None))
             elif reason == "error":
+                log.error("mpv failed to play %s: %s", self.playing_path, ev.get("file_error"))
                 self.actions.put(("file-error", ev.get("file_error")))
+        elif name == "log-message" and ev.get("level") in ("error", "warn", "fatal"):
+            log.warning("mpv %s: %s", ev.get("prefix"), (ev.get("text") or "").strip())
         elif name == "client-message":
             args = ev.get("args") or []
             if len(args) >= 2 and args[0] == "pitv":
@@ -455,6 +496,7 @@ class Player:
             self._save_state()
         elif act == "pause":
             self.paused = not self.paused
+            log.info("%s", "paused" if self.paused else "resumed")
             self.mpv.set("pause", self.paused)
             if self.paused:
                 self.behind_live = True
@@ -497,6 +539,7 @@ class Player:
     # --- OSD ---------------------------------------------------------------------------------------------
 
     def _sync_osd_size(self) -> None:
+        self.renderer.configure(float(self.settings.get("osd_safe_margin", 0.07)), float(self.settings.get("osd_scale", 1.0)))
         dims = self.mpv.get("osd-dimensions") or {}
         w, h = dims.get("w"), dims.get("h")
         if not (w and h):
@@ -638,6 +681,7 @@ class Player:
             "playing": self.playing_path not in (None, "testcard"), "testcard": self.playing_path == "testcard",
             "hwdec": self.hwdec_current, "on_pi": self.on_pi, "last_key": self.last_key, "error": self.last_error,
             "cache": self.cache.usage(), "maintenance": self.maintenance.status, "acquire": self.acquire.status(),
+            "stream": self.stream_info, "file": self.playing_path if self.playing_path != "testcard" else None,
             "input_devices": [getattr(d, "name", "?") for d in self.evdev.devices.values()],
         }
 

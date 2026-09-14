@@ -24,7 +24,7 @@ router = APIRouter(prefix="/api", dependencies=[Depends(admin_conn)])
 
 SECRET_SETTINGS = {"admin_password_hash", "session_secret"}
 SHOW_OVERRIDE_FIELDS = {"title", "year", "certificate", "genres", "plot", "kids"}
-SHOW_DIRECT_FIELDS = {"home_channel_id", "mode", "anchor_time", "anchor_days", "rest_weeks", "excluded"}
+SHOW_DIRECT_FIELDS = {"home_channel_id", "mode", "anchor_time", "anchor_days", "rest_weeks", "excluded", "category"}
 MEDIA_OVERRIDE_FIELDS = {"title", "year", "certificate", "genres", "plot", "season", "episode"}
 MEDIA_DIRECT_FIELDS = {"excluded", "channel_hint"}
 CHANNEL_FIELDS = {"number", "name", "short_name", "colour", "enabled", "ads_enabled", "ads_per_break",
@@ -60,15 +60,20 @@ def create_source(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = D
     if not path:
         raise HTTPException(400, "path required")
     with tx(conn):
-        cur = conn.execute("INSERT INTO sources(type, name, path, remote, enabled) VALUES (?,?,?,?,?)",
-                           (stype, name, path, body.get("remote"), int(bool(body.get("enabled", True)))))
+        category = body.get("category") or "general"
+        if category not in ("general", "sport", "kids"):
+            raise HTTPException(400, "category must be general, sport or kids")
+        cur = conn.execute("INSERT INTO sources(type, name, path, remote, enabled, category) VALUES (?,?,?,?,?,?)",
+                           (stype, name, path, body.get("remote"), int(bool(body.get("enabled", True))), category))
     return _source_row(conn, int(cur.lastrowid))
 
 
 @router.put("/sources/{sid}")
 def update_source(sid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
     _source_row(conn, sid)
-    fields = {k: body[k] for k in ("type", "name", "path", "remote", "enabled") if k in body}
+    fields = {k: body[k] for k in ("type", "name", "path", "remote", "enabled", "category") if k in body}
+    if fields.get("category") not in (None, "general", "sport", "kids"):
+        raise HTTPException(400, "category must be general, sport or kids")
     if "enabled" in fields:
         fields["enabled"] = int(bool(fields["enabled"]))
     if fields:
@@ -579,10 +584,8 @@ def rebuild(request: Request, body: dict[str, Any] = Body(...), conn: sqlite3.Co
 
 def _titles(media: sqlite3.Row) -> tuple[str, str]:
     if media["kind"] == "episode":
-        se = ""
-        if media["season"] is not None and media["episode"] is not None:
-            se = f"S{media['season']:02d}E{media['episode']:02d} "
-        return media["show_title"] or media["title"], f"{se}{media['title'] or ''}".strip()
+        from ...scheduler.build import episode_subtitle
+        return media["show_title"] or media["title"], episode_subtitle(dict(media))
     year = f"({media['year']})" if media["year"] else ""
     return media["title"], " ".join(x for x in (year, media["certificate"] or "") if x)
 
@@ -681,3 +684,41 @@ def export_overrides(conn: sqlite3.Connection = Depends(admin_conn)):
     return {"exported_at": now_ts(), "settings": {k: v for k, v in all_settings(conn).items() if k not in SECRET_SETTINGS},
             "channels": rows_to_dicts(conn.execute("SELECT * FROM channels")), "sources": rows_to_dicts(conn.execute("SELECT * FROM sources")),
             "shows": shows, "media": media}
+
+
+# --- logs ---------------------------------------------------------------------------------------------
+
+LOG_NAMES = ("player", "web", "scan", "schedule")
+
+
+@router.get("/logs")
+def list_logs(request: Request):
+    from ...logsetup import log_dir
+    d = log_dir(request.app.state.cfg)
+    out = []
+    for name in LOG_NAMES:
+        p = d / f"{name}.log"
+        out.append({"name": name, "path": str(p), "size": p.stat().st_size if p.exists() else 0,
+                    "modified": int(p.stat().st_mtime) if p.exists() else None})
+    return out
+
+
+@router.get("/logs/{name}")
+def read_log(name: str, request: Request, lines: int = 300, q: str = "", level: str = ""):
+    """Tail of a log file, newest last. `q` filters by substring, `level` by minimum level."""
+    from ...logsetup import log_dir, tail
+    if name not in LOG_NAMES:
+        raise HTTPException(404, "unknown log")
+    p = log_dir(request.app.state.cfg) / f"{name}.log"
+    entries = tail(p, max(10, min(lines, 5000)), q, level.upper())
+    return {"name": name, "lines": entries, "exists": p.exists()}
+
+
+@router.get("/logs/journal/{unit}")
+def read_journal(unit: str, lines: int = 300):
+    """systemd journal for a PiTV unit (Pi only; empty elsewhere)."""
+    if unit not in ("pitv-player", "pitv-web"):
+        raise HTTPException(404, "unknown unit")
+    out = subprocess.run(["journalctl", "-u", unit, "-n", str(min(lines, 2000)), "--no-pager", "-o", "short-iso"],
+                         capture_output=True, text=True, check=False)
+    return {"unit": unit, "text": out.stdout if out.returncode == 0 else "", "error": out.stderr.strip()[:300]}

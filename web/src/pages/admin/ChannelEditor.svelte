@@ -8,6 +8,20 @@
 
   let { channel = {}, onclose, onsaved } = $props();
   const c = untrack(() => ({ ...channel }));
+  const DP_PARTS = [['weekday', 'Weekday'], ['saturday', 'Saturday'], ['sunday', 'Sunday']];
+  // A profile is either a plain list (weekday only) or {weekday, saturday, sunday}; each part empty = use global.
+  function splitProfile(p) {
+    const copy = (rows) => (Array.isArray(rows) ? rows.map((d) => ({ ...d })) : []);
+    const parts = Array.isArray(p) ? { weekday: p } : (p && typeof p === 'object' ? p : {});
+    const out = {};
+    for (const [k] of DP_PARTS) out[k] = { use: copy(parts[k]).length > 0, rows: copy(parts[k]) };
+    return out;
+  }
+  function joinProfile(dp) {
+    const out = {};
+    for (const [k] of DP_PARTS) if (dp[k].use && dp[k].rows.length) out[k] = dp[k].rows;
+    return Object.keys(out).length ? out : null;
+  }
   const isNew = !c.id;
   let f = $state({
     number: c.number ?? '', name: c.name ?? '', short_name: c.short_name ?? '', colour: c.colour ?? '#e63946',
@@ -16,16 +30,18 @@
     eraUse: !!c.era_weights, era: c.era_weights ?? { '1980-1989': 0.85, '1990-1999': 0.15 },
     kindUse: !!c.kind_weights, kind: { tv: c.kind_weights?.tv ?? 0.7, movie: c.kind_weights?.movie ?? 0.3 },
     genreUse: !!c.genre_weights, genre: c.genre_weights ?? {},
-    dpUse: !!c.daypart_profile, dayparts: c.daypart_profile ? c.daypart_profile.map((d) => ({ ...d })) : [],
+    dp: splitProfile(c.daypart_profile),
     overnight_replay_from: c.overnight_replay_from ?? '08:00', idents_enabled: c.idents_enabled ?? 1,
     description: c.description ?? '',
   });
   f.enabled = !!f.enabled; f.idents_enabled = !!f.idents_enabled;
   let saving = $state(false);
 
-  async function loadDefaultDayparts() {
+  async function loadDefaultDayparts(part) {
     const s = await tryApi(get('/api/settings'));
-    if (s?.dayparts) f.dayparts = s.dayparts.map((d) => ({ ...d }));
+    const key = { weekday: 'dayparts', saturday: 'dayparts_saturday', sunday: 'dayparts_sunday' }[part];
+    const rows = s?.[key]?.length ? s[key] : s?.dayparts;
+    if (rows) f.dp[part].rows = rows.map((d) => ({ ...d }));
   }
   function move(i, d) {
     const j = i + d;
@@ -38,7 +54,7 @@
       name: f.name, short_name: f.short_name, colour: f.colour, enabled: f.enabled, ads_enabled: f.ads_enabled,
       ads_per_break: Number(f.ads_per_break) || 1, pattern: f.pattern.join(', '),
       era_weights: f.eraUse ? f.era : null, kind_weights: f.kindUse ? { tv: Number(f.kind.tv), movie: Number(f.kind.movie) } : null,
-      genre_weights: f.genreUse ? f.genre : null, daypart_profile: f.dpUse ? f.dayparts : null,
+      genre_weights: f.genreUse ? f.genre : null, daypart_profile: joinProfile(f.dp),
       overnight_replay_from: f.overnight_replay_from, idents_enabled: f.idents_enabled, description: f.description,
     };
     if (f.number !== '') body.number = Number(f.number);
@@ -98,12 +114,17 @@
         <label class="check"><input type="checkbox" bind:checked={f.genreUse} /> Genre weights</label>
         {#if f.genreUse}<div class="mt"><WeightRows value={f.genre} onchange={(v) => (f.genre = v)} keyLabel="Genre" keyPlaceholder="Comedy" addLabel="Add genre" /></div>{/if}
       </div>
-      <div>
-        <label class="check"><input type="checkbox" bind:checked={f.dpUse} onchange={() => { if (f.dpUse && !f.dayparts.length) loadDefaultDayparts(); }} /> Custom daypart profile</label>
-        {#if f.dpUse}
-          <p class="tiny muted">Leave empty to use the global dayparts from Weighting. <button class="small ghost" onclick={loadDefaultDayparts}>Copy global</button></p>
-          <DaypartTable bind:rows={f.dayparts} />
-        {/if}
+      <div class="stack">
+        <div class="small muted">Daypart profile: each part is optional and falls back to the global tables in Weighting.</div>
+        {#each DP_PARTS as [part, label] (part)}
+          <div>
+            <label class="check"><input type="checkbox" bind:checked={f.dp[part].use} onchange={() => { if (f.dp[part].use && !f.dp[part].rows.length) loadDefaultDayparts(part); }} /> Custom {label.toLowerCase()} dayparts</label>
+            {#if f.dp[part].use}
+              <p class="tiny muted">Empty = use global. <button class="small ghost" onclick={() => loadDefaultDayparts(part)}>Copy global {label.toLowerCase()}</button></p>
+              <DaypartTable bind:rows={f.dp[part].rows} />
+            {/if}
+          </div>
+        {/each}
       </div>
     </div>
   </div>

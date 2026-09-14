@@ -41,3 +41,9 @@ def test_episode_from_folder_and_number():
 def test_certificate_tag():
     assert parse_certificate_tag("Film [15].mkv") == "15"
     assert parse_certificate_tag("Film.mkv") is None
+
+
+def test_dated_episode():
+    e = parse_episode(PurePath("Season 1985/Grandstand - 1985-03-16.mp4"), "Grandstand")
+    assert (e.season, e.episode) == (1985, 316)
+    assert e.title == "16/03/1985"

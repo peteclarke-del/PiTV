@@ -12,13 +12,13 @@ before implementation starts.
 
 | Requirement | Decision |
 |---|---|
-| Hardware | Raspberry Pi 4, 4 GB, HDMI to a TV, IR receiver on GPIO (or HDMI-CEC), wired Ethernet to the Synology NAS (SMB) |
+| Hardware | Raspberry Pi 4, 4 GB, composite PAL out (or HDMI via converter) to a 14\" 4:3 colour CRT, OSMC RF remote, USB HDD cache, wired Ethernet to the Synology NAS (SMB) |
 | OS | Raspberry Pi OS Lite 64-bit (Bookworm), no desktop, boots straight into the player |
 | Video decode | Pi 4 hardware H.264 (and HEVC) via V4L2 M2M; see §5.2 |
 | Boot | Target ~15 s from power to picture; test card shown while the NAS mounts |
 | Channels | Defined in the admin UI. Default four: 1 and 2 programmes only, 3 and 4 with adverts in a `show, ad, ad` pattern |
 | Broadcast day | 08:00–00:00 scheduled; 00:00–08:00 replays that day's schedule from 08:00 (see §4.6) |
-| Era | 1980s core, occasional 1990s; per-item year from folder/file names, NFO, or overrides; weights editable per channel |
+| Era | Programmes: any age, with a healthy mix either side of 1980 (weights editable per channel). Adverts: 1980s/1990s only. Year from folder/file names, NFO, or overrides |
 | Watershed | 21:00. UK certificate rules: U/PG any time, 12 not before 20:00, 15 not before 21:00, 18 not before 22:00 |
 | Horizon | 7 days generated at a time; episodes advance in order per show; minimal repeats week to week |
 | Remote | Channel 1–4 direct, channel +/−, volume +/−, mute, pause/play, guide (menu), up/down/left/right/OK/back |
@@ -95,7 +95,8 @@ by the install tooling (mounting needs root, the web service does not run as roo
 | Kids content | genre Animation/Children/Family or override | no |
 
 Era eligibility and weights are global defaults with per-channel overrides, all editable
-in the admin UI. Proposed default: 1980–1989 weight 0.85, 1990–1999 weight 0.15.
+in the admin UI. Defaults: programmes 1920–1979 weight 0.45, 1980–1989 0.40, 1990–1999 0.15
+(unknown year 0.2); adverts 1980–1989 0.85, 1990–1999 0.15 and nothing outside that.
 A show counts as 80s if it premiered in the window; a per-show override handles long
 runners (e.g. a show that started in 1978 and ran to 1986).
 
@@ -156,7 +157,28 @@ Real 80s scheduling is about regularity, and it also gives episode order for fre
 
 The scheduler first pins anchors into the week, then fills the remaining gaps.
 
-### 4.4 Dayparts (weekday defaults, editable per channel)
+### 4.4 Sport and the weekend
+
+Sport lives on its own share (`smb://synologynas/tvsports/`, a `tv` source with category
+`sport`) and is limited to wrestling, snooker, motorcycle racing and strongman competitions,
+which is what 1980s ITV and BBC2 actually filled Saturday afternoons and midweek late slots
+with. Sport shows follow the same date-order rule as everything else (files named by date,
+e.g. `World of Sport Wrestling - 1985-03-16.mp4`, sort by year then month/day). Each daypart
+carries a `sport` weight: below 0.5 sport is ineligible unless nothing else fits, above 3 it
+forms a block. The week is modelled on a typical mid-80s schedule:
+
+- Weekdays: sport only in the late slot (Sportsnight / Midweek Sports Special territory).
+- Saturday: children's television all morning, a sport block from 12:30 to about 17:15
+  (wrestling, racing, snooker), family teatime, prime-time entertainment, sport again late
+  (the Match of the Day slot), a film after that.
+- Sunday: quiet morning, an afternoon block from 14:00 (snooker, motorcycle racing) or the
+  Sunday film, teatime sport, drama in the evening.
+
+At weekends two or more sport programmes may run back to back, including the same series;
+a programme may not overrun the end of its daypart by more than about half an hour, so a
+block never swallows the evening.
+
+### 4.5 Dayparts (weekday defaults, editable per channel)
 
 | Time | Daypart | Prefers |
 |---|---|---|
@@ -173,7 +195,7 @@ The scheduler first pins anchors into the week, then fills the remaining gaps.
 Hard rules override any daypart: certificate vs. time, and "no kids-only content after
 21:00".
 
-### 4.5 Gap filling
+### 4.6 Gap filling
 
 For each channel and day, walk from 08:00 to 00:00 following the channel's pattern:
 
@@ -193,7 +215,7 @@ For each channel and day, walk from 08:00 to 00:00 following the channel's patte
 Start times are rounded to 5 minutes where padding allows, because "19:35" reads right in
 a listing and "19:37" does not.
 
-### 4.6 Repeat control and overnight
+### 4.7 Repeat control and overnight
 
 - Movies: never twice in one week; across weeks, weighted by time since last airing.
 - Episodes: only ever advance; repeats only happen when a series wraps.
@@ -203,7 +225,7 @@ a listing and "19:37" does not.
   slot, cut off at 08:00 when the new day begins. The replay start time is a per-channel
   setting (e.g. replay from 19:00 instead).
 
-### 4.7 Manual editing
+### 4.8 Manual editing
 
 In the admin UI a slot can be: locked (regeneration leaves it alone), replaced with a
 chosen item (following items shift), removed, or moved to another time; a specific show
@@ -301,6 +323,10 @@ remote with number keys tunes channels 1–9 directly.
 
 ### 5.4 On-screen guide
 
+The display is a 4:3 CRT, so overlays sit inside a configurable overscan-safe margin (7%
+by default), use larger type, and are laid out for 576 lines. 4:3 content fills the screen;
+widescreen films are letterboxed by mpv.
+
 Teletext / Ceefax look: block font, 8-colour palette, black background, rendered by Pillow
 and pushed to mpv as an image overlay so playback continues underneath. Layout:
 
@@ -376,9 +402,11 @@ docs are served automatically by FastAPI at `/api/docs`.
 
 ### 7.1 Prefetch cache on the attached drive
 
-A USB hard drive on the Pi holds a cache (`cache_dir`, size-capped by `cache_max_gb`). A
-worker inside the player copies every programme due in the next `prefetch_hours` (default 4)
-on every channel, current channel first, into the cache before it airs; playback always
+A 1 TB USB hard drive on the Pi holds a cache (`cache_dir`, capped by `cache_max_gb`, default
+600 GB). A worker inside the player copies everything scheduled through the end of the next
+broadcast day (`prefetch_days`, default 1) on every channel, current channel and soonest first,
+so tomorrow's television is local before it starts at 08:00, and always at least
+`prefetch_hours` ahead; a day of four channels is roughly 60–150 GB depending on bitrates; playback always
 prefers the cached copy, then a transcoded copy, then the NAS original. A NAS hiccup at
 19:59 therefore never interrupts the 20:00 film. Least-recently-used files are evicted when
 the cap is reached; files scheduled within the window are protected. Copies can be

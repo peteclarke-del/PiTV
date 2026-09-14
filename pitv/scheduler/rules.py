@@ -72,11 +72,13 @@ def broadcast_day_for(ts: int | float, settings: dict[str, Any], tz: ZoneInfo) -
     return dt.date()
 
 
-def era_weight(year: int | None, era_weights: dict[str, float], end_year: int | None = None) -> float:
+def era_weight(year: int | None, era_weights: dict[str, float], end_year: int | None = None,
+               unknown: float = 0.0) -> float:
     """Weight for an item made in `year`. A series running from `year` to `end_year` gets the
-    best weight of any year in its run, so a 1978 show that ran into the 80s still counts."""
+    best weight of any year in its run, so a 1978 show that ran into the 80s still counts.
+    Items with no year get `unknown` (0 excludes them)."""
     if year is None:
-        return 0.0
+        return float(unknown)
     best = 0.0
     for span, weight in era_weights.items():
         try:
@@ -148,3 +150,23 @@ def parse_pattern(pattern: str) -> list[str]:
     valid = {"show", "tv", "movie", "ad", "ident", "break"}
     out = [t for t in tokens if t in valid]
     return out or ["show"]
+
+
+def dayparts_for_weekday(weekday: int, settings: dict[str, Any], channel_profile: Any = None) -> list[dict[str, Any]]:
+    """Daypart list for a weekday (0=Mon). A channel profile may be a plain list (weekdays only)
+    or {"weekday": [...], "saturday": [...], "sunday": [...]}; missing parts fall back to global."""
+    key = {5: "saturday", 6: "sunday"}.get(weekday, "weekday")
+    if isinstance(channel_profile, dict):
+        part = channel_profile.get(key)
+        if part:
+            return part
+    elif isinstance(channel_profile, list) and channel_profile and key == "weekday":
+        return channel_profile
+    setting = {"weekday": "dayparts", "saturday": "dayparts_saturday", "sunday": "dayparts_sunday"}[key]
+    return settings.get(setting) or settings.get("dayparts") or []
+
+
+def daypart_end_minutes(start_minutes: int, dayparts: list[dict[str, Any]], day_end_minutes: int = 1440) -> int:
+    """Minute of day at which the daypart containing start_minutes ends."""
+    ends = sorted(hhmm_to_minutes(dp["start"]) for dp in dayparts if hhmm_to_minutes(dp["start"]) > start_minutes)
+    return ends[0] if ends else day_end_minutes

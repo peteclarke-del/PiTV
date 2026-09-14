@@ -30,13 +30,14 @@ def cmd_fake_library(cfg, args) -> int:
     conn = _open(cfg)
     if args.register:
         with dbm.tx(conn):
-            for stype, name, p in (("tv", "TV Shows", paths["tv"]), ("movie", "Movies", paths["movies"]),
-                                   ("advert", "Adverts", paths["pitv"] / "Adverts"),
-                                   ("ident", "Idents", paths["pitv"] / "Idents")):
+            for stype, name, p, cat in (("tv", "TV Shows", paths["tv"], "general"), ("movie", "Movies", paths["movies"], "general"),
+                                        ("advert", "Adverts", paths["pitv"] / "Adverts", "general"),
+                                        ("ident", "Idents", paths["pitv"] / "Idents", "general"),
+                                        ("tv", "Sport", paths["sport"], "sport")):
                 exists = conn.execute("SELECT id FROM sources WHERE path = ?", (str(p),)).fetchone()
                 if not exists:
-                    conn.execute("INSERT INTO sources(type, name, path) VALUES (?,?,?)",
-                                 (stype, name, str(p)))
+                    conn.execute("INSERT INTO sources(type, name, path, category) VALUES (?,?,?,?)",
+                                 (stype, name, str(p), cat))
         print("Registered sources:")
         for r in conn.execute("SELECT id, type, name, path FROM sources"):
             print(f"  {r['id']:>2}  {r['type']:<7} {r['name']:<10} {r['path']}")
@@ -59,6 +60,8 @@ def cmd_source(cfg, args) -> int:
 
 def cmd_scan(cfg, args) -> int:
     from .library.scanner import scan_all
+    from .logsetup import setup_logging
+    setup_logging(cfg, "scan")
     conn = _open(cfg)
     last = [""]
 
@@ -80,6 +83,8 @@ def cmd_scan(cfg, args) -> int:
 
 def cmd_schedule(cfg, args) -> int:
     from .scheduler.build import build_horizon, parse_day
+    from .logsetup import setup_logging
+    setup_logging(cfg, "schedule")
     conn = _open(cfg)
     start = parse_day(args.start) if args.start else None
     result = build_horizon(conn, start_day=start, days=args.days, force=args.force,
@@ -102,7 +107,7 @@ def cmd_web(cfg, args) -> int:
     from .web.app import create_app
     app = create_app(cfg)
     uvicorn.run(app, host=args.host or cfg.web_host, port=args.port or cfg.web_port,
-                log_level="info", access_log=False)
+                log_level="info", access_log=False, log_config=None)
     return 0
 
 

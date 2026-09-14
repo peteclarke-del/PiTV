@@ -88,7 +88,7 @@
         <tbody>
           {#each shows ?? [] as s (s.id)}
             <tr class="clickable" onclick={() => (showId = s.id)}>
-              <td><b>{s.title}</b>{#if s.excluded}<span class="badge">excluded</span>{/if}{#if s.attention_count}<span class="badge warn">{s.attention_count}</span>{/if}</td>
+              <td><b>{s.title}</b>{#if s.category && s.category !== 'general'}<span class="badge info">{s.category}</span>{/if}{#if s.excluded}<span class="badge">excluded</span>{/if}{#if s.attention_count}<span class="badge warn">{s.attention_count}</span>{/if}</td>
               <td>{#if chById.get(s.home_channel_id)}<ChannelBadge channel={chById.get(s.home_channel_id)} size="sm" name={false} />{:else}<span class="muted">–</span>{/if}</td>
               <td class="small">{modeLabel(s)}</td>
               <td>{s.certificate ?? '–'}</td>

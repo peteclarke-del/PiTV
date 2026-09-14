@@ -5,7 +5,7 @@
 set -euo pipefail
 
 NAS_HOST="${NAS_HOST:-synologynas}"
-SHARES="${SHARES:-tvshows movies ads}"
+SHARES="${SHARES:-tvshows movies ads tvsports}"
 INSTALL_DIR=/opt/pitv
 DATA_DIR=/var/lib/pitv
 CACHE_DIR="${CACHE_DIR:-/mnt/cache/pitv}"
@@ -72,19 +72,20 @@ from pitv.config import load_config
 cfg = load_config(); cfg.ensure_dirs()
 conn = dbm.connect(cfg.db_path); dbm.init_db(conn)
 with dbm.tx(conn):
-    for stype, name, share in (("tv", "TV Shows", "tvshows"), ("movie", "Movies", "movies"), ("advert", "Adverts", "ads")):
+    for stype, name, share, cat in (("tv", "TV Shows", "tvshows", "general"), ("movie", "Movies", "movies", "general"),
+                                    ("advert", "Adverts", "ads", "general"), ("tv", "Sport", "tvsports", "sport")):
         if share in "$SHARES".split():
             path = f"/mnt/{share}"
             if not conn.execute("SELECT 1 FROM sources WHERE path = ?", (path,)).fetchone():
-                conn.execute("INSERT INTO sources(type, name, path, remote) VALUES (?,?,?,?)",
-                             (stype, name, path, f"smb://$NAS_HOST/{share}/"))
+                conn.execute("INSERT INTO sources(type, name, path, remote, category) VALUES (?,?,?,?,?)",
+                             (stype, name, path, f"smb://$NAS_HOST/{share}/", cat))
     if not dbm.get_setting(conn, "cache_dir"):
         dbm.set_setting(conn, "cache_dir", "$CACHE_DIR")
 print("sources:", [dict(r) for r in conn.execute("SELECT type, path FROM sources")])
 PY
 
-log "Boot tuning"
-"$SRC_DIR/setup/boot-trim.sh" || true
+log "Boot tuning (DISPLAY_MODE=${DISPLAY_MODE:-composite}: composite | hdmi43 | hdmi)"
+DISPLAY_MODE="${DISPLAY_MODE:-composite}" "$SRC_DIR/setup/boot-trim.sh" || true
 
 log "Done. Start with: systemctl start pitv-player pitv-web   (web UI on http://$(hostname -I | awk '{print $1}')/ )"
 echo "First run: open the web UI, set the admin password, check Sources, run Scan, then Build schedule."

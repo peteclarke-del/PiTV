@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ from .nfo import read_nfo
 from .probe import probe_cached
 
 Progress = Callable[[str, int, int], None]
+log = logging.getLogger("pitv.scanner")
 _YEAR_DIR = re.compile(r"^(19[3-9]\d|20[0-4]\d)$")
 _CHANNEL_DIR = re.compile(r"(?:ch(?:annel)?\s*_?)?(\d{1,2})$", re.IGNORECASE)
 _EXTRAS_DIRS = {"extras", "featurettes", "behind the scenes", "deleted scenes", "trailers",
@@ -106,21 +108,26 @@ def _scan_tv(conn: sqlite3.Connection, source: dict, summary: ScanSummary, seen:
         title = (nfo.title if nfo and nfo.title else ty.title)
         year = ty.year or (nfo.year if nfo else None)
         cert = (nfo.certificate if nfo else None) or parse_certificate_tag(show_dir.name)
-        genres = nfo.genres if nfo else []
+        genres = list(nfo.genres) if nfo else []
         kids = int(nfo.kids) if nfo else 0
         plot = nfo.plot if nfo else None
+        category = source.get("category") or "general"
+        if category == "sport" and not any(g.lower() == "sport" for g in genres):
+            genres.append("Sport")
+        if category == "kids":
+            kids = 1
         row = conn.execute("SELECT id FROM shows WHERE path = ?", (str(show_dir),)).fetchone()
         if row:
             show_id = row["id"]
             conn.execute(
-                "UPDATE shows SET title=?, year=?, certificate=?, genres=?, plot=?, kids=?,"
+                "UPDATE shows SET title=?, year=?, certificate=?, genres=?, plot=?, kids=?, category=?,"
                 " missing=0, updated_at=? WHERE id=?",
-                (title, year, cert, json.dumps(genres), plot, kids, now_ts(), show_id))
+                (title, year, cert, json.dumps(genres), plot, kids, category, now_ts(), show_id))
         else:
             cur = conn.execute(
-                "INSERT INTO shows(source_id, path, title, year, certificate, genres, plot, kids,"
-                " updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
-                (source["id"], str(show_dir), title, year, cert, json.dumps(genres), plot, kids,
+                "INSERT INTO shows(source_id, path, title, year, certificate, genres, plot, kids, category,"
+                " updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (source["id"], str(show_dir), title, year, cert, json.dumps(genres), plot, kids, category,
                  now_ts()))
             show_id = int(cur.lastrowid)
         summary.shows_seen += 1
@@ -285,12 +292,17 @@ def scan_all(conn: sqlite3.Connection, progress: Progress = _noop,
         def prog(msg: str, done: int, total: int, _s=source) -> None:
             progress(f"[{_s['name']}] {msg}", done, total)
         try:
+            log.info("scanning %s (%s) at %s", source["name"], source["type"], source["path"])
             summary = scan_source(conn, source, prog, ffprobe_binary)
+            log.info("%s: %s", source["name"], summary.text())
+            for m in summary.messages:
+                log.warning("%s: %s", source["name"], m)
             details.append(f"{source['name']}: {summary.text()}")
             details.extend(f"{source['name']}: {m}" for m in summary.messages)
             if summary.messages:
                 status = "warning"
         except Exception as exc:  # noqa: BLE001 - keep scanning other sources
+            log.exception("scan of %s failed", source["name"])
             details.append(f"{source['name']}: failed: {exc!r}")
             status = "error"
     run_log_finish(conn, run_id, status, "; ".join(details), details)

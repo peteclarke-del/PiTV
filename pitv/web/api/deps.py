@@ -48,7 +48,7 @@ def media_public(row: sqlite3.Row | dict[str, Any] | None, with_path: bool = Fal
 def show_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     d = row_to_dict(row) if isinstance(row, sqlite3.Row) else dict(row)
     eff = effective(d)
-    keys = ("id", "title", "year", "certificate", "genres", "plot", "kids", "home_channel_id",
+    keys = ("id", "title", "year", "certificate", "genres", "plot", "kids", "category", "home_channel_id",
             "mode", "anchor_time", "anchor_days", "rest_weeks", "excluded", "missing", "overrides",
             "source_id")
     out = {k: eff.get(k) for k in keys}
