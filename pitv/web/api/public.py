@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response

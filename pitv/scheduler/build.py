@@ -26,7 +26,7 @@ from typing import Any, Callable
 from ..db import (all_settings, effective, now_ts, row_to_dict, rows_to_dicts,
                   run_log_finish, run_log_start, tx)
 from .rules import (allowed_at, broadcast_day_for, day_bounds, daypart_for, era_weight,
-                    hhmm_to_minutes, is_kids, local_ts, minutes_of_day, parse_pattern, tz_of)
+                    is_kids, local_ts, minutes_of_day, parse_pattern, tz_of)
 
 Progress = Callable[[str], None] | None
 MAX_ITERATIONS_PER_DAY = 2000
@@ -449,7 +449,6 @@ class Builder:
             keep = list(existing)
         self._cut = (cut if (force or from_ts is not None) else None)
         keep.sort(key=lambda s: s.start_ts)
-        keep_ids = {s.id for s in keep}
         placed_today: dict[int, int] = {}
         for s in keep:
             if s.show_id:

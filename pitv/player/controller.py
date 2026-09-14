@@ -12,7 +12,6 @@ import logging
 import queue
 import signal
 import sqlite3
-import threading
 import time
 from datetime import datetime
 from pathlib import Path

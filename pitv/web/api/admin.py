@@ -8,7 +8,6 @@ import shutil
 import sqlite3
 import subprocess
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -16,7 +15,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from ... import __version__
-from ...db import (DEFAULT_SETTINGS, all_settings, effective, now_ts, row_to_dict, rows_to_dicts,
+from ...db import (DEFAULT_SETTINGS, all_settings, now_ts, row_to_dict, rows_to_dicts,
                    set_setting, tx)
 from ...scheduler.rules import parse_pattern
 from .deps import SLOT_QUERY, admin_conn, media_public, show_public, slot_public
