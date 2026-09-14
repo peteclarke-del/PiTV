@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pitv"
+version = "0.1.0"
+description = "PiTV: a 1980s UK television broadcaster for the Raspberry Pi 4"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "pyyaml>=6",
+    "pillow>=10",
+    "sse-starlette>=2",
+    "python-multipart>=0.0.9",
+    "itsdangerous>=2",
+]
+
+[project.optional-dependencies]
+pi = ["evdev>=1.6"]
+dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.4"]
+
+[project.scripts]
+pitv = "pitv.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pitv*"]
+
+[tool.setuptools.package-data]
+"pitv.web" = ["static/**/*"]
+"pitv" = ["assets/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
