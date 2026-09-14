@@ -161,6 +161,37 @@ CREATE TABLE IF NOT EXISTS probe_cache (
     probed_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS wanted (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('episode', 'movie', 'advert')),
+    title TEXT NOT NULL,
+    year INTEGER,
+    season INTEGER,
+    episode INTEGER,
+    show_id INTEGER REFERENCES shows(id) ON DELETE SET NULL,
+    provider TEXT NOT NULL DEFAULT 'auto',     -- auto | archive | url
+    ref TEXT,                                  -- archive.org identifier[/file] or a URL
+    status TEXT NOT NULL DEFAULT 'queued',     -- queued | searching | downloading | transcoding | done | failed
+    progress REAL NOT NULL DEFAULT 0,
+    message TEXT,
+    dest_path TEXT,
+    media_id INTEGER REFERENCES media(id) ON DELETE SET NULL,
+    auto INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS transcode_queue (
+    id INTEGER PRIMARY KEY,
+    media_id INTEGER NOT NULL UNIQUE REFERENCES media(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'queued',     -- queued | running | done | failed
+    progress REAL NOT NULL DEFAULT 0,
+    message TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS run_log (
     id INTEGER PRIMARY KEY,
     kind TEXT NOT NULL,            -- scan | schedule | transcode
@@ -213,6 +244,31 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "weekend_kids_breakfast": True,
     "admin_password_hash": None,
     "channel_switch_static": True,
+    # player
+    "keymap": {},                      # action -> [evdev key names]; empty = built-in defaults
+    "nav_keys_change_channel": True,   # up/down = channel +/- when the guide is closed (OSMC remote has no channel keys)
+    "nav_keys_change_volume": True,    # left/right = volume when the guide is closed
+    "badge_seconds": 5,
+    "pi_hwdec": "drm-prime,v4l2m2m-copy",
+    "audio_device": "auto",
+    # local cache on the attached drive
+    "cache_dir": "",                   # e.g. /mnt/cache/pitv ; empty = disabled
+    "cache_max_gb": 200,
+    "cache_copy_mbps": 0,              # 0 = unlimited
+    "prefetch_hours": 4,
+    # acquisition of missing programmes and transcoding (see docs/PLAN.md §7)
+    "acquire_enabled": False,
+    "acquire_dir": "",                 # empty = <cache_dir>/acquired
+    "acquire_providers": ["archive"],  # archive (archive.org) and/or url
+    "acquire_fill_gaps": False,        # queue missing episodes between the ones on disk
+    "acquire_hours": "00:00-23:59",
+    "transcode_enabled": False,
+    "transcode_hours": "01:00-07:00",
+    "transcode_max_height": 720,
+    "transcode_bitrate_kbps": 4000,
+    # maintenance
+    "scan_hour": 4,
+    "history_keep_days": 180,
 }
 
 DEFAULT_CHANNELS = [

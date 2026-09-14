@@ -1,0 +1,29 @@
+[Unit]
+Description=PiTV player (mpv on DRM, schedule follower)
+After=network-online.target systemd-timesyncd.service
+Wants=network-online.target
+# Do not Require the mounts: playback starts with the test card and retries until the NAS is up.
+After=mnt-tvshows.automount mnt-movies.automount mnt-ads.automount
+
+[Service]
+Type=simple
+User=pitv
+Group=pitv
+SupplementaryGroups=video render audio input tty
+Environment=PITV_DATA=/var/lib/pitv
+Environment=PITV_RUN=/run/pitv
+RuntimeDirectory=pitv
+RuntimeDirectoryPreserve=yes
+ExecStart=/opt/pitv/.venv/bin/pitv play
+Restart=always
+RestartSec=2
+# Give mpv real-time-ish priority so audio never stutters under a scan or copy.
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=2
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pitv-player
+
+[Install]
+WantedBy=multi-user.target

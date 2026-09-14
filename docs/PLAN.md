@@ -61,7 +61,8 @@ and a last-scanned time. Initial sources:
 |---|---|---|---|
 | `smb://synologynas/tvshows/` | tv | `Show Name (1984)/Season 02/Show Name - S02E05 - Title.mkv` | Season/episode from `SxxEyy` (also `2x05`, `Season 2/05 - Title`). Show year from folder |
 | `smb://synologynas/movies/` | movie | `Title (1985)/Title (1985).mkv` | Year from folder, then file name |
-| `smb://synologynas/pitv/` (new, or a folder inside an existing share) | advert / ident | `Adverts/1984/Product.mp4`, `Idents/ch1/*.mp4`, `Static/static.mp4` | Advert year from sub-folder or a leading `1984 - ` in the file name |
+| `smb://synologynas/ads/` | advert | `1984/Product.mp4` or `1984 - Product.mp4` | Advert year from the sub-folder or a leading year in the file name |
+| (optional) any folder | ident | `ch1/*.mp4` | Channel idents; the folder name gives the channel number |
 
 Both shares require authentication (guest access is denied), so the Pi mounts them with
 CIFS using a root-only credentials file at `/etc/pitv/smb-credentials`, via systemd
@@ -272,26 +273,31 @@ the "needs attention" list flags anything the Pi may struggle with (e.g. 1080p M
   the same hardware and the phone would then show a stream of the TV you are sitting in
   front of.
 
-### 5.3 Remote control mapping
+### 5.3 Remote control
 
-Kernel IR (`dtoverlay=gpio-ir,gpio_pin=18` + `ir-keytable`) turns any IR remote into a
-normal Linux input device, so no LIRC daemon is needed and the same code path handles a
-keyboard, CEC, or the web virtual remote. If a classic `lircd` setup is preferred, the
-input module is the only piece that changes.
+The remote is the **OSMC RF remote** (2.4 GHz USB dongle). It presents itself to Linux as an
+ordinary USB keyboard, so there is no IR receiver, no LIRC and no learning of codes: the
+player reads every keyboard-like input device through evdev and hot-plugs the dongle if it
+appears late. Key codes map to actions through the `keymap` setting; the admin Player page
+shows the last key pressed so any button can be reassigned by pressing it. IR remotes set up
+with the kernel driver and `ir-keytable`, HDMI-CEC and a plain keyboard take the same path.
 
-| Key | Action |
-|---|---|
-| 1–9 | Select channel |
-| CH+ / CH− | Next / previous enabled channel (wraps) |
-| VOL+ / VOL− | mpv volume ±5, on-screen bar |
-| MUTE | Toggle mute |
-| PLAY/PAUSE | Pause holds the frame; play resumes from the paused point (that channel runs behind live until you change channel, at which point you rejoin live). See open question 2 |
-| MENU / GUIDE | Toggle the programme guide |
-| UP / DOWN | Guide: move channel highlight |
-| LEFT / RIGHT | Guide: previous / next programme on the highlighted channel. Left stops at what's on now |
-| OK | Guide: switch to highlighted channel and close guide |
-| BACK / EXIT | Close guide |
-| INFO | Show the channel badge (what's on, start–end, what's next) |
+The OSMC remote has no number, channel or mute keys, so the defaults are:
+
+| Button | Guide closed | Guide open |
+|---|---|---|
+| Up / Down | Channel up / down | Move channel highlight |
+| Left / Right | Volume down / up | Previous / next programme (left stops at what's on now) |
+| OK | Show channel badge | Tune to the highlighted channel and close |
+| Back | Return to live after pause/restart | Close guide |
+| Home or Menu | Open the guide | Close guide |
+| Info (i) | Channel badge: what's on, progress, what's next | |
+| Play/Pause | Pause holds the frame; play resumes (channel runs behind live until Back or a channel change) | |
+| Stop | Mute / unmute | |
+| Vol + / − | Volume, with on-screen bar | |
+
+Both "up/down change channel" and "left/right change volume" are settings, and any
+remote with number keys tunes channels 1–9 directly.
 
 ### 5.4 On-screen guide
 
@@ -366,7 +372,42 @@ docs are served automatically by FastAPI at `/api/docs`.
 
 ---
 
-## 7. Boot and system setup
+## 7. Local cache, prefetch and acquiring missing programmes
+
+### 7.1 Prefetch cache on the attached drive
+
+A USB hard drive on the Pi holds a cache (`cache_dir`, size-capped by `cache_max_gb`). A
+worker inside the player copies every programme due in the next `prefetch_hours` (default 4)
+on every channel, current channel first, into the cache before it airs; playback always
+prefers the cached copy, then a transcoded copy, then the NAS original. A NAS hiccup at
+19:59 therefore never interrupts the 20:00 film. Least-recently-used files are evicted when
+the cap is reached; files scheduled within the window are protected. Copies can be
+rate-limited (`cache_copy_mbps`) so they never starve playback.
+
+### 7.2 Acquiring programmes that are not on the NAS
+
+The scheduler only ever schedules what is in the library. Missing material is handled by a
+**wanted list** that is worked through by an acquisition worker in the player:
+
+- Entries are added by hand in the admin UI (title, year, season/episode, or a specific
+  archive.org item or URL), or automatically when `acquire_fill_gaps` is on and a season
+  on disk has holes (S01E01, S01E03 present, S01E02 missing).
+- Providers: the **Internet Archive** (search, pick a file, download) and **explicit URLs**
+  (direct media links, or pages handled by `yt-dlp` when installed). These are the sources
+  the owner is entitled to use; there is no torrent or usenet support and none is planned.
+- Downloads land in `acquire_dir` (default `<cache_dir>/acquired`) with Kodi-style names,
+  are re-encoded to H.264 if needed, then that folder is registered as a source and
+  scanned, so the next schedule build can use them.
+- Runs inside `acquire_hours`, one item at a time, three attempts before giving up, with
+  live progress in the admin UI.
+
+### 7.3 Transcode queue
+
+Any library file the Pi cannot hardware-decode can be queued (individually or "all
+software-decoded files") and is re-encoded overnight (`transcode_hours`) with the Pi 4's
+H.264 hardware encoder into `<acquire_dir>/transcoded/`; the player then plays that copy.
+
+## 8. Boot and system setup
 
 - Raspberry Pi OS Lite 64-bit. Static IP on Ethernet (no DHCP wait). NTP via
   `systemd-timesyncd` pointed at the NAS or router.
@@ -385,7 +426,7 @@ docs are served automatically by FastAPI at `/api/docs`.
 
 ---
 
-## 8. Code layout
+## 9. Code layout
 
 ```
 PiTV/
@@ -394,7 +435,8 @@ PiTV/
 │   ├── db.py                  SQLite schema, migrations, helpers
 │   ├── library/               scanner.py, naming.py (regexes), nfo.py, probe.py (ffprobe cache: duration, codec, interlace)
 │   ├── scheduler/             build.py (week builder), patterns.py, anchors.py, fill.py, rules.py (era/cert/daypart), overnight.py, edit.py
-│   ├── player/                controller.py, mpv_ipc.py, hwdec.py, input_evdev.py, control_socket.py, osd/ (badge.py, guide.py, teletext.py)
+│   ├── player/                controller.py, mpv_ipc.py, hwdec.py, input.py, control_socket.py, osd.py, cache.py, maintenance.py
+│   ├── acquire/               providers.py (archive.org, URL/yt-dlp), transcode.py, worker.py
 │   ├── web/                   app.py (FastAPI), api/ (now, schedule, player, sources, library, channels, settings, system), events.py (SSE), auth.py, static/ (built frontend)
 │   └── cli.py                 `pitv scan | schedule | listing | play | web | simulate`
 ├── web/                       Svelte + Vite source; `npm run build` writes to pitv/web/static/
@@ -416,7 +458,7 @@ Database tables: `settings`, `sources`, `channels`, `media`, `shows`, `episodes`
 
 ---
 
-## 9. Build phases
+## 10. Build phases
 
 | Phase | Deliverable | Checkpoint |
 |---|---|---|
@@ -432,12 +474,11 @@ Database tables: `settings`, `sources`, `channels`, `media`, `shows`, `episodes`
 
 ---
 
-## 10. Open questions (assumptions used until answered)
+## 11. Open questions (assumptions used until answered)
 
 1. **NAS shares**: confirmed as `smb://synologynas/tvshows/` and `smb://synologynas/movies/`.
-   Still needed: an SMB account for the Pi (read-only is enough), where the adverts folder
-   will live (assumed a new `pitv` share), and ideally a sample directory listing of each
-   share so the name parsers can be checked against the real convention.
+   Adverts live in `smb://synologynas/ads/`. Still needed: an SMB account for the Pi (read-only
+   is enough) and ideally a sample directory listing so the name parsers can be checked.
 2. **Pause semantics**: assumed "pause holds, play resumes where you paused, changing
    channel rejoins live". The alternative is real-TV behaviour where resume jumps to live.
    "Restart" is read as play/resume; a separate "restart programme from the beginning" key
@@ -446,8 +487,7 @@ Database tables: `settings`, `sources`, `channels`, `media`, `shows`, `episodes`
 4. **Ratings and genres**: are the shares scraped with NFO files? If not, the admin
    overrides are the only source of certificates, and unknown movies default to
    post-watershed.
-5. **Remote**: which IR remote and receiver? Assumed a TSOP-type receiver on GPIO 18 with
-   the kernel IR driver. HDMI-CEC (using the TV's own remote) can be added as a second input.
+5. **Remote**: OSMC RF remote (USB dongle, appears as a keyboard). Resolved; see §5.3.
 6. **Channel names** for the on-screen guide and badges (editable in admin anyway).
 7. **Mid-programme ad breaks** on ad channels: v1 places adverts only between programmes;
    the data model already allows a split at the halfway point later.

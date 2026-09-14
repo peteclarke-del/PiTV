@@ -1,0 +1,80 @@
+// Formatting helpers. Times are shown in the browser's local zone, 24h clock.
+
+const timeFmt = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+const dayFmt = new Intl.DateTimeFormat(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+const longDayFmt = new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+const dateTimeFmt = new Intl.DateTimeFormat(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false });
+
+export function fmtTime(ts) {
+  if (ts === null || ts === undefined) return '';
+  return timeFmt.format(new Date(ts * 1000)).replace(/^24:/, '00:');
+}
+
+export function fmtRange(a, b) {
+  return `${fmtTime(a)}–${fmtTime(b)}`;
+}
+
+export function fmtDateTime(ts) {
+  if (!ts) return '';
+  return dateTimeFmt.format(new Date(ts * 1000)).replace(/24:(\d\d)$/, '00:$1');
+}
+
+/** 'YYYY-MM-DD' -> 'Mon 14 Sep' */
+export function fmtDay(day, long = false) {
+  if (!day) return '';
+  const [y, m, d] = day.split('-').map(Number);
+  return (long ? longDayFmt : dayFmt).format(new Date(y, m - 1, d));
+}
+
+export function fmtDuration(seconds) {
+  if (!seconds && seconds !== 0) return '';
+  const m = Math.round(seconds / 60);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  return r ? `${h}h ${r}m` : `${h}h`;
+}
+
+export function fmtBytes(n) {
+  if (n === null || n === undefined) return '';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v.toFixed(i >= 3 ? 1 : 0)} ${units[i]}`;
+}
+
+export function fmtAgo(ts, now = Math.floor(Date.now() / 1000)) {
+  if (!ts) return 'never';
+  const d = now - ts;
+  if (d < 60) return 'just now';
+  if (d < 3600) return `${Math.floor(d / 60)} min ago`;
+  if (d < 86400) return `${Math.floor(d / 3600)} h ago`;
+  return `${Math.floor(d / 86400)} d ago`;
+}
+
+export function todayLocal() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** Local 'YYYY-MM-DD' + 'HH:MM' -> unix seconds */
+export function localToTs(day, time) {
+  const [y, m, d] = day.split('-').map(Number);
+  const [hh, mm] = time.split(':').map(Number);
+  return Math.floor(new Date(y, m - 1, d, hh, mm, 0).getTime() / 1000);
+}
+
+export function tsToLocalDay(ts) {
+  const d = new Date(ts * 1000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+export function tsToLocalTime(ts) {
+  const d = new Date(ts * 1000);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+export const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+export const CERTIFICATES = ['U', 'PG', '12', '12A', '15', '18'];
+export const PATTERN_TOKENS = ['show', 'tv', 'movie', 'ad', 'ident', 'break'];

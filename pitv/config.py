@@ -42,6 +42,8 @@ class Config:
     ffprobe_binary: str = field(default_factory=lambda: os.environ.get("PITV_FFPROBE", "ffprobe"))
     # Desktop development: run mpv in a window rather than on DRM.
     windowed: bool = field(default_factory=lambda: os.environ.get("PITV_WINDOWED", "") == "1")
+    # Extra mpv arguments (space separated), e.g. "--vo=null --ao=null" for headless tests.
+    mpv_extra_args: list[str] = field(default_factory=lambda: os.environ.get("PITV_MPV_ARGS", "").split())
 
     @property
     def db_path(self) -> Path:

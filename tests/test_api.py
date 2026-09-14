@@ -116,3 +116,37 @@ def test_password_flow(client):
 def test_player_offline(client):
     r = client.get("/api/player").json()
     assert r["offline"] is True
+
+
+def test_wanted_and_transcode(client):
+    r = client.post("/api/wanted", json={"kind": "movie", "title": "Some Public Domain Film", "year": 1984})
+    assert r.status_code == 200, r.text
+    wid = r.json()["id"]
+    assert any(w["id"] == wid for w in client.get("/api/wanted").json())
+    assert client.post("/api/wanted", json={"kind": "movie", "title": "X", "provider": "url", "ref": "ftp://nope"}).status_code == 400
+    assert client.post(f"/api/wanted/{wid}/retry").json()["ok"]
+    assert client.delete(f"/api/wanted/{wid}").json()["ok"]
+    gaps = client.post("/api/wanted/scan-gaps").json()
+    assert gaps["added"] == 0  # fake library has no gaps
+    media = client.get("/api/media", params={"kind": "movie", "limit": 1}).json()["items"]
+    assert client.post("/api/transcode", json={"media_id": media[0]["id"]}).json()["added"] == 1
+    q = client.get("/api/transcode").json()
+    assert q and q[0]["status"] == "queued"
+    assert client.delete(f"/api/transcode/{q[0]['id']}").json()["ok"]
+
+
+def test_gap_detection(env):
+    from pitv.acquire.worker import AcquisitionWorker
+    conn = dbm.connect(env.db_path)
+    show = conn.execute("SELECT id FROM shows WHERE title = 'Blackadder'").fetchone()
+    with dbm.tx(conn):
+        conn.execute("UPDATE media SET missing = 1 WHERE show_id = ? AND season = 1 AND episode = 3", (show["id"],))
+    w = AcquisitionWorker(env.db_path, lambda: 0, False, "ffprobe", lambda: None)
+    assert w.queue_gaps(conn) == 1
+    row = conn.execute("SELECT * FROM wanted WHERE show_id = ?", (show["id"],)).fetchone()
+    assert (row["season"], row["episode"], row["auto"]) == (1, 3, 1)
+    assert w.queue_gaps(conn) == 0
+    with dbm.tx(conn):
+        conn.execute("UPDATE media SET missing = 0 WHERE show_id = ?", (show["id"],))
+        conn.execute("DELETE FROM wanted")
+    conn.close()

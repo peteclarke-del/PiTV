@@ -1,0 +1,9 @@
+[Unit]
+Description=PiTV media share @SHARE@ (automount)
+
+[Automount]
+Where=/mnt/@SHARE@
+TimeoutIdleSec=0
+
+[Install]
+WantedBy=multi-user.target

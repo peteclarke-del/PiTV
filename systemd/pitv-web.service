@@ -1,0 +1,23 @@
+[Unit]
+Description=PiTV web interface
+After=network-online.target pitv-player.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pitv
+Group=pitv
+Environment=PITV_DATA=/var/lib/pitv
+Environment=PITV_RUN=/run/pitv
+Environment=PITV_WEB_PORT=80
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+ExecStart=/opt/pitv/.venv/bin/pitv web
+Restart=always
+RestartSec=3
+Nice=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pitv-web
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,229 @@
+"""On-screen graphics: channel badge, volume bar, guide, test card. Rendered with Pillow
+into BGRA files that mpv composites with `overlay-add`."""
+
+from __future__ import annotations
+
+import textwrap
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from PIL import Image, ImageDraw, ImageFont
+
+FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeMonoBold.ttf",
+    "/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf",
+]
+TELETEXT = {  # the seven teletext colours plus black
+    "black": (0, 0, 0), "red": (255, 0, 0), "green": (0, 255, 0), "yellow": (255, 255, 0),
+    "blue": (0, 0, 255), "magenta": (255, 0, 255), "cyan": (0, 255, 255), "white": (255, 255, 255),
+}
+
+OVERLAY_BADGE, OVERLAY_VOLUME, OVERLAY_GUIDE, OVERLAY_MESSAGE = 1, 2, 3, 4
+
+
+def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    for cand in FONT_CANDIDATES:
+        if Path(cand).exists():
+            try:
+                return ImageFont.truetype(cand, size)
+            except OSError:
+                continue
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def _hex(colour: str | None) -> tuple[int, int, int]:
+    try:
+        c = (colour or "#ffffff").lstrip("#")
+        return int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+    except ValueError:
+        return (255, 255, 255)
+
+
+def _hhmm(ts: int | float | None) -> str:
+    return datetime.fromtimestamp(ts).strftime("%H:%M") if ts else "--:--"
+
+
+class Renderer:
+    def __init__(self, run_dir: Path, width: int = 1280, height: int = 720) -> None:
+        self.run_dir = run_dir
+        self.width, self.height = width, height
+        self.scale = height / 720
+        self.f_big = _font(int(44 * self.scale))
+        self.f_med = _font(int(28 * self.scale))
+        self.f_small = _font(int(22 * self.scale))
+
+    def resize(self, width: int, height: int) -> None:
+        if (width, height) != (self.width, self.height) and width > 0 and height > 0:
+            self.__init__(self.run_dir, width, height)
+
+    def _save(self, img: Image.Image, name: str) -> tuple[str, int, int]:
+        path = self.run_dir / f"{name}.bgra"
+        path.write_bytes(img.tobytes("raw", "BGRA"))
+        return str(path), img.width, img.height
+
+    # --- badge ---------------------------------------------------------------------------
+
+    def badge(self, channel: dict[str, Any], now: dict[str, Any] | None, nxt: dict[str, Any] | None,
+              position: float | None, behind_live: bool) -> tuple[str, int, int, int, int]:
+        s = self.scale
+        w, h = int(self.width * 0.62), int(176 * s)
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rounded_rectangle((0, 0, w - 1, h - 1), radius=int(12 * s), fill=(0, 0, 0, 200))
+        col = _hex(channel.get("colour"))
+        d.rounded_rectangle((int(14 * s), int(14 * s), int(120 * s), int(80 * s)), radius=int(8 * s), fill=col + (255,))
+        num = str(channel.get("number", "?"))
+        bbox = d.textbbox((0, 0), num, font=self.f_big)
+        d.text((int(67 * s) - (bbox[2] - bbox[0]) // 2, int(18 * s)), num, font=self.f_big, fill=(0, 0, 0, 255))
+        d.text((int(135 * s), int(14 * s)), channel.get("name", ""), font=self.f_med, fill=(255, 255, 255, 255))
+        if now:
+            title = now.get("title", "")
+            sub = now.get("subtitle", "")
+            line = f"{_hhmm(now.get('start_ts'))}–{_hhmm(now.get('end_ts'))}  {title}"
+            d.text((int(135 * s), int(50 * s)), line[:70], font=self.f_med, fill=(255, 255, 0, 255))
+            if sub:
+                d.text((int(135 * s), int(84 * s)), sub[:80], font=self.f_small, fill=(0, 255, 255, 255))
+            # progress bar
+            if now.get("start_ts") and now.get("end_ts") and position is not None:
+                frac = max(0.0, min(1.0, position))
+                x0, x1, y = int(135 * s), w - int(20 * s), int(116 * s)
+                d.rectangle((x0, y, x1, y + int(8 * s)), fill=(70, 70, 70, 255))
+                d.rectangle((x0, y, x0 + int((x1 - x0) * frac), y + int(8 * s)), fill=col + (255,))
+        else:
+            d.text((int(135 * s), int(50 * s)), "No programme scheduled", font=self.f_med, fill=(255, 80, 80, 255))
+        if nxt:
+            d.text((int(135 * s), int(136 * s)), f"Next {_hhmm(nxt.get('start_ts'))}  {nxt.get('title', '')}"[:70],
+                   font=self.f_small, fill=(180, 180, 180, 255))
+        if behind_live:
+            d.text((w - int(170 * s), int(14 * s)), "PAUSED/BEHIND", font=self.f_small, fill=(255, 0, 0, 255))
+        path, iw, ih = self._save(img, "badge")
+        return path, iw, ih, int(30 * s), self.height - h - int(40 * s)
+
+    # --- volume ---------------------------------------------------------------------------
+
+    def volume(self, volume: int, muted: bool) -> tuple[str, int, int, int, int]:
+        s = self.scale
+        w, h = int(420 * s), int(56 * s)
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rounded_rectangle((0, 0, w - 1, h - 1), radius=int(10 * s), fill=(0, 0, 0, 200))
+        label = "MUTE" if muted else f"VOL {volume}"
+        d.text((int(14 * s), int(12 * s)), label, font=self.f_med, fill=(255, 255, 0, 255))
+        x0, x1, y = int(150 * s), w - int(16 * s), int(22 * s)
+        d.rectangle((x0, y, x1, y + int(12 * s)), fill=(70, 70, 70, 255))
+        if not muted:
+            d.rectangle((x0, y, x0 + int((x1 - x0) * volume / 100), y + int(12 * s)), fill=(0, 255, 0, 255))
+        path, iw, ih = self._save(img, "volume")
+        return path, iw, ih, (self.width - w) // 2, self.height - h - int(40 * s)
+
+    # --- message ---------------------------------------------------------------------------
+
+    def message(self, text: str, sub: str = "") -> tuple[str, int, int, int, int]:
+        s = self.scale
+        w, h = int(self.width * 0.7), int(120 * s)
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rounded_rectangle((0, 0, w - 1, h - 1), radius=int(12 * s), fill=(0, 0, 0, 210))
+        d.text((int(20 * s), int(18 * s)), text[:60], font=self.f_med, fill=(255, 255, 255, 255))
+        if sub:
+            d.text((int(20 * s), int(64 * s)), sub[:90], font=self.f_small, fill=(0, 255, 255, 255))
+        path, iw, ih = self._save(img, "message")
+        return path, iw, ih, (self.width - w) // 2, int(self.height * 0.4)
+
+    # --- guide -----------------------------------------------------------------------------
+
+    def guide(self, channels: list[dict[str, Any]], rows: dict[int, list[dict[str, Any]]],
+              highlight: int, cursor: int, now_ts: int, clock: str) -> tuple[str, int, int, int, int]:
+        """Teletext style guide. rows[channel_id] = [now, next, next+1, ...]."""
+        s = self.scale
+        w = self.width - int(60 * s)
+        line_h = int(34 * s)
+        header_h = int(52 * s)
+        per_channel = 2  # lines per non-highlighted channel
+        highlight_lines = 4
+        total_lines = sum(highlight_lines if ch["id"] == highlight else per_channel for ch in channels)
+        h = header_h + total_lines * line_h + int(30 * s)
+        h = min(h, self.height - int(40 * s))
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rectangle((0, 0, w - 1, h - 1), fill=(0, 0, 0, 225))
+        # header
+        d.rectangle((0, 0, w - 1, header_h), fill=(0, 0, 255, 255))
+        d.text((int(16 * s), int(10 * s)), "P100  PiTV GUIDE", font=self.f_med, fill=(255, 255, 0, 255))
+        cb = d.textbbox((0, 0), clock, font=self.f_med)
+        d.text((w - (cb[2] - cb[0]) - int(16 * s), int(10 * s)), clock, font=self.f_med, fill=(255, 255, 255, 255))
+        y = header_h + int(8 * s)
+        x_num, x_name, x_prog = int(16 * s), int(70 * s), int(300 * s)
+        for ch in channels:
+            is_hl = ch["id"] == highlight
+            items = rows.get(ch["id"], [])
+            col = _hex(ch.get("colour"))
+            if is_hl:
+                d.rectangle((0, y - int(4 * s), w - 1, y + highlight_lines * line_h - int(6 * s)), fill=(30, 30, 30, 255))
+            d.text((x_num, y), str(ch["number"]), font=self.f_med, fill=col + (255,))
+            d.text((x_name, y), str(ch.get("short_name") or ch.get("name"))[:12], font=self.f_med, fill=(255, 255, 255, 255))
+            if not items:
+                d.text((x_prog, y), "No programmes", font=self.f_med, fill=(255, 80, 80, 255))
+                y += per_channel * line_h
+                continue
+            if is_hl:
+                idx = max(0, min(cursor, len(items) - 1))
+                item = items[idx]
+                marker = "▶ " if idx == 0 else "  "
+                d.text((x_prog - int(30 * s), y), marker, font=self.f_med, fill=(0, 255, 0, 255))
+                d.text((x_prog, y), f"{_hhmm(item.get('start_ts'))}–{_hhmm(item.get('end_ts'))}  {item.get('title', '')}"[:60],
+                       font=self.f_med, fill=(255, 255, 0, 255))
+                d.text((x_prog, y + line_h), (item.get("subtitle") or "")[:70], font=self.f_small, fill=(0, 255, 255, 255))
+                plot = (item.get("plot") or "").strip()
+                if plot:
+                    wrapped = textwrap.wrap(plot, width=int(90 * 1280 / self.width) if self.width else 90)[:2]
+                    for i, line in enumerate(wrapped):
+                        d.text((x_prog, y + (2 + i) * line_h - int(6 * s)), line, font=self.f_small, fill=(255, 255, 255, 255))
+                nav = f"{idx + 1}/{len(items)}  ◀ ▶ programmes   ▲ ▼ channel   OK tune"
+                d.text((x_num, y + 3 * line_h - int(6 * s)), nav, font=self.f_small, fill=(150, 150, 150, 255))
+                y += highlight_lines * line_h
+            else:
+                now_item = items[0]
+                d.text((x_prog, y), f"{_hhmm(now_item.get('start_ts'))}  {now_item.get('title', '')}"[:60],
+                       font=self.f_med, fill=(255, 255, 255, 255))
+                if len(items) > 1:
+                    nx = items[1]
+                    d.text((x_prog, y + line_h), f"{_hhmm(nx.get('start_ts'))}  {nx.get('title', '')}"[:60],
+                           font=self.f_small, fill=(160, 160, 160, 255))
+                y += per_channel * line_h
+            if y > h - line_h:
+                break
+        path, iw, ih = self._save(img, "guide")
+        return path, iw, ih, int(30 * s), self.height - h - int(20 * s)
+
+
+def make_testcard(path: Path, width: int = 1920, height: int = 1080, label: str = "PiTV") -> Path:
+    """A colour-bars test card with the PiTV wordmark, used at boot and when nothing is scheduled."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img = Image.new("RGB", (width, height), (0, 0, 0))
+    d = ImageDraw.Draw(img)
+    bars = [(192, 192, 192), (192, 192, 0), (0, 192, 192), (0, 192, 0), (192, 0, 192), (192, 0, 0), (0, 0, 192)]
+    bw = width / len(bars)
+    top = int(height * 0.66)
+    for i, c in enumerate(bars):
+        d.rectangle((int(i * bw), 0, int((i + 1) * bw), top), fill=c)
+    small = [(0, 0, 192), (19, 19, 19), (192, 0, 192), (19, 19, 19), (0, 192, 192), (19, 19, 19), (192, 192, 192)]
+    for i, c in enumerate(small):
+        d.rectangle((int(i * bw), top, int((i + 1) * bw), int(height * 0.75)), fill=c)
+    d.rectangle((0, int(height * 0.75), width, height), fill=(19, 19, 19))
+    f = _font(int(height * 0.16))
+    bbox = d.textbbox((0, 0), label, font=f)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    cx, cy = width // 2, int(height * 0.5)
+    d.rectangle((cx - tw // 2 - 40, cy - th // 2 - 30, cx + tw // 2 + 40, cy + th // 2 + 50), fill=(0, 0, 0))
+    d.text((cx - tw // 2, cy - th // 2 - bbox[1]), label, font=f, fill=(255, 255, 255))
+    f2 = _font(int(height * 0.035))
+    d.text((int(width * 0.04), int(height * 0.85)), "Programmes will begin shortly", font=f2, fill=(220, 220, 220))
+    img.save(path)
+    return path

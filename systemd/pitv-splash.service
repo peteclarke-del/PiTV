@@ -1,0 +1,14 @@
+[Unit]
+Description=PiTV boot splash (test card on the framebuffer)
+DefaultDependencies=no
+After=systemd-udev-settle.service dev-fb0.device
+Before=pitv-player.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/pitv/.venv/bin/python -m pitv.splash /var/lib/pitv/testcard.png
+RemainAfterExit=yes
+StandardOutput=journal
+
+[Install]
+WantedBy=sysinit.target

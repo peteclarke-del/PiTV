@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .. import db as dbm
 from ..config import Config
-from .api import admin, public
+from .api import acquire, admin, public
 from .events import EventBus
 from .player_client import PlayerClient
 from .tasks import JobRunner
@@ -92,6 +92,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     app.include_router(public.router)
     app.include_router(admin.router)
+    app.include_router(acquire.router)
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception):

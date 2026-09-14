@@ -347,14 +347,18 @@ class Builder:
         if token in ("show", "movie"):
             for m in self.movies:
                 last = self.last_placed.get(m["id"])
-                recent = m["id"] in self.placed_movies or (last is not None and t - last < movie_repeat)
+                if m["id"] in self.placed_movies:
+                    last = max(last or 0, self.placed_movies[m["id"]])
+                recent = last is not None and t - last < movie_repeat
                 if recent and relax < 2:
                     continue
                 w = common_weight(m, "movie")
                 if w <= 0:
                     continue
                 if recent:
-                    w *= 0.2
+                    # Forced repeat (thin library): strongly prefer the one aired longest ago.
+                    age = (t - last) if last is not None else 0
+                    w *= 0.2 * max(0.05, (age / movie_repeat)) ** 2
                 elif last is not None:
                     w *= min(2.0, (t - last) / movie_repeat)  # prefer the least recently aired
                 else:
