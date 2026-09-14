@@ -382,6 +382,7 @@ class Builder:
         penalty_s = int(self.settings.get("advert_repeat_penalty_hours", 6)) * 3600
         era_weights = self._channel_setting(channel, "era_weights")
         cands: list[tuple[float, dict[str, Any]]] = []
+        fresh: list[tuple[float, dict[str, Any]]] = []
         for ad in self.adverts:
             if float(ad["duration"]) > gap:
                 continue
@@ -392,9 +393,12 @@ class Builder:
             if last is not None and t - last < penalty_s:
                 w *= 0.1
             cands.append((w, ad))
-        if not cands:
+            if last is None or t - last > 900:
+                fresh.append((w, ad))  # not shown in the last quarter of an hour
+        pool = fresh or cands  # never repeat an advert within a break if any other will fit
+        if not pool:
             return None
-        return rng.choices(cands, weights=[c[0] for c in cands], k=1)[0][1]
+        return rng.choices(pool, weights=[c[0] for c in pool], k=1)[0][1]
 
     def _choose_ident(self, channel: dict[str, Any], rng: random.Random, gap: int) -> dict[str, Any] | None:
         if not channel.get("idents_enabled", 1):

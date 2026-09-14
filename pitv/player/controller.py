@@ -28,7 +28,8 @@ from .hwdec import decode_options, is_raspberry_pi
 from .input import EvdevInput, TerminalInput
 from .maintenance import Maintenance
 from .mpv_ipc import Mpv, MpvError, default_args
-from .osd import OVERLAY_BADGE, OVERLAY_GUIDE, OVERLAY_MESSAGE, OVERLAY_VOLUME, Renderer, make_testcard
+from .osd import (OVERLAY_BADGE, OVERLAY_GUIDE, OVERLAY_MESSAGE, OVERLAY_STATIC, OVERLAY_VOLUME, Renderer,
+                  make_testcard)
 
 log = logging.getLogger("pitv.player")
 
@@ -44,7 +45,7 @@ for _n in range(1, 10):
 
 
 class Player:
-    def __init__(self, cfg: Config, channel: int = 1, keyboard: bool = False, now_override: str | None = None) -> None:
+    def __init__(self, cfg: Config, channel: int | None = None, keyboard: bool = False, now_override: str | None = None) -> None:
         self.cfg = cfg
         cfg.ensure_dirs()
         self.conn = dbm.connect(cfg.db_path)
@@ -82,7 +83,8 @@ class Player:
         self._last_drift_check = 0.0
         self._state_cache: str = ""
         self.keyboard = keyboard
-        self.initial_channel = channel
+        self.initial_channel = channel or 1
+        self.explicit_channel = channel is not None
         self.state_file = cfg.data_dir / "player_state.json"
 
         cache_dir = self.settings.get("cache_dir") or ""
@@ -197,7 +199,7 @@ class Player:
             data = json.loads(self.state_file.read_text())
             self.volume = int(data.get("volume", self.volume))
             self.muted = bool(data.get("muted", False))
-            if self.initial_channel == 1 and data.get("channel"):
+            if not self.explicit_channel and data.get("channel"):
                 self.initial_channel = int(data["channel"])
         except (OSError, ValueError):
             pass
@@ -287,6 +289,7 @@ class Player:
         if channel is None:
             return
         self._end_history()
+        switching = self.channel is not None and self.channel["id"] != channel["id"]
         self.channel = channel
         self.paused = False
         self.behind_live = False
@@ -295,6 +298,9 @@ class Player:
             self.mpv.set("pause", False)
         except MpvError:
             pass
+        if switching and self.settings.get("channel_switch_static", True):
+            self._sync_osd_size()
+            self._overlay(OVERLAY_STATIC, self.renderer.static(), ttl=0.35)
         self.play_live()
         self._save_state()
         self.prefetch.poke()
@@ -344,6 +350,7 @@ class Player:
         self.playing_path = path
         self.failed_slot_id = None
         self.last_error = None
+        self.mpv.overlay_remove(OVERLAY_MESSAGE)
         self._start_history(slot)
         log.info("ch%s %s %s +%.0fs (%s)", self.channel["number"], slot["kind"], slot["title"], offset,
                  "cache" if self.cache.cached_path(media["id"], media["path"] or "") else "source")
@@ -645,5 +652,5 @@ class Player:
             self.control.broadcast(st)
 
 
-def run_player(cfg: Config, channel: int = 1, keyboard: bool = False, now_override: str | None = None) -> int:
+def run_player(cfg: Config, channel: int | None = None, keyboard: bool = False, now_override: str | None = None) -> int:
     return Player(cfg, channel=channel, keyboard=keyboard, now_override=now_override).run()

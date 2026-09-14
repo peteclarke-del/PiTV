@@ -172,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     w.set_defaults(func=cmd_web)
 
     pl = sub.add_parser("play", help="run the player")
-    pl.add_argument("--channel", type=int, default=1)
+    pl.add_argument("--channel", type=int, default=None, help="start on this channel (default: last used)")
     pl.add_argument("--keyboard", action="store_true", help="read keys from the terminal (desktop)")
     pl.add_argument("--now", help="pretend the clock reads this local time (YYYY-MM-DDTHH:MM)")
     pl.set_defaults(func=cmd_play)

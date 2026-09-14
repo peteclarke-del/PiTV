@@ -21,7 +21,7 @@ TELETEXT = {  # the seven teletext colours plus black
     "blue": (0, 0, 255), "magenta": (255, 0, 255), "cyan": (0, 255, 255), "white": (255, 255, 255),
 }
 
-OVERLAY_BADGE, OVERLAY_VOLUME, OVERLAY_GUIDE, OVERLAY_MESSAGE = 1, 2, 3, 4
+OVERLAY_BADGE, OVERLAY_VOLUME, OVERLAY_GUIDE, OVERLAY_MESSAGE, OVERLAY_STATIC = 1, 2, 3, 4, 5
 
 
 def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -66,6 +66,16 @@ class Renderer:
         path = self.run_dir / f"{name}.bgra"
         path.write_bytes(img.tobytes("raw", "BGRA"))
         return str(path), img.width, img.height
+
+    # --- static ---------------------------------------------------------------------------
+
+    def static(self) -> tuple[str, int, int, int, int]:
+        """Full-screen analogue 'snow', shown for a moment when changing channel."""
+        small = Image.effect_noise((self.width // 3, self.height // 3), 90).convert("L")
+        noise = small.resize((self.width, self.height), Image.NEAREST)
+        img = Image.merge("RGBA", (noise, noise, noise, Image.new("L", noise.size, 255)))
+        path, w, h = self._save(img, "static")
+        return path, w, h, 0, 0
 
     # --- badge ---------------------------------------------------------------------------
 
