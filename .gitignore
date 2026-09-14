@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+*.db
+*.sqlite
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+config/config.yaml
+config/overrides.yaml
