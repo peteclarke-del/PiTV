@@ -141,7 +141,9 @@ input[type="range"] { padding: 0; min-height: 0; accent-color: var(--accent); }
 input.narrow { width: 6rem; }
 input.xnarrow { width: 4.2rem; }
 textarea { min-height: 4rem; resize: vertical; }
-.check { display: inline-flex; align-items: center; gap: .45rem; font-weight: 500; font-size: .92rem; cursor: pointer; }
+.check { display: inline-grid; grid-template-columns: auto 1fr; column-gap: .45rem; row-gap: .1rem; align-items: center; font-weight: 500; font-size: .92rem; cursor: pointer; }
+.check > input { grid-column: 1; }
+.check .help { grid-column: 2; font-weight: 400; color: var(--fg-muted); font-size: .8rem; }
 .form-grid { display: grid; gap: .8rem 1rem; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
 .form-grid .wide { grid-column: 1 / -1; }
 .inline-form { display: flex; flex-wrap: wrap; gap: .5rem; align-items: flex-end; }

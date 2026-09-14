@@ -129,7 +129,16 @@ class AcquisitionWorker:
         sets = ", ".join(f"{k} = ?" for k in fields)
         with tx(conn):
             conn.execute(f"UPDATE wanted SET {sets} WHERE id = ?", (*fields.values(), wid))
-        self.current = {"kind": "wanted", "id": wid, **{k: v for k, v in fields.items() if k in ("status", "progress", "message")}}
+        cur = self.current or {}
+        self.current = {"kind": "wanted", "id": wid, "title": cur.get("title") or self._title_of(conn, wid),
+                        **{k: v for k, v in fields.items() if k in ("status", "progress", "message")}}
+
+    def _title_of(self, conn: sqlite3.Connection, wid: int) -> str:
+        row = conn.execute("SELECT title, season, episode FROM wanted WHERE id = ?", (wid,)).fetchone()
+        if not row:
+            return ""
+        se = f" S{row['season']:02d}E{row['episode']:02d}" if row["season"] is not None and row["episode"] is not None else ""
+        return f"{row['title']}{se}"
 
     def _dest_for(self, w: dict[str, Any], settings: dict[str, Any], ext: str = ".mp4") -> tuple[Path, str]:
         base = Path(settings.get("acquire_dir") or "") if settings.get("acquire_dir") else Path(settings.get("cache_dir") or "/var/lib/pitv") / "acquired"

@@ -10,7 +10,11 @@
   let saving = $state(false);
   let savedOnce = $state(false);
 
-  async function load() { s = await tryApi(get('/api/settings')); }
+  let providers = $state({ archive: true, url: false });
+  async function load() {
+    s = await tryApi(get('/api/settings'));
+    if (s) providers = { archive: (s.acquire_providers ?? []).includes('archive'), url: (s.acquire_providers ?? []).includes('url') };
+  }
   onMount(load);
 
   async function save() {
@@ -18,14 +22,16 @@
     const body = { ...s };
     for (const k of ['horizon_days', 'rebuild_when_days_left', 'show_daily_limit', 'movie_repeat_days', 'episode_recency_days',
                      'duration_tolerance_minutes', 'start_rounding_minutes', 'end_of_day_overrun_minutes', 'advert_year_window',
-                     'advert_repeat_penalty_hours', 'series_rest_weeks']) body[k] = parseInt(body[k], 10) || 0;
+                     'advert_repeat_penalty_hours', 'series_rest_weeks', 'badge_seconds', 'cache_max_gb', 'cache_copy_mbps',
+                     'prefetch_hours', 'transcode_max_height', 'transcode_bitrate_kbps', 'scan_hour', 'history_keep_days']) body[k] = parseInt(body[k], 10) || 0;
+    body.acquire_providers = ['archive', 'url'].filter((p) => providers[p]);
     for (const k of ['show_repeat_penalty', 'same_slot_bonus', 'genre_repeat_penalty']) body[k] = Number(body[k]) || 0;
     body.kind_weights = { tv: Number(s.kind_weights.tv), movie: Number(s.kind_weights.movie) };
     body.dayparts = s.dayparts.map((d) => ({ ...d, tv: Number(d.tv), movie: Number(d.movie), kids: Number(d.kids), ...(d.max_minutes ? { max_minutes: Number(d.max_minutes) } : {}) }))
       .map((d) => { if (!d.max_minutes) delete d.max_minutes; return d; });
     const r = await tryApi(put('/api/settings', body), { success: 'Settings saved' });
     saving = false;
-    if (r) { s = r; savedOnce = true; }
+    if (r) { s = r; savedOnce = true; providers = { archive: (s.acquire_providers ?? []).includes('archive'), url: (s.acquire_providers ?? []).includes('url') }; }
   }
   async function reset() {
     if (!(await confirm('Reset every weighting setting to its default?', { title: 'Reset to defaults', okLabel: 'Reset', danger: true }))) return;
@@ -85,7 +91,7 @@
             <select bind:value={s.unknown_tv_certificate}>{#each CERTIFICATES as c (c)}<option value={c}>{c}</option>{/each}</select>
             <span class="help">Assumed for episodes with no certificate.</span></label>
           <label class="field">Kids cutoff<input type="time" bind:value={s.kids_cutoff} /><span class="help">Children's programmes are not scheduled after this time.</span></label>
-          <label class="check"><input type="checkbox" bind:checked={s.weekend_kids_breakfast} /> Weekend kids' breakfast<span class="help" style="display:block">Boost children's programmes at breakfast on Saturday and Sunday.</span></label>
+          <label class="check"><input type="checkbox" bind:checked={s.weekend_kids_breakfast} /> Weekend kids' breakfast<span class="help">Boost children's programmes at breakfast on Saturday and Sunday.</span></label>
         </div>
       </div>
 
@@ -114,9 +120,54 @@
           <label class="field">Advert year window<input type="number" min="0" bind:value={s.advert_year_window} /><span class="help">Prefer adverts from within this many years of the programme.</span></label>
           <label class="field">Advert repeat penalty (hours)<input type="number" min="0" bind:value={s.advert_repeat_penalty_hours} /><span class="help">Avoid repeating an advert within this many hours.</span></label>
         </div>
-        <hr />
+      </div>
+
+      <div class="card">
         <div class="card-title"><h3>Player</h3></div>
-        <label class="check"><input type="checkbox" bind:checked={s.channel_switch_static} /> Static burst on channel change</label>
+        <div class="stack">
+          <label class="check"><input type="checkbox" bind:checked={s.nav_keys_change_channel} /> Up / down change channel<span class="help">When the guide is closed (the OSMC remote has no channel keys).</span></label>
+          <label class="check"><input type="checkbox" bind:checked={s.nav_keys_change_volume} /> Left / right change volume<span class="help">When the guide is closed.</span></label>
+          <label class="field">Channel badge seconds<input type="number" min="0" max="60" bind:value={s.badge_seconds} /><span class="help">How long the channel badge stays on screen after a change.</span></label>
+          <label class="check"><input type="checkbox" bind:checked={s.channel_switch_static} /> Static burst on channel change</label>
+          <label class="field">Pi hardware decoders<input class="mono" bind:value={s.pi_hwdec} /><span class="help">mpv <code>--hwdec</code> list tried in order on the Pi, e.g. drm-prime,v4l2m2m-copy.</span></label>
+          <label class="field">Audio device<input class="mono" bind:value={s.audio_device} /><span class="help">mpv audio device name; <code>auto</code> picks HDMI.</span></label>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><h3>Cache</h3></div>
+        <div class="stack">
+          <label class="field">Cache directory<input class="mono" bind:value={s.cache_dir} placeholder="/mnt/cache/pitv" /><span class="help">Folder on the attached drive for local copies of upcoming programmes; empty disables the cache.</span></label>
+          <label class="field">Maximum size (GB)<input type="number" min="0" bind:value={s.cache_max_gb} /><span class="help">Oldest copies are removed once the cache exceeds this.</span></label>
+          <label class="field">Copy speed limit (Mbit/s)<input type="number" min="0" bind:value={s.cache_copy_mbps} /><span class="help">0 = unlimited. Throttle to keep the NAS responsive while a programme plays.</span></label>
+          <label class="field">Prefetch hours<input type="number" min="0" max="48" bind:value={s.prefetch_hours} /><span class="help">Copy programmes scheduled within this many hours ahead.</span></label>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><h3>Acquisition</h3></div>
+        <div class="stack">
+          <label class="check"><input type="checkbox" bind:checked={s.acquire_enabled} /> Fetch wanted programmes<span class="help">Downloads items from the Acquire page in the background.</span></label>
+          <label class="field">Download directory<input class="mono" bind:value={s.acquire_dir} placeholder="(cache dir)/acquired" /><span class="help">Where downloaded files are stored and scanned from; empty uses the cache directory.</span></label>
+          <div class="field"><span>Providers</span>
+            <div class="row"><label class="check"><input type="checkbox" bind:checked={providers.archive} /> archive.org</label><label class="check"><input type="checkbox" bind:checked={providers.url} /> Direct URLs</label></div>
+            <span class="help">Only archive.org searches and explicit URLs are supported.</span>
+          </div>
+          <label class="check"><input type="checkbox" bind:checked={s.acquire_fill_gaps} /> Queue missing episodes automatically<span class="help">Looks for gaps between the episodes already on disk.</span></label>
+          <label class="field">Acquisition hours<input class="mono" style="width:9rem" bind:value={s.acquire_hours} placeholder="00:00-23:59" /><span class="help">Window (HH:MM-HH:MM) in which downloads may run.</span></label>
+          <label class="check"><input type="checkbox" bind:checked={s.transcode_enabled} /> Transcode software-decoded files<span class="help">Re-encode to H.264 so the Pi can hardware-decode them.</span></label>
+          <label class="field">Transcode hours<input class="mono" style="width:9rem" bind:value={s.transcode_hours} placeholder="01:00-07:00" /><span class="help">Window (HH:MM-HH:MM) for CPU-heavy transcoding, ideally overnight.</span></label>
+          <label class="field">Max height (pixels)<input type="number" min="240" max="2160" step="1" bind:value={s.transcode_max_height} /><span class="help">Taller sources are scaled down, e.g. 720.</span></label>
+          <label class="field">Bitrate (kbit/s)<input type="number" min="500" bind:value={s.transcode_bitrate_kbps} /><span class="help">Target video bitrate for transcoded copies.</span></label>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><h3>Maintenance</h3></div>
+        <div class="stack">
+          <label class="field">Nightly scan hour<input type="number" min="0" max="23" bind:value={s.scan_hour} /><span class="help">Hour of the day (0–23) when the library is rescanned and the schedule extended.</span></label>
+          <label class="field">Keep history (days)<input type="number" min="1" bind:value={s.history_keep_days} /><span class="help">Airing history older than this is pruned.</span></label>
+        </div>
       </div>
     </div>
 

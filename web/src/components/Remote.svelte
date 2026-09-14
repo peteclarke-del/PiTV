@@ -57,6 +57,7 @@
     <button disabled={!online} onclick={() => key('back')}>Back</button>
     <button disabled={!online} onclick={() => key('guide')}>Guide</button>
     <button disabled={!online} onclick={() => key('info')}>Info</button>
+    <button disabled={!online} onclick={() => key('restart')} title="Restart the current programme from the beginning">↺ Restart</button>
   </div>
 </div>
 
@@ -79,6 +80,6 @@
   .ok { grid-column: 2; grid-row: 2; border-radius: 50%; font-weight: 800; background: var(--bg-sunken); }
   .right { grid-column: 3; grid-row: 2; }
   .down { grid-column: 2; grid-row: 3; }
-  .extras { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: .5rem; }
+  .extras { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
   .busy { opacity: .7; }
 </style>

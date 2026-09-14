@@ -57,7 +57,7 @@
     </div>
   </div>
   {#each channels as ch (ch.id)}
-    <div class="row">
+    <div class="chrow">
       <div class="chcell"><ChannelBadge channel={ch} size="sm" /></div>
       <div class="track" style="width:{width}px">
         {#each byChannel.get(ch.id) ?? [] as s (s.id)}
@@ -76,7 +76,7 @@
     </div>
   {/each}
   {#if !channels.length}
-    <div class="empty">No channels.</div>
+    <div class="empty">{loading ? 'Loading…' : 'No channels are enabled.'}</div>
   {/if}
 </div>
 
@@ -87,13 +87,13 @@
     -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain;
   }
   .epg.loading { opacity: .6; }
-  .head { display: flex; position: sticky; top: 0; z-index: 3; background: var(--bg-elev); border-bottom: 1px solid var(--border); height: 30px; }
+  .head { display: flex; flex-wrap: nowrap; position: sticky; top: 0; z-index: 3; background: var(--bg-elev); border-bottom: 1px solid var(--border); height: 30px; }
   .corner { position: sticky; left: 0; z-index: 4; width: var(--chw); flex: none; background: var(--bg-elev); border-right: 1px solid var(--border); }
   .axis { position: relative; flex: none; height: 100%; }
   .tick { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; padding-left: 4px; font-size: .74rem; color: var(--fg-muted); border-left: 1px solid var(--border); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .nowmark { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); }
   .nowmark::after { content: ''; position: absolute; top: 0; left: -4px; border: 5px solid transparent; border-top: 7px solid var(--accent); }
-  .row { display: flex; border-bottom: 1px solid var(--border); }
+  .chrow { display: flex; flex-wrap: nowrap; border-bottom: 1px solid var(--border); }
   .chcell { position: sticky; left: 0; z-index: 2; width: var(--chw); flex: none; background: var(--bg-elev); border-right: 1px solid var(--border); padding: .35rem .4rem; display: flex; align-items: center; overflow: hidden; }
   .track { position: relative; height: 54px; flex: none; overflow: hidden; background: repeating-linear-gradient(90deg, transparent 0, transparent calc(var(--gridstep, 60px) - 1px), var(--border) calc(var(--gridstep, 60px) - 1px), var(--border) var(--gridstep, 60px)); }
   .nowline { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); pointer-events: none; z-index: 1; }

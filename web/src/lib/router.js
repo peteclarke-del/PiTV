@@ -12,6 +12,10 @@ function parse() {
 }
 
 export function startRouter() {
+  // A plain path such as /admin/acquire (bookmark or typed URL) is served by the SPA fallback; turn it into a hash route.
+  if (!location.hash && location.pathname !== '/' && location.pathname !== '/index.html') {
+    history.replaceState(null, '', `/#${location.pathname}${location.search}`);
+  }
   const apply = () => {
     const r = parse();
     route.path = r.path;

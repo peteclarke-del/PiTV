@@ -11,10 +11,11 @@
   import Schedule from './admin/Schedule.svelte';
   import PlayerPage from './admin/Player.svelte';
   import System from './admin/System.svelte';
+  import Acquire from './admin/Acquire.svelte';
 
   const tabs = [
     ['dashboard', 'Dashboard'], ['sources', 'Sources'], ['library', 'Library'], ['channels', 'Channels'],
-    ['weighting', 'Weighting'], ['schedule', 'Schedule'], ['player', 'Player'], ['system', 'System'],
+    ['weighting', 'Weighting'], ['schedule', 'Schedule'], ['acquire', 'Acquire'], ['player', 'Player'], ['system', 'System'],
   ];
   let tab = $derived(route.parts[1] ?? 'dashboard');
   let skipSetup = $state(sessionStorage.getItem('pitv-skip-setup') === '1');
@@ -69,6 +70,7 @@
     {:else if tab === 'channels'}<Channels />
     {:else if tab === 'weighting'}<Weighting />
     {:else if tab === 'schedule'}<Schedule />
+    {:else if tab === 'acquire'}<Acquire />
     {:else if tab === 'player'}<PlayerPage />
     {:else if tab === 'system'}<System />
     {:else}<div class="empty">Unknown section.</div>{/if}

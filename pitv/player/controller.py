@@ -398,7 +398,7 @@ class Player:
     # --- actions --------------------------------------------------------------------------------------
 
     def _on_key(self, keyname: str, action: str | None) -> None:
-        self.last_key = {"key": keyname, "action": action, "ts": now_ts()}
+        self.last_key = {"key": keyname, "action": action, "ts": now_ts(), "source": "remote"}
         self.actions.put(("key", ("remote", action)))
 
     def do(self, action: str, arg: Any) -> None:
@@ -593,6 +593,7 @@ class Player:
             return {"ok": True, **self.state()}
         if cmd == "key":
             key = str(req.get("key", ""))
+            self.last_key = {"key": f"WEB_{key.upper()}", "action": key, "ts": now_ts(), "source": "web"}
             self.actions.put(("key", ("web", key)))
             return {"ok": True}
         if cmd == "channel":

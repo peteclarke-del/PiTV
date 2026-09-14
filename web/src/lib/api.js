@@ -68,20 +68,32 @@ export async function tryApi(promise, { success } = {}) {
   }
 }
 
-/** The player daemon's state shape is loosely defined; normalise it for the UI. */
+/** Normalise the player daemon's state (SSE `player` event, GET /api/player) for the UI.
+ *  Online: {online:true, ts, channel{id,number,name,colour}|null, slot{id,kind,title,subtitle,start_ts,end_ts,media_id}|null,
+ *  position, paused, behind_live, volume, muted, guide_open, playing, testcard, hwdec, on_pi, last_key, error,
+ *  cache, maintenance, acquire, input_devices}. Offline: {online:false} or {ok:false, offline:true}. */
 export function normalisePlayer(raw) {
   if (!raw || typeof raw !== 'object') return { online: false };
-  const online = raw.online === true || (raw.online === undefined && !raw.offline && raw.ok !== false);
-  const ch = raw.channel;
-  const channel = typeof ch === 'object' && ch ? ch : (ch !== undefined && ch !== null ? { number: ch } : null);
+  const online = raw.online === true || raw.ok === true;
+  if (!online) return { online: false, error: raw.error ?? null };
+  const slot = raw.slot && typeof raw.slot === 'object' ? raw.slot : null;
   return {
     ...raw,
-    online,
-    channel: channel && { number: channel.number ?? raw.channel_number, name: channel.name ?? raw.channel_name },
+    online: true,
+    channel: raw.channel && typeof raw.channel === 'object' ? raw.channel : null,
+    slot,
+    title: slot?.title ?? null,
+    position: typeof raw.position === 'number' ? raw.position : null,
     paused: !!raw.paused,
-    muted: !!(raw.muted ?? raw.mute),
-    volume: raw.volume ?? null,
-    title: raw.title ?? raw.now?.title ?? raw.slot?.title ?? null,
+    behind_live: !!raw.behind_live,
+    muted: !!raw.muted,
+    volume: typeof raw.volume === 'number' ? raw.volume : null,
+    hwdec: raw.hwdec || null,
+    cache: raw.cache ?? { enabled: false },
+    maintenance: raw.maintenance ?? {},
+    acquire: raw.acquire ?? { current: null },
+    input_devices: Array.isArray(raw.input_devices) ? raw.input_devices : [],
+    last_key: raw.last_key && typeof raw.last_key === 'object' ? raw.last_key : null,
   };
 }
 

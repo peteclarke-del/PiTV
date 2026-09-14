@@ -1,5 +1,6 @@
 <script>
-  import { get, put, tryApi } from '../../lib/api.js';
+  import { get, put, post, tryApi } from '../../lib/api.js';
+  import { toast } from '../../lib/stores.svelte.js';
   import { fmtDuration, fmtBytes, fmtDateTime, CERTIFICATES } from '../../lib/format.js';
   import Drawer from '../../components/Drawer.svelte';
 
@@ -32,6 +33,11 @@
     if (r) { await load(); onsaved?.(); }
   }
   let overridden = $derived(item ? Object.keys(item.overrides ?? {}) : []);
+  let queued = $state(false);
+  async function transcode() {
+    const r = await tryApi(post('/api/transcode', { media_id: id }));
+    if (r) { queued = true; toast.success(r.added ? 'Queued for transcoding' : 'Already in the transcode queue'); }
+  }
 </script>
 
 <Drawer open={true} title={item?.title ?? 'Item'} subtitle={item?.filename ?? ''} {onclose}>
@@ -43,6 +49,9 @@
         {#if item.width}<span class="small muted">{item.width}×{item.height}{item.interlaced ? 'i' : ''}</span>{/if}
         {#if item.hwdec}<span class="badge ok">Hardware decode</span>{:else}<span class="badge warn">Software decode</span>{/if}
         {#if item.transcoded_path}<span class="badge info">transcoded copy</span>{/if}
+        {#if !item.hwdec && !item.transcoded_path && (item.kind === 'movie' || item.kind === 'episode')}
+          <button class="small" onclick={transcode} disabled={queued}>{queued ? 'Queued' : 'Transcode'}</button>
+        {/if}
       </div>
       <dl class="kv small">
         <dt>Duration</dt><dd>{fmtDuration(item.duration)}</dd>
