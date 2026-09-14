@@ -109,6 +109,7 @@ class Builder:
         self.log: list[str] = []
         self.channels = [row_to_dict(r) for r in conn.execute(
             "SELECT * FROM channels WHERE enabled = 1 ORDER BY number")]
+        self.movie_placements: dict[int, list[int]] = {}  # media_id -> every placement time known
         self._load_library()
         self._load_history()
         self.placed_movies: dict[int, int] = {}        # media_id -> ts placed in this build
@@ -180,6 +181,9 @@ class Builder:
         for r in conn.execute("SELECT media_id, MAX(start_ts) AS ts FROM schedule"
                               " WHERE media_id IS NOT NULL AND replay = 0 GROUP BY media_id"):
             self.last_placed[r["media_id"]] = max(self.last_placed.get(r["media_id"], 0), r["ts"])
+        for r in conn.execute("SELECT media_id, started_at AS ts FROM history WHERE media_id IS NOT NULL"
+                              " UNION ALL SELECT media_id, start_ts FROM schedule WHERE media_id IS NOT NULL AND replay = 0"):
+            self.movie_placements.setdefault(r["media_id"], []).append(r["ts"])
 
         cursors = {r["show_id"]: r for r in conn.execute("SELECT * FROM show_cursor")}
         for show in self.shows.values():
@@ -346,21 +350,21 @@ class Builder:
                 tv_cands.append((w, ep, show))
         if token in ("show", "movie"):
             for m in self.movies:
-                last = self.last_placed.get(m["id"])
-                if m["id"] in self.placed_movies:
-                    last = max(last or 0, self.placed_movies[m["id"]])
-                recent = last is not None and t - last < movie_repeat
-                if recent and relax < 2:
+                placements = self.movie_placements.get(m["id"], [])
+                # Distance to the nearest airing in either direction: a film already placed later
+                # today on another channel is just as "recent" as one shown yesterday.
+                nearest = min((abs(t - x) for x in placements), default=None)
+                recent = nearest is not None and nearest < movie_repeat
+                if recent and (relax < 2 or nearest < 12 * 3600):
                     continue
                 w = common_weight(m, "movie")
                 if w <= 0:
                     continue
                 if recent:
                     # Forced repeat (thin library): strongly prefer the one aired longest ago.
-                    age = (t - last) if last is not None else 0
-                    w *= 0.2 * max(0.05, (age / movie_repeat)) ** 2
-                elif last is not None:
-                    w *= min(2.0, (t - last) / movie_repeat)  # prefer the least recently aired
+                    w *= 0.2 * (nearest / movie_repeat) ** 2
+                elif nearest is not None:
+                    w *= min(2.0, nearest / movie_repeat)  # prefer the least recently aired
                 else:
                     w *= 2.0
                 movie_cands.append((w, m, None))
@@ -575,6 +579,7 @@ class Builder:
                 placed_today[show.id] = placed_today.get(show.id, 0) + 1
             else:
                 self.placed_movies[item["id"]] = t
+                self.movie_placements.setdefault(item["id"], []).append(t)
             self.last_placed[item["id"]] = t
             last_programme_year = item.get("year")
             t = slot.end_ts
