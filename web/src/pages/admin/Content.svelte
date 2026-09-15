@@ -188,7 +188,7 @@
     {:else if !loadedSub.settings}<div class="skeleton" style="height:200px"></div>
     {:else}<SchemaForm {schema} errors={schemaErrors} saving={savingSchema} onsave={saveSchema} />{/if}
   {:else if sub === 'providers'}
-    {#if !online}<div class="empty">Providers need the pitv_content API.</div>{:else if !providers}<div class="skeleton" style="height:120px"></div>{:else}<ToolProviders {providers} />{/if}
+    {#if !online}<div class="empty">Providers need the pitv_content API.</div>{:else if !providers}<div class="skeleton" style="height:120px"></div>{:else}<ToolProviders {providers} onchange={(list) => { if (Array.isArray(list)) providers = list; else loadSub('providers', true); }} />{/if}
   {:else if sub === 'catalogue'}
     {#if !online}<div class="empty">The catalogue needs the pitv_content API.</div>{:else if !catalogue}<div class="skeleton" style="height:120px"></div>{:else}<ToolCatalogue {catalogue} onchange={() => loadSub('catalogue', true)} />{/if}
   {:else if sub === 'jobs'}

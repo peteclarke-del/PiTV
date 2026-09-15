@@ -84,6 +84,7 @@
         </label>
         <label class="field">Home channel
           <select bind:value={form.home_channel_id}><option value="">(unassigned)</option>{#each channels as c (c.id)}<option value={c.id}>{c.number} {c.name}</option>{/each}</select>
+          <span class="help">Changing this moves the show's line-up entry to that channel; a show is on one channel only.</span>
         </label>
         <label class="field">Scheduling mode
           <select bind:value={form.mode}><option value="auto">Auto</option><option value="strip">Strip (same time, chosen days)</option><option value="weekly">Weekly (one day a week)</option></select>

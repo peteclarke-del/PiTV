@@ -19,7 +19,8 @@ from ... import db as dbm
 from ...db import (DEFAULT_SETTINGS, all_settings, get_setting, now_ts, row_to_dict, rows_to_dicts,
                    set_setting, tx)
 from ...guide import SLOT_QUERY
-from ...library.scanner import _assign_home_channels, scan_all
+from ... import lineup as lineup_mod
+from ...library.scanner import scan_all
 from ...logsetup import log_dir, tail
 from ...scheduler.build import build_horizon, parse_day, rebuild_from, slot_titles
 from ...scheduler.rules import broadcast_day_for, parse_pattern, tz_of
@@ -33,11 +34,12 @@ SHOW_OVERRIDE_FIELDS = {"title", "year", "certificate", "genres", "plot", "kids"
 SHOW_DIRECT_FIELDS = {"home_channel_id", "mode", "anchor_time", "anchor_days", "rest_weeks", "excluded", "category"}
 SHOW_CATEGORIES = ("general", "sport", "kids", "cartoon")
 MEDIA_OVERRIDE_FIELDS = {"title", "year", "certificate", "genres", "plot", "season", "episode", "artist"}
-MEDIA_DIRECT_FIELDS = {"excluded", "channel_hint", "concert", "family_safe"}
+MEDIA_DIRECT_FIELDS = {"excluded", "channel_hint", "concert", "family_safe", "home_channel_id"}
 CHANNEL_FIELDS = {"number", "name", "short_name", "colour", "enabled", "ads_enabled", "ads_per_break",
                   "pattern", "era_weights", "genre_weights", "kind_weights", "daypart_profile",
-                  "overnight_replay_from", "idents_enabled", "description", "content", "family_safe_ads"}
-JSON_CHANNEL_FIELDS = {"era_weights", "genre_weights", "kind_weights", "daypart_profile"}
+                  "overnight_replay_from", "idents_enabled", "description", "content", "family_safe_ads",
+                  "allowed_genres", "excluded_genres", "nas_only"}
+JSON_CHANNEL_FIELDS = {"era_weights", "genre_weights", "kind_weights", "daypart_profile", "allowed_genres", "excluded_genres"}
 SOURCE_TYPES = ("tv", "movie", "advert", "ident", "music")
 SOURCE_CATEGORIES = ("general", "sport", "kids")
 # What the web service may ask systemd to do; must stay in step with the sudoers rule in
@@ -283,6 +285,10 @@ def update_show(sid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Connec
                 overrides[k] = v
         elif k in SHOW_DIRECT_FIELDS:
             direct[k] = v
+    if "home_channel_id" in direct:
+        target = direct.pop("home_channel_id")
+        if target:
+            lineup_mod.add(conn, int(target), show_id=sid)
     if "mode" in direct and direct["mode"] not in ("auto", "strip", "weekly"):
         raise HTTPException(400, "mode must be auto, strip or weekly")
     if "category" in direct and direct["category"] not in SHOW_CATEGORIES:
@@ -397,6 +403,10 @@ def update_media(mid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Conne
                 overrides[k] = v
         elif k in MEDIA_DIRECT_FIELDS:
             direct[k] = int(bool(v)) if k in ("excluded", "concert", "family_safe") else v
+    if "home_channel_id" in direct:
+        target = direct.pop("home_channel_id")
+        if target and row["kind"] == "movie":
+            lineup_mod.add(conn, int(target), media_id=mid)
     direct["overrides"] = json.dumps(overrides)
     if "year" in overrides or "certificate" in overrides:
         # Clear attention flags the override resolves.
@@ -491,6 +501,10 @@ def _clean_channel_fields(body: dict[str, Any]) -> dict[str, Any]:
             if v not in ("general", "music", "cartoons"):
                 raise HTTPException(400, "content must be general, music or cartoons")
             fields[k] = v
+        elif k == "nas_only":
+            if v not in ("inherit", "yes", "no"):
+                raise HTTPException(400, "nas_only must be inherit, yes or no")
+            fields[k] = v
         elif k == "colour":
             if not isinstance(v, str) or not _COLOUR.match(v):
                 raise HTTPException(400, "colour must be #rrggbb")
@@ -549,10 +563,8 @@ def delete_channel(cid: int, conn: sqlite3.Connection = Depends(admin_conn)):
 
 @router.post("/channels/rebalance")
 def rebalance_channels(conn: sqlite3.Connection = Depends(admin_conn)):
-    """Clear automatic home-channel assignments and redistribute shows evenly."""
-    with tx(conn):
-        conn.execute("UPDATE shows SET home_channel_id = NULL")
-        _assign_home_channels(conn)
+    """Redistribute unpinned line-up entries across channels by their genre lists."""
+    lineup_mod.generate(conn, rebalance=True)
     return list_channels(conn)
 
 
@@ -857,3 +869,72 @@ def read_journal(unit: str, lines: int = 300):
         raise HTTPException(404, "unknown unit")
     rc, out, err = run_cmd(["journalctl", "-u", unit, "-n", str(min(lines, 2000)), "--no-pager", "-o", "short-iso"], timeout=15)
     return {"unit": unit, "text": out if rc == 0 else "", "error": err[:300]}
+
+
+# --- line-ups ------------------------------------------------------------------------------------------
+
+@router.get("/library/genres")
+def library_genres(conn: sqlite3.Connection = Depends(admin_conn)):
+    return lineup_mod.genre_facets(conn)
+
+
+@router.get("/lineup")
+def lineup_list(conn: sqlite3.Connection = Depends(admin_conn), channel_id: int | None = None):
+    return lineup_mod.entries(conn, channel_id=channel_id)
+
+
+@router.get("/lineup/options")
+def lineup_options(conn: sqlite3.Connection = Depends(admin_conn), q: str = "", limit: int = 50):
+    """Dropdown choices: library series and films plus pitv_content's catalogue when it is up."""
+    from .content import tool_catalogue
+    out = lineup_mod.options(conn, q, limit)
+    for c in tool_catalogue(conn):
+        if q and q.lower() not in str(c.get("name", "")).lower():
+            continue
+        if c.get("kind") in ("music", "adverts"):
+            continue
+        out.append({"type": "show", "title": c["name"], "year": c.get("first_year"), "on_disk": bool(c.get("count_on_disk")),
+                    "catalogue": True, "episodes_known": c.get("episodes_known"), "years": c.get("years")})
+    return out
+
+
+@router.post("/lineup")
+def lineup_add(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
+    try:
+        return lineup_mod.add(conn, int(body["channel_id"]), show_id=body.get("show_id"), media_id=body.get("media_id"),
+                              title=body.get("title"), year=body.get("year"), kind=body.get("kind"), genres=body.get("genres"),
+                              transient=body.get("transient"), episode_minutes=body.get("episode_minutes"),
+                              source="catalogue" if body.get("catalogue") else "manual")
+    except (KeyError, ValueError, TypeError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.put("/lineup/{lid}")
+def lineup_update(lid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
+    try:
+        return lineup_mod.update(conn, lid, body)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.delete("/lineup/{lid}")
+def lineup_delete(lid: int, conn: sqlite3.Connection = Depends(admin_conn)):
+    lineup_mod.remove(conn, lid)
+    return {"ok": True}
+
+
+@router.post("/lineup/generate")
+def lineup_generate(body: dict[str, Any] = Body(default={}), conn: sqlite3.Connection = Depends(admin_conn)):
+    return lineup_mod.generate(conn, rebalance=bool(body.get("rebalance")))
+
+
+@router.get("/lineup/export")
+def lineup_export(conn: sqlite3.Connection = Depends(admin_conn)):
+    return lineup_mod.export(conn)
+
+
+@router.post("/lineup/import")
+def lineup_import(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
+    if not isinstance(body, dict) or "channels" not in body:
+        raise HTTPException(400, "expected a line-up document with a channels list")
+    return lineup_mod.import_doc(conn, body)

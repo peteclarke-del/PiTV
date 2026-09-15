@@ -167,14 +167,19 @@ def test_healthy_mix_of_eras_and_adverts_only_80s_90s(conn):
 
 
 def test_weekend_afternoons_carry_sport(conn):
-    """Saturday 19th and Sunday 20th afternoons should be largely sport; weekday daytime should not."""
+    """On the channels whose line-ups carry sport, Saturday and Sunday afternoons should be
+    largely sport and weekday daytime should not."""
     from datetime import datetime
     tz = tz_of(conn)
+    sport_channels = [r[0] for r in conn.execute(
+        "SELECT DISTINCT l.channel_id FROM lineup l JOIN shows sh ON sh.id = l.show_id WHERE sh.category = 'sport'")]
+    assert sport_channels, "no channel's line-up carries sport"
 
     def share(days, hours):
         rows = conn.execute("SELECT s.start_ts, s.end_ts, sh.category FROM schedule s JOIN media m ON m.id = s.media_id"
                             " LEFT JOIN shows sh ON sh.id = m.show_id WHERE s.replay = 0 AND s.kind = 'programme'"
-                            f" AND s.day IN ({','.join('?' * len(days))})", days).fetchall()
+                            f" AND s.day IN ({','.join('?' * len(days))})"
+                            f" AND s.channel_id IN ({','.join('?' * len(sport_channels))})", (*days, *sport_channels)).fetchall()
         rows = [r for r in rows if hours[0] <= datetime.fromtimestamp(r["start_ts"], tz).hour < hours[1]]
         total = sum(r["end_ts"] - r["start_ts"] for r in rows) or 1
         return sum(r["end_ts"] - r["start_ts"] for r in rows if r["category"] == "sport") / total
@@ -359,8 +364,15 @@ def test_anchored_show_keeps_the_day_contiguous(conn):
         " ORDER BY (SELECT COUNT(DISTINCT s.media_id) FROM schedule s JOIN media m ON m.id = s.media_id WHERE m.show_id = sh.id)"
         "        - (SELECT COUNT(*) FROM media m WHERE m.show_id = sh.id AND m.missing = 0) LIMIT 1",
         (ch, ch, now)).fetchone()["id"]
+    # With exclusive line-ups a channel carries few series in the test library, so by the last
+    # day even this one may have aired every episode and be resting (a resting series is never
+    # anchored). Restart it from its first episode the way the admin would, with the cursor.
+    first = conn.execute("SELECT season, episode FROM media WHERE show_id = ? AND missing = 0"
+                         " ORDER BY season, episode LIMIT 1", (show,)).fetchone()
     with dbm.tx(conn):
         conn.execute("UPDATE shows SET mode = 'strip', anchor_time = '17:03', anchor_days = '[0,1,2,3,4,5,6]' WHERE id = ?", (show,))
+        conn.execute("INSERT OR REPLACE INTO show_cursor(show_id, next_season, next_episode, set_at) VALUES (?,?,?,?)",
+                     (show, first["season"], first["episode"], now + 1))
     try:
         for seed in range(4):
             r = rebuild_from(conn, ch, now, now=now, seed=seed)
@@ -372,6 +384,7 @@ def test_anchored_show_keeps_the_day_contiguous(conn):
     finally:
         with dbm.tx(conn):
             conn.execute("UPDATE shows SET mode = 'auto', anchor_time = NULL, anchor_days = NULL WHERE id = ?", (show,))
+            conn.execute("DELETE FROM show_cursor WHERE show_id = ?", (show,))
         rebuild_from(conn, ch, now, now=now, seed=42)
 
 

@@ -34,8 +34,8 @@ def check(conn: sqlite3.Connection, *, now: int | None = None, days: int = 1, su
     sources = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM sources")}
     share_up = {sid: Path(src["path"]).is_dir() for sid, src in sources.items()}
     rows = conn.execute(
-        "SELECT s.id AS slot_id, s.channel_id, s.start_ts, s.title, c.number AS channel, c.name AS channel_name, m.*"
-        " FROM schedule s JOIN media m ON m.id = s.media_id JOIN channels c ON c.id = s.channel_id"
+        "SELECT s.id AS slot_id, s.channel_id, s.start_ts, s.title, s.wanted_id, c.number AS channel, c.name AS channel_name, m.*"
+        " FROM schedule s LEFT JOIN media m ON m.id = s.media_id JOIN channels c ON c.id = s.channel_id"
         " WHERE s.kind = 'programme' AND s.replay = 0 AND s.start_ts >= ? AND s.start_ts < ? ORDER BY s.start_ts",
         (now, horizon)).fetchall()
     run_id = run_log_start(conn, "readiness")
@@ -46,9 +46,17 @@ def check(conn: sqlite3.Connection, *, now: int | None = None, days: int = 1, su
     seen: dict[int, bool] = {}                       # media_id -> resolvable (a file airs on several channels)
     for r in rows:
         checked += 1
+        if r["id"] is None:
+            # A line-up placeholder whose material has not arrived from pitv_content.
+            if r["wanted_id"] is not None:
+                missing.setdefault(r["channel_id"], []).append(dict(r))
+                notes.append(f"NOT FETCHED {r['channel_name']} {_hhmm(r['start_ts'], tz)} '{r['title']}' (wanted #{r['wanted_id']})")
+                log.error("material not fetched in time: '%s' at %s on %s (wanted %s)", r["title"],
+                          _hhmm(r["start_ts"], tz), r["channel_name"], r["wanted_id"])
+            continue
         ok = seen.get(r["id"])
         if ok is None:
-            ok = cache.resolve(dict(r)) is not None
+            ok = cache.resolve({"id": r["id"], "path": r["path"], "transcoded_path": r["transcoded_path"]}) is not None
             seen[r["id"]] = ok
         if ok:
             continue
@@ -66,9 +74,10 @@ def check(conn: sqlite3.Connection, *, now: int | None = None, days: int = 1, su
     if substitute:
         mark_missing(conn, {s["id"] for slots in missing.values() for s in slots}, "File not found at readiness check")
         for channel_id, slots in missing.items():
-            exclude = {s["id"] for s in slots}
+            exclude = {s["id"] for s in slots if s["id"] is not None}
             first = min(s["start_ts"] for s in slots)
-            result = rebuild_from(conn, channel_id, first, now=now, exclude_media_ids=exclude)
+            # Never re-place material that is not on disk when substituting: the day must be playable.
+            result = rebuild_from(conn, channel_id, first, now=now, exclude_media_ids=exclude, allow_external=False)
             substituted += len(slots)
             log.warning("rebalanced %s from %s replacing %d programme(s): %s", slots[0]["channel_name"],
                         _hhmm(first, tz), len(slots), result.get("summary"))

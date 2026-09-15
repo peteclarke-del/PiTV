@@ -56,6 +56,9 @@ CREATE TABLE IF NOT EXISTS channels (
     overnight_replay_from TEXT NOT NULL DEFAULT '08:00',
     idents_enabled INTEGER NOT NULL DEFAULT 1,
     content TEXT NOT NULL DEFAULT 'general',   -- general | music | cartoons
+    allowed_genres TEXT,                       -- JSON list; empty/NULL = any genre
+    excluded_genres TEXT,                      -- JSON list
+    nas_only TEXT NOT NULL DEFAULT 'inherit',  -- inherit | yes | no : may this channel schedule material not yet on disk
     family_safe_ads INTEGER NOT NULL DEFAULT 0, -- only child-friendly adverts (cartoon channels default on)
     description TEXT NOT NULL DEFAULT ''
 );
@@ -71,7 +74,7 @@ CREATE TABLE IF NOT EXISTS shows (
     plot TEXT,
     kids INTEGER NOT NULL DEFAULT 0,
     category TEXT NOT NULL DEFAULT 'general',   -- general | sport | kids | cartoon
-    home_channel_id INTEGER REFERENCES channels(id) ON DELETE SET NULL,
+    home_channel_id INTEGER REFERENCES channels(id) ON DELETE SET NULL,   -- derived from lineup
     mode TEXT NOT NULL DEFAULT 'auto' CHECK (mode IN ('auto', 'strip', 'weekly')),
     anchor_time TEXT,              -- 'HH:MM' for strip/weekly
     anchor_days TEXT,              -- JSON list of weekday ints (0=Mon) for strip/weekly
@@ -108,6 +111,8 @@ CREATE TABLE IF NOT EXISTS media (
     artist TEXT,                   -- music videos
     concert INTEGER NOT NULL DEFAULT 0,   -- music: full concert / live show
     family_safe INTEGER NOT NULL DEFAULT 1,   -- adverts: 0 = alcohol/tobacco/adult; never on a family channel
+    home_channel_id INTEGER REFERENCES channels(id) ON DELETE SET NULL,   -- movies: derived from lineup
+    transient INTEGER NOT NULL DEFAULT 0,      -- fetched for a line-up entry; lives only in the cache
     excluded INTEGER NOT NULL DEFAULT 0,
     missing INTEGER NOT NULL DEFAULT 0,
     attention TEXT,                -- reason this item needs a look, or NULL
@@ -139,7 +144,8 @@ CREATE TABLE IF NOT EXISTS schedule (
     locked INTEGER NOT NULL DEFAULT 0,
     title TEXT NOT NULL DEFAULT '',       -- denormalised for fast guide rendering
     subtitle TEXT NOT NULL DEFAULT '',    -- episode title, or '(1983) PG' for a film
-    block TEXT                            -- music: consecutive slots with the same block show as one programme
+    block TEXT,                           -- music: consecutive slots with the same block show as one programme
+    wanted_id INTEGER                     -- placeholder for material pitv_content is to fetch; bound to media when it lands
 );
 CREATE INDEX IF NOT EXISTS schedule_lookup ON schedule(channel_id, start_ts);
 CREATE INDEX IF NOT EXISTS schedule_day ON schedule(day);
@@ -181,6 +187,8 @@ CREATE TABLE IF NOT EXISTS wanted (
     ref TEXT,                                  -- URL of a specific page or file for pitv_content
     genre TEXT,                                -- music: destination genre folder
     artist TEXT,
+    lineup_id INTEGER,                         -- raised for a channel line-up entry
+    transient INTEGER NOT NULL DEFAULT 0,      -- keep only in the cache
     status TEXT NOT NULL DEFAULT 'queued',     -- queued | done | failed (set from pitv_content reports)
     progress REAL NOT NULL DEFAULT 0,
     message TEXT,
@@ -190,6 +198,29 @@ CREATE TABLE IF NOT EXISTS wanted (
     created_at INTEGER NOT NULL,
     updated_at INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS lineup (
+    id INTEGER PRIMARY KEY,
+    channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('show', 'movie')),
+    show_id INTEGER REFERENCES shows(id) ON DELETE CASCADE,   -- library series
+    media_id INTEGER REFERENCES media(id) ON DELETE CASCADE,  -- library film
+    key TEXT NOT NULL UNIQUE,      -- show:<id> | movie:<id> | ext:show:<title>:<year> | ext:movie:<title>:<year>
+    title TEXT NOT NULL,
+    year INTEGER,
+    genres TEXT,                   -- JSON list (externals)
+    source TEXT NOT NULL DEFAULT 'library',   -- library | catalogue | manual
+    episode_minutes INTEGER,       -- externals: expected length
+    next_episode INTEGER NOT NULL DEFAULT 1,  -- externals: next episode number to request
+    transient INTEGER NOT NULL DEFAULT 0,
+    remove_after_airing INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    pinned INTEGER NOT NULL DEFAULT 0,        -- set by hand; rebalance leaves it alone
+    notes TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS lineup_channel ON lineup(channel_id);
 
 CREATE TABLE IF NOT EXISTS run_log (
     id INTEGER PRIMARY KEY,
@@ -326,6 +357,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # requests to pitv_content (which fetches, encodes and fills the cache; see docs/PLAN.md §7)
     "acquire_dir": "",                 # empty = <cache_dir>/acquired ; where pitv_content files what it fetches
     "acquire_fill_gaps": False,        # queue missing episodes between the ones on disk
+    # line-ups: what each channel carries. NAS-only restricts scheduling to material on disk.
+    "nas_only": True,
+    "external_lead_days": 2,           # material not on disk is scheduled at least this many days ahead
+    "external_episode_minutes": 30,    # expected length when a line-up entry does not say
+    "external_weight": 0.7,            # relative to library programmes when choosing
+    "transient_keep_days": 7,          # fetched transient files are deleted this long after airing
     # folders an admin may browse and register as sources (plus the cache, acquire and home dirs)
     "browse_roots": ["/mnt", "/media", "/srv"],
     "content_profile": {"width": 768, "height": 576, "vcodec": "h264", "acodec": "aac", "max_bitrate_kbps": 4000,
@@ -343,22 +380,27 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 DEFAULT_CHANNELS = [
     {"number": 1, "name": "PiTV One", "short_name": "One", "colour": "#e63946", "ads_enabled": 0,
      "pattern": "show", "description": "Mainstream: drama, sitcoms, light entertainment, afternoon films",
-     "kind_weights": {"tv": 0.75, "movie": 0.25}},
+     "kind_weights": {"tv": 0.75, "movie": 0.25},
+     "allowed_genres": ["Drama", "Comedy", "Family", "Adventure", "Romance", "Game Show", "History"]},
     {"number": 2, "name": "PiTV Two", "short_name": "Two", "colour": "#457b9d", "ads_enabled": 0,
      "pattern": "show", "description": "Alternative: documentaries, cult, older films, comedy",
-     "kind_weights": {"tv": 0.6, "movie": 0.4}},
+     "kind_weights": {"tv": 0.6, "movie": 0.4},
+     "allowed_genres": ["Documentary", "Science Fiction", "Fantasy", "Mystery", "Comedy", "Horror", "Thriller", "Sport"]},
     {"number": 3, "name": "PiTV Three", "short_name": "Three", "colour": "#f4a261", "ads_enabled": 1,
      "pattern": "show, ad, ad", "description": "Commercial: soaps, quiz, action drama, kids' teatime",
-     "kind_weights": {"tv": 0.8, "movie": 0.2}},
+     "kind_weights": {"tv": 0.8, "movie": 0.2},
+     "allowed_genres": ["Soap", "Game Show", "Action", "Crime", "Drama", "Children", "Sport", "Comedy"]},
     {"number": 4, "name": "PiTV Four", "short_name": "Four", "colour": "#2a9d8f", "ads_enabled": 1,
      "pattern": "show, ad, ad", "description": "Alternative commercial: comedy, imports, films, late night",
-     "kind_weights": {"tv": 0.55, "movie": 0.45}},
+     "kind_weights": {"tv": 0.55, "movie": 0.45},
+     "allowed_genres": ["Comedy", "Science Fiction", "Thriller", "Horror", "Documentary", "Crime", "Action"]},
     {"number": 5, "name": "PiTV Music", "short_name": "Music", "colour": "#b5179e", "ads_enabled": 0,
      "pattern": "show", "description": "Music videos by genre and decade, with two full concerts a day",
      "kind_weights": {"tv": 1.0, "movie": 0.0}, "content": "music"},
     {"number": 6, "name": "PiTV Toons", "short_name": "Toons", "colour": "#ffb703", "ads_enabled": 1,
      "pattern": "show, show, ad, ad", "description": "Cartoons all day; child-friendly adverts only",
-     "kind_weights": {"tv": 1.0, "movie": 0.0}, "content": "cartoons", "family_safe_ads": 1},
+     "kind_weights": {"tv": 1.0, "movie": 0.0}, "content": "cartoons", "family_safe_ads": 1,
+     "allowed_genres": ["Animation", "Cartoon", "Anime"]},
 ]
 
 
@@ -384,6 +426,8 @@ def init_db(conn: sqlite3.Connection) -> None:
     _migrate(conn)
     _migrate_settings(conn)
     with tx(conn):
+        _seed_channel_genres(conn)
+    with tx(conn):
         conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
                      (str(SCHEMA_VERSION),))
         for key, value in DEFAULT_SETTINGS.items():
@@ -393,10 +437,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             for ch in DEFAULT_CHANNELS:
                 conn.execute(
                     "INSERT INTO channels(number, name, short_name, colour, ads_enabled, pattern,"
-                    " description, kind_weights, content, family_safe_ads) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    " description, kind_weights, content, family_safe_ads, allowed_genres) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (ch["number"], ch["name"], ch["short_name"], ch["colour"], ch["ads_enabled"],
                      ch["pattern"], ch["description"], json.dumps(ch["kind_weights"]), ch.get("content", "general"),
-                     ch.get("family_safe_ads", 0)))
+                     ch.get("family_safe_ads", 0), json.dumps(ch.get("allowed_genres") or [])))
 
 
 # Columns added after the first release: (table, column, DDL). Applied when missing.
@@ -412,6 +456,14 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("media", "family_safe", "INTEGER NOT NULL DEFAULT 1"),
     ("wanted", "genre", "TEXT"),
     ("wanted", "artist", "TEXT"),
+    ("wanted", "lineup_id", "INTEGER"),
+    ("wanted", "transient", "INTEGER NOT NULL DEFAULT 0"),
+    ("channels", "allowed_genres", "TEXT"),
+    ("channels", "excluded_genres", "TEXT"),
+    ("channels", "nas_only", "TEXT NOT NULL DEFAULT 'inherit'"),
+    ("media", "home_channel_id", "INTEGER REFERENCES channels(id) ON DELETE SET NULL"),
+    ("media", "transient", "INTEGER NOT NULL DEFAULT 0"),
+    ("schedule", "wanted_id", "INTEGER"),
 ]
 
 
@@ -456,6 +508,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
     conn.executescript(SCHEMA)  # recreate any indexes dropped with a rebuilt table
+
+
+def _seed_channel_genres(conn: sqlite3.Connection) -> None:
+    """Channels created before line-ups had no genre lists. Give the shipped default channels
+    (matched on number and unchanged name) their default lists once; anything renamed or added
+    by the user is left alone."""
+    for ch in DEFAULT_CHANNELS:
+        if ch.get("allowed_genres"):
+            conn.execute("UPDATE channels SET allowed_genres = ? WHERE number = ? AND name = ? AND allowed_genres IS NULL",
+                         (json.dumps(ch["allowed_genres"]), ch["number"], ch["name"]))
 
 
 def _migrate_settings(conn: sqlite3.Connection) -> None:
@@ -537,7 +599,7 @@ def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
         return None
     d = dict(row)
     for key in ("genres", "overrides", "anchor_days", "era_weights", "genre_weights",
-                "kind_weights", "daypart_profile", "details"):
+                "kind_weights", "daypart_profile", "details", "allowed_genres", "excluded_genres"):
         if key in d and isinstance(d[key], str):
             try:
                 d[key] = json.loads(d[key])

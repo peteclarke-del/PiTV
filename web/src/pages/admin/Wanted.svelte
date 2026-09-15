@@ -11,10 +11,15 @@
   import Drawer from '../../components/Drawer.svelte';
 
   let wanted = $state(null);
+  let lineupById = $state({});
   let adding = $state(null);       // add-wanted form
 
   async function load() {
     wanted = (await tryApi(get('/api/wanted'))) ?? wanted ?? [];
+    if ((wanted ?? []).some((w) => w.lineup_id)) {
+      const entries = await tryApi(get('/api/lineup'));
+      if (entries) { const m = {}; for (const e of entries) m[e.id] = e; lineupById = m; }
+    }
   }
   $effect(() => { changes.library; untrack(load); });
   poll(load, 20000); // pitv_content updates progress without an SSE event
@@ -56,7 +61,7 @@
         <tbody>
           {#each wanted ?? [] as w (w.id)}
             <tr>
-              <td><b>{w.show_title ? `${w.show_title} · ` : ''}{w.title}</b>{#if w.auto}<span class="badge" title="Queued automatically">auto</span>{/if}
+              <td><b>{w.show_title ? `${w.show_title} · ` : ''}{w.title}</b>{#if w.auto}<span class="badge" title="Queued automatically">auto</span>{/if}{#if w.lineup_id}<span class="badge info" title="Wanted because of a line-up entry">line-up{lineupById[w.lineup_id]?.channel_number ? ` Ch ${lineupById[w.lineup_id].channel_number}` : ''}</span>{/if}{#if w.transient}<span class="badge warn" title="Fetched for its airing, then removed">transient</span>{/if}
                 <div class="tiny muted">{w.kind}{w.year ? ` · ${w.year}` : ''}{w.season != null ? ` · ${fmtEpisode(w.season, w.episode)}` : ''}{w.kind === 'music' && w.artist ? ` · ${w.artist}` : ''}{w.kind === 'music' && w.genre ? ` · ${w.genre}` : ''}</div></td>
               <td class="small">{#if w.ref}<div class="tiny muted mono truncate" style="max-width:220px" title={w.ref}>{w.ref}</div>{:else}<span class="muted">search</span>{/if}</td>
               <td style="min-width:160px"><StatusBadge status={w.status} />

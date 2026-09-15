@@ -5,6 +5,11 @@ schedule of TV episodes, films, adverts, sport, music videos and cartoons from a
 driven by an RF remote, with a teletext-style on-screen guide and a web interface for the
 schedule and administration. It plays through an HDMI-to-SCART converter into a 14" 4:3 CRT.
 
+Each channel carries its own line-up of series and films: generated from per-channel genre
+lists, edited in the admin, and exclusive, so a programme never appears on two channels. With
+NAS-only switched off, a line-up can also name titles that are not on disk; the content app
+fetches them into the Pi's cache ahead of air time and they are removed after airing.
+
 - Design: [docs/PLAN.md](docs/PLAN.md); requirements checklist: [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)
 - Install on the Pi: [setup/README.md](setup/README.md) (SD-card installer or manual script)
 - Installer internals: [installer/README.md](installer/README.md)

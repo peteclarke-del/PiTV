@@ -11,6 +11,7 @@
   let summary = $state(null);
   let days = $state(null);
   let runs = $state([]);
+  let lineup = $state(null);      // {perChannel, total, placeholders, noChannel}
   let readiness = $state(null);
 
   async function load() {
@@ -21,6 +22,15 @@
     [summary, days] = r;
     runs = r[3];
     r[2].forEach(upsertJob); // jobs that finished before this page connected to the event stream
+    const l = await tryApi(Promise.all([get('/api/lineup'), get('/api/library/attention'), get('/api/channels')]));
+    if (!l) return;
+    const [entries, attention, channels] = l;
+    const per = new Map();
+    for (const c of channels) if (c.enabled && ['general', 'cartoons'].includes(c.content ?? 'general')) per.set(c.id, { label: `${c.number} ${c.short_name}`, n: 0 });
+    let placeholders = 0;
+    for (const e of entries) { if (per.has(e.channel_id)) per.get(e.channel_id).n++; placeholders += e.placeholders ?? 0; }
+    const noChannel = [...new Set(attention.filter((a) => String(a.attention ?? '').startsWith('No channel accepts')).map((a) => a.show_title || a.title))];
+    lineup = { perChannel: [...per.values()], total: entries.length, placeholders, noChannel };
   }
   $effect(() => { changes.library; changes.schedule; untrack(load); });
 
@@ -81,6 +91,21 @@
           <p class="muted">No schedule built yet.</p>
         {/if}
       {:else}<div class="skeleton" style="height:80px"></div>{/if}
+    </div>
+
+    <div class="card">
+      <div class="card-title"><h3>Line-ups</h3><a class="small" href="#/admin/channels">Open</a></div>
+      {#if lineup}
+        {#if lineup.total}
+          <div class="row" style="gap:.35rem">{#each lineup.perChannel as c (c.label)}<span class="chip">{c.label} <b>{c.n}</b></span>{/each}</div>
+          <p class="small muted mt">{lineup.total} entries · {lineup.placeholders} external airing{lineup.placeholders === 1 ? '' : 's'} not yet fetched</p>
+        {:else}
+          <p class="muted small">No line-ups yet. Generate on the Channels page gives every series and film a channel.</p>
+        {/if}
+        {#if lineup.noChannel.length}
+          <div class="warn-box mt"><b>No channel accepts:</b> {lineup.noChannel.slice(0, 8).join(', ')}{lineup.noChannel.length > 8 ? ` and ${lineup.noChannel.length - 8} more` : ''}<div class="tiny">Widen a channel's allowed genres, or add them to a line-up by hand.</div></div>
+        {/if}
+      {:else}<div class="skeleton" style="height:60px"></div>{/if}
     </div>
 
     <div class="card">

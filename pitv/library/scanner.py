@@ -322,34 +322,13 @@ def _is_cartoon(genres: list[str], cartoon_genres: set[str]) -> bool:
     return any(g.lower() in cartoon_genres for g in genres)
 
 
-def _assign_home_channels(conn: sqlite3.Connection) -> None:
-    """Give every show without a home channel a channel: cartoons go to a cartoons channel when
-    one is enabled; everything else is spread over the general channels, least loaded first."""
+def _tag_cartoons(conn: sqlite3.Connection) -> None:
+    """Category 'cartoon' is informational (dayparts, the admin); channel membership is the
+    line-up's job, driven by each channel's genre lists."""
     cartoon_genres = {g.lower() for g in (get_setting(conn, "cartoon_genres") or CARTOON_GENRES)}
-    toons = [r["id"] for r in conn.execute("SELECT id FROM channels WHERE enabled = 1 AND content = 'cartoons' ORDER BY number")]
-    if toons:
-        for r in conn.execute("SELECT id, genres, category FROM shows WHERE home_channel_id IS NULL AND excluded = 0 AND missing = 0"):
-            genres = json.loads(r["genres"] or "[]")
-            if r["category"] == "cartoon" or _is_cartoon(genres, cartoon_genres):
-                conn.execute("UPDATE shows SET home_channel_id = ?, category = 'cartoon' WHERE id = ?", (toons[0], r["id"]))
-    channels = [r["id"] for r in conn.execute("SELECT id FROM channels WHERE enabled = 1 AND content = 'general' ORDER BY number")]
-    if not channels:
-        return
-    load = {cid: 0 for cid in channels}
-    for r in conn.execute("SELECT home_channel_id AS c, COUNT(*) AS n FROM shows"
-                          " WHERE home_channel_id IS NOT NULL GROUP BY home_channel_id"):
-        if r["c"] in load:
-            load[r["c"]] = r["n"]
-    order = {"U": 0, "PG": 1, "12": 2, "12A": 2, "15": 3, "18": 4}
-    rows = conn.execute("SELECT id, certificate, kids, title FROM shows WHERE home_channel_id IS NULL"
-                        " AND excluded = 0 AND missing = 0").fetchall()
-    # Sort by kids then certificate so consecutive assignments alternate channels and every
-    # channel ends up with a similar mix of daytime-friendly and post-watershed series.
-    rows = sorted(rows, key=lambda r: (-r["kids"], order.get((r["certificate"] or "PG").upper(), 1), r["title"]))
-    for r in rows:
-        cid = min(channels, key=lambda c: (load[c], c))
-        conn.execute("UPDATE shows SET home_channel_id = ? WHERE id = ?", (cid, r["id"]))
-        load[cid] += 1
+    for r in conn.execute("SELECT id, genres FROM shows WHERE category = 'general' AND missing = 0"):
+        if _is_cartoon(json.loads(r["genres"] or "[]"), cartoon_genres):
+            conn.execute("UPDATE shows SET category = 'cartoon' WHERE id = ?", (r["id"],))
 
 
 def scan_source(conn: sqlite3.Connection, source: dict, progress: Progress = _noop,
@@ -379,7 +358,7 @@ def scan_source(conn: sqlite3.Connection, source: dict, progress: Progress = _no
             conn.execute("UPDATE shows SET missing = 1 WHERE source_id = ? AND id NOT IN"
                          " (SELECT DISTINCT show_id FROM media WHERE show_id IS NOT NULL AND missing = 0)",
                          (source["id"],))
-        _assign_home_channels(conn)
+        _tag_cartoons(conn)
         conn.execute("UPDATE sources SET last_scanned_at = ?, last_scan_summary = ? WHERE id = ?",
                      (now_ts(), summary.text(), source["id"]))
     return summary
@@ -410,5 +389,14 @@ def scan_all(conn: sqlite3.Connection, progress: Progress = _noop,
             log.exception("scan of %s failed", source["name"])
             details.append(f"{source['name']}: failed: {exc!r}")
             status = "error"
+    # New series and films get a channel; existing membership is untouched.
+    from ..lineup import bind_fetched, generate, restore_if_empty
+    restore_if_empty(conn)
+    bound = bind_fetched(conn)
+    if bound["bound"]:
+        details.append(f"line-up: {bound['bound']} fetched file(s) bound to their slots")
+    gen = generate(conn)
+    if gen["assigned"] or gen["unmatched"]:
+        details.append(f"line-up: {gen['assigned']} placed, {gen['unmatched']} matched no channel")
     run_log_finish(conn, run_id, status, "; ".join(details), details)
     return run_id

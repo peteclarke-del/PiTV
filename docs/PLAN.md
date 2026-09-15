@@ -15,7 +15,7 @@ checklist of what was asked for and where each item lives.
 | Video decode | Pi 4 hardware H.264 and HEVC through V4L2 M2M (section 5.2). Anything else is re-encoded into the cache by pitv_content so everything on air takes the hardware path |
 | Boot | Target about 15 s from power to picture. A test card is drawn on the framebuffer within seconds and stays up until the clock is synchronised and the first file plays |
 | Channels | Rows in the database, each can be enabled or disabled. Six by default: 1 and 2 programmes only, 3 and 4 with adverts, 5 music, 6 cartoons |
-| Broadcast day | 08:00 to 00:00 scheduled; 00:00 to 08:00 replays that day's schedule (section 4.8) |
+| Broadcast day | 08:00 to 00:00 scheduled; 00:00 to 08:00 replays that day's schedule (section 4.9) |
 | Era | Programmes of any age with a mix either side of 1980 (1920-1979 weight 0.45, 1980-1989 0.40, 1990-1999 0.15; editable globally and per channel). Adverts 1980s and 1990s only. Year from folder and file names, NFO files, or overrides |
 | Watershed | Films: 12 not before 20:00, 15 not before 21:00, 18 not before 22:00. TV episodes obey only the 15 and 18 rules (a 12-rated series was routinely repeated in the daytime). No children's programmes after 21:00 except on the cartoon channel |
 | Horizon | 7 days built ahead, topped up when fewer than 2 days remain; episodes advance in order per show; repeats minimised |
@@ -82,10 +82,11 @@ and the web service does not run as root.
   flag (H.264 or HEVC) so the admin UI can show which files hardware-decode.
 - Overrides (title, year, certificate, genres, plot, kids, season, episode, artist) are
   stored in a JSON column on the row and applied on top of scanned values. Show-level
-  scheduling fields (home channel, strip or weekly mode, anchor time and days, rest weeks,
-  category, excluded) are ordinary columns. `GET /api/export` returns settings, channels,
+  scheduling fields (strip or weekly mode, anchor time and days, rest weeks, category,
+  excluded) are ordinary columns; the channel comes from the line-up (section 4.2). `GET /api/export` returns settings, channels,
   sources and every override as JSON for backup.
-- Assigns each show a home channel when it has none.
+- Places new series and films into channel line-ups (section 4.2) and binds files fetched by
+  pitv_content to the placeholder slots that asked for them.
 - Runs nightly at `scan_hour` (04:00) from the player's maintenance thread, on demand from
   the admin UI (all sources or one, with live progress), and after a pitv_content report
   that fetched wanted items. Files that vanish are marked `missing` rather than deleted.
@@ -118,8 +119,11 @@ day, a number of days, a channel subset and a force flag, as a background job wi
 A channel row holds: number, name, short name, colour, enabled, pattern, ads enabled, adverts
 per break, idents enabled, era weights, genre weights, kind (TV/movie) weights, daypart
 profile (weekday, Saturday, Sunday), overnight replay start, content type (`general`,
-`music`, `cartoons`), family-safe adverts flag and a description. Per-channel weights are
-optional and fall back to the global settings. The defaults:
+`music`, `cartoons`), family-safe adverts flag, allowed and excluded genre lists, a NAS-only
+override (`inherit`, `yes`, `no`) and a description. Per-channel weights are optional and
+fall back to the global settings. No rule in the code refers to a channel by name or
+number; the six channels below are seed data for a fresh install and every value is
+editable in the admin UI.
 
 | Ch | Name | Pattern | TV/movie | Lean |
 |---|---|---|---|---|
@@ -127,12 +131,59 @@ optional and fall back to the global settings. The defaults:
 | 2 | PiTV Two | `show` | 0.60/0.40 | Alternative: documentaries, cult, older films, comedy |
 | 3 | PiTV Three | `show, ad, ad` | 0.80/0.20 | Commercial: soaps, quiz, action drama, kids' teatime |
 | 4 | PiTV Four | `show, ad, ad` | 0.55/0.45 | Alternative commercial: comedy, imports, films, late night |
-| 5 | PiTV Music | blocks (section 4.4) | | Music videos by genre and decade, two concerts a day |
+| 5 | PiTV Music | blocks (section 4.5) | | Music videos by genre and decade, two concerts a day |
 | 6 | PiTV Toons | `show, show, ad, ad` | 1.0/0.0 | Cartoons all day; family-safe adverts only |
 
-Leans are soft weights, not hard rules; with a small library they relax automatically.
+The lean is the description. What a channel actually carries is its line-up (section 4.2),
+generated from the allowed genre lists (for example drama, comedy, family and quiz on One;
+documentary, science fiction, cult and sport on Two; animation only on Toons) and then
+edited by hand. Weights and dayparts shape when those programmes air.
 
-### 4.2 Patterns
+### 4.2 Line-ups
+
+A line-up is the list of series and films a channel carries. It is the source of truth for
+which programme belongs where, and every series or film belongs to exactly one channel, so a
+programme on one channel never appears on another. Adverts, idents and music videos are not
+programmes and stay shared by rule.
+
+- Generation. After every scan, series and films that belong to no line-up are placed on the
+  enabled general or cartoon channel that suits them best. A channel accepts an item when it
+  has at least one of the channel's allowed genres and none of its excluded ones (an empty
+  allowed list accepts anything). Among the channels that accept it, the item goes where
+  load in hours, divided by how well it fits, is lowest. Sport and everything else are
+  balanced separately, so a channel that takes the long sport series still gets its share of
+  ordinary programmes; fit is the share of the channel's
+  allowed genres the item matches, so a narrowly defined channel attracts what it
+  specialises in. Items with no genre information (typical of files without NFOs) are
+  accepted by every general channel and spread by load. Items no channel accepts are flagged
+  in the library's attention list. Rebalance redistributes everything that is not pinned.
+- Editing. In the admin a channel's line-up can gain any series or film from a searchable
+  list (library titles, plus pitv_content's catalogue when its API is up), lose entries, or
+  move entries to another channel. A hand edit pins the entry so rebalancing leaves it alone.
+  Changing a show's or film's channel in the library editors moves its line-up entry.
+- External entries. An entry can name a series or film that is not on disk: added by title,
+  or from pitv_content's catalogue. What the scheduler does with it depends on NAS-only
+  (below).
+- Retention. Material fetched for an external entry is transient by default: it lives only
+  in the cache, is never removed before it has aired, and is deleted
+  `transient_keep_days` (7) after its last airing, or straight after airing when the entry
+  asks for that. An entry can be switched to keep instead.
+- Persistence. Line-ups live in the database and are mirrored to `lineups.json` beside it on
+  every change. The admin exports and imports the same document, and an empty line-up table
+  (a rebuilt database) is restored from the mirror on the next scan.
+
+NAS-only. A global switch (`nas_only`, on by default), overridable per channel, limits
+scheduling to material already on the NAS or in the cache. When it is off for a channel,
+its external entries may be placed like any other programme, but only on broadcast days at
+least `external_lead_days` (2) after today's date, at `external_weight` (0.7) relative to
+library programmes, using `episode_minutes` or `external_episode_minutes` (30) as the
+length. Each placement is a placeholder slot plus a wanted item for pitv_content (section
+7.2): a series asks for its next episode number, a film for itself. When the file arrives the
+next scan binds it to its placeholder, sets the slot to the file's real length and rebuilds
+the rest of that channel-day from the earliest change. A placeholder still empty at the
+readiness checks is replaced like any missing file, and the error is logged.
+
+### 4.3 Patterns
 
 A pattern is an ordered list of tokens the channel cycles through when filling gaps:
 
@@ -146,26 +197,25 @@ A pattern is an ordered list of tokens the channel cycles through when filling g
 | `break` | the channel's configured number of adverts |
 
 `ad` and `break` tokens are dropped when the channel's adverts are off. An anchored show
-(section 4.3) counts as a `show` token where it lands, so the pattern resumes cleanly. When
+(section 4.4) counts as a `show` token where it lands, so the pattern resumes cleanly. When
 no programme fits a gap the scheduler pads with adverts or idents and then writes a
 `filler` slot (the player shows the test card), noting it in the run log.
 
-### 4.3 Anchors: strips and weekly slots
+### 4.4 Anchors: strips and weekly slots
 
 Real 80s scheduling is about regularity, and it also gives episode order for free.
 
-- Strip: a show airs every weekday at the same time on its home channel. One episode per
+- Strip: a show airs every weekday at the same time on its channel. One episode per
   day, in order.
 - Weekly: once a week, same day and time.
-- Every show has a home channel (assigned by the scanner, or pinned in the admin UI), so the
-  same series never appears on two channels.
+- A series airs only on the channel whose line-up carries it (section 4.2).
 - The next episode is whatever follows the latest one already placed (in history or the
   schedule), or the cursor set in the admin UI (`show_cursor`). When a series ends it rests
   for `rest_weeks` (default `series_rest_weeks`, 4) and restarts from the first episode.
 
 Anchors are pinned into the day first; the gaps are filled afterwards.
 
-### 4.4 Music and cartoon channels
+### 4.5 Music and cartoon channels
 
 - Music comes from `music` sources. The day is a sequence of blocks by decade and genre
   with two full concerts (13:30 and 20:30), covering the 1970s to the 2000s: Seventies
@@ -176,13 +226,14 @@ Anchors are pinned into the day first; the gaps are filled afterwards.
   library never leaves gaps. Videos are not repeated within 36 hours nor concerts within 14
   days unless nothing else fits. Guides show a block as one programme with the current video
   beneath it.
-- Cartoons: series with an animation, cartoon, anime or animated genre are routed to the
-  cartoon channel by the scanner (or set a show's category to `cartoon`). Children's
+- Cartoons: the cartoon channel's genre list (Animation, Cartoon, Anime by default) draws
+  animated series into its line-up; the scanner also tags them with category `cartoon`, which
+  the dayparts and admin use. Children's
   programmes may run all evening there. Its adverts are family-safe only (no alcohol,
   tobacco, adult or gambling brands, from folder and keyword heuristics and NFO tags,
   editable per advert).
 
-### 4.5 Sport and the weekend
+### 4.6 Sport and the weekend
 
 Sport lives on its own share (a `tv` source with category `sport`) and is meant to be
 wrestling, snooker, motorcycle racing and strongman competitions, which is what 1980s ITV
@@ -202,7 +253,7 @@ modelled on a mid-80s schedule:
 A programme that would overrun the end of its daypart by more than half an hour is heavily
 penalised (sport most of all), so a block never swallows the evening.
 
-### 4.6 Dayparts
+### 4.7 Dayparts
 
 Weekday defaults; Saturday and Sunday have their own tables, and a channel can override all
 three. Each daypart carries `tv`, `movie`, `kids` and `sport` weights and an optional
@@ -222,13 +273,15 @@ maximum programme length.
 
 Certificate and kids rules override any daypart.
 
-### 4.7 Gap filling
+### 4.8 Gap filling
 
 For each channel and day, walk from 08:00 to 00:00 following the pattern:
 
 1. If a kept slot or an anchor starts here, place it.
-2. Otherwise take the next token. For a programme token, first choose the kind (TV or film)
-   by the channel's kind weights multiplied by the daypart's, then choose an item by weight.
+2. Otherwise take the next token. Only programmes in the channel's line-up are candidates,
+   plus its external entries when NAS-only is off for it and the day is far enough ahead.
+   For a programme token, first choose the kind (TV or film) by the channel's kind weights
+   multiplied by the daypart's, then choose an item by weight.
    An item's weight is its era weight (divided by the size of its era pool to the power
    `era_pool_normalise`, 0.5, so eras with few titles are not drowned out), multiplied by the
    daypart weight for its kind, kids and sport factors, the channel's genre weights, a
@@ -239,7 +292,8 @@ For each channel and day, walk from 08:00 to 00:00 following the pattern:
    limits. A show may air at most `show_daily_limit` (2) times a day per channel, each
    repeat weighted by `show_repeat_penalty` (0.3).
 3. If nothing fits, the rules relax in two steps (ignore daypart preferences and daily
-   limits, then allow recently aired films); certificates are never relaxed.
+   limits, then allow recently aired films and, as the very last resort, sport outside its
+   dayparts); certificates are never relaxed.
 4. Adverts must be from the configured decades, prefer a year within
    `advert_year_window` (3) of the surrounding programme, are penalised within
    `advert_repeat_penalty_hours` (6) and never repeat within a quarter of an hour if any other
@@ -251,7 +305,7 @@ For each channel and day, walk from 08:00 to 00:00 following the pattern:
 Selection is seeded per channel-day from the build's start day, so rebuilding the same week
 reproduces it.
 
-### 4.8 Repeat control and overnight
+### 4.9 Repeat control and overnight
 
 - Films: not within `movie_repeat_days` (21) of any airing on any channel; beyond that,
   weighted by time since last shown. A thin library relaxes this, preferring the film aired
@@ -263,7 +317,7 @@ reproduces it.
   default, per channel), looping a short day, never butting the same series against the
   day's last programme or tomorrow's first, and filling any remainder up to 08:00.
 
-### 4.9 Manual editing
+### 4.10 Manual editing
 
 In the admin Schedule tab a slot can be locked or unlocked, removed, replaced with a chosen
 programme, or a programme can be inserted at a time or before a slot; each edit rebuilds the
@@ -396,14 +450,14 @@ re-renders on every key press and every 30 s so the clock and the "now" marker s
 
 | Tab | What you can do |
 |---|---|
-| Dashboard | Library counts, schedule horizon, readiness result, recent runs and jobs; scan all sources, build or force-rebuild the week, check readiness |
+| Dashboard | Library counts, line-up summary per channel with unfetched placeholders and unplaced items, schedule horizon, readiness result, recent runs and jobs; scan all sources, build or force-rebuild the week, check readiness |
 | Sources | Add, edit, enable, disable and remove sources (type, category, path); scan one or all with live progress; a folder browser for paths |
-| Library | Browse shows, episodes, films, adverts, idents and music; search and filter; per-show editor (overrides, home channel, strip or weekly anchor, rest weeks, category, next-episode cursor, upcoming airings); per-item editor (overrides, exclude, family-safe, concert, transcode status, recent and upcoming airings); "needs attention" list with inline year and certificate fixes |
-| Channels | Add, edit, delete channels; number, name, colour, enabled, description; adverts on/off and per break; pattern editor (add, remove, reorder tokens); era, genre and TV/movie weights; weekday, Saturday and Sunday daypart tables; overnight replay start; content type and family-safe adverts; rebalance shows across channels |
-| Weighting | Global defaults: broadcast day, horizon, era and advert era weights, TV/movie balance, watershed times and unknown certificates, kids cutoff, variety and repeat settings, timing, advert rules, player settings (navigation keys, badge time, static, hardware decoders, audio device, overscan margin, text scale, DRM connector), cache and pitv_content settings, maintenance hours, music blocks and decades; reset to defaults |
+| Library | Browse shows, episodes, films, adverts, idents and music; search and filter; per-show editor (overrides, channel, strip or weekly anchor, rest weeks, category, next-episode cursor, upcoming airings); per-item editor (overrides, channel for films, exclude, family-safe, concert, transcode status, recent and upcoming airings); "needs attention" list with inline year and certificate fixes, including items no channel accepts |
+| Channels | Add, edit, delete channels; number, name, colour, enabled, description; adverts on/off and per break; pattern editor (add, remove, reorder tokens); allowed and excluded genres as compact multi-select lists with library counts; NAS-only override; era, genre and TV/movie weights; weekday, Saturday and Sunday daypart tables; overnight replay start; content type and family-safe adverts. Each channel's line-up in a drawer: add from a searchable list or by title, remove, move, enable, transient and remove-after-airing toggles, state per entry (on disk, not on disk, fetching, scheduled). Generate, rebalance, export and import line-ups |
+| Weighting | Global defaults: broadcast day, horizon, era and advert era weights, TV/movie balance, watershed times and unknown certificates, kids cutoff, variety and repeat settings, timing, advert rules, player settings (navigation keys, badge time, static, hardware decoders, audio device, overscan margin, text scale, DRM connector), cache and pitv_content settings, NAS-only and external scheduling (lead days, episode length, weight, transient retention), maintenance hours, music blocks and decades; reset to defaults |
 | Schedule | The EPG grid, editable: lock, remove, replace, insert at a time or before a slot, rebuild from here; build jobs and notes from the last edit |
-| Wanted | The wanted list for pitv_content: add a film, episode, advert or music video (optionally with a URL), retry, delete, queue missing episodes |
-| Content | pitv_content: overview (status file, service and timer, last reports, manifest summary), run now, and through its own API its settings, providers, catalogue, jobs and log |
+| Wanted | The wanted list for pitv_content: requests raised by line-up placeholders (marked with their channel and as transient) and items added by hand (film, episode, advert or music video, optionally with a URL); retry, delete, queue missing episodes |
+| Content | pitv_content: overview (status file, service and timer, last reports, manifest summary), run now, and through its own API its settings (schema-driven form), providers (enable, order, kinds, options, add), catalogue, jobs and log |
 | Player | Now playing, stream details, virtual remote, cache usage, maintenance status, restart the player; remote keymap editor with press-to-learn |
 | Logs | Player, web, scan, schedule and install logs, pitv_content's log, and the journal of both units; level and text filters, auto-refresh, copy |
 | System | Version, time sync, services, database and disk usage, mounts, jobs; export settings and overrides; set or change the admin password |
@@ -449,9 +503,10 @@ the next broadcast day: `media_id`, Pi `path`, `share`, `relpath`, `remote`, cod
 height, interlacing, `hwdec_ok`, `channels`, `first_air_ts`, `deadline_ts` (15 minutes before
 air), `priority` (hours ahead divided by four) and a `target` `<cache>/<media_id>_<stem>.<ext>`
 with `action` `copy` (already H.264 or HEVC) or `transcode` (`content_profile`: 768x576 4:3,
-H.264, AAC, 4000 kbps, deinterlaced if interlaced). It carries the wanted list (missing
+H.264, AAC, 4000 kbps, deinterlaced if interlaced). It carries the wanted list (placeholders raised by line-ups, missing
 episodes found by gap detection, films, adverts and music videos added in the admin UI) with
-destination folders under `acquire_dir`, typical duration ranges, an exact search phrase in
+`lineup_id`, `transient` and the series title for line-up requests, destination folders
+under `acquire_dir`, typical duration ranges, an exact search phrase in
 `hints[0]`, a year tolerance (0 for music, otherwise 2) and the attempt count, plus
 `free_bytes`, `pi`, `cache_max_bytes`, the running marker and reports directory paths, the
 Kodi folder layouts, and shortfalls from the last build (missing music, filler). The report
@@ -469,7 +524,8 @@ Nightly workflow (Pi local time): 01:00 pitv_content main run; 04:00 PiTV scans 
 the acquired folders and tops up the schedule; 05:00 pitv_content catch-up run; 06:00 and
 07:00 PiTV readiness checks (`readiness_hours`) verify every programme through tomorrow is
 playable from the cache, a transcoded copy or the NAS original. A programme whose file is
-missing while its share is mounted is replaced and the rest of that channel-day rebalanced,
+missing while its share is mounted, or a line-up placeholder pitv_content has not filled, is
+replaced and the rest of that channel-day rebalanced without further external placements,
 logged as an error; if a whole share is down nothing is substituted and the player shows the
 test card at air time. The same substitution happens live if a file fails when it comes on air.
 
@@ -545,6 +601,7 @@ PiTV/
 │   ├── guide.py               "what's on" lookups shared by the OSD guide and the web API
 │   ├── content.py             the pitv_content contract: manifest and reports (section 7)
 │   ├── readiness.py           are tomorrow's files playable; substitute and rebalance
+│   ├── lineup.py              channel line-ups: generation by genre, editing, JSON mirror, binding fetched files, transient clean-up
 │   ├── wanted.py              the wanted list (gap detection)
 │   ├── library/               scanner.py, naming.py, nfo.py, probe.py (ffprobe cache)
 │   ├── scheduler/             build.py (week builder, anchors, gap fill, music, overnight, rebuild), rules.py, listing.py
@@ -567,7 +624,8 @@ card is generated into the data directory on first use.
 
 Database tables: `meta`, `settings`, `sources`, `channels`, `shows`, `media` (episodes,
 films, adverts, idents and music videos; overrides in a JSON column), `show_cursor`,
-`schedule`, `history`, `probe_cache`, `wanted`, `run_log`.
+`lineup`, `schedule` (placeholder slots carry a `wanted_id`), `history`, `probe_cache`,
+`wanted`, `run_log`.
 
 ## 12. Open questions
 
@@ -576,5 +634,8 @@ films, adverts, idents and music videos; overrides in a JSON column), `show_curs
    post-watershed and unknown episodes to PG.
 2. Mid-programme ad breaks on the commercial channels: adverts are only placed between
    programmes. The slot model already allows a split at the halfway point.
-3. Web exposure: LAN only is assumed; the admin password is the only protection and there
+3. Episode numbering for fetched series with nothing on disk starts at series 1, episode 1;
+   the numbering pitv_content files them under is kept and bound by request, so a series
+   whose real numbering matters should have one episode on disk first.
+4. Web exposure: LAN only is assumed; the admin password is the only protection and there
    is no HTTPS. A reverse proxy would be needed before exposing it further.

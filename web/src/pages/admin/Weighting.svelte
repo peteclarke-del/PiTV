@@ -178,6 +178,12 @@
           <label class="field">Cache directory<input class="mono" bind:value={s.cache_dir} placeholder="/mnt/cache/pitv" /><span class="help">Folder on the attached drive where pitv_content puts local copies of upcoming programmes; empty disables the cache.</span></label>
           <label class="field">Maximum size (GB)<input type="number" min="0" bind:value={s.cache_max_gb} /><span class="help">pitv_content fills the cache; PiTV only evicts under this cap.</span></label>
           <label class="field">Download directory<input class="mono" bind:value={s.acquire_dir} placeholder="(cache dir)/acquired" /><span class="help">Where pitv_content stores fetched wanted items, scanned as a library source; empty uses the cache directory.</span></label>
+          <label class="check"><input type="checkbox" bind:checked={s.nas_only} /> NAS only<span class="help">Yes: only material on the NAS or in the cache. No: line-up entries not on disk may be scheduled ahead and fetched by pitv_content. Channels can override this.</span></label>
+          <div class="form-grid">
+            <label class="field">External lead days<input type="number" min="0" max="14" bind:value={s.external_lead_days} /><span class="help">Material not on disk is scheduled at least this many days ahead so pitv_content has time to fetch it.</span></label>
+            <label class="field">External episode minutes<input type="number" min="1" max="240" bind:value={s.external_episode_minutes} /><span class="help">Assumed episode length for series whose files are not on disk yet.</span></label>
+            <label class="field">External weight<input type="number" min="0" max="2" step="0.05" bind:value={s.external_weight} /><span class="help">How readily externals are picked next to material on disk; 1 is equal footing.</span></label>
+          </div>
           <label class="field">pitv_content API URL<input class="mono" bind:value={s.content_tool_url} placeholder="http://127.0.0.1:8081" /><span class="help">Where pitv_content's local API listens.</span></label>
           <label class="check"><input type="checkbox" bind:checked={s.acquire_fill_gaps} /> Queue missing episodes automatically<span class="help">Looks for gaps between the episodes already on disk and adds them to the wanted list.</span></label>
           {#if s.content_profile}

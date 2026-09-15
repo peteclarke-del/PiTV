@@ -87,6 +87,8 @@ class Maintenance:
                 self._empty_build_at = 0
                 if needs_rebuild(conn, now):
                     self._build(conn, now)
+            from ..lineup import remove_aired_transients
+            remove_aired_transients(conn)
             if apply_report_files(conn, self.cache):
                 self.cache.invalidate()
                 self.on_schedule_changed()

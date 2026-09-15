@@ -7,6 +7,7 @@
   import Drawer from '../../components/Drawer.svelte';
   import WeightRows from './WeightRows.svelte';
   import DaypartTable from './DaypartTable.svelte';
+  import GenrePicker from '../../components/GenrePicker.svelte';
 
   let { channel = {}, onclose, onsaved } = $props();
   const c = untrack(() => ({ ...channel }));
@@ -35,7 +36,10 @@
     dp: splitProfile(c.daypart_profile),
     overnight_replay_from: c.overnight_replay_from ?? '08:00', idents_enabled: c.idents_enabled ?? 1,
     description: c.description ?? '', content: c.content ?? 'general',
+    allowed_genres: c.allowed_genres ?? [], excluded_genres: c.excluded_genres ?? [], nas_only: c.nas_only ?? 'inherit',
   });
+  let genreOptions = $state({});
+  $effect(() => { get('/api/library/genres').then((g) => (genreOptions = g ?? {})).catch(() => {}); });
   f.enabled = !!f.enabled; f.idents_enabled = !!f.idents_enabled;
 
   async function loadDefaultDayparts(part) {
@@ -58,6 +62,7 @@
       kind_weights: f.kindUse ? { tv: num(f.kind.tv, { min: 0, max: 1, fallback: 0 }), movie: num(f.kind.movie, { min: 0, max: 1, fallback: 0 }) } : null,
       genre_weights: f.genreUse ? f.genre : null, daypart_profile: joinProfile(f.dp),
       overnight_replay_from: f.overnight_replay_from, idents_enabled: f.idents_enabled, description: f.description, content: f.content,
+      allowed_genres: f.allowed_genres, excluded_genres: f.excluded_genres, nas_only: f.nas_only,
     };
     const number = num(f.number, { min: 1, int: true });
     if (number !== null) body.number = number;
@@ -74,6 +79,16 @@
       <label class="field">Short name<input bind:value={f.short_name} placeholder="One" /><span class="help">Used on the badge and remote.</span></label>
       <label class="field">Colour<span class="row"><input type="color" bind:value={f.colour} /><input class="narrow mono" bind:value={f.colour} aria-label="Colour as hex" pattern="#[0-9a-fA-F]{6}" /></span></label>
       <label class="field wide">Description<input bind:value={f.description} placeholder="Mainstream: drama, sitcoms…" /></label>
+      <div class="field wide genres">
+        <span>Line-up genres</span>
+        <div class="row">
+          <span class="small">Allowed</span><GenrePicker value={f.allowed_genres} options={genreOptions} onchange={(v) => (f.allowed_genres = v)} label="Allowed genres" />
+          <span class="small">Excluded</span><GenrePicker value={f.excluded_genres} options={genreOptions} onchange={(v) => (f.excluded_genres = v)} empty="None" label="Excluded genres" />
+          <span class="small">NAS only</span>
+          <select bind:value={f.nas_only} style="min-height:28px;padding:.15rem .4rem"><option value="inherit">inherit</option><option value="yes">yes</option><option value="no">no</option></select>
+        </div>
+        <span class="help">Allowed genres decide which series and films the generator places on this channel; empty means any. NAS only, yes: only material on the NAS or in the cache. No: line-up entries not on disk may be scheduled ahead and fetched by pitv_content. Inherit follows the global setting.</span>
+      </div>
       <label class="field wide">Content
         <select bind:value={f.content}><option value="general">General (shows and films)</option><option value="music">Music videos</option><option value="cartoons">Cartoons</option></select>
         <span class="help">Music: the day is built from genre/decade blocks and two concerts, see Weighting, Music channel. Cartoons: animated series are routed here automatically and may run all evening.</span>

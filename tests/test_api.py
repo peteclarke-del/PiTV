@@ -108,7 +108,12 @@ def test_schedule_edit(client):
     day2 = client.get(f"/api/schedule/day/{DAY1}").json()
     titles = [s["title"] for s in day2["slots"] if s["channel_id"] == day["channels"][0]["id"]]
     assert "Labyrinth" in titles
-    r = client.delete(f"/api/schedule/slots/{ch1[7]['id']}")
+    # A replacement longer than the slot it replaces consumes what it overlaps, so pick the
+    # slot to delete from the day as it is now.
+    now_day = client.get(f"/api/schedule/day/{day['day']}").json()
+    later = [s for s in now_day["slots"] if s["channel_id"] == day["channels"][0]["id"] and s["kind"] == "programme"
+             and not s["locked"] and not s["replay"]]
+    r = client.delete(f"/api/schedule/slots/{later[-2]['id']}")
     assert r.status_code == 200, r.text
 
 
@@ -384,3 +389,33 @@ def test_unhandled_errors_do_not_leak_details(client):
     request = Request({"type": "http", "method": "GET", "path": "/api/x", "headers": [], "query_string": b""})
     r = asyncio.run(handler(request, RuntimeError("/mnt/tvshows/secret.mkv")))
     assert r.status_code == 500 and b"secret" not in r.body
+
+
+def test_lineup_api(client):
+    genres = client.get("/api/library/genres").json()
+    assert "Comedy" in genres and genres["Comedy"]["shows"] > 0
+    chans = client.get("/api/channels").json()
+    general = [c for c in chans if c["content"] == "general"]
+    assert general[0]["allowed_genres"]
+    entries = client.get("/api/lineup", params={"channel_id": general[0]["id"]}).json()
+    assert entries and all(e["channel_id"] == general[0]["id"] for e in entries)
+    opts = client.get("/api/lineup/options", params={"q": "Minder"}).json()
+    assert opts and opts[0]["type"] == "show" and opts[0]["channel_id"]
+    target = general[1]["id"]
+    moved = client.post("/api/lineup", json={"channel_id": target, "show_id": opts[0]["show_id"]}).json()
+    assert moved["channel_id"] == target and moved["pinned"] == 1
+    ext = client.post("/api/lineup", json={"channel_id": target, "title": "The Tripods", "year": 1984, "kind": "show",
+                                           "episode_minutes": 25}).json()
+    assert ext["external"] is True and ext["transient"] == 1
+    upd = client.put(f"/api/lineup/{ext['id']}", json={"remove_after_airing": True, "enabled": False}).json()
+    assert upd["remove_after_airing"] == 1 and upd["enabled"] == 0
+    doc = client.get("/api/lineup/export").json()
+    assert any(any(e["title"] == "The Tripods" for e in c["lineup"]) for c in doc["channels"])
+    assert client.post("/api/lineup/import", json=doc).json()["entries"] > 0
+    assert client.delete(f"/api/lineup/{ext['id']}").json()["ok"]
+    r = client.put(f"/api/channels/{target}", json={"nas_only": "no", "allowed_genres": ["Comedy", "Drama"]}).json()
+    assert r["nas_only"] == "no" and r["allowed_genres"] == ["Comedy", "Drama"]
+    assert client.put(f"/api/channels/{target}", json={"nas_only": "maybe"}).status_code == 400
+    client.put(f"/api/channels/{target}", json={"nas_only": "inherit"})
+    gen = client.post("/api/lineup/generate", json={"rebalance": True}).json()
+    assert gen["assigned"] > 0

@@ -180,3 +180,12 @@ async def tool_proxy(path: str, request: Request, conn: sqlite3.Connection = Dep
         payload.setdefault("path", None)
         payload.setdefault("exists", True)
     return JSONResponse(status_code=503 if offline else status, content=payload)
+
+
+def tool_catalogue(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """pitv_content's catalogue (titles it can fetch), or [] when it is not running."""
+    base = all_settings(conn).get("content_tool_url") or "http://127.0.0.1:8081"
+    status, payload = _tool_request(base, "GET", "catalogue", timeout=3)
+    if status != 200 or not isinstance(payload, list):
+        return []
+    return [c for c in payload if isinstance(c, dict)]

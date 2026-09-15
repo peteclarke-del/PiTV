@@ -100,6 +100,8 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
                           (MAX_WANTED_ATTEMPTS,)):
         d = row_to_dict(w)
         show = conn.execute("SELECT title FROM shows WHERE id = ?", (d["show_id"],)).fetchone() if d.get("show_id") else None
+        if show is None and d.get("lineup_id"):
+            show = conn.execute("SELECT title FROM lineup WHERE id = ? AND kind = 'show'", (d["lineup_id"],)).fetchone()
         wanted.append({"wanted_id": d["id"], "kind": d["kind"], "title": d["title"], "artist": d.get("artist"),
                        "year": d.get("year"), "season": d.get("season"), "episode": d.get("episode"),
                        "genre": d.get("genre"), "provider": d.get("provider"), "ref": d.get("ref"),
@@ -108,7 +110,8 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
                        "duration_minutes": WANTED_MINUTES.get(d["kind"], [1, 240]),
                        "hints": _search_hints(d, show["title"] if show else None),
                        # A music video must be the exact release; a film or episode may be listed under a nearby year.
-                       "year_tolerance": 0 if d["kind"] == "music" else 2})
+                       "year_tolerance": 0 if d["kind"] == "music" else 2,
+                       "transient": bool(d.get("transient")), "lineup_id": d.get("lineup_id")})
     free_bytes = None
     try:
         free_bytes = shutil.disk_usage(cache.dir).free if cache.dir and cache.dir.exists() else None
