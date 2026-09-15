@@ -503,3 +503,21 @@ def test_failed_build_is_logged(conn, monkeypatch):
                       now=local_ts(parse_day("2026-09-21"), "07:00", tz_of(conn)))
     row = conn.execute("SELECT status, summary FROM run_log WHERE kind = 'schedule' ORDER BY id DESC LIMIT 1").fetchone()
     assert row["status"] == "error" and "boom" in row["summary"]
+
+
+def test_channel_without_idents_gets_the_stand_in(tmp_path):
+    """Where a pattern asks for an ident and the channel has none, of its own or generic, the
+    slot has no file (the player shows the shipped test signal under the badge); a channel with
+    idents never gets the stand-in, and gaps are not padded with it."""
+    from pitv.config import TEST_SIGNAL
+    assert TEST_SIGNAL.is_file() and TEST_SIGNAL.stat().st_size > 0, "the test signal ships with the code"
+    ctx = make_library(tmp_path, max_episodes=4)
+    conn = ctx["conn"]
+    toons, one = (conn.execute("SELECT id FROM channels WHERE number = ?", (n,)).fetchone()["id"] for n in (6, 1))
+    with dbm.tx(conn):
+        conn.execute("UPDATE channels SET pattern = 'show, ident' WHERE id IN (?, ?)", (toons, one))
+    build_horizon(conn, start_day=parse_day("2026-09-14"), days=1, seed=3, force=True)
+    idents = {cid: conn.execute("SELECT media_id FROM schedule WHERE channel_id = ? AND kind = 'ident'", (cid,)).fetchall()
+              for cid in (toons, one)}
+    assert idents[toons] and all(r["media_id"] is None for r in idents[toons])
+    assert idents[one] and all(r["media_id"] is not None for r in idents[one])

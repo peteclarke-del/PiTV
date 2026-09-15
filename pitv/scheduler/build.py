@@ -67,6 +67,7 @@ Rebuild = dict[int, tuple[int, int | None]]
 MAX_STEPS_PER_DAY = 3000
 WEEK = 7 * 86400
 FILLER_TITLE = "Programmes will continue shortly"
+STAND_IN_IDENT_SECONDS = 10     # the shipped test signal's length (pitv/assets)
 log = logging.getLogger("pitv.scheduler")
 
 
@@ -711,6 +712,16 @@ class Builder:
             [i for i in fits if not i.get("home_channel_id")]
         return rng.choice(pool) if pool else None
 
+    def _stand_in_ident(self, channel: dict[str, Any], gap: int) -> dict[str, Any] | None:
+        """For a channel whose pattern asks for idents but which has none, of its own or generic:
+        a slot with no file, which the player fills with the test signal under the channel's
+        badge. Only where the pattern asks; gaps are never padded with it."""
+        if not channel.get("idents_enabled", 1) or gap < STAND_IN_IDENT_SECONDS:
+            return None
+        if any(i.get("home_channel_id") in (None, channel["id"]) for i in self.idents):
+            return None   # it has idents; none fitted this gap
+        return {"id": None, "title": channel.get("short_name") or channel["name"], "duration": STAND_IN_IDENT_SECONDS}
+
     # --- building ----------------------------------------------------------------------
 
     def _anchors_for(self, channel: dict[str, Any], day: date, day_start: int, day_end: int) -> list[tuple[int, Show]]:
@@ -883,7 +894,7 @@ class Builder:
                     t = slot.end_ts
                 continue
             if token == "ident":
-                ident = self._choose_ident(channel, rng, boundary - t)
+                ident = self._choose_ident(channel, rng, boundary - t) or self._stand_in_ident(channel, boundary - t)
                 if ident is not None:
                     slot = self._media_slot(channel, day_str, t, ident, "ident")
                     emit(slot)

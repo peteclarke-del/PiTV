@@ -32,6 +32,10 @@
     <li class="muted small">Nothing found. Check the spelling or the year, or add it without a match.</li>
   {/each}
 </ul>
+{#if candidates.some((c) => c.match?.source === 'tmdb')}
+  <!-- TMDb's terms ask for this credit wherever its data is shown. -->
+  <p class="tiny muted">This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+{/if}
 
 <style>
   .found { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .5rem; max-height: 50vh; overflow-y: auto; }

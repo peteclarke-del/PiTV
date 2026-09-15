@@ -9,7 +9,6 @@
   import { blank, clean } from '../lib/settingTypes.js';
 
   let { schema = [], onsave, saving = false, errors = {}, groups = [], group = null, intro = '', app = '' } = $props();
-  const SECRET_MASK = '••••';
   let values = $state({});
   // Re-seed the editable copy only when a new schema arrives, not on every keystroke.
   let seeded = null;
@@ -22,7 +21,8 @@
   const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
   const original = (f) => (f.type === 'secret' ? '' : copy(f.value ?? f.default ?? blank(f.type)));
   const isChanged = (f) => !same(values[f.key], original(f));
-  const secretSet = (f) => f.value === SECRET_MASK || (typeof f.value === 'string' && f.value.length > 0);
+  // A secret comes back masked, with `is_set` saying whether one is saved; the mask is never sent back.
+  const secretSet = (f) => f.is_set ?? (typeof f.value === 'string' && f.value.length > 0);
 
   let changed = $derived(schema.filter(isChanged));
   let restart = $derived(changed.some((f) => f.restart_required));
@@ -53,7 +53,10 @@
         {#if intro && group}<p class="scope">{intro}</p>{/if}
         <div class="form-grid">
           {#each fields as f (f.key)}
-            <SettingField field={f} bind:value={values[f.key]} error={errors[f.key]} changed={isChanged(f)} secretSet={secretSet(f)} />
+            <!-- The editable copy is seeded just after a new schema renders; bind only once it holds the key. -->
+            {#if f.key in values}
+              <SettingField field={f} bind:value={values[f.key]} error={errors[f.key]} changed={isChanged(f)} secretSet={secretSet(f)} />
+            {/if}
           {/each}
         </div>
       </div>

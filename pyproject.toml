@@ -26,6 +26,7 @@ include = ["pitv*"]
 
 [tool.setuptools.package-data]
 "pitv.web" = ["static/**/*"]
+"pitv" = ["assets/*.mp4"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -182,7 +182,7 @@
   {:else if sub === 'settings'}
     {#if !online}<div class="empty">Settings need the pitv_content API.</div>
     {:else if !loadedSub.settings}<div class="skeleton" style="height:200px"></div>
-    {:else}<p class="scope" style="margin:0"><AppBadge app="content" /> pitv_content's own configuration, stored by pitv_content. PiTV relays the edits through its API; nothing here changes PiTV.</p><SchemaForm {schema} groups={['Providers', 'Search', 'Encoding', 'Schedule', 'Advanced']} errors={schemaErrors} saving={savingSchema} onsave={saveSchema} app="content" />{/if}
+    {:else}<p class="scope" style="margin:0"><AppBadge app="content" /> pitv_content's own configuration, stored by pitv_content. PiTV relays the edits through its API; nothing here changes PiTV.</p><SchemaForm {schema} groups={['Providers', 'Search', 'Lookup', 'Encoding', 'Schedule', 'Advanced']} errors={schemaErrors} saving={savingSchema} onsave={saveSchema} app="content" />{/if}
   {:else if sub === 'catalogue'}
     <p class="scope" style="margin:0"><AppBadge app="content" /> Online titles pitv_content knows about. Enabling one lets pitv_content fetch from it; anything fetched reaches PiTV's catalogue through the library index.</p>
     {#if !online}<div class="empty">The catalogue needs the pitv_content API.</div>{:else if !catalogue}<div class="skeleton" style="height:120px"></div>{:else}<ToolCatalogue {catalogue} onchange={() => loadSub('catalogue', true)} />{/if}

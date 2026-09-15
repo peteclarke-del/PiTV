@@ -291,8 +291,13 @@ PiTV never contacts the sources itself, as all online access is pitv_content's.
  "sources": ["tvmaze"], "errors": {}}
 ```
 
-- Series come from a source with episode lists (TVmaze needs no key); films from a film
-  database. Adverts and music videos are candidates for the video itself: `match.source` is the
+- Series come from a source with episode lists (TVmaze needs no key). Films come from TMDb,
+  then OMDb (each needs a key, set in pitv_content's settings under Lookup; the order is the
+  `film_lookup_order` setting): `match.source` is `tmdb` or `omdb`, with the IMDb id, a UK
+  certificate (US when there is no UK one) and a poster; a film both return is offered once.
+  Without a key the answer is 502 "no film source configured: set a TMDb or OMDb key". TMDb's
+  terms require the credit "This product uses the TMDB API but is not endorsed or certified by
+  TMDB." wherever its data is shown; PiTV's lookup results show it under TMDb candidates. Adverts and music videos are candidates for the video itself: `match.source` is the
   video site, `match.url` the video, and `duration_seconds`, `uploader`, `max_height` (the
   best resolution the video offers) and a thumbnail as `image` replace the series fields. A music candidate may carry `artist` and the release
   `year` from a music database.

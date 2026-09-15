@@ -23,7 +23,7 @@ from typing import Any
 
 from .. import db as dbm
 from .. import display, sdnotify
-from ..config import Config
+from ..config import TEST_SIGNAL, Config
 from ..db import all_settings, enabled_channels, now_ts
 from ..guide import block_entry, next_programmes, slot_at
 from ..logsetup import setup_logging
@@ -207,11 +207,15 @@ class Player:
             # disabled keeps playing until the viewer changes channel.
             self.channel = next((c for c in self.channels if c["id"] == self.channel["id"]), self.channel)
 
-    def _testcard(self) -> Path:
+    def _card_picture(self) -> tuple[Path, dict[str, Any]]:
+        """What plays under a card: the shipped test signal, looped; the still test card only if
+        the clip is missing from the install."""
+        if TEST_SIGNAL.is_file():
+            return TEST_SIGNAL, {"loop-file": "inf"}
         p = self.cfg.data_dir / "testcard.png"
         if not p.exists():
             make_testcard(p)
-        return p
+        return p, {}
 
     def _slot_on_air(self, channel_id: int, now: int) -> dict[str, Any] | None:
         """`slot_at` for the tick loop: re-read only at the slot boundary, after a schedule
@@ -530,6 +534,10 @@ class Player:
             self._show_testcard("No programme scheduled", self.channel["name"])
             self.playing_slot_id = None
             return
+        if slot["kind"] == "ident" and not slot.get("media_id"):
+            self._placeholder_ident(slot)
+            self.playing_slot_id = slot["id"]
+            return
         if slot["kind"] == "filler" or not slot.get("media_id"):
             self._show_testcard(slot.get("title") or "Programmes will continue shortly", "")
             self.playing_slot_id = slot["id"]
@@ -610,15 +618,30 @@ class Player:
         self.stream_info = info
         log.info("stream: %s", " ".join(f"{k}={v}" for k, v in info.items()))
 
+    def _play_test_signal(self) -> None:
+        if self.playing_path != TESTCARD:
+            self._end_history()
+            path, options = self._card_picture()
+            self.playing_entry = self.mpv.loadfile(str(path), options=options)
+            self.playing_path = TESTCARD
+            self.stream_info = {}
+
+    def _placeholder_ident(self, slot: dict[str, Any]) -> None:
+        """An ident slot with no file: the channel has no idents, so the test signal runs under
+        the channel badge for the slot's length."""
+        try:
+            self._play_test_signal()
+            self.mpv.overlay_remove(OVERLAY_MESSAGE)
+            self.show_badge(ttl=max(1.0, float(slot["end_ts"] - self.clock())))
+        except MpvError as exc:
+            self.playing_path = None   # tick retries after RETRY_SECONDS
+            log.warning("could not show the stand-in ident: %s", exc)
+
     def _show_testcard(self, text: str, sub: str) -> None:
         """The test card with a caption. Whatever was playing has stopped, so its history
         entry is closed here rather than when the next programme starts."""
         try:
-            if self.playing_path != TESTCARD:
-                self._end_history()
-                self.playing_entry = self.mpv.loadfile(str(self._testcard()))
-                self.playing_path = TESTCARD
-                self.stream_info = {}
+            self._play_test_signal()
             self._overlay(OVERLAY_MESSAGE, self.renderer.message(text, sub), ttl=None)
         except MpvError as exc:
             self.playing_path = None   # tick retries after RETRY_SECONDS
@@ -853,7 +876,7 @@ class Player:
         else:
             self.osd_expiry.pop(oid, None)
 
-    def show_badge(self) -> None:
+    def show_badge(self, ttl: float | None = None) -> None:
         if not self.channel:
             return
         self._sync_osd_size()
@@ -864,7 +887,7 @@ class Player:
         if cur and cur["end_ts"] > cur["start_ts"]:
             position = (now - cur["start_ts"]) / (cur["end_ts"] - cur["start_ts"])
         self._overlay(OVERLAY_BADGE, self.renderer.badge(self.channel, cur, nxt[0] if nxt else None, position, self.behind_live),
-                      ttl=float(self.settings["badge_seconds"]))
+                      ttl=ttl or float(self.settings["badge_seconds"]))
 
     def open_guide(self) -> None:
         if not self.channels:

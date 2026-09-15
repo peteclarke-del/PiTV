@@ -4,6 +4,7 @@
   // restart_required?}. Composite types (weights, dayparts, music blocks) use their own editors.
   import ChipList from './ChipList.svelte';
   import DecadePicker from './DecadePicker.svelte';
+  import OrderedChoices from './OrderedChoices.svelte';
   import WeightRows from '../pages/admin/WeightRows.svelte';
   import DaypartTable from '../pages/admin/DaypartTable.svelte';
   import MusicBlocks from '../pages/admin/MusicBlocks.svelte';
@@ -45,6 +46,8 @@
       <input type="range" min={f.min ?? 0} max={f.max ?? 1} step={f.step ?? 0.05} bind:value />
     {:else if f.type === 'time'}
       <input type="time" bind:value />
+    {:else if f.type === 'list' && f.choices?.length}
+      <OrderedChoices bind:value choices={f.choices} label={f.label ?? f.key} />
     {:else if f.type === 'list' || f.type === 'chips'}
       <ChipList value={value ?? []} onchange={(v) => (value = v)} placeholder="add…" label={f.label ?? f.key} lower={!!f.options?.lower} />
     {:else if f.type === 'hour_list'}

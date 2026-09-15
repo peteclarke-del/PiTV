@@ -14,6 +14,11 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Files shipped with the code (setuptools package data): the test signal the player shows when
+# it has nothing else to show. `pitv test-signal` regenerates it.
+ASSETS = Path(__file__).parent / "assets"
+TEST_SIGNAL = ASSETS / "test_signal.mp4"
+
 
 def _default_data_dir() -> Path:
     if os.environ.get("PITV_DATA"):

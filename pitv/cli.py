@@ -39,6 +39,12 @@ def cmd_fake_library(cfg: Config, args: Args) -> int:
     return 0
 
 
+def cmd_test_signal(cfg: Config, args: Args) -> int:
+    from .devtools import make_player_test_signal
+    print(f"Test signal written to {make_player_test_signal(Path(args.out)) if args.out else make_player_test_signal()}")
+    return 0
+
+
 def cmd_catalogue(cfg: Config, args: Args) -> int:
     """Import pitv_content's library index: from a file, or from its API (index file fallback)."""
     from .catalogue import import_and_place, refresh
@@ -152,6 +158,10 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--max-episodes", type=int, default=None, help="cap episodes per show")
     f.add_argument("--import", dest="import_index", action="store_true", help="import the generated index")
     f.set_defaults(func=cmd_fake_library)
+
+    ts = sub.add_parser("test-signal", help="regenerate the test signal shipped in pitv/assets (needs ffmpeg)")
+    ts.add_argument("--out", help="write here instead of pitv/assets/test_signal.mp4")
+    ts.set_defaults(func=cmd_test_signal)
 
     ca = sub.add_parser("catalogue", help="import pitv_content's library index")
     ca.add_argument("--file", help="import this index file instead of asking pitv_content")

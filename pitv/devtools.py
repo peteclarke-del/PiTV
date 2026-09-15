@@ -17,6 +17,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .config import TEST_SIGNAL
+
 # (title, year, seasons, episodes per season, minutes, genres, certificate)
 FAKE_SHOWS = [
     ("Blake's 7", 1978, 4, 13, 50, ["Science Fiction", "Drama"], "PG"),
@@ -137,27 +139,42 @@ FAKE_CONCERTS = [
     ("Prince", "Sign o' the Times", 1987, "Funk", 85), ("The Who", "Live at Shea", 1982, "Rock", 100),
 ]
 
+def test_signal(dest: Path, seconds: int, *, size: str = "320x240", drawtext: str | None = None,
+                crf: int = 35) -> Path:
+    """SMPTE colour bars, `seconds` long at one frame a second (a 25-minute file stays around
+    100 KB), with an optional drawtext caption. The fake library's clips and the test signal
+    the player shows when it has nothing else both come from here."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"smptebars=s={size}:r=1:d={seconds}",
+         *(["-vf", drawtext] if drawtext else []),
+         "-c:v", "libx264", "-preset", "slow", "-tune", "stillimage", "-crf", str(crf),
+         "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(dest)],
+        check=True)
+    return dest
+
+
+def make_player_test_signal(dest: Path = TEST_SIGNAL, seconds: int = 10) -> Path:
+    """The clip shipped in pitv/assets: 4:3 PAL bars with the PiTV name in a box, looped behind
+    the player's cards and shown under the badge as a stand-in ident."""
+    caption = ("drawtext=text='PiTV':fontsize=120:fontcolor=white:box=1:boxcolor=black:boxborderw=28:"
+               "x=(w-text_w)/2:y=(h-text_h)/2-40")
+    return test_signal(dest, seconds, size="768x576", drawtext=caption, crf=28)
+
+
 def _make_video(dest: Path, seconds: int, templates: Path) -> None:
     """Copy a tiny video of `seconds` into place, encoding it into `templates` the first time
     that length is needed (ffmpeg is slow; most files share a handful of lengths)."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
     tmpl = templates / f"{seconds}.mp4"
     if not tmpl.exists():
-        tmpl.parent.mkdir(parents=True, exist_ok=True)
-        # 4:3 colour bars with a running timecode and the clip length, so the preview window
-        # shows that the live offset is right; 1 fps keeps a 25-minute file around 100 KB.
+        # A running timecode and the clip length, so the preview window shows that the live
+        # offset is right. Colons inside the strftime format need a further escape, or drawtext
+        # reads them as more arguments to pts and draws nothing.
         mins, secs = divmod(seconds, 60)
-        # Colons inside the strftime format need a further escape, or drawtext reads them as
-        # more arguments to pts and draws nothing.
         label = f"PiTV test signal  %{{pts\\:gmtime\\:0\\:%H\\\\\\:%M\\\\\\:%S}} of {mins:02d}\\:{secs:02d}"
-        draw = (f"drawtext=text='{label}':fontsize=18:fontcolor=white:box=1:boxcolor=black@0.6:"
-                "x=(w-text_w)/2:y=h-40")
-        subprocess.run(
-            ["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
-             "-i", f"smptebars=s=320x240:r=1:d={seconds}", "-vf", draw,
-             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage", "-crf", "35",
-             "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(tmpl)],
-            check=True)
+        test_signal(tmpl, seconds, drawtext=f"drawtext=text='{label}':fontsize=18:fontcolor=white:box=1:"
+                                            "boxcolor=black@0.6:x=(w-text_w)/2:y=h-40")
+    dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(tmpl, dest)
 
 

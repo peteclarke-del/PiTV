@@ -293,7 +293,16 @@ A pattern is an ordered list of tokens the channel cycles through when filling g
 `ad` and `break` tokens are dropped when the channel's adverts are off. An anchored show
 (section 4.4) counts as a `show` token where it lands, so the pattern resumes cleanly. When
 no programme fits a gap the scheduler pads with adverts or idents and then writes a
-`filler` slot (the player shows the test card), noting it in the run log.
+`filler` slot (the player shows the test signal), noting it in the run log. Where the pattern
+asks for an `ident` and the channel has none, of its own or generic, the slot has no file and
+the player shows the test signal under the channel's badge; gaps are never padded with it.
+
+The test signal (`pitv/assets/test_signal.mp4`, 768x576 colour bars with the PiTV name, ten
+seconds at one frame a second, under 5 KB) ships with the code, so there is always something
+to show: it loops behind every card the player puts up (technical difficulties, continuity,
+no programme, waiting for the clock) and stands in for missing idents. Channel changes keep
+their burst of generated static. `pitv test-signal` regenerates the clip with ffmpeg; the
+boot splash still draws the still test card on the framebuffer.
 
 ### 4.4 Anchors: strips and weekly slots
 
@@ -479,7 +488,7 @@ Everything on air is meant to play from the cache on the attached drive. `MediaC
 2. The NAS original, only when `nas_fallback` is on (the default) and the item came from the
    NAS. The player logs an error when it does this, because pitv_content missed a request,
    and its status (shown on the admin Player page) says it is playing from the NAS.
-3. Nothing playable: the player shows the test card with "We are experiencing technical
+3. Nothing playable: the player shows the test signal with "We are experiencing technical
    difficulties" and "Normal service will be resumed as soon as possible", logs
    `TECHNICAL DIFFICULTIES` with the channel, title and reason, and tries the slot again
    every 30 s in case the file arrives late. The next slot is tried normally when it starts.
@@ -870,8 +879,8 @@ Development happens on the desktop with a generated fake library and a `--now` c
 override, so a week can be built and inspected without the NAS or pitv_content:
 `pitv fake-library DIR --import` writes tiny H.264 clips, writes the schema 2 index
 pitv_content would publish for them, and imports it. The windowed player is a 768x576 4:3
-preview of the Pi's picture with the same scaler and file resolution. The test card is
-generated into the data directory on first use.
+preview of the Pi's picture with the same scaler and file resolution. The fake clips and
+the shipped test signal come from the same generator (`devtools.test_signal`).
 
 Database tables: `meta`, `settings`, `sources` (a mirror of pitv_content's sources: `uid`,
 `location`, `last_indexed_at`, `index_summary`), `channels`, `shows`, `media` (episodes,
