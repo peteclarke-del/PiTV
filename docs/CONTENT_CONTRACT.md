@@ -233,6 +233,22 @@ pitv_content's API owns the source configuration; PiTV's admin Sources page is a
 - `PUT {content_tool_url}/api/sources` with `{"id", "name", "type", "category", "root",
   "remote", "enabled"}` adds or edits one; `{"id", "delete": true}` removes one. Returns the
   list, or 400 `{"errors": {...}}`.
+- A source whose `remote` is an SMB share may carry a login: `username`, `password`,
+  `workgroup` (all optional; none means a guest mount). The password is write-only: `GET`
+  returns `credentials: {"username", "workgroup", "set": true|false}` and never the password;
+  a `PUT` without `password` keeps the saved one, and `{"id", "clear_credentials": true}`
+  removes the login. pitv_content keeps logins in files only its service user (and root) can
+  read, never logs them, and uses them for one thing: mounting that share read-only at the
+  source's `root`, through a root helper that accepts only a source id and builds the mount
+  from pitv_content's own configuration. It mounts, remounts after a change and unmounts on
+  removal; `health` reports the mount. PiTV relays these fields and stores none of them.
+- `POST /api/sources/test` with a source's `remote`, `root` and login (or its `id`, to use the
+  saved login) tries the share without saving anything: `{"ok": true|false, "message": ...}`,
+  e.g. "logged in; 3 folders at the top level" or "permission denied". PiTV's admin offers it
+  as Test connection.
+- NAS mounts are pitv_content's: it creates them for its sources, including those seeded from
+  the installer's share list. Until a pitv_content with the mount helper is installed, PiTV's
+  installer keeps writing the mounts for the installer's shares with one shared login.
 - Online providers stay on `GET/PUT /api/providers` as already agreed.
 
 ## 5. Shared cache rules

@@ -2,11 +2,12 @@
   // pitv_content's sources: the NAS shares it indexes and the cache folders holding what it fetched.
   // PiTV no longer scans anything; this page reads the list through PiTV and relays edits to pitv_content.
   import { untrack } from 'svelte';
-  import { get, put, tryApi, confirmApi } from '../../lib/api.js';
+  import { get, post, put, tryApi, confirmApi } from '../../lib/api.js';
   import { importCatalogue } from '../../lib/actions.js';
   import { changes, clock, toast } from '../../lib/stores.svelte.js';
   import { guard } from '../../lib/guard.svelte.js';
   import { fmtAgo } from '../../lib/format.js';
+  import { shown } from '../../lib/prefs.svelte.js';
   import AppBadge from '../../components/AppBadge.svelte';
   import DataTable from '../../components/DataTable.svelte';
   import Drawer from '../../components/Drawer.svelte';
@@ -45,8 +46,39 @@
     { key: 'actions', label: '', class: 'nowrap right', sortable: false, cell: actionsCell },
   ];
 
-  function add() { errors = {}; editing = { isNew: true, id: '', name: '', type: 'tv', category: 'general', root: '', remote: '', enabled: true }; }
-  function edit(s) { errors = {}; editing = { isNew: false, id: s.id, name: s.name ?? '', type: s.type, category: s.category || 'general', root: s.root ?? '', remote: s.remote ?? '', enabled: s.enabled !== false }; }
+  // Credentials: the password is write-only. pitv_content says whether one is saved, never what it is;
+  // a blank password keeps the saved one.
+  const noCredentials = { username: '', password: '', workgroup: '', saved: false, clear: false };
+  function add() { errors = {}; tested = null; editing = { isNew: true, id: '', name: '', type: 'tv', category: 'general', root: '', remote: '', enabled: true, ...noCredentials }; }
+  function edit(s) {
+    errors = {}; tested = null;
+    const c = s.credentials ?? {};
+    editing = { isNew: false, id: s.id, name: s.name ?? '', type: s.type, category: s.category || 'general', root: s.root ?? '', remote: s.remote ?? '',
+                enabled: s.enabled !== false, ...noCredentials, username: c.username ?? '', workgroup: c.workgroup ?? '', saved: !!c.set };
+  }
+  let smb = $derived(/^smb:\/\//i.test(editing?.remote?.trim() ?? ''));
+  /** The credential fields to send: none unless the share is SMB and a login is entered or saved
+   *  (a pitv_content without login support refuses fields it does not know), a clear when asked. */
+  function credentials(f) {
+    if (!smb) return {};
+    if (f.clear) return { clear_credentials: true };
+    const out = {};
+    if (f.username.trim() || f.saved) out.username = f.username.trim() || null;
+    if (f.workgroup.trim() || f.saved) out.workgroup = f.workgroup.trim() || null;
+    if (f.password) out.password = f.password;
+    return out;
+  }
+  let tested = $state(null);   // {ok, message} from the last connection test
+  const test = guard(async () => {
+    const f = editing;
+    tested = null;
+    try {
+      const r = await post('/api/sources/test', { id: f.isNew ? null : f.id, remote: f.remote.trim(), root: f.root.trim(), ...credentials(f) });
+      tested = { ok: !!r?.ok, message: r?.message ?? (r?.ok ? 'The share answered.' : 'The share did not answer.') };
+    } catch (e) {
+      tested = { ok: false, message: e?.status === 404 ? 'This version of pitv_content cannot test a share yet.' : explain(e) };
+    }
+  });
 
   // PiTV relays to pitv_content: 400 carries per-field errors, 403 a root outside the allowed roots, 503 an offline tool.
   function explain(e) {
@@ -61,7 +93,7 @@
   const save = guard(async () => {
     errors = {};
     const f = editing;
-    const body = { id: f.id.trim(), name: f.name.trim(), type: f.type, root: f.root.trim(), remote: f.remote.trim() || null, enabled: f.enabled };
+    const body = { id: f.id.trim(), name: f.name.trim(), type: f.type, root: f.root.trim(), remote: f.remote.trim() || null, enabled: f.enabled, ...credentials(f) };
     if (f.type === 'tv') body.category = f.category || 'general';
     try {
       await put('/api/sources', body);
@@ -133,7 +165,23 @@
         <span class="help">Folder as mounted on the Pi. pitv_content only indexes inside its allowed roots.</span>
         {#if errors.root}<span class="help err">{errors.root}</span>{/if}
       </label>
-      <label class="field">Remote (optional)<input bind:value={editing.remote} placeholder="smb://synologynas/tvshows/" /><span class="help">The share it is mounted from; shown for reference.</span>{#if errors.remote}<span class="help err">{errors.remote}</span>{/if}</label>
+      <label class="field">Remote (optional)<input bind:value={editing.remote} placeholder="smb://synologynas/tvshows/" /><span class="help">The SMB share pitv_content mounts, read-only, at the root above.</span>{#if errors.remote}<span class="help err">{errors.remote}</span>{/if}</label>
+      {#if smb}
+        <fieldset class="creds">
+          <legend>Share login {#if editing.saved}<span class="badge ok">saved</span>{/if}</legend>
+          {#if !editing.clear}
+            <div class="form-grid">
+              <label class="field">Username<input bind:value={editing.username} autocomplete="off" placeholder="guest if empty" />{#if errors.username}<span class="help err">{errors.username}</span>{/if}</label>
+              <label class="field">Password<input type="password" bind:value={editing.password} autocomplete="new-password" placeholder={editing.saved ? 'saved: leave blank to keep' : ''} />{#if errors.password}<span class="help err">{errors.password}</span>{/if}</label>
+              {#if shown('advanced')}<label class="field">Workgroup or domain<input bind:value={editing.workgroup} autocomplete="off" placeholder="usually empty" /></label>{/if}
+            </div>
+          {/if}
+          {#if editing.saved}<label class="check"><input type="checkbox" bind:checked={editing.clear} /> Remove the saved login<span class="help">The share is then mounted as a guest.</span></label>{/if}
+          <p class="help">Kept by pitv_content where only its service can read it, and used only to mount this share. The password is never shown again.</p>
+          <div class="row"><button type="button" class="small" onclick={test} disabled={test.busy || !editing.remote.trim()}>{test.busy ? 'Testing…' : 'Test connection'}</button>
+            {#if tested}<span class="badge {tested.ok ? 'ok' : 'danger'}">{tested.ok ? 'connected' : 'failed'}</span><span class="small">{tested.message}</span>{/if}</div>
+        </fieldset>
+      {/if}
       <label class="check"><input type="checkbox" bind:checked={editing.enabled} /> Enabled<span class="help">Disabled sources are skipped by the next index.</span></label>
     </div>
   {/if}
@@ -147,5 +195,7 @@
 
 <style>
   .head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem 1rem; padding: .8rem 1rem .4rem; }
+  .creds { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: .6rem .8rem; display: flex; flex-direction: column; gap: .5rem; }
+  .creds legend { font-weight: 650; font-size: .85rem; padding: 0 .3rem; }
   .head h3 { margin: 0; }
 </style>

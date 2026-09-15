@@ -645,7 +645,7 @@ pitv_content:
 
 | Page | What you can do |
 |---|---|
-| Sources | pitv_content's sources through its API: add, edit, enable, disable and remove (id, name, type, category, root, SMB URL), with health (mounted, readable, item count, last indexed) and a folder picker confined to `browse_roots`. Read-only, from the last imported index, when pitv_content is down. A change takes effect at pitv_content's next index; the catalogue import can ask for one straight away |
+| Sources | pitv_content's sources through its API: add, edit, enable, disable and remove (id, name, type, category, root, SMB URL, and for an SMB share its login: username, password, workgroup at Advanced; the password is write-only and kept by pitv_content, which mounts the share read-only with it; Test connection tries a share before saving), with health (mounted, readable, item count, last indexed) and a folder picker confined to `browse_roots`. Read-only, from the last imported index, when pitv_content is down. A change takes effect at pitv_content's next index; the catalogue import can ask for one straight away |
 | Content | Overview (status file, service and timer, last reports, manifest summary, the token pitv_content presents: show, copy, issue a new one), run now, and through its own API its settings (schema-driven form), providers (enable, order, kinds, options, add), catalogue of fetchable titles, jobs and log |
 
 ### 6.4 API

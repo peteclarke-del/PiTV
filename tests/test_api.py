@@ -682,3 +682,16 @@ def test_screen_profile_sets_quality_and_screen(client):
     r = client.put("/api/settings", json={"display_profile": "crt_pal", "osd_scale": 1.5}).json()
     assert r["display_aspect"] == "4:3" and r["osd_safe_margin"] == 0.07 and r["osd_scale"] == 1.5
     assert client.put("/api/settings", json={"display_profile": "plasma"}).status_code == 400
+
+
+def test_source_login_is_relayed_not_kept(client, env):
+    """PiTV relays a share's login to pitv_content and keeps none of it: with pitv_content
+    unreachable both the save and the connection test answer 503, and the password appears in
+    neither PiTV's database nor its settings."""
+    client.put("/api/settings", json={"content_tool_url": "http://127.0.0.1:9"})
+    body = {"id": "tvshows", "root": "/mnt/tvshows", "remote": "smb://nas/tvshows", "username": "pete", "password": "hunter2-secret"}
+    assert client.put("/api/sources", json=body).status_code == 503
+    assert client.post("/api/sources/test", json=body).status_code == 503
+    import sqlite3
+    dump = "\n".join(sqlite3.connect(env.db_path).iterdump())
+    assert "hunter2-secret" not in dump

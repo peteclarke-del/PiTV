@@ -131,7 +131,19 @@ def put_source(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depe
             raise HTTPException(400, "category must be general, sport or kids")
         if body.get("root"):
             body["root"] = str(allowed_dir(str(body["root"]), browse_roots(all_settings(conn))))
-    status, payload = tool_client.request(tool_url(conn), "PUT", "sources", body=body, timeout=15)
+    # Credentials (username, password, workgroup) pass straight through: pitv_content keeps them
+    # and never returns the password, and PiTV neither stores nor logs them.
+    return _relay_source(conn, "PUT", "sources", body, timeout=15)
+
+
+@router.post("/sources/test")
+def test_source(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
+    """Ask pitv_content to try a share with the given (or saved) credentials, without saving."""
+    return _relay_source(conn, "POST", "sources/test", body, timeout=30)
+
+
+def _relay_source(conn: sqlite3.Connection, method: str, path: str, body: dict[str, Any], timeout: float) -> Any:
+    status, payload = tool_client.request(tool_url(conn), method, path, body=body, timeout=timeout)
     if isinstance(payload, dict) and payload.get("offline"):
         raise HTTPException(503, "pitv_content is not running; sources can only be changed through it")
     if status >= 400:
