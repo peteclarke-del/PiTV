@@ -130,3 +130,23 @@ def test_cache_copy_is_decoded_by_its_own_properties():
     assert on_cache["deinterlace"] is False and on_cache["hwdec"] != "no"
     on_nas = decode_options(Player._decode_props(media, "nas"), True, {})
     assert on_nas["deinterlace"] is True and on_nas["hwdec"] == "no"
+
+
+def test_reindex_waits_for_its_job(monkeypatch):
+    """The import after a re-index must read the new index, not the one being replaced."""
+    from pitv import catalogue, tool_client
+    calls, polls = [], iter([[{"job_id": "j1"}], [{"job_id": "j1", "finished_ts": 5, "status": "ok"}]])
+
+    def fake(base, method, path, query="", body=None, timeout=15):
+        calls.append((method, path))
+        if path == "index":
+            return 200, {"ok": True, "job_id": "j1"}
+        if path == "jobs":
+            return 200, next(polls)
+        return 200, {"schema": 2, "items": []}
+
+    monkeypatch.setattr(tool_client, "request", fake)
+    monkeypatch.setattr(catalogue, "REINDEX_POLL", 0)
+    doc, _ = catalogue.fetch_index({"content_tool_url": "http://x"}, reindex=True)
+    assert doc == {"schema": 2, "items": []}
+    assert calls == [("POST", "index"), ("GET", "jobs"), ("GET", "jobs"), ("GET", "library")]

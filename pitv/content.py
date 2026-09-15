@@ -335,9 +335,21 @@ def apply_report(conn: sqlite3.Connection, report: dict[str, Any]) -> dict[str, 
     return counts
 
 
+def _already_applied(conn: sqlite3.Connection, report: dict[str, Any]) -> bool:
+    """pitv_content posts each report and also drops it as a file; a run already recorded (same
+    tool and start time) is not applied twice."""
+    run = report.get("run") if isinstance(report.get("run"), dict) else {}
+    started = _number(run.get("started_ts"))
+    if not started:
+        return False
+    return conn.execute("SELECT 1 FROM run_log WHERE kind = 'content' AND started_at = ? AND summary LIKE ?",
+                        (int(started), f"{run.get('tool', 'pitv_content')}:%")).fetchone() is not None
+
+
 def apply_report_files(conn: sqlite3.Connection, cache: MediaCache) -> int:
-    """Apply report JSON files pitv_content dropped in `<cache>/reports` that we have not seen;
-    each applied file gets a `.applied` marker next to it."""
+    """Apply report JSON files pitv_content dropped in `<cache>/reports` that PiTV has not seen
+    (the web service may already have taken the same report over HTTP); each file handled gets a
+    `.applied` marker next to it."""
     d = cache.reports_dir
     if d is None or not d.is_dir():
         return 0
@@ -347,9 +359,11 @@ def apply_report_files(conn: sqlite3.Connection, cache: MediaCache) -> int:
         if done.exists():
             continue
         try:
-            apply_report(conn, json.loads(f.read_text()))
+            report = json.loads(f.read_text())
+            if not _already_applied(conn, report):
+                apply_report(conn, report)
+                applied += 1
             done.write_text(str(now_ts()))
-            applied += 1
         except (OSError, ValueError) as exc:
             log.warning("report file %s not applied (will retry): %s", f.name, exc)
     return applied

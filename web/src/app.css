@@ -223,4 +223,4 @@ pre.log { font-family: var(--mono); font-size: .78rem; white-space: pre-wrap; wo
 .scope { font-size: .8rem; color: var(--fg-muted); margin: -.45rem 0 .75rem; }
 /* keep the app badge beside the title and push the card's actions to the right */
 .card-title h2:has(~ .app), .card-title h3:has(~ .app) { flex: 0 1 auto; }
-.card-title .app { margin-right: auto; }
+.card-title .app:not(:has(+ .app)) { margin-right: auto; }   /* the last badge of a run takes the gap */

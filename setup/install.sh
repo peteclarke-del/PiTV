@@ -78,7 +78,7 @@ log "systemd services"
 cp "$SRC_DIR/systemd/pitv-player.service" "$SRC_DIR/systemd/pitv-web.service" "$SRC_DIR/systemd/pitv-splash.service" /etc/systemd/system/
 # Exactly the commands pitv/web/api/admin.py SERVICE_ACTIONS and content.py tool_run issue.
 cat > /etc/sudoers.d/pitv <<'SUDO'
-pitv ALL=(root) NOPASSWD: /usr/bin/systemctl restart pitv-player, /usr/bin/systemctl stop pitv-player, /usr/bin/systemctl start pitv-player, /usr/bin/systemctl restart pitv-web, /usr/bin/systemctl start pitv-content.service
+pitv ALL=(root) NOPASSWD: /usr/bin/systemctl restart pitv-web.service, /usr/bin/systemctl restart pitv-player.service, /usr/bin/systemctl stop pitv-player.service, /usr/bin/systemctl start pitv-player.service, /usr/bin/systemctl restart pitv-content-api.service, /usr/bin/systemctl start pitv-content.service
 SUDO
 chmod 440 /etc/sudoers.d/pitv
 systemctl daemon-reload

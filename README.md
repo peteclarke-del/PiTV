@@ -49,11 +49,18 @@ PITV_WINDOWED=1 .venv/bin/pitv play --keyboard --now 2026-09-15T19:30   # player
 ```
 
 `pitv catalogue` without `--file` asks pitv_content's API at `content_tool_url` and falls back
-to `<cache_dir>/index/library.json`; `--reindex` asks pitv_content to re-index first. Use it
-when pitv_content is running locally.
+to `<cache_dir>/index/library.json`; `--reindex` asks pitv_content to re-index first and
+waits for that job to finish before importing. Use it when pitv_content is running locally.
 
-`setup/dev.sh start|stop|restart|status` runs the web service and the windowed player
-together against `.dev`. The frontend is built separately (see web/README.md) and the built
+`setup/dev.sh` runs the whole system on a desktop, wired as it is on the Pi: the web service,
+the windowed player and pitv_content's API (port 8091, as 8081 is often taken), all against
+`.dev` and a RAM-backed cache at `/dev/shm/pitvcache/pitv`. `setup` builds the fake library,
+seeds pitv_content's sources from it and points PiTV at the cache; `start`, `stop`, `restart`
+and `status` manage the three processes; `index` has pitv_content re-index and PiTV import;
+`cache` has pitv_content work PiTV's manifest into the cache, the same as Run now in the
+admin. pitv_content is taken from `PATH`, or `PITV_CONTENT_BIN`, or a `PiTV_content` checkout
+two folders up. A first end-to-end run is `setup/dev.sh setup && setup/dev.sh start &&
+setup/dev.sh index && setup/dev.sh cache`. The frontend is built separately (see web/README.md) and the built
 files under `pitv/web/static/` are committed, so the Pi never runs Node.
 
 Player keys in the window or terminal: `1` to `9` channel, `[` and `]` channel down and up,

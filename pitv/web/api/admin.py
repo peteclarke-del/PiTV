@@ -26,6 +26,7 @@ from ...logsetup import log_dir, tail
 from ...scheduler.build import build_horizon, parse_day, rebuild_from, slot_titles
 from ...scheduler.rules import broadcast_day_for, parse_pattern, tz_of
 from .deps import admin_conn, media_public, run_cmd, show_public, slot_public
+from .services import CONTENT_RUN, SERVICE_ACTIONS, services
 from .settings_rules import SettingError, check_setting
 
 router = APIRouter(prefix="/api", dependencies=[Depends(admin_conn)])
@@ -43,7 +44,6 @@ CHANNEL_FIELDS = {"number", "name", "short_name", "colour", "enabled", "ads_enab
 JSON_CHANNEL_FIELDS = {"era_weights", "genre_weights", "kind_weights", "daypart_profile", "allowed_genres", "excluded_genres"}
 # What the web service may ask systemd to do; must stay in step with the sudoers rule in
 # setup/install.sh. Stopping the web service from the web is deliberately not offered.
-SERVICE_ACTIONS = {"pitv-player": ("restart", "stop", "start"), "pitv-web": ("restart",)}
 _HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _COLOUR = re.compile(r"^#[0-9a-fA-F]{6}$")
 
@@ -571,7 +571,7 @@ def get_settings(conn: sqlite3.Connection = Depends(admin_conn)):
 
 
 @router.put("/settings")
-def put_settings(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
+def put_settings(request: Request, body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
     unknown = [k for k in body if k not in DEFAULT_SETTINGS or k in SECRET_SETTINGS]
     if unknown:
         raise HTTPException(400, f"unknown settings: {', '.join(unknown)}")
@@ -584,16 +584,18 @@ def put_settings(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = De
     with tx(conn):
         for k, v in clean.items():
             set_setting(conn, k, v)
+    request.app.state.player.call("settings-changed")
     return get_settings(conn)
 
 
 @router.post("/settings/reset")
-def reset_settings(body: dict[str, Any] = Body(default={}), conn: sqlite3.Connection = Depends(admin_conn)):
+def reset_settings(request: Request, body: dict[str, Any] = Body(default={}), conn: sqlite3.Connection = Depends(admin_conn)):
     keys = body.get("keys") or [k for k in DEFAULT_SETTINGS if k not in SECRET_SETTINGS]
     with tx(conn):
         for k in keys:
             if k in DEFAULT_SETTINGS and k not in SECRET_SETTINGS:
                 set_setting(conn, k, DEFAULT_SETTINGS[k])
+    request.app.state.player.call("settings-changed")
     return get_settings(conn)
 
 
@@ -737,19 +739,29 @@ def _cmd(args: list[str], timeout: float = 3) -> str:
     return run_cmd(args, timeout)[1]
 
 
+def _live_checks(request: Request, conn: sqlite3.Connection) -> dict[str, bool | None]:
+    """Whether each application's processes answer, whatever systemd says."""
+    player = request.app.state.player.call("state", timeout=1)
+    status, tool = tool_client.request(tool_client.base_url(all_settings(conn)), "GET", "status", timeout=3)
+    tool_up = status == 200 and isinstance(tool, dict) and ("api_version" in tool or "tool" in tool)
+    return {
+        "pitv-web.service": True,
+        "pitv-player.service": bool(player.get("ok") and player.get("online", True)),
+        "pitv-content-api.service": tool_up,
+        CONTENT_RUN: bool(tool.get("active_job")) if tool_up else None,
+    }
+
+
 @router.get("/system")
 def system_info(request: Request, conn: sqlite3.Connection = Depends(admin_conn)):
     cfg = request.app.state.cfg
-    services = {}
-    for svc in ("pitv-player", "pitv-web"):
-        services[svc] = _cmd(["systemctl", "is-active", svc]) or "unknown"
     time_info = {}
     for line in _cmd(["timedatectl", "show"]).splitlines():
         if "=" in line:
             k, v = line.split("=", 1)
             time_info[k] = v
     mounts = []
-    for r in conn.execute("SELECT * FROM sources ORDER BY id"):
+    for r in conn.execute("SELECT * FROM sources WHERE location = 'nas' ORDER BY id"):
         p = Path(r["path"])
         usage = None
         if p.is_dir():
@@ -773,7 +785,7 @@ def system_info(request: Request, conn: sqlite3.Connection = Depends(admin_conn)
         "hostname": _cmd(["hostname"]), "uptime": _cmd(["uptime", "-p"]), "load": load, "temperature_c": temp,
         "time": {"now": now_ts(), "local": datetime.now().isoformat(timespec="seconds"),
                  "ntp": time_info.get("NTPSynchronized"), "timezone": time_info.get("Timezone")},
-        "services": services, "mounts": mounts,
+        "services": services(_live_checks(request, conn)), "mounts": mounts,
         "data": {"path": str(cfg.data_dir), "db": str(cfg.db_path),
                  "db_size": cfg.db_path.stat().st_size if cfg.db_path.exists() else 0,
                  "free": data_usage.free if data_usage else None, "total": data_usage.total if data_usage else None},

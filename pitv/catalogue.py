@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,8 @@ SCHEMA = 2
 SOURCE_TYPES = ("tv", "movie", "advert", "ident", "music")
 KINDS = ("episode", "movie", "advert", "ident", "music")
 CATEGORIES = ("general", "sport", "kids")
+REINDEX_TIMEOUT = 1800        # seconds to wait for a NAS re-index before importing what is there
+REINDEX_POLL = 3
 CONCERT_MINUTES = 35          # a music item this long is a concert even when not tagged
 UNSAFE_TAGS = {"alcohol", "tobacco", "adult", "gambling", "18"}
 
@@ -49,7 +52,7 @@ def fetch_index(settings: dict[str, Any], reindex: bool = False) -> tuple[dict[s
     down. Returns (document or None, where it came from or why it failed)."""
     base = tool_client.base_url(settings)
     if reindex:
-        tool_client.request(base, "POST", "index", body={}, timeout=10)
+        _reindex(base)
     status, payload = tool_client.request(base, "GET", "library", timeout=60)
     if status == 200 and isinstance(payload, dict):
         return payload, f"pitv_content API at {base}"
@@ -61,6 +64,28 @@ def fetch_index(settings: dict[str, Any], reindex: bool = False) -> tuple[dict[s
             return None, f"index file {path} unreadable: {exc}"
     reason = payload.get("error") if isinstance(payload, dict) else f"HTTP {status}"
     return None, f"no index: API {reason}; file {path or '(no cache_dir)'} absent"
+
+
+def _reindex(base: str, timeout: float = REINDEX_TIMEOUT) -> None:
+    """Start a re-index and wait for that job to finish, so the import that follows reads the
+    new index rather than the one it replaces. A failure or timeout is logged; the current index
+    is imported regardless."""
+    status, started = tool_client.request(base, "POST", "index", body={}, timeout=10)
+    job_id = started.get("job_id") if status == 200 and isinstance(started, dict) else None
+    if not job_id:
+        log.warning("re-index not started (HTTP %s): %s", status, started.get("error", "") if isinstance(started, dict) else "")
+        return
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status, jobs = tool_client.request(base, "GET", "jobs", timeout=10)
+        job = next((j for j in jobs if isinstance(j, dict) and j.get("job_id") == job_id), None) \
+            if status == 200 and isinstance(jobs, list) else None
+        if job is not None and job.get("finished_ts"):
+            if job.get("status") != "ok":
+                log.warning("re-index %s ended %s: %s", job_id, job.get("status"), job.get("summary", ""))
+            return
+        time.sleep(REINDEX_POLL)
+    log.warning("re-index %s still running after %ds; importing the current index", job_id, timeout)
 
 
 def _genres(value: Any) -> list[str]:

@@ -59,6 +59,20 @@ def _fit(d: ImageDraw.ImageDraw, text: str, font, max_px: int) -> str:
     return text[:lo].rstrip() + "…"
 
 
+def _wrap(d: ImageDraw.ImageDraw, text: str, font, max_px: int, max_lines: int) -> list[str]:
+    """Word-wrap text to max_px; the last line takes an ellipsis if there is more."""
+    lines: list[str] = []
+    words = text.split()
+    while words and len(lines) < max_lines:
+        line = words.pop(0)
+        while words and d.textlength(f"{line} {words[0]}", font=font) <= max_px:
+            line = f"{line} {words.pop(0)}"
+        lines.append(line)
+    if words:
+        lines[-1] = _fit(d, f"{lines[-1]} {' '.join(words)}", font, max_px)
+    return [_fit(d, line, font, max_px) for line in lines]
+
+
 def _hhmm(ts: int | float | None) -> str:
     return datetime.fromtimestamp(ts).strftime("%H:%M") if ts else "--:--"
 
@@ -166,16 +180,29 @@ class Renderer:
     # --- message ---------------------------------------------------------------------------
 
     def message(self, text: str, sub: str = "") -> tuple[str, int, int, int, int]:
+        """A caption box over the test card, wrapped to the overscan-safe width; it sits above
+        the channel badge so the two do not collide."""
         s = self.scale
-        w, h = min(int(self.width * 0.7), self.safe_width), int(120 * s)
+        w = min(int(self.width * 0.8), self.safe_width)
+        pad = int(20 * s)
+        probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+        head = _wrap(probe, text, self.f_med, w - 2 * pad, 3)
+        tail = _wrap(probe, sub, self.f_small, w - 2 * pad, 3) if sub else []
+        lh_med, lh_small = (int(f.getbbox("Ag")[3] * 1.2) for f in (self.f_med, self.f_small))
+        h = 2 * pad + len(head) * lh_med + (int(8 * s) + len(tail) * lh_small if tail else 0)
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
         d.rounded_rectangle((0, 0, w - 1, h - 1), radius=int(12 * s), fill=(0, 0, 0, 210))
-        d.text((int(20 * s), int(18 * s)), text[:60], font=self.f_med, fill=(255, 255, 255, 255))
-        if sub:
-            d.text((int(20 * s), int(64 * s)), sub[:90], font=self.f_small, fill=(0, 255, 255, 255))
+        y = pad
+        for line in head:
+            d.text((pad, y), line, font=self.f_med, fill=(255, 255, 255, 255))
+            y += lh_med
+        y += int(8 * s)
+        for line in tail:
+            d.text((pad, y), line, font=self.f_small, fill=(0, 255, 255, 255))
+            y += lh_small
         path, iw, ih = self._save(img, "message")
-        return path, iw, ih, (self.width - w) // 2, int(self.height * 0.4)
+        return path, iw, ih, (self.width - w) // 2, max(self.my, int(self.height * 0.55) - h)
 
     # --- guide -----------------------------------------------------------------------------
 
@@ -247,8 +274,9 @@ class Renderer:
         return path, iw, ih, self.mx, self.height - h - self.my
 
 
-def make_testcard(path: Path, width: int = 1920, height: int = 1080, label: str = "PiTV") -> Path:
-    """A colour-bars test card with the PiTV wordmark, used at boot and when nothing is scheduled."""
+def make_testcard(path: Path, width: int = 1024, height: int = 768, label: str = "PiTV") -> Path:
+    """A 4:3 colour-bars test card with the PiTV wordmark, used at boot and whenever nothing is
+    playing. It carries no caption: the player lays its message over it."""
     path.parent.mkdir(parents=True, exist_ok=True)
     img = Image.new("RGB", (width, height), (0, 0, 0))
     d = ImageDraw.Draw(img)
@@ -267,7 +295,5 @@ def make_testcard(path: Path, width: int = 1920, height: int = 1080, label: str 
     cx, cy = width // 2, int(height * 0.5)
     d.rectangle((cx - tw // 2 - 40, cy - th // 2 - 30, cx + tw // 2 + 40, cy + th // 2 + 50), fill=(0, 0, 0))
     d.text((cx - tw // 2, cy - th // 2 - bbox[1]), label, font=f, fill=(255, 255, 255))
-    f2 = _font(int(height * 0.035))
-    d.text((int(width * 0.04), int(height * 0.85)), "Programmes will begin shortly", font=f2, fill=(220, 220, 220))
     img.save(path)
     return path

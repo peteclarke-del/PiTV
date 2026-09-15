@@ -179,3 +179,16 @@ def test_skip_in_progress_is_neither_done_nor_failed(conn):
     assert (row["status"], row["attempts"]) == ("queued", 0)
     with dbm.tx(conn):
         conn.execute("DELETE FROM wanted WHERE id = ?", (wid,))
+
+
+def test_report_file_already_posted_is_not_applied_twice(conn, tmp_path):
+    from pitv.content import apply_report, apply_report_files
+    from pitv.player.cache import MediaCache
+    cache = MediaCache(tmp_path / "cache", 10 ** 9)
+    cache.reports_dir.mkdir(parents=True)
+    report = {"schema": 2, "items": [], "run": {"tool": "pitv-content test", "started_ts": 1234, "finished_ts": 1240}}
+    apply_report(conn, report)                                   # posted over HTTP
+    (cache.reports_dir / "r.json").write_text(__import__("json").dumps(report))
+    assert apply_report_files(conn, cache) == 0                  # the dropped copy is recognised
+    assert (cache.reports_dir / "r.json.applied").exists()
+    assert conn.execute("SELECT COUNT(*) FROM run_log WHERE kind = 'content' AND started_at = 1234").fetchone()[0] == 1

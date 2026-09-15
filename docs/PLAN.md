@@ -578,7 +578,7 @@ PiTV:
 | Wanted | The wanted list for pitv_content: requests raised by line-up placeholders (marked with their channel and as transient) and items added by hand (film, episode, advert or music video, optionally with a URL); retry, delete, queue missing episodes |
 | Player | Now playing and whether from the cache or the NAS, stream details, virtual remote, cache usage, maintenance status, restart the player; remote keymap editor with press-to-learn |
 | Logs | Player, web, catalogue, schedule and install logs, pitv_content's log, and the journal of both units; level and text filters, auto-refresh, copy |
-| System | Version, time sync, services, database and disk usage, mounts, jobs; export settings and overrides; set or change the admin password |
+| System | Version, time sync, database and disk usage, NAS mounts, jobs; every service of both apps (systemd state, a live check that the process answers, up since, memory, restarts) with the actions the installer allows; export settings and overrides; set or change the admin password |
 
 pitv_content:
 
@@ -593,7 +593,7 @@ Everything the UI does goes through the JSON API so a script or Home Assistant c
 same: `GET /api/now`, `GET /api/schedule?start=&end=&channel=`, `GET /api/schedule/day/{day}`,
 `POST /api/player/key|channel|volume`, `GET /api/catalogue` (last import and index file),
 `POST /api/catalogue/refresh` (body `{"reindex": true}` asks pitv_content to re-index
-first), `POST /api/catalogue/import` (a schema 2 index document), `GET /api/catalogue/export`,
+first and waits for that job), `POST /api/catalogue/import` (a schema 2 index document), `GET /api/catalogue/export`,
 `GET` and `PUT /api/sources` (a view of pitv_content's sources; edits go through its API),
 `POST /api/schedule/build`, CRUD for channels and wanted items, read and edit for shows and
 media, `GET /api/content/manifest`, `POST /api/content/report`, `POST /api/content/readiness`,
@@ -648,7 +648,8 @@ what to keep. `wanted` carries requests that are not scheduled yet: adverts and 
 added by hand, and gaps in a series.
 
 Delivery report (`POST /api/content/report`, or a file dropped in `<cache>/reports/`, which
-maintenance applies and marks `.applied`). Each request comes back `done`, `failed` or
+maintenance applies and marks `.applied`; a dropped copy of a report already posted is
+recognised by its run's tool and start time and not applied twice). Each request comes back `done`, `failed` or
 `skipped`, with the delivered file's path and properties as pitv_content measured them. PiTV
 records the path as `cache_path`; when the delivered length differs from the slot by 30 s or
 more it resizes the future slots and rebuilds the rest of that channel-day from the earliest

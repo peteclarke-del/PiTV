@@ -400,8 +400,27 @@ def test_proxy_rejects_path_escapes(client):
 
 
 def test_service_actions_match_sudoers(client):
-    assert client.post("/api/system/service/pitv-web/stop").status_code == 400
-    assert client.post("/api/system/service/sshd/restart").status_code == 400
+    """The admin offers exactly the systemctl commands the installer lets the pitv user run."""
+    from pathlib import Path
+    from pitv.web.api.services import SERVICE_ACTIONS
+    install = (Path(__file__).parents[1] / "setup" / "install.sh").read_text()
+    rule = next(line for line in install.splitlines() if line.startswith("pitv ALL=(root) NOPASSWD:"))
+    granted = {tuple(cmd.split()[1:]) for cmd in rule.split("NOPASSWD:", 1)[1].split(",")}
+    assert granted == {(action, unit) for unit, actions in SERVICE_ACTIONS.items() for action in actions}
+    assert client.post("/api/system/service/pitv-web.service/stop").status_code == 400
+    assert client.post("/api/system/service/sshd.service/restart").status_code == 400
+
+
+def test_services_cover_both_apps():
+    from pitv.web.api.services import UNITS, Unit, assess
+    assert {u.app for u in UNITS} == {"pitv", "content"}
+    daemon, run = Unit("a.service", "pitv", "", "daemon"), Unit("b.service", "content", "", "run")
+    loaded = {"LoadState": "loaded", "ActiveState": "inactive", "SubState": "dead", "Result": "success"}
+    assert assess(run, loaded, None) == ("idle", "idle, last run ok")         # a oneshot at rest is not a fault
+    assert assess(daemon, loaded, None)[0] == "down"
+    assert assess(daemon, {**loaded, "ActiveState": "active", "SubState": "running"}, False)[0] == "warn"
+    assert assess(daemon, {"LoadState": "not-found"}, True) == ("ok", "running outside systemd")
+    assert assess(daemon, {"LoadState": "not-found"}, None) == ("absent", "not installed")
 
 
 def test_spa_never_serves_outside_the_bundle(client):

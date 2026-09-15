@@ -50,7 +50,7 @@ def validate_control(req: dict[str, Any]) -> tuple[str, Any] | str:
     socket is reachable by the web service, whose remote endpoint is public on the LAN, so
     only remote-control actions and sane numbers get through."""
     cmd = req.get("cmd")
-    if cmd in ("state", "schedule-changed", "quit"):
+    if cmd in ("state", "schedule-changed", "settings-changed", "quit"):
         return cmd, None
     if cmd == "key":
         key = str(req.get("key", "")).lower()
@@ -355,8 +355,9 @@ class Player:
             self.stopping = True
 
     def _reload_settings(self) -> None:
-        """Pick up admin changes to settings and channels once a minute (the cache directory
-        and mpv arguments are read at start only; those need a player restart)."""
+        """Pick up admin changes to settings and channels: at once when the web service says
+        so, and once a minute regardless (the cache directory and mpv arguments are read at start
+        only; those need a player restart)."""
         try:
             self.settings = all_settings(self.conn)
             self.evdev.set_keymap(self.settings.get("keymap") or {})
@@ -603,6 +604,8 @@ class Player:
             self.tune(int(arg))
         elif action == "volume":
             self._set_volume(int(arg))
+        elif action == "settings-changed":
+            self._reload_settings()
         elif action == "schedule-changed":
             self.guide_loaded_at = 0
             self._forget_slot()

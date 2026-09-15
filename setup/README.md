@@ -48,7 +48,9 @@ partition or the USB drive.
    asks once for the NAS username and password (stored root-only in
    `/etc/pitv/smb-credentials`); writes CIFS mount and automount units for the shares under
    `/mnt/` (read-only); creates the cache directory and its `acquired` folders; installs the
-   three services and a sudoers entry so the web UI can restart them; sets `cache_dir` and
+   three services and a sudoers entry granting exactly the service actions the admin offers
+   (restart the web service; restart, stop and start the player; restart pitv_content's API;
+   start a pitv_content run); sets `cache_dir` and
    `acquire_dir` in PiTV's database, which is all PiTV keeps about content; writes the share
    list to `/etc/pitv/nas-sources.json` for pitv_content; and runs `boot-trim.sh`. Environment
    variables: `NAS_HOST` (`synologynas`), `SHARES` (`tvshows movies ads tvsports

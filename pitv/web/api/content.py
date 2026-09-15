@@ -19,12 +19,10 @@ from ...logsetup import tail
 from ...player.cache import MediaCache
 from ...readiness import check as readiness_check
 from .deps import admin_conn, run_cmd
+from .services import CONTENT_RUN, CONTENT_TIMER, systemd_state
 
 router = APIRouter(prefix="/api/content", dependencies=[Depends(admin_conn)])
 
-CONTENT_SERVICE = "pitv-content.service"
-CONTENT_TIMER = "pitv-content.timer"
-CONTENT_BINARY = "/opt/pitv-content/.venv/bin/pitv-content"
 
 
 @router.get("/manifest")
@@ -78,14 +76,18 @@ def tool_status(conn: sqlite3.Connection = Depends(admin_conn)):
             status = json.loads(cache.status_file.read_text())
         except (OSError, ValueError) as exc:
             status = {"error": f"unreadable status file: {exc}"}
-    _, active, _ = run_cmd(["systemctl", "is-active", CONTENT_SERVICE])
-    _, timer, _ = run_cmd(["systemctl", "is-active", CONTENT_TIMER])
-    _, timers, _ = run_cmd(["systemctl", "list-timers", CONTENT_TIMER, "--no-pager", "--no-legend"])
-    rc, version, _ = run_cmd([CONTENT_BINARY, "--version"])
+    units = systemd_state([CONTENT_RUN, CONTENT_TIMER])
+
+    def state(unit: str) -> str:
+        props = units.get(unit) or {}
+        return "not installed" if props.get("LoadState") == "not-found" else props.get("ActiveState") or "unknown"
+
+    loaded = any((units.get(u) or {}).get("LoadState") == "loaded" for u in (CONTENT_RUN, CONTENT_TIMER))
     return {
-        "installed": rc == 0 or status is not None,
-        "version": version if rc == 0 else None,
-        "service": active or "unknown", "timer": timer or "unknown", "timers": timers,
+        "installed": loaded or status is not None,
+        "version": (status or {}).get("tool"),
+        "service": state(CONTENT_RUN), "timer": state(CONTENT_TIMER),
+        "next_run_ts": (status or {}).get("next_timer_ts"),
         "running_marker": cache.content_tool_running(),
         "status_file": str(cache.status_file) if cache.status_file else None, "status": status,
         "log_file": str(cache.log_file) if cache.log_file else None,
@@ -103,9 +105,9 @@ def tool_run(conn: sqlite3.Connection = Depends(admin_conn)):
         if status == 409:
             return {"ok": False, "error": payload.get("error") or "a run is already active"}
         return {"ok": status < 400, **{k: v for k, v in payload.items() if k != "ok"}}
-    rc, _, err = run_cmd(["sudo", "-n", "systemctl", "start", CONTENT_SERVICE], timeout=10)
+    rc, _, err = run_cmd(["sudo", "-n", "systemctl", "start", CONTENT_RUN], timeout=10)
     if rc != 0:
-        return {"ok": False, "error": err or f"could not start {CONTENT_SERVICE}"}
+        return {"ok": False, "error": err or f"could not start {CONTENT_RUN}"}
     return {"ok": True, "via": "systemd"}
 
 

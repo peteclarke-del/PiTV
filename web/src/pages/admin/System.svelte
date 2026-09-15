@@ -1,11 +1,12 @@
 <script>
   import AppBadge from '../../components/AppBadge.svelte';
   import { onMount } from 'svelte';
-  import { get, post, tryApi } from '../../lib/api.js';
+  import { confirmApi, get, post, tryApi } from '../../lib/api.js';
   import { auth, toast } from '../../lib/stores.svelte.js';
   import { fmtBytes, fmtDateTime } from '../../lib/format.js';
   import { downloadJson } from '../../lib/util.js';
   import { guard } from '../../lib/guard.svelte.js';
+  import { poll } from '../../lib/poll.svelte.js';
   import JobList from './JobList.svelte';
 
   let info = $state(null);
@@ -32,7 +33,24 @@
     busy = false;
     if (r) { pw = { current: '', password: '', confirm: '' }; auth.password_set = true; auth.admin = true; }
   }
-  const svcClass = (s) => (s === 'active' ? 'ok' : s === 'inactive' || s === 'failed' ? 'danger' : '');
+  const HEALTH = { ok: 'ok', idle: 'info', warn: 'warn', down: 'danger' };
+  let acting = $state('');
+  poll(load, 10000);
+
+  // Stopping the player blanks the screen, and restarting the web service drops this page for a moment: ask first.
+  async function serviceAction(unit, action) {
+    const verb = { restart: 'Restart', stop: 'Stop', start: 'Start' }[action] ?? action;
+    const call = () => post(`/api/system/service/${unit}/${action}`);
+    const opts = { success: `${verb} requested for ${unit}` };
+    acting = unit;
+    if (action === 'stop' || unit === 'pitv-web.service') {
+      await confirmApi(`${verb} ${unit}?`, { title: `${verb} service`, okLabel: verb, danger: action === 'stop' }, call, opts);
+    } else {
+      await tryApi(call(), opts);
+    }
+    acting = '';
+    setTimeout(load, 1500);
+  }
 </script>
 
 <div class="stack">
@@ -62,16 +80,6 @@
       {/if}
     </div>
     <div class="card">
-      <div class="card-title"><h3>Services</h3><AppBadge app="pitv" /></div>
-      {#if info}
-        <dl class="kv">
-          {#each Object.entries(info.services) as [name, state] (name)}
-            <dt class="mono">{name}</dt><dd><span class="badge {svcClass(state)}">{state}</span></dd>
-          {/each}
-        </dl>
-      {/if}
-    </div>
-    <div class="card">
       <div class="card-title"><h3>Data</h3><AppBadge app="pitv" /></div>
       {#if info}
         <dl class="kv">
@@ -81,6 +89,36 @@
           <dt>Free space</dt><dd>{info.data.free != null ? `${fmtBytes(info.data.free)} of ${fmtBytes(info.data.total)}` : '–'}</dd>
         </dl>
       {/if}
+    </div>
+  </div>
+
+  <div class="card pad-0">
+    <div class="card-title" style="padding:.8rem 1rem 0"><h3>Services</h3><AppBadge app="pitv" /><AppBadge app="content" /></div>
+    <p class="scope" style="padding:0 1rem;margin:.2rem 0 .4rem">The systemd units of both applications. "Answers" is a live check that the process responds, so a service run by hand on a desktop still shows as up.</p>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Service</th><th>App</th><th>Status</th><th>Answers</th><th>Up since</th><th>Memory</th><th>Restarts</th><th></th></tr></thead>
+      <tbody>
+        {#each info?.services ?? [] as s (s.unit)}
+          <tr>
+            <td><div class="mono">{s.unit}</div><div class="tiny muted">{s.role}</div></td>
+            <td><AppBadge app={s.app} /></td>
+            <td><span class="badge {HEALTH[s.health] ?? ''}">{s.state}</span>{#if s.enabled && s.enabled !== 'enabled' && s.enabled !== 'static'}<div class="tiny muted">{s.enabled}</div>{/if}</td>
+            <td>{#if s.responding === true}<span class="badge ok">yes</span>{:else if s.responding === false}<span class="badge danger">no</span>{:else}<span class="muted">–</span>{/if}</td>
+            <td class="small">{s.since_ts ? fmtDateTime(s.since_ts) : '–'}</td>
+            <td class="small">{s.memory != null ? fmtBytes(s.memory) : '–'}</td>
+            <td class="small">{s.restarts ?? '–'}</td>
+            <td class="right nowrap">
+              {#each s.actions as a (a)}
+                <button class="small ghost" onclick={() => serviceAction(s.unit, a)} disabled={acting === s.unit}>{a}</button>
+              {/each}
+            </td>
+          </tr>
+        {:else}
+          <tr><td colspan="8" class="empty">{info ? 'No services reported.' : 'Loading…'}</td></tr>
+        {/each}
+      </tbody>
+    </table>
     </div>
   </div>
 

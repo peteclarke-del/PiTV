@@ -38,8 +38,10 @@ contract, and anything it files reaches PiTV through the index like any other NA
 
 `GET {content_tool_url}/api/library`, and the same document written atomically to
 `<cache_dir>/index/library.json` so PiTV can import it when the API is down.
-`POST {content_tool_url}/api/index` starts a re-index; the file's `generated_ts` changes when
-it completes.
+`POST {content_tool_url}/api/index` starts a re-index and returns its `job_id`; the file's
+`generated_ts` changes when it completes. PiTV waits for that job (`GET /api/jobs` until the
+entry with that `job_id` has `finished_ts`) before it imports, so a re-index started from the
+admin is imported as soon as it is done.
 
 ```json
 {
@@ -132,7 +134,9 @@ service is down. Schema 2.
 
 ## 3. Delivery report (pitv_content to PiTV)
 
-`POST /api/content/report` on PiTV; the same document may be dropped in `reports_dir`.
+`POST /api/content/report` on PiTV; the same document may be dropped in `reports_dir`. PiTV
+applies a report once: a dropped copy of one it already took over HTTP is recognised by
+`run.tool` and `run.started_ts`, so both must be present and identical in the two copies.
 
 ```json
 {

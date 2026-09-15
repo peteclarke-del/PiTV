@@ -27,7 +27,7 @@
   });
 
   const restart = () => confirmApi('Restart the player service? The picture will drop for a few seconds.', { title: 'Restart player', okLabel: 'Restart' },
-    () => post('/api/system/service/pitv-player/restart'), { success: 'Restart requested' });
+    () => post('/api/system/service/pitv-player.service/restart'), { success: 'Restart requested' });
   let slotProgress = $derived.by(() => {
     const sl = s.slot; if (!sl || !sl.start_ts || !sl.end_ts) return 0;
     return (clock.ts - sl.start_ts) / (sl.end_ts - sl.start_ts);
