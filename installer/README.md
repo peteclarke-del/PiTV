@@ -14,7 +14,8 @@ installer/
 ## How it fits together
 
 1. **Image.** `sudo installer/image/build.sh` downloads DietPi (Bookworm, Pi 2/3/4), adds both
-   apps' source trees under `/opt/pitv-src` and `/opt/pitv-content-src`, installs the first-boot
+   apps' source trees (PiTV from this checkout; pitv_content from the private repo
+   https://github.com/peteclarke-del/PiTV_content cloned beside it as `../../PiTV_content`, or pass `--content-src`) under `/opt/pitv-src` and `/opt/pitv-content-src`, installs the first-boot
    hook and disables DietPi's own root-partition auto-grow. Nothing is installed at build time,
    so no chroot or emulation is needed.
 2. **Installer.** `pitv-installer` (one binary per platform, run as administrator/root) asks the

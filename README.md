@@ -7,6 +7,8 @@ with a teletext-style on-screen guide and a web interface for the schedule and a
 - **Design**: [docs/PLAN.md](docs/PLAN.md)
 - **Install on the Pi**: [setup/README.md](setup/README.md)
 - **Web frontend**: [web/README.md](web/README.md)
+- **Installer**: [installer/README.md](installer/README.md)
+- **Content app** (fetch, encode, cache): private repo https://github.com/peteclarke-del/PiTV_content
 
 ## Development on a desktop
 

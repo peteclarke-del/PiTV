@@ -127,12 +127,18 @@ def create_app(cfg: Config) -> FastAPI:
         if assets.is_dir():
             app.mount("/assets", StaticFiles(directory=assets), name="assets")
 
+        # index.html must never be cached: it names hashed asset files that change on every
+        # build, and a stale copy renders a blank page. The hashed assets themselves are immutable.
+        no_cache = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+
         @app.get("/{path:path}", include_in_schema=False)
         async def spa(path: str):
             candidate = STATIC_DIR / path
             if path and candidate.is_file():
-                return FileResponse(candidate)
-            return FileResponse(index)
+                if path.startswith("assets/"):
+                    return FileResponse(candidate, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+                return FileResponse(candidate, headers=no_cache)
+            return FileResponse(index, headers=no_cache)
     else:
         @app.get("/", include_in_schema=False)
         async def placeholder():
