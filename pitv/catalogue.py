@@ -82,7 +82,7 @@ def _reindex(base: str, timeout: float = REINDEX_TIMEOUT) -> None:
             if status == 200 and isinstance(jobs, list) else None
         if job is not None and job.get("finished_ts"):
             if job.get("status") != "ok":
-                log.warning("re-index %s ended %s: %s", job_id, job.get("status"), job.get("summary", ""))
+                log.warning("re-index %s ended %s, no new index: %s", job_id, job.get("status"), job.get("summary", ""))
             return
         time.sleep(REINDEX_POLL)
     log.warning("re-index %s still running after %ds; importing the current index", job_id, timeout)

@@ -41,7 +41,9 @@ contract, and anything it files reaches PiTV through the index like any other NA
 `POST {content_tool_url}/api/index` starts a re-index and returns its `job_id`; the file's
 `generated_ts` changes when it completes. PiTV waits for that job (`GET /api/jobs` until the
 entry with that `job_id` has `finished_ts`) before it imports, so a re-index started from the
-admin is imported as soon as it is done.
+admin is imported as soon as it is done. A job that wrote an index ends `ok` even when the index
+is incomplete (that is carried by `"complete": false`); `failed` means no index was produced,
+and PiTV logs it and imports the index it already had.
 
 ```json
 {
