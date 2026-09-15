@@ -166,7 +166,11 @@ service is down. Schema 2.
 - `meta` is required for fetched material, which PiTV has never seen; PiTV creates its
   catalogue entry from it. For episodes `show_title`, `season` and `episode` echo the request
   exactly, so the delivery is filed against it even when the fetched title differs.
-- A `skipped` item still carries a `file` block measured from the existing target.
+- A `skipped` item still carries a `file` block measured from the existing target, except a
+  skip whose message is "being written by another process": its file is incomplete, it has
+  `"file": null`, and PiTV ignores it (no attempt used, no failure logged) until a later report
+  delivers it measured.
+- Every `file` block carries `vcodec` and `interlaced`: they decide how PiTV decodes the copy.
 - Schema 1 reports (no `file` block) are still accepted during the transition: the path is
   recorded and the requested length is kept.
 

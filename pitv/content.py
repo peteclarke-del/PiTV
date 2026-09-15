@@ -290,6 +290,8 @@ def apply_report(conn: sqlite3.Connection, report: dict[str, Any]) -> dict[str, 
             mid = int(_number(e.get("media_id")) or 0)
             file = e.get("file") if isinstance(e.get("file"), dict) else ({"path": e["path"]} if isinstance(e.get("path"), str) else None)
             usable = bool(file and isinstance(file.get("path"), str) and Path(file["path"]).is_file())
+            if status == "skipped" and not usable:
+                continue   # still being written by another process: it arrives measured in a later report
             if status in ("done", "skipped") and usable:
                 if wid:
                     changes = _deliver_fetched(conn, wid, file, e.get("meta") if isinstance(e.get("meta"), dict) else {})
@@ -306,8 +308,8 @@ def apply_report(conn: sqlite3.Connection, report: dict[str, Any]) -> dict[str, 
                     continue
                 for ch, at in changes.items():
                     refill[ch] = min(refill.get(ch, at), at)
-            elif status == "failed" or (status in ("done", "skipped") and not usable):
-                message = e.get("message") or ("reported file does not exist" if status != "failed" else "")
+            elif status == "failed" or (status == "done" and not usable):
+                message = e.get("message") or ("reported file does not exist" if status == "done" else "")
                 if wid:
                     _fail_wanted(conn, wid, message)
                     counts["wanted_failed"] += 1

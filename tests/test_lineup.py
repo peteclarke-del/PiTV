@@ -163,3 +163,19 @@ def test_delivery_report_fills_placeholder(conn, tmp_path):
     with dbm.tx(conn):
         conn.execute("DELETE FROM schedule WHERE day >= '2099-12-31'")
     lineup.remove(conn, entry["id"])
+
+
+def test_skip_in_progress_is_neither_done_nor_failed(conn):
+    """"skipped, being written by another process" arrives without a file block; it must not use
+    up an attempt or count as a failed delivery."""
+    from pitv.content import apply_report
+    with dbm.tx(conn):
+        wid = conn.execute("INSERT INTO wanted(kind, title, provider, created_at) VALUES ('music', 'In Progress', 'auto', 0)").lastrowid
+    counts = apply_report(conn, {"schema": 2, "items": [
+        {"request_id": f"w:{wid}", "wanted_id": wid, "status": "skipped", "message": "being written by another process", "file": None},
+        {"request_id": "m:1", "media_id": 1, "status": "skipped", "message": "being written by another process", "file": None}]})
+    assert counts == {"items_done": 0, "items_failed": 0, "wanted_done": 0, "wanted_failed": 0, "created": 0}
+    row = conn.execute("SELECT status, attempts FROM wanted WHERE id = ?", (wid,)).fetchone()
+    assert (row["status"], row["attempts"]) == ("queued", 0)
+    with dbm.tx(conn):
+        conn.execute("DELETE FROM wanted WHERE id = ?", (wid,))
