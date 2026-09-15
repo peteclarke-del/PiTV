@@ -68,7 +68,10 @@ installer/
    the environment, never on a command line or in the log. DietPi runs the script once and
    never again, so a failed or interrupted first boot is finished by hand: log in as the
    maintenance user, fix the cause given at the end of the log, and run
-   `sudo bash /boot/Automation_Custom_Script.sh`. Every step is safe to repeat.
+   `sudo bash /boot/Automation_Custom_Script.sh`. Every step is safe to repeat. The USB work
+   drive is waited for up to 30 s; without it PiTV still installs, but pitv_content does not
+   (it refuses a cache on the SD card), and the log says to plug the drive in and re-run the
+   script.
 4. Upgrade. `pitv-installer upgrade --host pitv --user <maintenance user>` (or mode `upgrade`
    in the guided flow) connects over SSH (password, or `--key`), checks the Pi's host key
    against `~/.ssh/known_hosts` (shown and recorded on first contact, refused if it ever

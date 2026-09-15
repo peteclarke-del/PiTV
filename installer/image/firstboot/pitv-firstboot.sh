@@ -189,7 +189,14 @@ printf '[Journal]\nStorage=persistent\nSystemMaxUse=200M\nRuntimeMaxUse=20M\n' >
 CACHE_ROOT="$(dirname "$CFG_CACHE_DIR")"
 DEV="$CFG_WORK_DEV"
 if [ "$DEV" = auto ]; then
-  DEV="$(lsblk -dpno NAME,TYPE,TRAN | awk -v sys="$DISK" '$2=="disk" && $3=="usb" && $1!=sys {print $1; exit}')"
+  # A USB drive can enumerate a few seconds after boot; give it up to 30 s before deciding
+  # there is none, since pitv_content will not install without its cache drive.
+  for _ in $(seq 1 15); do
+    DEV="$(lsblk -dpno NAME,TYPE,TRAN | awk -v sys="$DISK" '$2=="disk" && $3=="usb" && $1!=sys {print $1; exit}')"
+    [ -z "$DEV" ] || break
+    udevadm settle --timeout=2 || true
+    sleep 2
+  done
 fi
 [ "$DEV" != "$DISK" ] || fail "work_drive.device $DEV is the system card"
 if [ -n "$DEV" ] && [ -b "$DEV" ]; then
@@ -236,7 +243,10 @@ print("admin password set")' >> "$LOG" 2>&1
 fi
 
 # ---- 5. pitv_content ---------------------------------------------------------------------------
-if [ -f "$SRC_CONTENT/setup/install-on-pi.sh" ]; then
+if ! mountpoint -q "$CACHE_ROOT"; then
+  # pitv_content refuses a cache on the SD card; installing it now would only fail.
+  log "WARNING: pitv_content not installed: the work drive is not mounted at $CACHE_ROOT. Plug it in, then run: sudo bash /boot/Automation_Custom_Script.sh"
+elif [ -f "$SRC_CONTENT/setup/install-on-pi.sh" ]; then
   log "installing pitv_content"
   # The NAS shares, as written by install.sh, become pitv_content's sources on its first install.
   # shellcheck disable=SC2094 # the installer and this redirection both append to the log
