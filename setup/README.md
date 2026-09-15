@@ -47,11 +47,12 @@ later is refused.
    git clone https://github.com/peteclarke-del/PiTV.git ~/PiTV
    cd ~/PiTV && sudo ./setup/install.sh
    ```
-   `install.sh` is idempotent. It asks once for the NAS username and password (stored
+   `install.sh` is idempotent. It asks once for the NAS login, defaulting to the NAS's `pitv` account with no password, since the shares are only read (stored
    root-only in `/etc/pitv/smb-credentials`); installs mpv, ffmpeg, Python, Pillow, evdev and
    cifs-utils; creates the `pitv` system user; copies the code to `/opt/pitv` with a venv,
-   owned by root so the service cannot rewrite it; writes a CIFS mount and automount unit per
-   share under `/mnt/` (read-only); creates the cache directory and its `acquired` folders on
+   owned by root so the service cannot rewrite it; hands the NAS mounts to pitv_content (it
+   keeps the login and the share list for pitv_content's installer, which mounts the shares
+   read-only under `/mnt/`, and removes mount units an older install wrote); creates the cache directory and its `acquired` folders on
    the mounted drive; installs the three services and a sudoers entry, checked with `visudo`,
    granting exactly the service actions the admin offers (restart the web service; restart,
    stop and start the player; restart pitv_content's API; start a pitv_content run); sets
@@ -112,5 +113,5 @@ journalctl -u pitv-player -f       # player log (also Admin, Logs)
 journalctl -u pitv-web -f          # web log
 sudo -u pitv /opt/pitv/.venv/bin/pitv catalogue --reindex   # ask pitv_content to re-index, then import
 systemd-analyze blame | head       # boot time breakdown
-systemctl status mnt-tvshows.automount   # one per share
+systemctl status mnt-tvshows.automount   # one per source, written by pitv_content
 ```

@@ -161,7 +161,7 @@ func Wizard(c Config) Config {
 	fmt.Println("\nNAS (read-only media shares)")
 	c.NAS.Host = p.ask("NAS host", c.NAS.Host)
 	c.NAS.Username = p.ask("NAS username", c.NAS.Username)
-	p.secret("NAS password", &c.NAS.Password)
+	p.secret("NAS password (blank for none)", &c.NAS.Password)
 	c.NAS.Shares = strings.Fields(p.ask("Shares (space separated; use %20 for a space)", strings.Join(c.NAS.Shares, " ")))
 
 	fmt.Println("\nTelevision and storage")

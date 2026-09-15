@@ -91,15 +91,18 @@ The installer's default shares, and the layouts pitv_content expects on them:
 | `<cache>/acquired/{tvshows,tvsports,movies,ads,music videos}` | as above | Where pitv_content files what it fetches (section 7). Indexed with `location: cache`, so PiTV treats these items as already cached |
 | any folder | ident | `ch1/*.mp4`; the folder name gives the channel the ident was made for (assigned once, section 3.2) |
 
-The NAS shares require authentication and are mounted read-only with CIFS from a root-only
-credentials file (`/etc/pitv/smb-credentials`) through systemd automount units, so boot
-never blocks on the network. Mount options (`systemd/mnt-share.mount.template`):
-`vers=3.0,ro,noserverino,cache=loose,actimeo=60,uid=pitv,gid=pitv,iocharset=utf8,_netdev,x-systemd.automount,x-systemd.idle-timeout=0,x-systemd.mount-timeout=30`.
-`install.sh` writes one mount and automount unit per share named in `SHARES`. PiTV's
-installer keeps the mounts because both apps read the shares: pitv_content to index and
-deliver, PiTV to play an original when its cache copy is missing (section 5.2). A source added
-in the admin must point at a folder that is already mounted, because mounting needs root and
-neither web service runs as root.
+The NAS shares are mounted read-only with CIFS by pitv_content, which owns the sources and
+their logins (contract section 4). Each source may carry its own login, set in the admin;
+pitv_content keeps it root-only and a root helper, started by a systemd path unit rather than
+sudo, writes one mount and automount unit per source, so boot never blocks on the network.
+Mount options are those PiTV's installer used before the handover:
+`vers=3.0,ro,noserverino,cache=loose,actimeo=60,uid=pitv,gid=pitv,iocharset=utf8,_netdev`, plus
+`nosuid,nodev,noexec`, with the automount's idle timeout off. At install, PiTV's `install.sh`
+keeps the installer's NAS login in `/etc/pitv/smb-credentials` (root-only) and the share list
+in `/etc/pitv/nas-sources.json`; pitv_content's installer mounts those shares with that login,
+at the same `/mnt/<share>` points, and removing the units an older `install.sh` wrote lets it
+take them over. Both apps read the mounts: pitv_content to index and deliver, PiTV to play an
+original when its cache copy is missing (section 5.2).
 
 ### 3.2 Importing the index (`pitv catalogue`)
 
@@ -779,8 +782,8 @@ titles and jobs.
   partition (`50-pitv.conf`); first boot adds persistent storage on `/work` capped at 200 MB
   (`60-pitv-work.conf`).
 - Services: `pitv-splash` (sysinit, runs as `pitv` in group `video` and draws the test card
-  straight onto `/dev/fb0`), `pitv-player` (after network-online, time sync and the CIFS
-  automounts, which it does not require; Type=notify with a watchdog, reports ready before
+  straight onto `/dev/fb0`), `pitv-player` (after network-online, time sync and remote
+  file systems, which it does not require; Type=notify with a watchdog, reports ready before
   its clock wait, `TimeoutStartSec=180`), `pitv-web` (after the player; does not delay the
   picture). All three need `/var/lib/pitv` mounted. `pitv-web` cannot carry NoNewPrivileges
   or anything that implies it, because the admin's service actions go through `sudo -n`. The
@@ -868,7 +871,7 @@ PiTV/
 │   ├── logsetup.py, sdnotify.py, splash.py, devtools.py (fake library and its index)
 │   └── cli.py                 pitv init | fake-library | catalogue | schedule | listing | reset-schedule | content-manifest | content-report | readiness | web | play
 ├── web/                       Svelte + Vite source; npm run build writes pitv/web/static/
-├── systemd/                   pitv-player.service, pitv-web.service, pitv-splash.service, mount and automount templates
+├── systemd/                   pitv-player.service, pitv-web.service, pitv-splash.service
 ├── setup/                     install.sh (Pi provisioning), boot-trim.sh, dev.sh (desktop helper)
 ├── installer/                 SD-card image build, first-boot script, Go installer CLI
 ├── tests/                     pytest suite against a generated fake library and its index (tiny ffmpeg clips)

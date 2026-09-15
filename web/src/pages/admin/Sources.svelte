@@ -34,8 +34,16 @@
   const typeLabel = (t) => TYPES.find((x) => x[0] === t)?.[1] ?? t;
   const indexedAt = (h) => h?.last_indexed_ts ?? h?.last_indexed ?? null;
   // Worst first, so an ascending sort on Health lists the problems at the top.
-  const HEALTH = [['danger', 'not mounted'], ['danger', 'unreadable'], ['', 'unknown', "Health is reported by pitv_content's API"], ['ok', 'mounted']];
-  const healthRank = (h) => (h?.mounted === false ? 0 : h?.readable === false ? 1 : h?.mounted === true ? 3 : 2);
+  // Worst first, so sorting the column ascending puts problems at the top.
+  const HEALTH = [['danger', 'mount failed'], ['danger', 'not mounted'], ['danger', 'unreadable'], ['info', 'mounting'],
+                  ['', 'unknown', "Health is reported by pitv_content's API"], ['ok', 'mounted']];
+  function healthRank(h) {
+    if (h?.mount_state === 'failed') return 0;
+    if (h?.mounted === false && h?.mount_state !== 'pending') return 1;
+    if (h?.readable === false) return 2;
+    if (h?.mount_state === 'pending') return 3;
+    return h?.mounted === true ? 5 : 4;
+  }
   const columns = [
     { key: 'name', label: 'Name', cell: nameCell },
     { key: 'type', label: 'Type', get: (s) => typeLabel(s.type), cell: typeCell },
@@ -69,6 +77,8 @@
     return out;
   }
   let tested = $state(null);   // {ok, message} from the last connection test
+  // A result describes the address and login it was run with; editing either retires it.
+  $effect(() => { editing?.remote; editing?.username; editing?.password; editing?.workgroup; editing?.clear; tested = null; });
   const test = guard(async () => {
     const f = editing;
     tested = null;
@@ -137,7 +147,7 @@
 {#snippet nameCell(s)}<b>{s.name}</b>{#if s.enabled === false}<span class="badge">disabled</span>{/if}<div class="tiny muted mono">{s.id}</div>{/snippet}
 {#snippet typeCell(s)}{typeLabel(s.type)}{#if s.type === 'tv' && s.category && s.category !== 'general'}<span class="badge info">{s.category}</span>{/if}{/snippet}
 {#snippet rootCell(s)}<div style="max-width:300px" title={s.root}><div class="truncate">{s.root}</div>{#if s.remote}<div class="tiny muted truncate">{s.remote}</div>{/if}</div>{/snippet}
-{#snippet healthCell(s)}{@const [cls, text, title] = HEALTH[healthRank(s.health)]}<span class="badge {cls}" {title}>{text}</span>{#if s.health?.error}<div class="tiny" style="color:var(--danger)">{s.health.error}</div>{/if}{/snippet}
+{#snippet healthCell(s)}{@const [cls, text, title] = HEALTH[healthRank(s.health)]}<span class="badge {cls}" {title}>{text}</span>{#each [s.health?.mount_error, s.health?.error].filter(Boolean) as msg (msg)}<div class="tiny" style="color:var(--danger)">{msg}</div>{/each}{#if s.credentials?.set}<div class="tiny muted">login saved</div>{/if}{/snippet}
 {#snippet indexedCell(s)}{indexedAt(s.health) ? fmtAgo(indexedAt(s.health), clock.ts) : 'never'}{/snippet}
 {#snippet actionsCell(s)}<button class="small" onclick={() => edit(s)} disabled={offline}>Edit</button>
   <button class="small danger" onclick={() => remove(s)} disabled={offline}>Remove</button>{/snippet}

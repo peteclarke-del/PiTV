@@ -248,10 +248,12 @@ if ! mountpoint -q "$CACHE_ROOT"; then
   log "WARNING: pitv_content not installed: the work drive is not mounted at $CACHE_ROOT. Plug it in, then run: sudo bash /boot/Automation_Custom_Script.sh"
 elif [ -f "$SRC_CONTENT/setup/install-on-pi.sh" ]; then
   log "installing pitv_content"
-  # The NAS shares, as written by install.sh, become pitv_content's sources on its first install.
+  # The NAS shares, as written by install.sh, become pitv_content's sources on its first install,
+  # and it mounts them with the NAS login install.sh keeps root-only (contract section 4).
   # shellcheck disable=SC2094 # the installer and this redirection both append to the log
   ( cd "$SRC_CONTENT" && CACHE_DIR="$CFG_CACHE_DIR" WORK_DIR="$WORK/pitv-content" PITV_URL=http://127.0.0.1 \
-      NAS_SOURCES="$(< /etc/pitv/nas-sources.json)" INSTALL_LOG="$LOG" YOUTUBE_COOKIES_FILE="$CFG_COOKIES" \
+      NAS_SOURCES="$(< /etc/pitv/nas-sources.json)" NAS_CREDENTIALS_FILE=/etc/pitv/smb-credentials \
+      INSTALL_LOG="$LOG" YOUTUBE_COOKIES_FILE="$CFG_COOKIES" \
       bash ./setup/install-on-pi.sh ) < /dev/null >> "$LOG" 2>&1 \
     || log "WARNING: pitv_content install failed (see above); PiTV runs without it"
 else
