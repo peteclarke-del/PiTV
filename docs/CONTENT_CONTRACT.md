@@ -213,14 +213,16 @@ the platform is `null`.
 
 ```json
 {"version": "0.2.0", "python": "3.12.3",
- "tools": {"ffmpeg": "5.1.6", "yt-dlp": "2026.08.19"},
+ "tools": {"ffmpeg": "5.1.6", "ffprobe": "5.1.6", "yt-dlp": "2026.08.19", "curl": "7.88.1"},
  "hostname": "pitv", "model": "Raspberry Pi 4 Model B Rev 1.5", "pi": true,
  "uptime_s": 583200, "load": [1.09, 1.39, 2.29], "temperature_c": 52.0,
  "memory": {"total": 4038000000, "available": 2511000000}}
 ```
 
 - `tools` maps each external program the application depends on to its version, or `null`
-  when it is missing. PiTV reports `mpv`; pitv_content reports `ffmpeg` and `yt-dlp`.
+  when it is missing. PiTV reports `mpv`; pitv_content reports `ffmpeg`, `ffprobe`, `yt-dlp` and
+  `curl`. The admin renders whatever keys arrive. pitv_content reads the versions at start-up
+  and hourly, so a request never waits on a subprocess.
 - `model` is the board from `/proc/device-tree/model` on a Pi, else the OS and architecture.
 - `uptime_s` is the machine's uptime from `/proc/uptime`; `temperature_c` is
   `thermal_zone0`; `memory` comes from `MemTotal` and `MemAvailable` in `/proc/meminfo`, in

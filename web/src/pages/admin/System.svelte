@@ -83,11 +83,8 @@
     <HostCard title="PiTV" app="pitv" host={info?.host}>
       <button class="small ghost" onclick={load}>Refresh</button>
     </HostCard>
-    <HostCard title="pitv_content" app="content" host={content} note={contentNote}>
-      {#if content && info?.host}
-        <span class="badge {content.hostname === info.host.hostname ? 'info' : ''}">{content.hostname === info.host.hostname ? 'same machine as PiTV' : 'separate machine'}</span>
-      {/if}
-    </HostCard>
+    <HostCard title="pitv_content" app="content" host={content} note={contentNote}
+      hostBadge={content && info?.host ? (content.hostname === info.host.hostname ? 'same machine as PiTV' : 'separate machine') : ''} />
     <div class="card">
       <div class="card-title"><h3>Time</h3><AppBadge app="pitv" /></div>
       {#if info}
