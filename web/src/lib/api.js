@@ -1,6 +1,6 @@
-// Fetch wrapper for the PiTV JSON API, the shared "confirm → call → toast" helpers, and the
+// Fetch wrapper for the PiTV JSON API, the shared "confirm, call, toast" helpers, and the
 // single Server-Sent Events connection that feeds the player/jobs/changes stores.
-import { auth, player, jobs, changes, toast, confirm } from './stores.svelte.js';
+import { auth, player, jobs, noteChange, toast, confirm } from './stores.svelte.js';
 
 export class ApiError extends Error {
   constructor(status, detail) {
@@ -112,40 +112,63 @@ export function normalisePlayer(raw) {
 // One EventSource for the whole app. The server replays its last event of each kind right after
 // `hello`, so schedule/library events within 500 ms of a (re)connect are ignored: the pages fetch
 // on mount anyway, and on a reconnect the change counters are bumped explicitly instead.
+// A dropped stream is retried by the browser itself; a refused or non-200 answer (a proxy while the
+// service restarts) closes the stream for good, so that case is reopened here with backoff.
 
+const RETRY_MIN = 1000, RETRY_MAX = 30000;
 let es = null;
 let hadHello = false;
 let helloAt = 0;
+let retryMs = RETRY_MIN;
+let retryTimer = 0;
 
 /** Open the shared EventSource. Idempotent. */
 export function connectEvents() {
-  if (es) return;
+  if (es || retryTimer) return;
+  open();
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && !es && retryTimer) { clearTimeout(retryTimer); retryTimer = 0; open(); }
+  });
+}
+
+function open() {
   es = new EventSource('/api/events');
   es.addEventListener('hello', (e) => {
     const data = safeJson(e.data);
     helloAt = Date.now();
-    if (data?.player) player.state = normalisePlayer(data.player);
+    retryMs = RETRY_MIN;
+    if (data && typeof data === 'object' && data.player) player.state = normalisePlayer(data.player);
     if (hadHello) { // reconnected after a drop: everything may be stale
-      changes.schedule++;
-      changes.library++;
+      noteChange('schedule');
+      noteChange('library');
     }
     hadHello = true;
     player.connected = true;
   });
-  es.addEventListener('player', (e) => { player.state = normalisePlayer(safeJson(e.data)); });
+  es.addEventListener('player', (e) => {
+    const data = safeJson(e.data);
+    if (data && typeof data === 'object') player.state = normalisePlayer(data);
+  });
   es.addEventListener('job', (e) => {
     const job = safeJson(e.data);
-    if (!job || typeof job.id !== 'number') return;
+    if (!job || typeof job !== 'object' || typeof job.id !== 'number') return;
     upsertJob(job);
     if (jobs.list.length > 30) jobs.list.splice(0, jobs.list.length - 30);
     if (job.status === 'done' || job.status === 'failed') {
-      if (job.kind === 'schedule') changes.schedule++;
-      if (job.kind === 'scan') changes.library++;
+      if (job.kind === 'schedule') noteChange('schedule');
+      if (job.kind === 'scan') noteChange('library');
     }
   });
-  es.addEventListener('schedule', () => { if (Date.now() - helloAt >= 500) changes.schedule++; });
-  es.addEventListener('library', () => { if (Date.now() - helloAt >= 500) changes.library++; });
-  es.onerror = () => { player.connected = false; };
+  es.addEventListener('schedule', () => { if (Date.now() - helloAt >= 500) noteChange('schedule'); });
+  es.addEventListener('library', () => { if (Date.now() - helloAt >= 500) noteChange('library'); });
+  es.onerror = () => {
+    player.connected = false;
+    if (es.readyState !== EventSource.CLOSED) return;
+    es.close();
+    es = null;
+    retryTimer = setTimeout(() => { retryTimer = 0; open(); }, retryMs);
+    retryMs = Math.min(retryMs * 2, RETRY_MAX);
+  };
 }
 
 /** Merge a job record (from SSE or GET /api/jobs) into the jobs store. */

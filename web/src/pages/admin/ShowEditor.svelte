@@ -2,12 +2,13 @@
   import { untrack } from 'svelte';
   import { get, put, post, del, tryApi } from '../../lib/api.js';
   import { fmtDuration, fmtDateTime, fmtEpisode, WEEKDAYS, CERTIFICATES } from '../../lib/format.js';
+  import { num } from '../../lib/util.js';
+  import { guard } from '../../lib/guard.svelte.js';
   import Drawer from '../../components/Drawer.svelte';
 
   let { id, channels = [], onclose, onsaved } = $props();
   let show = $state(null);
   let form = $state(null);
-  let saving = $state(false);
   let cursorForm = $state({ season: 1, episode: 1 });
 
   async function load() {
@@ -26,30 +27,30 @@
   function body() {
     const genres = form.genres.split(',').map((g) => g.trim()).filter(Boolean);
     return {
-      title: form.title, year: form.year === '' ? null : Number(form.year), certificate: form.certificate || null,
+      title: form.title, year: num(form.year, { min: 1900, max: 2100, int: true }), certificate: form.certificate || null,
       genres: genres.length ? genres : null, plot: form.plot, kids: form.kids ? 1 : 0,
       category: form.category, home_channel_id: form.home_channel_id === '' ? null : Number(form.home_channel_id), mode: form.mode,
       anchor_time: form.mode === 'auto' ? null : form.anchor_time || null,
       anchor_days: form.mode === 'auto' ? null : [...form.anchor_days].sort(),
-      rest_weeks: Number(form.rest_weeks), excluded: form.excluded,
+      rest_weeks: num(form.rest_weeks, { min: 0, max: 52, int: true, fallback: 0 }), excluded: form.excluded,
     };
   }
-  async function save() {
-    saving = true;
+  const save = guard(async () => {
     const r = await tryApi(put(`/api/shows/${id}`, body()), { success: 'Show saved' });
-    saving = false;
     if (r) { show = r; onsaved?.(); }
-  }
-  async function clearOverrides() {
+  });
+  const clearOverrides = guard(async () => {
     const r = await tryApi(put(`/api/shows/${id}`, { title: null, year: null, certificate: null, genres: null, plot: null, kids: null }), { success: 'Overrides cleared' });
     if (r) { await load(); onsaved?.(); }
-  }
-  async function setCursor(season, episode) {
+  });
+  const setCursor = guard(async (season, episode) => {
+    season = num(season, { min: 0, int: true, fallback: 0 });
+    episode = num(episode, { min: 0, int: true, fallback: 0 });
     if (await tryApi(post(`/api/shows/${id}/cursor`, { season, episode }), { success: `Next episode set to S${season}E${episode}` })) load();
-  }
-  async function clearCursor() {
+  });
+  const clearCursor = guard(async () => {
     if (await tryApi(del(`/api/shows/${id}/cursor`), { success: 'Cursor cleared' })) load();
-  }
+  });
   function toggleDay(d) {
     if (form.anchor_days.has(d)) form.anchor_days.delete(d); else form.anchor_days.add(d);
     form.anchor_days = new Set(form.anchor_days);
@@ -61,7 +62,7 @@
   {#if form}
     <div class="stack">
       {#if overridden.length}
-        <div class="row small muted">Overriding scanned: {overridden.join(', ')} <button class="small ghost" onclick={clearOverrides}>Clear overrides</button></div>
+        <div class="row small muted">Overriding scanned: {overridden.join(', ')} <button class="small ghost" onclick={clearOverrides} disabled={clearOverrides.busy}>Clear overrides</button></div>
       {/if}
       <div class="form-grid">
         <label class="field">Title<input bind:value={form.title} /><span class="help">Scanned: {show.scanned.title}</span></label>
@@ -100,14 +101,14 @@
       <div class="row small">
         {#if show.cursor}
           <span>Cursor: S{show.cursor.next_season}E{show.cursor.next_episode}</span>
-          <button class="small ghost" onclick={clearCursor}>Clear</button>
+          <button class="small ghost" onclick={clearCursor} disabled={clearCursor.busy}>Clear</button>
         {:else}
           <span class="muted">No cursor set{show.last_aired ? ` (last aired S${show.last_aired.season}E${show.last_aired.episode})` : ''}.</span>
         {/if}
         <span class="inline-form">
           <input class="xnarrow" type="number" min="0" bind:value={cursorForm.season} aria-label="Season" />
           <input class="xnarrow" type="number" min="0" bind:value={cursorForm.episode} aria-label="Episode" />
-          <button class="small" onclick={() => setCursor(Number(cursorForm.season), Number(cursorForm.episode))}>Set next</button>
+          <button class="small" onclick={() => setCursor(cursorForm.season, cursorForm.episode)} disabled={setCursor.busy}>Set next</button>
         </span>
       </div>
       {#if show.upcoming?.length}
@@ -141,7 +142,7 @@
   {/if}
   {#snippet footer()}
     <button onclick={onclose}>Close</button>
-    <button class="primary" onclick={save} disabled={saving || !form}>Save</button>
+    <button class="primary" onclick={save} disabled={save.busy || !form}>Save</button>
   {/snippet}
 </Drawer>
 

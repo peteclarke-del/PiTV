@@ -29,6 +29,7 @@ REPORTS_DIR = "reports"
 MARKER_FRESH_SECONDS = 6 * 3600   # a marker older than this is a crashed run, not a busy one
 MIN_AGE_SECONDS = 2 * 3600        # freshly written files are never evicted
 HEADROOM_BYTES = 512 * 1024 * 1024  # free space to leave on the drive beyond what is asked for
+LISTING_TTL = 5.0                 # the player asks for usage every second; a USB disk need not be listed that often
 
 
 def _settled(p: Path) -> bool:
@@ -37,8 +38,8 @@ def _settled(p: Path) -> bool:
 
 
 def _stat(p: Path, attr: str) -> float:
-    """st_size / st_mtime / st_mtime, or 0 when the file vanished under us (pitv_content
-    renaming a finished .part)."""
+    """st_size / st_mtime, or 0 when the file vanished under us (pitv_content renaming a
+    finished .part)."""
     try:
         return getattr(p.stat(), attr)
     except OSError:
@@ -55,6 +56,9 @@ class MediaCache:
         self.max_bytes = max_bytes
         self.enabled = bool(cache_dir)
         self._protected: set[str] = set()
+        self._listing: list[Path] = []
+        self._listed_at = 0.0
+        self._usage: dict[str, Any] | None = None
         if self.dir:
             try:
                 # No parents: if the cache drive is not mounted the directory must not be
@@ -92,15 +96,36 @@ class MediaCache:
 
     # --- reading --------------------------------------------------------------------------
 
+    def _files(self, fresh: bool = False) -> list[Path]:
+        """Settled files in the cache, listed at most every LISTING_TTL seconds."""
+        if not self.dir:
+            return []
+        now = time.monotonic()
+        if fresh or now - self._listed_at > LISTING_TTL:
+            try:
+                self._listing = [p for p in self.dir.iterdir() if _settled(p)]
+            except OSError as exc:
+                log.warning("cannot list cache dir %s: %s", self.dir, exc)
+                self._listing = []
+            self._listed_at = now
+            self._usage = None
+        return self._listing
+
+    def invalidate(self) -> None:
+        self._listed_at = 0.0
+        self._usage = None
+
     def cached_path(self, media_id: int, source: str) -> Path | None:
         """`<media_id>_<original name>` (a plain copy) or `<media_id>_<stem>.mp4` (a transcode
-        made by pitv_content); any settled `<media_id>_*` file counts."""
+        made by pitv_content); any settled `<media_id>_*` file counts. The exact name is
+        checked on disk so a file that has just landed is seen at once."""
         if not self.enabled or not self.dir:
             return None
         p = self.dir / f"{media_id}_{Path(source).name}"
-        if p.is_file():
+        if _settled(p):
             return p
-        return next((c for c in self.dir.glob(f"{media_id}_*") if _settled(c)), None)
+        prefix = f"{media_id}_"
+        return next((c for c in self._files() if c.name.startswith(prefix)), None)
 
     def resolve(self, media: dict[str, Any] | None) -> str | None:
         """Best available path: cached copy > transcoded copy > original."""
@@ -116,13 +141,15 @@ class MediaCache:
     def usage(self) -> dict[str, Any]:
         if not self.enabled or not self.dir:
             return {"enabled": False}
-        files = [p for p in self.dir.iterdir() if _settled(p)]
-        try:
-            free = shutil.disk_usage(self.dir).free
-        except OSError:
-            free = None
-        return {"enabled": True, "dir": str(self.dir), "files": len(files), "used": sum(_size(p) for p in files),
-                "max": self.max_bytes, "free": free, "tool_running": self.content_tool_running()}
+        files = self._files()
+        if self._usage is None:
+            try:
+                free = shutil.disk_usage(self.dir).free
+            except OSError:
+                free = None
+            self._usage = {"enabled": True, "dir": str(self.dir), "files": len(files),
+                           "used": sum(_size(p) for p in files), "max": self.max_bytes, "free": free}
+        return {**self._usage, "tool_running": self.content_tool_running()}
 
     def content_tool_running(self) -> bool:
         """True while pitv_content's marker is fresh (it touches the marker as it works)."""
@@ -145,14 +172,16 @@ class MediaCache:
         `needed` bytes (plus headroom) free. Returns the free space afterwards."""
         if not self.enabled or not self.dir:
             return 0
-        files = [p for p in self.dir.iterdir() if p.is_file()]
-        used = sum(_size(p) for p in files)
         try:
+            files = [p for p in self.dir.iterdir() if p.is_file()]
             free = shutil.disk_usage(self.dir).free
-        except OSError:
-            free = needed
+        except OSError as exc:
+            log.warning("cannot inspect cache dir %s: %s", self.dir, exc)
+            return 0
+        used = sum(_size(p) for p in files)
         now = time.time()
         files.sort(key=lambda p: _stat(p, "st_mtime"))
+        evicted = 0
         for p in files:
             if used + needed <= self.max_bytes and free > needed + HEADROOM_BYTES:
                 break
@@ -166,7 +195,10 @@ class MediaCache:
                 continue
             used -= sz
             free += sz
+            evicted += 1
             log.info("evicted %s from cache", p.name)
+        if evicted:
+            self.invalidate()
         try:
             return shutil.disk_usage(self.dir).free
         except OSError:

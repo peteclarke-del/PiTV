@@ -7,7 +7,9 @@ export default defineConfig({
   build: {
     outDir: '../pitv/web/static',
     emptyOutDir: true,
-    target: 'es2020',
+    target: 'es2022',
+    // One chunk and no dynamic imports: the modulepreload polyfill would be dead weight.
+    modulePreload: { polyfill: false },
     reportCompressedSize: true,
   },
   server: {

@@ -2,7 +2,7 @@
   let { size = 'md' } = $props();
 </script>
 
-<span class="logo {size}" aria-label="PiTV">
+<span class="logo {size}" role="img" aria-label="PiTV">
   <span class="word">Pi<span class="tv">TV</span></span>
   <span class="bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
 </span>

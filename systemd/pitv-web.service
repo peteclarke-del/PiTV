@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=notify
-NotifyAccess=all
+NotifyAccess=main
 WatchdogSec=60
 User=pitv
 Group=pitv
@@ -21,6 +21,12 @@ MemoryHigh=400M
 MemoryMax=600M
 OOMPolicy=kill
 Nice=5
+# sudo (for the fixed systemctl commands) needs setuid, so NoNewPrivileges is not an option here.
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=pitv-web

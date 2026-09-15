@@ -2,6 +2,8 @@
   import { untrack } from 'svelte';
   import { get, post, put, tryApi } from '../../lib/api.js';
   import { PATTERN_TOKENS } from '../../lib/format.js';
+  import { num } from '../../lib/util.js';
+  import { guard } from '../../lib/guard.svelte.js';
   import Drawer from '../../components/Drawer.svelte';
   import WeightRows from './WeightRows.svelte';
   import DaypartTable from './DaypartTable.svelte';
@@ -35,7 +37,6 @@
     description: c.description ?? '', content: c.content ?? 'general',
   });
   f.enabled = !!f.enabled; f.idents_enabled = !!f.idents_enabled;
-  let saving = $state(false);
 
   async function loadDefaultDayparts(part) {
     const s = await tryApi(get('/api/settings'));
@@ -49,20 +50,20 @@
     const [x] = f.pattern.splice(i, 1);
     f.pattern.splice(j, 0, x);
   }
-  async function save() {
+  const save = guard(async () => {
     const body = {
       name: f.name, short_name: f.short_name, colour: f.colour, enabled: f.enabled, ads_enabled: f.ads_enabled, family_safe_ads: f.family_safe_ads,
-      ads_per_break: Number(f.ads_per_break) || 1, pattern: f.pattern.join(', '),
-      era_weights: f.eraUse ? f.era : null, kind_weights: f.kindUse ? { tv: Number(f.kind.tv), movie: Number(f.kind.movie) } : null,
+      ads_per_break: num(f.ads_per_break, { min: 1, max: 10, int: true, fallback: 1 }), pattern: f.pattern.join(', '),
+      era_weights: f.eraUse ? f.era : null,
+      kind_weights: f.kindUse ? { tv: num(f.kind.tv, { min: 0, max: 1, fallback: 0 }), movie: num(f.kind.movie, { min: 0, max: 1, fallback: 0 }) } : null,
       genre_weights: f.genreUse ? f.genre : null, daypart_profile: joinProfile(f.dp),
       overnight_replay_from: f.overnight_replay_from, idents_enabled: f.idents_enabled, description: f.description, content: f.content,
     };
-    if (f.number !== '') body.number = Number(f.number);
-    saving = true;
+    const number = num(f.number, { min: 1, int: true });
+    if (number !== null) body.number = number;
     const r = await tryApi(isNew ? post('/api/channels', body) : put(`/api/channels/${c.id}`, body), { success: 'Channel saved' });
-    saving = false;
     if (r) onsaved?.(r);
-  }
+  });
 </script>
 
 <Drawer open={true} title={isNew ? 'New channel' : `Channel ${c.number}: ${c.name}`} {onclose} wide>
@@ -71,11 +72,11 @@
       <label class="field">Number<input type="number" class="narrow" min="1" bind:value={f.number} placeholder="auto" /><span class="help">Edit to reorder; must be unique.</span></label>
       <label class="field">Name<input bind:value={f.name} placeholder="PiTV One" /></label>
       <label class="field">Short name<input bind:value={f.short_name} placeholder="One" /><span class="help">Used on the badge and remote.</span></label>
-      <label class="field">Colour<span class="row"><input type="color" bind:value={f.colour} /><input class="narrow mono" bind:value={f.colour} /></span></label>
+      <label class="field">Colour<span class="row"><input type="color" bind:value={f.colour} /><input class="narrow mono" bind:value={f.colour} aria-label="Colour as hex" pattern="#[0-9a-fA-F]{6}" /></span></label>
       <label class="field wide">Description<input bind:value={f.description} placeholder="Mainstream: drama, sitcoms…" /></label>
       <label class="field wide">Content
         <select bind:value={f.content}><option value="general">General (shows and films)</option><option value="music">Music videos</option><option value="cartoons">Cartoons</option></select>
-        <span class="help">Music: the day is built from genre/decade blocks and two concerts, see Weighting → Music blocks. Cartoons: animated series are routed here automatically and may run all evening.</span>
+        <span class="help">Music: the day is built from genre/decade blocks and two concerts, see Weighting, Music channel. Cartoons: animated series are routed here automatically and may run all evening.</span>
       </label>
       <label class="check"><input type="checkbox" bind:checked={f.enabled} /> Enabled</label>
       <label class="check"><input type="checkbox" bind:checked={f.idents_enabled} /> Idents between programmes</label>
@@ -87,7 +88,7 @@
     <div class="form-grid">
       <label class="check"><input type="checkbox" bind:checked={f.ads_enabled} /> Ad breaks on this channel</label>
       <label class="field">Ads per break<input type="number" class="narrow" min="1" max="10" bind:value={f.ads_per_break} disabled={!f.ads_enabled} /></label>
-      <label class="check wide"><input type="checkbox" bind:checked={f.family_safe_ads} /> Family-safe adverts only<span class="help">No alcohol, tobacco, adult or gambling adverts on this channel (flagged by the keywords under Weighting → Family-safe adverts).</span></label>
+      <label class="check wide"><input type="checkbox" bind:checked={f.family_safe_ads} /> Family-safe adverts only<span class="help">No alcohol, tobacco, adult or gambling adverts on this channel (flagged by the keywords under Weighting, Family-safe adverts).</span></label>
     </div>
 
     <h3>Pattern</h3>
@@ -135,7 +136,7 @@
   </div>
   {#snippet footer()}
     <button onclick={onclose}>Cancel</button>
-    <button class="primary" onclick={save} disabled={saving || !f.name}>Save</button>
+    <button class="primary" onclick={save} disabled={save.busy || !f.name}>Save</button>
   {/snippet}
 </Drawer>
 

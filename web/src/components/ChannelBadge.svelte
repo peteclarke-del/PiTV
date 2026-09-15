@@ -1,8 +1,10 @@
 <script>
+  import { safeColour } from '../lib/format.js';
+
   let { channel, size = 'md', name = true } = $props();
+  let colour = $derived(safeColour(channel?.colour));
 
   function textColour(hex) {
-    if (!hex || hex.length < 7) return '#fff';
     const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
     const l = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
     return l > 0.62 ? '#111' : '#fff';
@@ -10,7 +12,7 @@
 </script>
 
 <span class="cb {size}" title={channel?.name}>
-  <span class="num" style="background:{channel?.colour || '#888'};color:{textColour(channel?.colour)}">{channel?.number ?? '?'}</span>
+  <span class="num" style="background:{colour};color:{textColour(colour)}">{channel?.number ?? '?'}</span>
   {#if name}<span class="name truncate">{channel?.name ?? ''}</span>{/if}
 </span>
 

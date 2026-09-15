@@ -4,6 +4,7 @@
   import { auth, toast } from '../../lib/stores.svelte.js';
   import { fmtBytes, fmtDateTime } from '../../lib/format.js';
   import { downloadJson } from '../../lib/util.js';
+  import { guard } from '../../lib/guard.svelte.js';
   import JobList from './JobList.svelte';
 
   let info = $state(null);
@@ -16,10 +17,10 @@
   }
   onMount(load);
 
-  async function exportJson() {
+  const exportJson = guard(async () => {
     const data = await tryApi(get('/api/export'));
     if (data) downloadJson(data, `pitv-export-${new Date().toISOString().slice(0, 10)}.json`);
-  }
+  });
 
   async function changePassword(e) {
     e.preventDefault();
@@ -101,7 +102,7 @@
     <div class="card">
       <div class="card-title"><h3>Backup</h3></div>
       <p class="small muted">Download settings, channels, sources and every show/media override as JSON.</p>
-      <button onclick={exportJson}>Export settings &amp; overrides</button>
+      <button onclick={exportJson} disabled={exportJson.busy}>Export settings &amp; overrides</button>
     </div>
     <div class="card">
       <div class="card-title"><h3>{auth.password_set ? 'Change admin password' : 'Set admin password'}</h3></div>

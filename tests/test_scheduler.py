@@ -314,3 +314,87 @@ def test_readiness_substitutes_missing_file(conn, tmp_path):
         os.rename(backup, row["path"])
     r2 = check(conn, now=now, days=1)
     assert r2["status"] in ("ok", "warning") and r2["missing"] == 0
+
+
+def _assert_channel_day_sound(conn, channel_id, day):
+    rows = conn.execute("SELECT start_ts, end_ts, kind, locked FROM schedule WHERE channel_id = ? AND day = ? ORDER BY start_ts",
+                        (channel_id, day)).fetchall()
+    assert rows
+    for a, b in zip(rows, rows[1:]):
+        assert a["end_ts"] == b["start_ts"], (dict(a), dict(b))
+    return rows
+
+
+def test_rebuild_never_overlaps_a_locked_slot(conn):
+    """A programme may overrun closedown by the tolerance, never a fixed slot that follows it."""
+    tz = tz_of(conn)
+    ch = conn.execute("SELECT id FROM channels WHERE number = 2").fetchone()["id"]
+    now = local_ts(parse_day("2026-09-19"), "11:00", tz)
+    fixed = conn.execute("SELECT id FROM schedule WHERE channel_id = ? AND day = '2026-09-19' AND replay = 0 AND kind = 'programme'"
+                         " AND start_ts > ? ORDER BY start_ts LIMIT 1 OFFSET 6", (ch, now)).fetchone()
+    with dbm.tx(conn):
+        conn.execute("UPDATE schedule SET locked = 1 WHERE id = ?", (fixed["id"],))
+    try:
+        for seed in range(6):
+            r = rebuild_from(conn, ch, now, now=now, seed=seed)
+            assert r["status"] in ("ok", "warning")
+            rows = _assert_channel_day_sound(conn, ch, "2026-09-19")
+            assert any(r["locked"] for r in rows), "locked slot must survive"
+    finally:
+        with dbm.tx(conn):
+            conn.execute("UPDATE schedule SET locked = 0 WHERE id = ?", (fixed["id"],))
+
+
+def test_anchored_show_keeps_the_day_contiguous(conn):
+    """A strip anchored at a fixed time is padded up to, never left with a hole before it."""
+    tz = tz_of(conn)
+    ch = conn.execute("SELECT id FROM channels WHERE number = 1").fetchone()["id"]
+    now = local_ts(parse_day("2026-09-20"), "10:00", tz)
+    # A series that has not aired on that day yet (an anchor is skipped once the show has been
+    # placed earlier in the kept part of the day) and still has episodes to come.
+    show = conn.execute(
+        "SELECT sh.id FROM shows sh WHERE sh.home_channel_id = ? AND sh.excluded = 0 AND sh.missing = 0 AND sh.category = 'general'"
+        " AND NOT EXISTS (SELECT 1 FROM schedule s JOIN media m ON m.id = s.media_id"
+        "                 WHERE s.channel_id = ? AND s.day = '2026-09-20' AND s.start_ts < ? AND m.show_id = sh.id)"
+        " ORDER BY (SELECT COUNT(DISTINCT s.media_id) FROM schedule s JOIN media m ON m.id = s.media_id WHERE m.show_id = sh.id)"
+        "        - (SELECT COUNT(*) FROM media m WHERE m.show_id = sh.id AND m.missing = 0) LIMIT 1",
+        (ch, ch, now)).fetchone()["id"]
+    with dbm.tx(conn):
+        conn.execute("UPDATE shows SET mode = 'strip', anchor_time = '17:03', anchor_days = '[0,1,2,3,4,5,6]' WHERE id = ?", (show,))
+    try:
+        for seed in range(4):
+            r = rebuild_from(conn, ch, now, now=now, seed=seed)
+            assert r["status"] in ("ok", "warning"), r
+            _assert_channel_day_sound(conn, ch, "2026-09-20")
+            anchored = conn.execute("SELECT s.start_ts FROM schedule s JOIN media m ON m.id = s.media_id WHERE s.channel_id = ?"
+                                    " AND s.day = '2026-09-20' AND s.replay = 0 AND m.show_id = ?", (ch, show)).fetchall()
+            assert any(minutes_of_day(a["start_ts"], tz) == 17 * 60 + 3 for a in anchored), "strip not placed at its time"
+    finally:
+        with dbm.tx(conn):
+            conn.execute("UPDATE shows SET mode = 'auto', anchor_time = NULL, anchor_days = NULL WHERE id = ?", (show,))
+        rebuild_from(conn, ch, now, now=now, seed=42)
+
+
+def test_rebuild_continues_episode_order_from_the_cut(conn):
+    """Slots the rebuild replaces must not advance a series' cursor: the first episode of each
+    series placed after the cut follows the latest one placed before it (anywhere), so a
+    mid-week rebuild does not skip ahead of what later days already hold."""
+    tz = tz_of(conn)
+    ch = conn.execute("SELECT id FROM channels WHERE number = 2").fetchone()["id"]
+    now = local_ts(parse_day("2026-09-18"), "13:00", tz)
+    r = rebuild_from(conn, ch, now, now=now, seed=5)
+    assert r["status"] in ("ok", "warning")
+    after = conn.execute("SELECT m.show_id, m.season, m.episode, s.start_ts FROM schedule s JOIN media m ON m.id = s.media_id"
+                         " WHERE s.channel_id = ? AND s.day = '2026-09-18' AND s.replay = 0 AND s.kind = 'programme'"
+                         " AND s.start_ts >= ? AND m.show_id IS NOT NULL ORDER BY s.start_ts", (ch, now)).fetchall()
+    assert after
+    for sid in {r["show_id"] for r in after}:
+        first = next(r for r in after if r["show_id"] == sid)
+        before = conn.execute("SELECT m.season, m.episode FROM schedule s JOIN media m ON m.id = s.media_id"
+                              " WHERE m.show_id = ? AND s.replay = 0 AND s.start_ts < ? ORDER BY s.start_ts DESC LIMIT 1",
+                              (sid, now)).fetchone()
+        eps = [(e["season"], e["episode"]) for e in conn.execute(
+            "SELECT season, episode FROM media WHERE show_id = ? AND missing = 0 AND excluded = 0"
+            " ORDER BY COALESCE(season, 999), COALESCE(episode, 999), path", (sid,))]
+        expected = eps[(eps.index((before["season"], before["episode"])) + 1) % len(eps)] if before else eps[0]
+        assert (first["season"], first["episode"]) == expected, (sid, dict(first), dict(before) if before else None)

@@ -75,6 +75,17 @@ type Config struct {
 var hostnameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 var userRe = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 
+// Everything below ends up in dietpi.txt, a sed expression or a shell variable on the Pi, so
+// the character sets are deliberately narrow.
+var nasHostRe = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]{0,252}[A-Za-z0-9])?$`)
+var shareRe = regexp.MustCompile(`^[A-Za-z0-9._%+-]+$`)
+var tokenRe = regexp.MustCompile(`^[A-Za-z0-9_./+-]+$`) // locale, keyboard layout, timezone
+var addrRe = regexp.MustCompile(`^[0-9A-Fa-f.:/]*$`)    // static IP with prefix, gateway, DNS
+var deviceRe = regexp.MustCompile(`^(auto|/dev/[A-Za-z0-9/_-]+)$`)
+var pathRe = regexp.MustCompile(`^/[A-Za-z0-9._/-]*$`)
+
+func hasLineBreak(s string) bool { return strings.ContainsAny(s, "\r\n\x00") }
+
 func DefaultConfig() Config {
 	return Config{
 		Schema: 1, Mode: "normal", Hostname: "pitv", Timezone: "Europe/London", Locale: "en_GB.UTF-8", Keyboard: "gb",
@@ -130,6 +141,51 @@ func (c Config) Validate() error {
 	}
 	if c.NAS.Host == "" || c.NAS.Username == "" {
 		errs = append(errs, "NAS host and username are required")
+	}
+	if !nasHostRe.MatchString(c.NAS.Host) {
+		errs = append(errs, "NAS host must be a host name or IP address")
+	}
+	if !userRe.MatchString(strings.ToLower(c.NAS.Username)) {
+		errs = append(errs, "NAS username must be letters, digits, '_' and '-'")
+	}
+	for _, s := range c.NAS.Shares {
+		if !shareRe.MatchString(s) {
+			errs = append(errs, "share names may only contain letters, digits, '.', '_', '-' and %20")
+			break
+		}
+	}
+	for _, v := range []string{c.Timezone, c.Locale, c.Keyboard} {
+		if !tokenRe.MatchString(v) {
+			errs = append(errs, "timezone, locale and keyboard must be plain identifiers")
+			break
+		}
+	}
+	for _, v := range []string{c.Network.StaticIP, c.Network.Gateway, c.Network.DNS} {
+		if !addrRe.MatchString(v) {
+			errs = append(errs, "static IP, gateway and DNS must be addresses")
+			break
+		}
+	}
+	if !deviceRe.MatchString(c.WorkDrive.Device) {
+		errs = append(errs, "work drive device must be 'auto' or a /dev path")
+	}
+	if !pathRe.MatchString(c.WorkDrive.CacheDir) {
+		errs = append(errs, "cache_dir must be an absolute path")
+	}
+	if c.PiTVContent.YoutubeCookiesFile != "" && !pathRe.MatchString(c.PiTVContent.YoutubeCookiesFile) {
+		errs = append(errs, "youtube_cookies_file must be an absolute path on the Pi")
+	}
+	for _, v := range []string{c.MaintenanceUser.Password, c.NAS.Password, c.Wifi.PSK, c.Wifi.SSID, c.PiTV.AdminPassword} {
+		if hasLineBreak(v) {
+			errs = append(errs, "passwords and the SSID must not contain line breaks")
+			break
+		}
+	}
+	for _, k := range c.MaintenanceUser.SSHAuthorizedKeys {
+		if hasLineBreak(k) || !strings.HasPrefix(k, "ssh-") && !strings.HasPrefix(k, "ecdsa-") && !strings.HasPrefix(k, "sk-") {
+			errs = append(errs, "ssh_authorized_keys entries must be single-line public keys")
+			break
+		}
 	}
 	switch c.DisplayMode {
 	case "hdmi576", "composite", "hdmi43", "hdmi":

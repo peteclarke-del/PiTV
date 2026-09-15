@@ -25,8 +25,8 @@
   {/if}
   {#each rows as r, i (i)}
     <div class="r">
-      <input bind:value={r.k} placeholder={keyPlaceholder} onchange={emit} />
-      <input {type} {step} {min} bind:value={r.v} onchange={emit} />
+      <input bind:value={r.k} placeholder={keyPlaceholder} onchange={emit} aria-label={keyLabel} />
+      <input {type} {step} {min} bind:value={r.v} onchange={emit} aria-label={valueLabel} />
       <button class="small ghost" onclick={() => remove(i)} aria-label="Remove">✕</button>
     </div>
   {/each}

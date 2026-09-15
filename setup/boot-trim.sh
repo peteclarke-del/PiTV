@@ -24,7 +24,6 @@ case "$DISPLAY_MODE" in
   hdmi576)
     echo "hdmi_group=1" >> "$CONFIG"
     echo "hdmi_mode=17" >> "$CONFIG"         # CEA 17: 720x576p 50 Hz, 4:3 (PAL)
-    echo "hdmi_drive=2" >> "$CONFIG"
     echo "dtoverlay=vc4-kms-v3d" >> "$CONFIG"
     ;;
   composite)

@@ -2,6 +2,7 @@
   import { toolPost } from '../../lib/toolapi.js';
   import { tryApi } from '../../lib/api.js';
   import { toast } from '../../lib/stores.svelte.js';
+  import { num } from '../../lib/util.js';
 
   let { running = false, onchange } = $props();
   let mode = $state('cache');
@@ -12,7 +13,7 @@
 
   async function run() {
     busy = true;
-    const body = { mode, kind: kind || null, count: count === '' ? null : Number(count), url: url.trim() || null };
+    const body = { mode, kind: kind || null, count: num(count, { min: 1, int: true }), url: url.trim() || null };
     const r = await tryApi(toolPost('run', body));
     busy = false;
     if (r?.ok) { toast.success(`pitv_content run started (job ${r.job_id ?? '?'})`); onchange?.(); }
@@ -30,7 +31,7 @@
   <div class="card-title"><h3>Run</h3>{#if running}<span class="badge info">running</span>{/if}</div>
   <div class="inline-form">
     <label class="field">Mode
-      <select bind:value={mode}><option value="cache">cache – fill the Pi's cache for the schedule</option><option value="catalogue">catalogue – refresh the catalogue</option><option value="dry-run">dry-run – report only</option></select>
+      <select bind:value={mode}><option value="cache">cache: fill the Pi's cache for the schedule</option><option value="catalogue">catalogue: refresh the catalogue</option><option value="dry-run">dry-run: report only</option></select>
     </label>
     <label class="field">Kind
       <select bind:value={kind}><option value="">all</option><option value="shows">shows</option><option value="sport">sport</option><option value="music">music</option><option value="adverts">adverts</option></select>

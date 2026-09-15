@@ -29,6 +29,9 @@ class Job:
                 "error": self.error, "result": self.result, "notes": self.notes[-50:]}
 
 
+MAX_JOBS_KEPT = 50   # finished jobs kept for the admin page; older ones are dropped
+
+
 class JobRunner:
     def __init__(self, bus: EventBus) -> None:
         self.bus = bus
@@ -44,6 +47,8 @@ class JobRunner:
             job = Job(id=self._next_id, kind=kind, label=label)
             self._next_id += 1
             self._jobs[job.id] = job
+            for old in [j for j in self._jobs.values() if j.status in ("done", "failed")][:-MAX_JOBS_KEPT]:
+                self._jobs.pop(old.id, None)
             self._queue.append((job, fn))
             if self._worker is None or not self._worker.is_alive():
                 self._worker = threading.Thread(target=self._run, name="pitv-jobs", daemon=True)

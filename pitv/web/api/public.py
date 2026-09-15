@@ -1,4 +1,9 @@
-"""Public API: now & next, schedule/guide, remote control, auth and the event stream."""
+"""Public API: now & next, schedule/guide, remote control, auth and the event stream.
+
+Everything here is reachable by anyone on the LAN. It shows what is on and drives the
+player like a remote control; anything that names files, devices or the system is
+admin-only and lives in the other routers (or is filtered out of the player state here).
+"""
 
 from __future__ import annotations
 
@@ -10,19 +15,26 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
-from ...db import all_settings, enabled_channels, now_ts, set_setting, tx
+from ... import db as dbm
+from ...db import all_settings, enabled_channels, get_setting, now_ts, set_setting, tx
 from ...guide import SLOT_QUERY, block_entry, collapse_blocks, next_programmes, slot_at
+from ...player.input import ACTIONS
 from ...scheduler.rules import broadcast_day_for, day_bounds, tz_of
 from .. import auth
 from ..events import format_sse
-from .deps import get_conn, slot_public
+from .deps import get_conn, player_public, slot_public
 
 router = APIRouter()
+
+MAX_SCHEDULE_WINDOW = 14 * 86400
+REMOTE_KEYS = frozenset(ACTIONS)          # what a remote control can send; nothing else reaches the player
+PUBLIC_EVENTS = frozenset({"player", "schedule", "library"})
 
 
 @router.get("/api/now")
 def api_now(request: Request, conn: sqlite3.Connection = Depends(get_conn), next: int = 3):
     now = now_ts()
+    n = max(1, min(next, 10))
     out = []
     for ch in enabled_channels(conn):
         cur = slot_at(conn, ch["id"], now)
@@ -33,7 +45,7 @@ def api_now(request: Request, conn: sqlite3.Connection = Depends(get_conn), next
             if merged:
                 current = slot_public(merged)
         after = current["end_ts"] if current else now
-        nxt = [slot_public(s) for s in next_programmes(conn, ch["id"], after, next)]
+        nxt = [slot_public(s) for s in next_programmes(conn, ch["id"], after, n)]
         if current and cur["kind"] != "programme":
             # During an ad break, show the programme that follows as "now".
             prog = conn.execute(SLOT_QUERY + " WHERE s.channel_id = ? AND s.start_ts <= ? AND s.kind = 'programme'"
@@ -41,7 +53,8 @@ def api_now(request: Request, conn: sqlite3.Connection = Depends(get_conn), next
             current["break"] = True
             current["previous_programme"] = slot_public(prog) if prog else None
         out.append({"channel": ch, "now": current, "next": nxt})
-    return {"ts": now, "channels": out, "player": request.app.state.player_state}
+    player = player_public(request.app.state.player_state, auth.has_admin(request, conn))
+    return {"ts": now, "channels": out, "player": player}
 
 
 @router.get("/api/schedule")
@@ -50,6 +63,7 @@ def api_schedule(conn: sqlite3.Connection = Depends(get_conn), start: int | None
     now = now_ts()
     start = start if start is not None else now - 3600
     end = end if end is not None else start + 6 * 3600
+    end = min(end, start + MAX_SCHEDULE_WINDOW)
     q = SLOT_QUERY + " WHERE s.end_ts > ? AND s.start_ts < ?"
     params: list[Any] = [start, end]
     if channel is not None:
@@ -100,15 +114,15 @@ def api_schedule_days(conn: sqlite3.Connection = Depends(get_conn)):
 # --- remote control -----------------------------------------------------------------------
 
 @router.get("/api/player")
-def api_player(request: Request):
-    return request.app.state.player.state()
+def api_player(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+    return player_public(request.app.state.player.state(), auth.has_admin(request, conn))
 
 
 @router.post("/api/player/key")
 def api_player_key(request: Request, body: dict[str, Any] = Body(...)):
     key = str(body.get("key", "")).lower()
-    if not key:
-        raise HTTPException(400, "key required")
+    if key not in REMOTE_KEYS:
+        raise HTTPException(400, "key must be a remote control action")
     return request.app.state.player.key(key)
 
 
@@ -118,6 +132,8 @@ def api_player_channel(request: Request, body: dict[str, Any] = Body(...)):
         number = int(body["number"])
     except (KeyError, ValueError, TypeError) as exc:
         raise HTTPException(400, "number required") from exc
+    if not 1 <= number <= 999:
+        raise HTTPException(400, "number out of range")
     return request.app.state.player.call("channel", number=number)
 
 
@@ -132,10 +148,14 @@ def api_player_volume(request: Request, body: dict[str, Any] = Body(...)):
 
 # --- auth ------------------------------------------------------------------------------------
 
+def _check_new_password(password: str) -> None:
+    if len(password) < 6 or len(password) > 200:
+        raise HTTPException(400, "password must be 6 to 200 characters")
+
+
 @router.get("/api/auth")
 def api_auth_status(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
-    return {"password_set": auth.password_is_set(conn), "admin": auth.is_admin(request, conn)
-            or not auth.password_is_set(conn)}
+    return {"password_set": auth.password_is_set(conn), "admin": auth.has_admin(request, conn)}
 
 
 @router.post("/api/auth/setup")
@@ -144,27 +164,28 @@ def api_auth_setup(request: Request, response: Response, body: dict[str, Any] = 
     if auth.password_is_set(conn):
         raise HTTPException(409, "password already set")
     password = str(body.get("password", ""))
-    if len(password) < 6:
-        raise HTTPException(400, "password must be at least 6 characters")
+    _check_new_password(password)
     with tx(conn):
         set_setting(conn, "admin_password_hash", auth.hash_password(password))
-    response.set_cookie(auth.COOKIE, auth.make_session(conn), max_age=auth.SESSION_SECONDS,
-                        httponly=True, samesite="lax")
+    auth.set_session_cookie(request, response, conn)
     return {"ok": True}
 
 
 @router.post("/api/auth/login")
 def api_auth_login(request: Request, response: Response, body: dict[str, Any] = Body(...),
                    conn: sqlite3.Connection = Depends(get_conn)):
-    ip = request.client.host if request.client else "?"
+    ip = auth.client_ip(request)
     if auth.rate_limited(ip):
         raise HTTPException(429, "too many attempts, try again in a few minutes")
-    stored = all_settings(conn).get("admin_password_hash")
-    if not auth.verify_password(str(body.get("password", "")), stored):
+    password = str(body.get("password", ""))
+    stored = get_setting(conn, "admin_password_hash")
+    if not auth.verify_password(password, stored):
         auth.record_attempt(ip)
         raise HTTPException(401, "wrong password")
-    response.set_cookie(auth.COOKIE, auth.make_session(conn), max_age=auth.SESSION_SECONDS,
-                        httponly=True, samesite="lax")
+    if auth.needs_rehash(stored):
+        with tx(conn):
+            set_setting(conn, "admin_password_hash", auth.hash_password(password))
+    auth.set_session_cookie(request, response, conn)
     return {"ok": True}
 
 
@@ -178,12 +199,11 @@ def api_auth_logout(response: Response):
 def api_auth_password(request: Request, body: dict[str, Any] = Body(...),
                       conn: sqlite3.Connection = Depends(get_conn)):
     auth.require_admin(request, conn)
-    stored = all_settings(conn).get("admin_password_hash")
+    stored = get_setting(conn, "admin_password_hash")
     if stored and not auth.verify_password(str(body.get("current", "")), stored):
         raise HTTPException(401, "current password is wrong")
     new = str(body.get("password", ""))
-    if len(new) < 6:
-        raise HTTPException(400, "password must be at least 6 characters")
+    _check_new_password(new)
     with tx(conn):
         set_setting(conn, "admin_password_hash", auth.hash_password(new))
     return {"ok": True}
@@ -193,22 +213,44 @@ def api_auth_password(request: Request, body: dict[str, Any] = Body(...),
 
 @router.get("/api/events")
 async def api_events(request: Request):
+    # Decide the viewer's rights once, on a connection that is closed before streaming starts
+    # (a yield-dependency would hold a database handle open for the life of the stream).
+    conn = dbm.connect(request.app.state.cfg.db_path)
+    try:
+        admin = auth.has_admin(request, conn)
+    finally:
+        conn.close()
     bus = request.app.state.bus
     q = bus.subscribe()
 
+    def visible(msg: dict[str, Any]) -> dict[str, Any] | None:
+        if admin:
+            return msg
+        if msg["event"] not in PUBLIC_EVENTS:
+            return None
+        if msg["event"] == "player":
+            return {**msg, "data": player_public(msg["data"], False)}
+        return msg
+
     async def gen():
         try:
-            yield format_sse({"event": "hello", "data": {"ts": now_ts(), "player": request.app.state.player_state}})
+            yield format_sse({"event": "hello", "data": {"ts": now_ts(),
+                                                          "player": player_public(request.app.state.player_state, admin)}})
             for msg in list(bus.last.values()):
-                yield format_sse(msg)
+                shown = visible(msg)
+                if shown:
+                    yield format_sse(shown)
             while True:
                 if await request.is_disconnected():
                     break
                 try:
                     msg = await asyncio.wait_for(q.get(), timeout=15)
-                    yield format_sse(msg)
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
+                    continue
+                shown = visible(msg)
+                if shown:
+                    yield format_sse(shown)
         finally:
             bus.unsubscribe(q)
 

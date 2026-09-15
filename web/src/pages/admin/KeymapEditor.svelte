@@ -35,7 +35,7 @@
     learning = action;
     baselineTs = player.state.last_key?.ts ?? 0;
     clearTimeout(learnTimer);
-    learnTimer = setTimeout(() => { if (learning) { toast.info('No key received; still listening? Press a button on the remote or cancel.'); } }, 15000);
+    learnTimer = setTimeout(() => { if (learning) { toast.info('No key received in 15 s. Press a button on the remote, or cancel.'); } }, 15000);
   }
   function stopLearning() { learning = null; clearTimeout(learnTimer); }
   $effect(() => () => clearTimeout(learnTimer));
@@ -45,7 +45,7 @@
     if (!action || !lk || !lk.key) return;
     if ((lk.ts ?? 0) > untrack(() => baselineTs)) {
       assign(action, lk.key);
-      toast.success(`${lk.key} → ${ACTION_LABELS[action]}`);
+      toast.success(`${lk.key} assigned to ${ACTION_LABELS[action]}`);
       stopLearning();
     }
   });
@@ -66,7 +66,7 @@
 <div class="stack">
   <p class="small muted">Map remote buttons to actions. Click <b>Learn</b>, then press the button on the remote while the player is running: the key is added to that action and removed from any other. The OSMC RF remote (and CEC remotes and keyboards) work out of the box with the defaults.</p>
   {#if !player.state.online}<div class="note">The player is offline, so Learn cannot see key presses. You can still type key names (e.g. <code>KEY_RED</code>).</div>{/if}
-  {#if player.state.last_key}<div class="tiny muted">Last key seen: <code>{player.state.last_key.key}</code> → {player.state.last_key.action ?? 'unmapped'}</div>{/if}
+  {#if player.state.last_key}<div class="tiny muted">Last key seen: <code>{player.state.last_key.key}</code>, mapped to {player.state.last_key.action ?? 'unmapped'}</div>{/if}
   {#if map}
     <div class="table-wrap">
       <table>

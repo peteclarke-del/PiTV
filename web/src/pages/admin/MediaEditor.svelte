@@ -2,12 +2,13 @@
   import { untrack } from 'svelte';
   import { get, put, tryApi } from '../../lib/api.js';
   import { fmtDuration, fmtBytes, fmtDateTime, CERTIFICATES } from '../../lib/format.js';
+  import { num } from '../../lib/util.js';
+  import { guard } from '../../lib/guard.svelte.js';
   import Drawer from '../../components/Drawer.svelte';
 
   let { id, onclose, onsaved } = $props();
   let item = $state(null);
   let form = $state(null);
-  let saving = $state(false);
 
   async function load() {
     const m = await tryApi(get(`/api/media/${id}`));
@@ -18,22 +19,20 @@
   }
   $effect(() => { id; untrack(load); });
 
-  async function save() {
-    saving = true;
+  const save = guard(async () => {
     const genres = form.genres.split(',').map((g) => g.trim()).filter(Boolean);
-    const body = { title: form.title, year: form.year === '' ? null : Number(form.year), certificate: form.certificate || null,
+    const body = { title: form.title, year: num(form.year, { min: 1900, max: 2100, int: true }), certificate: form.certificate || null,
                    genres: genres.length ? genres : null, plot: form.plot, excluded: form.excluded };
-    if (item.kind === 'ident') body.channel_hint = form.channel_hint === '' ? null : Number(form.channel_hint);
+    if (item.kind === 'ident') body.channel_hint = num(form.channel_hint, { min: 1, int: true });
     if (item.kind === 'music') { body.artist = form.artist; body.concert = form.concert ? 1 : 0; }
     if (item.kind === 'advert') body.family_safe = form.family_safe ? 1 : 0;
     const r = await tryApi(put(`/api/media/${id}`, body), { success: 'Saved' });
-    saving = false;
     if (r) { item = r; onsaved?.(); }
-  }
-  async function clearOverrides() {
+  });
+  const clearOverrides = guard(async () => {
     const r = await tryApi(put(`/api/media/${id}`, { title: null, year: null, certificate: null, genres: null, plot: null, artist: null }), { success: 'Overrides cleared' });
     if (r) { await load(); onsaved?.(); }
-  }
+  });
   let overridden = $derived(item ? Object.keys(item.overrides ?? {}) : []);
 </script>
 
@@ -57,7 +56,7 @@
         {#if item.attention}<dt>Attention</dt><dd><span class="badge warn">{item.attention}</span></dd>{/if}
       </dl>
       {#if overridden.length}
-        <div class="row small muted">Overriding scanned: {overridden.join(', ')} <button class="small ghost" onclick={clearOverrides}>Clear overrides</button></div>
+        <div class="row small muted">Overriding scanned: {overridden.join(', ')} <button class="small ghost" onclick={clearOverrides} disabled={clearOverrides.busy}>Clear overrides</button></div>
       {/if}
       <div class="form-grid">
         {#if item.kind === 'music'}
@@ -98,6 +97,6 @@
   {/if}
   {#snippet footer()}
     <button onclick={onclose}>Close</button>
-    <button class="primary" onclick={save} disabled={saving || !form}>Save</button>
+    <button class="primary" onclick={save} disabled={save.busy || !form}>Save</button>
   {/snippet}
 </Drawer>

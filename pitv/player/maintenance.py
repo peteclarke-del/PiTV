@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -24,6 +23,7 @@ log = logging.getLogger("pitv.maintenance")
 
 STARTUP_DELAY = 20      # seconds; let playback start before the first pass
 PASS_INTERVAL = 600     # seconds between passes
+EMPTY_BUILD_RETRY = 3600  # a build that produced nothing (empty library) is not retried every pass
 
 
 class Maintenance:
@@ -35,7 +35,9 @@ class Maintenance:
         self.clock = clock
         self.on_schedule_changed = on_schedule_changed
         self._stop = threading.Event()
-        self._readiness_done: set[str] = set()   # "YYYY-MM-DD:hour" stamps already checked
+        self._readiness_done: set[str] = set()   # "YYYY-MM-DD:hour" stamps already checked today
+        self._first_pass = True
+        self._empty_build_at = 0
         self.status: dict[str, Any] = {"last_build": None, "last_scan": None, "last_readiness": None, "error": None}
 
     def start(self) -> None:
@@ -45,7 +47,8 @@ class Maintenance:
         self._stop.set()
 
     def _loop(self) -> None:
-        time.sleep(STARTUP_DELAY)
+        if self._stop.wait(STARTUP_DELAY):
+            return
         while not self._stop.is_set():
             try:
                 self._once()
@@ -54,17 +57,25 @@ class Maintenance:
                 self.status["error"] = repr(exc)
             self._stop.wait(PASS_INTERVAL)
 
+    def _build(self, conn, now: int) -> None:
+        if now - self._empty_build_at < EMPTY_BUILD_RETRY:
+            return
+        log.info("schedule horizon short; building")
+        result = build_horizon(conn, now=now)
+        self.status["last_build"] = {"at": now_ts(), **{k: result[k] for k in ("status", "summary")}}
+        log.info("schedule: %s", result["summary"])
+        if result["built"]:
+            self.on_schedule_changed()
+        else:
+            self._empty_build_at = now   # nothing to schedule yet; do not thrash the run log
+
     def _once(self) -> None:
         conn = connect(self.db_path)
         try:
             now = self.clock()
             settings = all_settings(conn)
             if needs_rebuild(conn, now):
-                log.info("schedule horizon short; building")
-                result = build_horizon(conn, now=now)
-                self.status["last_build"] = {"at": now_ts(), **{k: result[k] for k in ("status", "summary")}}
-                log.info("schedule: %s", result["summary"])
-                self.on_schedule_changed()
+                self._build(conn, now)
             local = datetime.fromtimestamp(now)
             today = local.date().isoformat()
             row = conn.execute("SELECT MAX(started_at) AS t FROM run_log WHERE kind = 'scan' AND status != 'running'").fetchone()
@@ -73,10 +84,11 @@ class Maintenance:
                 log.info("nightly scan")
                 scan_all(conn, ffprobe_binary=self.ffprobe)
                 self.status["last_scan"] = now_ts()
+                self._empty_build_at = 0
                 if needs_rebuild(conn, now):
-                    build_horizon(conn, now=now)
-                    self.on_schedule_changed()
+                    self._build(conn, now)
             if apply_report_files(conn, self.cache):
+                self.cache.invalidate()
                 self.on_schedule_changed()
             if settings.get("acquire_fill_gaps"):
                 queue_gaps(conn)
@@ -87,7 +99,9 @@ class Maintenance:
             # the configured hours (default 06:00 and 07:00), plus the first pass after boot.
             hours = [int(h) for h in (settings.get("readiness_hours") or [6, 7])]
             stamp = f"{today}:{local.hour}"
-            if (local.hour in hours and stamp not in self._readiness_done) or not self._readiness_done:
+            self._readiness_done = {s for s in self._readiness_done if s.startswith(today)}
+            if self._first_pass or (local.hour in hours and stamp not in self._readiness_done):
+                self._first_pass = False
                 self._readiness_done.add(stamp)
                 result = readiness_check(conn, now=now, days=1)
                 self.status["last_readiness"] = {"at": now_ts(), "status": result["status"], "summary": result["summary"]}
@@ -98,5 +112,8 @@ class Maintenance:
                 conn.execute("DELETE FROM history WHERE started_at < ?", (now - keep,))
                 conn.execute("DELETE FROM schedule WHERE end_ts < ?", (now - 14 * 86400,))
                 conn.execute("DELETE FROM run_log WHERE started_at < ?", (now - 30 * 86400,))
+                # Probe results outlive their media rows only while a source is deleted and re-added.
+                conn.execute("DELETE FROM probe_cache WHERE probed_at < ? AND path NOT IN (SELECT path FROM media)",
+                             (now - 30 * 86400,))
         finally:
             conn.close()

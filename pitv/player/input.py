@@ -24,7 +24,8 @@ ACTIONS = ["up", "down", "left", "right", "ok", "back", "guide", "info", "pause"
            "vol_up", "vol_down", "ch_up", "ch_down", "restart", "power"] + [f"channel_{n}" for n in range(1, 10)]
 
 # Defaults cover the OSMC RF remote (Home, Info, arrows, OK, Back, Menu, Play/Pause, Stop,
-# Vol +/-), CEC remotes and a plain keyboard. Editable in the admin UI.
+# Vol +/-), CEC remotes and a plain keyboard. Editable in the admin UI. "power" is standby:
+# picture off and sound muted until any key is pressed (the channel keeps "broadcasting").
 DEFAULT_KEYMAP: dict[str, list[str]] = {
     "up": ["KEY_UP"], "down": ["KEY_DOWN"], "left": ["KEY_LEFT"], "right": ["KEY_RIGHT"],
     "ok": ["KEY_ENTER", "KEY_KPENTER", "KEY_OK", "KEY_SELECT"],

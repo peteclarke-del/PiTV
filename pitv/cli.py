@@ -4,27 +4,30 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
 from . import db as dbm
-from .config import load_config
+from .config import Config, load_config
+
+Args = argparse.Namespace
 
 
-def _open(cfg):
+def _open(cfg: Config) -> sqlite3.Connection:
     cfg.ensure_dirs()
     conn = dbm.connect(cfg.db_path)
     dbm.init_db(conn)
     return conn
 
 
-def cmd_init(cfg, args) -> int:
+def cmd_init(cfg: Config, args: Args) -> int:
     _open(cfg)
     print(f"Database ready at {cfg.db_path}")
     return 0
 
 
-def cmd_fake_library(cfg, args) -> int:
+def cmd_fake_library(cfg: Config, args: Args) -> int:
     from .devtools import build_fake_library
     root = Path(args.dir).resolve()
     paths = build_fake_library(root, seed=args.seed, max_episodes_per_show=args.max_episodes)
@@ -47,7 +50,7 @@ def cmd_fake_library(cfg, args) -> int:
     return 0
 
 
-def cmd_source(cfg, args) -> int:
+def cmd_source(cfg: Config, args: Args) -> int:
     conn = _open(cfg)
     if args.action == "add":
         with dbm.tx(conn):
@@ -60,7 +63,7 @@ def cmd_source(cfg, args) -> int:
     return 0
 
 
-def cmd_scan(cfg, args) -> int:
+def cmd_scan(cfg: Config, args: Args) -> int:
     from .library.scanner import scan_all
     from .logsetup import setup_logging
     setup_logging(cfg, "scan")
@@ -83,7 +86,7 @@ def cmd_scan(cfg, args) -> int:
     return 0 if row["status"] != "error" else 1
 
 
-def cmd_schedule(cfg, args) -> int:
+def cmd_schedule(cfg: Config, args: Args) -> int:
     from .scheduler.build import build_horizon, parse_day
     from .logsetup import setup_logging
     setup_logging(cfg, "schedule")
@@ -96,7 +99,7 @@ def cmd_schedule(cfg, args) -> int:
     return 0
 
 
-def cmd_listing(cfg, args) -> int:
+def cmd_listing(cfg: Config, args: Args) -> int:
     from .scheduler.listing import print_listing
     conn = _open(cfg)
     print_listing(conn, day=args.day, channel_numbers=args.channel, show_ads=args.ads,
@@ -104,7 +107,7 @@ def cmd_listing(cfg, args) -> int:
     return 0
 
 
-def cmd_web(cfg, args) -> int:
+def cmd_web(cfg: Config, args: Args) -> int:
     import uvicorn
     from .web.app import create_app
     app = create_app(cfg)
@@ -113,12 +116,12 @@ def cmd_web(cfg, args) -> int:
     return 0
 
 
-def cmd_play(cfg, args) -> int:
+def cmd_play(cfg: Config, args: Args) -> int:
     from .player.controller import run_player
     return run_player(cfg, channel=args.channel, keyboard=args.keyboard, now_override=args.now)
 
 
-def cmd_reset_schedule(cfg, args) -> int:
+def cmd_reset_schedule(cfg: Config, args: Args) -> int:
     conn = _open(cfg)
     with dbm.tx(conn):
         conn.execute("DELETE FROM schedule")
@@ -128,7 +131,7 @@ def cmd_reset_schedule(cfg, args) -> int:
     return 0
 
 
-def cmd_content_manifest(cfg, args) -> int:
+def cmd_content_manifest(cfg: Config, args: Args) -> int:
     from .content import manifest
     conn = _open(cfg)
     data = manifest(conn, days=args.days)
@@ -141,7 +144,7 @@ def cmd_content_manifest(cfg, args) -> int:
     return 0
 
 
-def cmd_content_report(cfg, args) -> int:
+def cmd_content_report(cfg: Config, args: Args) -> int:
     from .content import apply_report
     conn = _open(cfg)
     data = json.loads(Path(args.file).read_text())
@@ -149,7 +152,7 @@ def cmd_content_report(cfg, args) -> int:
     return 0
 
 
-def cmd_readiness(cfg, args) -> int:
+def cmd_readiness(cfg: Config, args: Args) -> int:
     from .logsetup import setup_logging
     from .readiness import check
     setup_logging(cfg, "schedule")

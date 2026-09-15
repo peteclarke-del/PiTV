@@ -57,10 +57,6 @@ class Config:
     def player_socket(self) -> Path:
         return self.run_dir / "player.sock"
 
-    @property
-    def assets_dir(self) -> Path:
-        return Path(__file__).resolve().parent.parent / "assets"
-
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.run_dir.mkdir(parents=True, exist_ok=True)

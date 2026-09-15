@@ -131,7 +131,7 @@ input, select, textarea {
   min-height: 34px;
   max-width: 100%;
 }
-input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 input[type="checkbox"], input[type="radio"] { min-height: 0; width: 1.05rem; height: 1.05rem; accent-color: var(--accent); }
 input[type="color"] { padding: .1rem; width: 48px; }
 input[type="range"] { padding: 0; min-height: 0; accent-color: var(--accent); }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -15,7 +16,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from ... import __version__
 from ... import db as dbm
-from ...db import (DEFAULT_SETTINGS, all_settings, now_ts, row_to_dict, rows_to_dicts,
+from ...db import (DEFAULT_SETTINGS, all_settings, get_setting, now_ts, row_to_dict, rows_to_dicts,
                    set_setting, tx)
 from ...guide import SLOT_QUERY
 from ...library.scanner import _assign_home_channels, scan_all
@@ -23,6 +24,7 @@ from ...logsetup import log_dir, tail
 from ...scheduler.build import build_horizon, parse_day, rebuild_from, slot_titles
 from ...scheduler.rules import broadcast_day_for, parse_pattern, tz_of
 from .deps import admin_conn, media_public, run_cmd, show_public, slot_public
+from .settings_rules import SettingError, check_setting
 
 router = APIRouter(prefix="/api", dependencies=[Depends(admin_conn)])
 
@@ -36,6 +38,40 @@ CHANNEL_FIELDS = {"number", "name", "short_name", "colour", "enabled", "ads_enab
                   "pattern", "era_weights", "genre_weights", "kind_weights", "daypart_profile",
                   "overnight_replay_from", "idents_enabled", "description", "content", "family_safe_ads"}
 JSON_CHANNEL_FIELDS = {"era_weights", "genre_weights", "kind_weights", "daypart_profile"}
+SOURCE_TYPES = ("tv", "movie", "advert", "ident", "music")
+SOURCE_CATEGORIES = ("general", "sport", "kids")
+# What the web service may ask systemd to do; must stay in step with the sudoers rule in
+# setup/install.sh. Stopping the web service from the web is deliberately not offered.
+SERVICE_ACTIONS = {"pitv-player": ("restart", "stop", "start"), "pitv-web": ("restart",)}
+_HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+_COLOUR = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+# --- allowed folders --------------------------------------------------------------------------
+
+def browse_roots(settings: dict[str, Any]) -> list[Path]:
+    """Directories an admin may browse or register as a source: the configured roots (media
+    mounts by default) plus the cache, the acquire folder and the service user's home."""
+    roots = [str(r) for r in (settings.get("browse_roots") or []) if isinstance(r, str)]
+    roots += [settings.get("cache_dir") or "", settings.get("acquire_dir") or "", str(Path.home())]
+    out: list[Path] = []
+    for r in roots:
+        if r and r.startswith("/"):
+            real = Path(r).resolve()
+            if real not in out:
+                out.append(real)
+    return out
+
+
+def allowed_dir(path: str, roots: list[Path]) -> Path:
+    """The real path if it lies under one of the roots; 400/403 otherwise. Resolving first
+    means neither '..' segments nor a symlink planted on a share can escape."""
+    if not path or "\0" in path or not path.startswith("/"):
+        raise HTTPException(400, "path must be absolute")
+    real = Path(path).resolve()
+    if not any(real == r or real.is_relative_to(r) for r in roots):
+        raise HTTPException(403, "that folder is outside the browsable roots (see the browse_roots setting)")
+    return real
 
 
 # --- sources -----------------------------------------------------------------------------------
@@ -55,32 +91,53 @@ def list_sources(conn: sqlite3.Connection = Depends(admin_conn)):
     return [_source_row(conn, r["id"]) for r in conn.execute("SELECT id FROM sources ORDER BY id")]
 
 
+def _source_fields(body: dict[str, Any], conn: sqlite3.Connection) -> dict[str, Any]:
+    """Validated columns from a create/update body; only keys present in the body are returned."""
+    fields: dict[str, Any] = {}
+    if "type" in body:
+        if body["type"] not in SOURCE_TYPES:
+            raise HTTPException(400, "type must be tv, movie, advert, ident or music")
+        fields["type"] = body["type"]
+    if "category" in body:
+        if (body["category"] or "general") not in SOURCE_CATEGORIES:
+            raise HTTPException(400, "category must be general, sport or kids")
+        fields["category"] = body["category"] or "general"
+    if "path" in body:
+        path = str(body.get("path") or "").strip()
+        if not path:
+            raise HTTPException(400, "path required")
+        fields["path"] = str(allowed_dir(path, browse_roots(all_settings(conn))))
+    for k in ("name", "remote"):
+        if k in body:
+            v = body[k]
+            if v is not None and not isinstance(v, str):
+                raise HTTPException(400, f"{k} must be a string")
+            fields[k] = (v or "").strip()[:300] or None
+    if "enabled" in body:
+        fields["enabled"] = int(bool(body["enabled"]))
+    return fields
+
+
 @router.post("/sources")
 def create_source(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
-    stype = body.get("type")
-    if stype not in ("tv", "movie", "advert", "ident", "music"):
-        raise HTTPException(400, "type must be tv, movie, advert, ident or music")
-    path = str(body.get("path", "")).strip()
-    name = str(body.get("name", "")).strip() or Path(path).name or stype
-    if not path:
-        raise HTTPException(400, "path required")
+    fields = _source_fields(body, conn)
+    if "type" not in fields or "path" not in fields:
+        raise HTTPException(400, "type and path required")
+    fields["name"] = fields.get("name") or Path(fields["path"]).name or fields["type"]
+    fields.setdefault("enabled", 1)
+    fields.setdefault("category", "general")
+    cols = ", ".join(fields)
     with tx(conn):
-        category = body.get("category") or "general"
-        if category not in ("general", "sport", "kids"):
-            raise HTTPException(400, "category must be general, sport or kids")
-        cur = conn.execute("INSERT INTO sources(type, name, path, remote, enabled, category) VALUES (?,?,?,?,?,?)",
-                           (stype, name, path, body.get("remote"), int(bool(body.get("enabled", True))), category))
+        cur = conn.execute(f"INSERT INTO sources({cols}) VALUES ({', '.join('?' for _ in fields)})", tuple(fields.values()))
     return _source_row(conn, int(cur.lastrowid))
 
 
 @router.put("/sources/{sid}")
 def update_source(sid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
     _source_row(conn, sid)
-    fields = {k: body[k] for k in ("type", "name", "path", "remote", "enabled", "category") if k in body}
-    if fields.get("category") not in (None, "general", "sport", "kids"):
-        raise HTTPException(400, "category must be general, sport or kids")
-    if "enabled" in fields:
-        fields["enabled"] = int(bool(fields["enabled"]))
+    fields = _source_fields(body, conn)
+    if fields.get("name") is None and "name" in fields:
+        fields.pop("name")   # a blank name keeps the old one; the column is NOT NULL
     if fields:
         sets = ", ".join(f"{k} = ?" for k in fields)
         with tx(conn):
@@ -128,16 +185,22 @@ def scan_source(sid: int, request: Request, conn: sqlite3.Connection = Depends(a
 
 
 @router.get("/browse")
-def browse(path: str = "/"):
-    """List directories for the source path picker."""
-    p = Path(path or "/")
+def browse(path: str = "/", conn: sqlite3.Connection = Depends(admin_conn)):
+    """List directories for the source path picker, within the allowed roots only. "/" lists
+    the roots themselves (as paths relative to "/", which is how the picker joins them)."""
+    roots = browse_roots(all_settings(conn))
+    if path in ("", "/"):
+        return {"path": "/", "parent": None, "dirs": [str(r)[1:] for r in roots if r.is_dir()]}
+    p = allowed_dir(path, roots)
     if not p.is_dir():
         raise HTTPException(404, "not a directory")
     try:
         dirs = sorted(d.name for d in p.iterdir() if d.is_dir() and not d.name.startswith("."))
     except PermissionError:
         dirs = []
-    return {"path": str(p), "parent": str(p.parent) if p != p.parent else None, "dirs": dirs}
+    parent = p.parent
+    up = str(parent) if any(parent == r or parent.is_relative_to(r) for r in roots) else "/"
+    return {"path": str(p), "parent": up, "dirs": dirs}
 
 
 # --- library -------------------------------------------------------------------------------------
@@ -224,8 +287,17 @@ def update_show(sid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Connec
         raise HTTPException(400, "mode must be auto, strip or weekly")
     if "category" in direct and direct["category"] not in SHOW_CATEGORIES:
         raise HTTPException(400, "category must be general, sport, kids or cartoon")
-    if "anchor_days" in direct and direct["anchor_days"] is not None:
-        direct["anchor_days"] = json.dumps([int(d) for d in direct["anchor_days"]])
+    try:
+        if "anchor_days" in direct and direct["anchor_days"] is not None:
+            direct["anchor_days"] = json.dumps(sorted({int(d) % 7 for d in direct["anchor_days"]}))
+        if "rest_weeks" in direct:
+            direct["rest_weeks"] = max(0, int(direct["rest_weeks"]))
+        if "home_channel_id" in direct and direct["home_channel_id"] is not None:
+            direct["home_channel_id"] = int(direct["home_channel_id"])
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "anchor_days, rest_weeks and home_channel_id must be numbers") from exc
+    if direct.get("anchor_time") is not None and not _HHMM.match(str(direct.get("anchor_time"))):
+        raise HTTPException(400, "anchor_time must be HH:MM")
     if "excluded" in direct:
         direct["excluded"] = int(bool(direct["excluded"]))
     direct["overrides"] = json.dumps(overrides)
@@ -277,7 +349,7 @@ def list_media(conn: sqlite3.Connection = Depends(admin_conn), kind: str | None 
         params.append(show_id)
     total = conn.execute(f"SELECT COUNT(*) FROM ({sql})", params).fetchone()[0]
     sql += " ORDER BY title, season, episode LIMIT ? OFFSET ?"
-    rows = conn.execute(sql, (*params, min(limit, 500), offset)).fetchall()
+    rows = conn.execute(sql, (*params, max(1, min(limit, 500)), max(0, offset))).fetchall()
     return {"total": total, "items": [media_public(r) for r in rows]}
 
 
@@ -355,11 +427,20 @@ def library_search(conn: sqlite3.Connection = Depends(admin_conn), q: str = "", 
     """Pick-list search for the schedule editor: shows (next episode) and movies."""
     out: list[dict[str, Any]] = []
     like = f"%{q}%"
+    limit = max(1, min(limit, 100))
     if kind in ("programme", "tv"):
-        for r in conn.execute("SELECT * FROM shows WHERE missing = 0 AND excluded = 0 AND title LIKE ? ORDER BY title LIMIT ?", (like, limit)):
-            eps = conn.execute("SELECT * FROM media WHERE show_id = ? AND missing = 0 AND excluded = 0 ORDER BY COALESCE(season,999), COALESCE(episode,999)", (r["id"],)).fetchall()
-            out.append({"type": "show", "id": r["id"], "title": r["title"], "year": r["year"],
-                        "episodes": [{"id": e["id"], "season": e["season"], "episode": e["episode"], "title": e["title"], "duration": e["duration"]} for e in eps[:200]]})
+        shows = conn.execute("SELECT * FROM shows WHERE missing = 0 AND excluded = 0 AND title LIKE ? ORDER BY title LIMIT ?", (like, limit)).fetchall()
+        eps_by_show: dict[int, list[dict[str, Any]]] = {r["id"]: [] for r in shows}
+        if shows:
+            marks = ",".join("?" for _ in shows)
+            for e in conn.execute(f"SELECT id, show_id, season, episode, title, duration FROM media WHERE show_id IN ({marks})"
+                                  " AND missing = 0 AND excluded = 0 ORDER BY show_id, COALESCE(season,999), COALESCE(episode,999)",
+                                  [r["id"] for r in shows]):
+                lst = eps_by_show[e["show_id"]]
+                if len(lst) < 200:
+                    lst.append({"id": e["id"], "season": e["season"], "episode": e["episode"], "title": e["title"], "duration": e["duration"]})
+        for r in shows:
+            out.append({"type": "show", "id": r["id"], "title": r["title"], "year": r["year"], "episodes": eps_by_show[r["id"]]})
     if kind in ("programme", "movie"):
         for r in conn.execute("SELECT * FROM media WHERE kind = 'movie' AND missing = 0 AND excluded = 0 AND title LIKE ? ORDER BY title LIMIT ?", (like, limit)):
             out.append({"type": "movie", "id": r["id"], "title": r["title"], "year": r["year"], "duration": r["duration"], "certificate": r["certificate"]})
@@ -392,20 +473,36 @@ def _clean_channel_fields(body: dict[str, Any]) -> dict[str, Any]:
         if k not in CHANNEL_FIELDS:
             continue
         if k in JSON_CHANNEL_FIELDS:
+            if v not in (None, "", {}, []) and not isinstance(v, (dict, list)):
+                raise HTTPException(400, f"{k} must be an object or list")
             fields[k] = json.dumps(v) if v not in (None, "", {}, []) else None
         elif k in ("enabled", "ads_enabled", "idents_enabled", "family_safe_ads"):
             fields[k] = int(bool(v))
         elif k in ("number", "ads_per_break"):
-            fields[k] = int(v)
+            try:
+                fields[k] = int(v)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(400, f"{k} must be a number") from exc
+            if fields[k] < 1 or (k == "number" and fields[k] > 999) or (k == "ads_per_break" and fields[k] > 10):
+                raise HTTPException(400, f"{k} out of range")
         elif k == "pattern":
-            tokens = parse_pattern(str(v))
-            fields[k] = ", ".join(tokens)
+            fields[k] = ", ".join(parse_pattern(str(v)))
         elif k == "content":
             if v not in ("general", "music", "cartoons"):
                 raise HTTPException(400, "content must be general, music or cartoons")
             fields[k] = v
-        else:
+        elif k == "colour":
+            if not isinstance(v, str) or not _COLOUR.match(v):
+                raise HTTPException(400, "colour must be #rrggbb")
+            fields[k] = v.lower()
+        elif k == "overnight_replay_from":
+            if not isinstance(v, str) or not _HHMM.match(v):
+                raise HTTPException(400, "overnight_replay_from must be HH:MM")
             fields[k] = v
+        else:
+            if not isinstance(v, str):
+                raise HTTPException(400, f"{k} must be a string")
+            fields[k] = v.strip()[:200]
     return fields
 
 
@@ -472,8 +569,14 @@ def put_settings(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = De
     unknown = [k for k in body if k not in DEFAULT_SETTINGS or k in SECRET_SETTINGS]
     if unknown:
         raise HTTPException(400, f"unknown settings: {', '.join(unknown)}")
+    clean = {}
+    for k, v in body.items():
+        try:
+            clean[k] = check_setting(k, v)
+        except SettingError as exc:
+            raise HTTPException(400, str(exc)) from exc
     with tx(conn):
-        for k, v in body.items():
+        for k, v in clean.items():
             set_setting(conn, k, v)
     return get_settings(conn)
 
@@ -494,10 +597,13 @@ def reset_settings(body: dict[str, Any] = Body(default={}), conn: sqlite3.Connec
 def schedule_build(request: Request, body: dict[str, Any] = Body(default={})):
     cfg = request.app.state.cfg
     jobs = request.app.state.jobs
-    start = parse_day(body["start_day"]) if body.get("start_day") else None
-    days = int(body["days"]) if body.get("days") else None
+    try:
+        start = parse_day(str(body["start_day"])) if body.get("start_day") else None
+        days = max(1, min(int(body["days"]), 31)) if body.get("days") else None
+        channels = [int(c) for c in body.get("channels", [])] or None
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "start_day must be YYYY-MM-DD; days and channels must be numbers") from exc
     force = bool(body.get("force", False))
-    channels = [int(c) for c in body.get("channels", [])] or None
 
     def run(job):
         conn = dbm.connect(cfg.db_path)
@@ -505,7 +611,7 @@ def schedule_build(request: Request, body: dict[str, Any] = Body(default={})):
             result = build_horizon(conn, start_day=start, days=days, force=force, channel_numbers=channels,
                                    progress=lambda m: jobs.progress(job, m))
             job.notes.extend(result.get("notes", []))
-            request.app.state.bus.publish_threadsafe("schedule", {"changed": True})
+            _schedule_changed(request)
             return result
         finally:
             conn.close()
@@ -535,9 +641,15 @@ def _media_with_show(conn: sqlite3.Connection, media_id: int) -> sqlite3.Row:
     return media
 
 
+def _schedule_changed(request: Request) -> None:
+    """Tell the browser tabs and the player (which caches the slot on air) to re-read."""
+    request.app.state.bus.publish_threadsafe("schedule", {"changed": True})
+    request.app.state.player.call("schedule-changed")
+
+
 def _rebuild(request: Request, conn: sqlite3.Connection, channel_id: int, from_ts: int) -> dict[str, Any]:
     result = rebuild_from(conn, channel_id, from_ts)
-    request.app.state.bus.publish_threadsafe("schedule", {"changed": True})
+    _schedule_changed(request)
     return result
 
 
@@ -660,13 +772,13 @@ def system_info(request: Request, conn: sqlite3.Connection = Depends(admin_conn)
                  "db_size": cfg.db_path.stat().st_size if cfg.db_path.exists() else 0,
                  "free": data_usage.free if data_usage else None, "total": data_usage.total if data_usage else None},
         "jobs": request.app.state.jobs.recent(10),
-        "cache_dir": all_settings(conn).get("cache_dir") or "",
+        "cache_dir": get_setting(conn, "cache_dir") or "",
     }
 
 
 @router.post("/system/service/{name}/{action}")
 def service_action(name: str, action: str):
-    if name not in ("pitv-player", "pitv-web") or action not in ("restart", "stop", "start"):
+    if action not in SERVICE_ACTIONS.get(name, ()):
         raise HTTPException(400, "unsupported service or action")
     rc, _, err = run_cmd(["sudo", "-n", "systemctl", action, name], timeout=30)
     if rc != 0:
@@ -676,14 +788,15 @@ def service_action(name: str, action: str):
 
 @router.get("/runs")
 def runs(conn: sqlite3.Connection = Depends(admin_conn), limit: int = 20):
-    rows = conn.execute("SELECT * FROM run_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    rows = conn.execute("SELECT * FROM run_log ORDER BY id DESC LIMIT ?", (max(1, min(limit, 200)),)).fetchall()
     return rows_to_dicts(rows)
 
 
 @router.get("/history")
 def history(conn: sqlite3.Connection = Depends(admin_conn), limit: int = 100):
     rows = conn.execute("SELECT h.*, c.number AS channel_number, c.name AS channel_name FROM history h"
-                        " LEFT JOIN channels c ON c.id = h.channel_id ORDER BY h.started_at DESC LIMIT ?", (limit,)).fetchall()
+                        " LEFT JOIN channels c ON c.id = h.channel_id ORDER BY h.started_at DESC LIMIT ?",
+                        (max(1, min(limit, 1000)),)).fetchall()
     return [dict(r) for r in rows]
 
 

@@ -1,6 +1,6 @@
 <script>
   import { untrack } from 'svelte';
-  import { get } from '../../lib/api.js';
+  import { get, tryApi } from '../../lib/api.js';
   import { toast, clock } from '../../lib/stores.svelte.js';
   import { fmtBytes, fmtAgo } from '../../lib/format.js';
   import { debounce } from '../../lib/util.js';
@@ -41,7 +41,7 @@
     loading = true;
     try {
       if (isJournal) {
-        journal = await get(`/api/logs/journal/${source.slice(8)}`, { lines });
+        journal = await get(`/api/logs/journal/${encodeURIComponent(source.slice(8))}`, { lines });
         entries = null; exists = true;
       } else {
         let r = null;
@@ -50,11 +50,10 @@
           if (liveTool) { try { r = await get('/api/content/tool/api/log', { lines, q, level }); r.exists = true; } catch { r = null; } }
           if (!r) r = await get('/api/content/tool/log', { lines, q, level });
         } else {
-          r = await get(`/api/logs/${source}`, { lines, q, level });
+          r = await get(`/api/logs/${encodeURIComponent(source)}`, { lines, q, level });
         }
         entries = r.lines ?? []; exists = r.exists ?? true; journal = null; logPath = r.path ?? '';
       }
-      files = await get('/api/logs');
     } catch (e) {
       toast.error(e.detail || e.message);
     }
@@ -63,6 +62,9 @@
   }
   function jumpToEnd() { if (box) { box.scrollTop = box.scrollHeight; atEnd = true; } }
   function onScroll() { if (box) atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 40; }
+  // The file list (path, size, mtime) is per source, not per tail: auto-refresh only re-reads the tail.
+  async function loadFiles() { files = (await tryApi(get('/api/logs'))) ?? files; }
+  $effect(() => { source; untrack(loadFiles); });
   $effect(() => { source; lines; level; liveTool; untrack(load); });
   const reload = debounce(load, 300);
   function onQuery(v) { q = v; reload(); }

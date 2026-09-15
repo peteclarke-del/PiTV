@@ -181,11 +181,15 @@ def apply_report(conn: sqlite3.Connection, report: dict[str, Any]) -> dict[str, 
         if it.get("status") == "done":
             done_items += 1
             p = it.get("path")
-            if p and Path(p).is_file() and it.get("media_id"):
+            try:
+                media_id = int(it.get("media_id") or 0)
+            except (TypeError, ValueError):
+                media_id = 0
+            if p and isinstance(p, str) and media_id and Path(p).is_file():
                 # A transcode is also the best local copy for later days, after the cache has moved on.
                 with tx(conn):
                     conn.execute("UPDATE media SET transcoded_path = ?, hwdec = 1 WHERE id = ? AND transcoded_path IS NULL"
-                                 " AND ? LIKE '%.mp4'", (p, int(it["media_id"]), p))
+                                 " AND ? LIKE '%.mp4'", (p, media_id, p))
         elif it.get("status") == "failed":
             failed_items += 1
     done_w = failed_w = 0
@@ -211,9 +215,15 @@ def apply_report(conn: sqlite3.Connection, report: dict[str, Any]) -> dict[str, 
                     conn.execute("UPDATE wanted SET status = CASE WHEN attempts + 1 >= ? THEN 'failed' ELSE 'queued' END,"
                                  " attempts = attempts + 1, message = ?, updated_at = ? WHERE id = ?",
                                  (MAX_WANTED_ATTEMPTS, msg, now_ts(), wid))
-        run = report.get("run") or {}
+        run = report.get("run") if isinstance(report.get("run"), dict) else {}
+
+        def ts(key: str) -> int:
+            try:
+                return int(run.get(key) or now_ts())
+            except (TypeError, ValueError):
+                return now_ts()
         conn.execute("INSERT INTO run_log(kind, started_at, finished_at, status, summary, details) VALUES (?,?,?,?,?,?)",
-                     ("content", int(run.get("started_ts") or now_ts()), int(run.get("finished_ts") or now_ts()),
+                     ("content", ts("started_ts"), ts("finished_ts"),
                       "ok" if not (failed_items or failed_w) else "warning",
                       f"{run.get('tool', 'pitv_content')}: {done_items} cached, {failed_items} failed; wanted {done_w} done, {failed_w} failed",
                       json.dumps([str(run.get("log_tail") or "")[-4000:]])))

@@ -23,11 +23,12 @@ from ..config import Config
 from ..db import all_settings, enabled_channels, now_ts
 from ..guide import block_entry, next_programmes, slot_at
 from ..logsetup import setup_logging
+from ..readiness import mark_missing
 from ..scheduler.build import rebuild_from
 from .cache import MediaCache
 from .control_socket import ControlServer
 from .hwdec import decode_options, is_raspberry_pi
-from .input import EvdevInput, TerminalInput
+from .input import ACTIONS, EvdevInput, TerminalInput
 from .maintenance import Maintenance
 from .mpv_ipc import Mpv, MpvError, default_args
 from .osd import (OVERLAY_BADGE, OVERLAY_GUIDE, OVERLAY_MESSAGE, OVERLAY_STATIC, OVERLAY_VOLUME, Renderer,
@@ -36,12 +37,36 @@ from .osd import (OVERLAY_BADGE, OVERLAY_GUIDE, OVERLAY_MESSAGE, OVERLAY_STATIC,
 log = logging.getLogger("pitv.player")
 
 TESTCARD = "testcard"   # sentinel in `playing_path` while the test card is on screen
+SLOT_RECHECK_SECONDS = 5   # how stale the cached "slot on air" may be before it is re-read
+HEARTBEAT_SECONDS = 10     # the web service treats a longer silence as a wedged player
+SUBSTITUTION_MEMORY = 86400
 
 WINDOW_KEYS = {"UP": "up", "DOWN": "down", "LEFT": "left", "RIGHT": "right", "ENTER": "ok", "ESC": "back",
                "g": "guide", "i": "info", "SPACE": "pause", "m": "mute", "+": "vol_up", "=": "vol_up",
-               "-": "vol_down", "]": "ch_up", "[": "ch_down", "r": "restart", "q": "quit"}
+               "-": "vol_down", "]": "ch_up", "[": "ch_down", "r": "restart", "p": "power", "q": "quit"}
 for _n in range(1, 10):
     WINDOW_KEYS[str(_n)] = f"channel_{_n}"
+
+
+def validate_control(req: dict[str, Any]) -> tuple[str, Any] | str:
+    """Check a control-socket request; returns (cmd, argument) or an error message. The
+    socket is reachable by the web service, whose remote endpoint is public on the LAN, so
+    only remote-control actions and sane numbers get through."""
+    cmd = req.get("cmd")
+    if cmd in ("state", "schedule-changed", "quit"):
+        return cmd, None
+    if cmd == "key":
+        key = str(req.get("key", "")).lower()
+        return (cmd, key) if key in ACTIONS else f"unknown key {key!r}"
+    if cmd in ("channel", "volume"):
+        try:
+            value = int(req.get("number" if cmd == "channel" else "volume"))
+        except (TypeError, ValueError):
+            return f"{cmd} needs a number"
+        if cmd == "channel" and not 1 <= value <= 999:
+            return "channel number out of range"
+        return cmd, max(0, min(100, value)) if cmd == "volume" else value
+    return f"unknown command {cmd!r}"
 
 
 class Player:
@@ -68,6 +93,7 @@ class Player:
         self.retry_at = 0.0
         self.paused = False
         self.behind_live = False
+        self.standby = False
         self.volume = 80
         self.muted = False
         self.guide_open = False
@@ -85,7 +111,9 @@ class Player:
         self._last_drift_check = 0.0
         self._stream_info_at = 0.0
         self._started_at = time.time()
-        self._substituted_slots: set[int] = set()
+        self._substituted: dict[int, float] = {}   # slot id -> when a live substitution was tried
+        self._slot_cache: tuple[int, dict[str, Any] | None, int] = (0, None, 0)  # (channel, slot, valid until)
+        self._last_heartbeat = 0.0
         self.stream_info: dict[str, Any] = {}
         self._state_cache: str = ""
         self.keyboard = keyboard
@@ -124,15 +152,27 @@ class Player:
         self.channels = enabled_channels(self.conn)
 
     def _testcard(self) -> Path:
-        p = self.cfg.assets_dir / "testcard.png"
+        p = self.cfg.data_dir / "testcard.png"
         if not p.exists():
-            p = self.cfg.data_dir / "testcard.png"
-            if not p.exists():
-                make_testcard(p)
+            make_testcard(p)
         return p
 
     def slot_at(self, channel_id: int, ts: int) -> dict[str, Any] | None:
         return slot_at(self.conn, channel_id, ts)
+
+    def _slot_on_air(self, channel_id: int, now: int) -> dict[str, Any] | None:
+        """`slot_at` for the tick loop: re-read only at the slot boundary, after a schedule
+        change, or every few seconds as a backstop, not twice a second."""
+        cid, slot, until = self._slot_cache
+        if cid == channel_id and now < until:
+            return slot
+        slot = self.slot_at(channel_id, now)
+        until = min(slot["end_ts"] if slot else now + SLOT_RECHECK_SECONDS, now + SLOT_RECHECK_SECONDS)
+        self._slot_cache = (channel_id, slot, until)
+        return slot
+
+    def _forget_slot(self) -> None:
+        self._slot_cache = (0, None, 0)
 
     def next_programmes(self, channel_id: int, after: int, n: int = 12) -> list[dict[str, Any]]:
         return next_programmes(self.conn, channel_id, after, n)
@@ -213,15 +253,21 @@ class Player:
         except (OSError, ValueError) as exc:
             log.warning("player state file unreadable (%s): %s", self.state_file, exc)
             return
-        self.volume = int(data.get("volume", self.volume))
-        self.muted = bool(data.get("muted", False))
-        if not self.explicit_channel and data.get("channel"):
-            self.initial_channel = int(data["channel"])
+        try:
+            self.volume = max(0, min(100, int(data.get("volume", self.volume))))
+            self.muted = bool(data.get("muted", False))
+            if not self.explicit_channel and data.get("channel"):
+                self.initial_channel = int(data["channel"])
+        except (TypeError, ValueError, AttributeError) as exc:
+            log.warning("player state file ignored (%s): %s", self.state_file, exc)
 
     def _save_state(self) -> None:
+        """Written atomically: a power cut mid-write must not leave a half file for the next boot."""
+        tmp = self.state_file.with_suffix(".json.tmp")
         try:
-            self.state_file.write_text(json.dumps({"volume": self.volume, "muted": self.muted,
-                                                   "channel": self.channel["number"] if self.channel else None}))
+            tmp.write_text(json.dumps({"volume": self.volume, "muted": self.muted,
+                                       "channel": self.channel["number"] if self.channel else None}))
+            tmp.replace(self.state_file)
         except OSError as exc:
             log.warning("could not save player state: %s", exc)
 
@@ -331,10 +377,10 @@ class Player:
             if time.time() > expiry:
                 self.mpv.overlay_remove(oid)
                 del self.osd_expiry[oid]
-        if self.channel is None:
+        if self.channel is None or self.standby:
             return
         if not (self.paused or self.behind_live):
-            slot = self.slot_at(self.channel["id"], now)
+            slot = self._slot_on_air(self.channel["id"], now)
             sid = slot["id"] if slot else None
             if sid != self.playing_slot_id:
                 if sid != self.failed_slot_id or time.time() >= self.retry_at:
@@ -370,6 +416,7 @@ class Player:
         self.paused = False
         self.behind_live = False
         self.failed_slot_id = None
+        self._forget_slot()
         try:
             self.mpv.set("pause", False)
         except MpvError as exc:
@@ -460,10 +507,13 @@ class Player:
                                 (slot["media_id"],)).fetchone()
         if not src or not Path(src["path"]).is_dir():
             return False  # the whole share is down; nothing sensible to substitute with
-        if slot["id"] in self._substituted_slots:
+        cutoff = time.time() - SUBSTITUTION_MEMORY
+        self._substituted = {k: v for k, v in self._substituted.items() if v > cutoff}
+        if slot["id"] in self._substituted:
             return False  # already tried once for this slot; do not loop on a bad rebuild
-        self._substituted_slots.add(slot["id"])
+        self._substituted[slot["id"]] = time.time()
         try:
+            mark_missing(self.conn, {slot["media_id"]}, "File not found when it was due on air")
             result = rebuild_from(self.conn, self.channel["id"], self.clock(), now=self.clock(),
                                   exclude_media_ids={slot["media_id"]})
             log.error("substituted missing '%s' on channel %s and rebalanced the day: %s", slot.get("title"),
@@ -472,6 +522,7 @@ class Player:
             log.exception("live substitution failed")
             return False
         self.failed_slot_id = None
+        self._forget_slot()
         self.play_live()
         self._schedule_changed()
         return True
@@ -551,10 +602,17 @@ class Player:
             self._set_volume(int(arg))
         elif action == "schedule-changed":
             self.guide_loaded_at = 0
+            self._forget_slot()
+            self.cache.invalidate()
 
     def action(self, act: str) -> None:
         if act == "quit":
             self.stopping = True
+            return
+        if self.standby or act == "power":
+            # Standby is a television's off switch: any key wakes it and is otherwise ignored.
+            self._set_standby(not self.standby)
+            self._publish(force=True)
             return
         if act.startswith("channel_"):
             self.guide_open = False
@@ -604,6 +662,28 @@ class Player:
                 self.play_live()
                 self.show_badge()
         self._publish(force=True)
+
+    def _set_standby(self, on: bool) -> None:
+        """Picture off and sound muted; the schedule keeps running so waking rejoins live."""
+        self.standby = on
+        log.info("standby %s", "on" if on else "off")
+        try:
+            if on:
+                self.close_guide()
+                for oid in list(self.osd_expiry):
+                    self.mpv.overlay_remove(oid)
+                self.osd_expiry.clear()
+                self.mpv.set("mute", True)
+                self.mpv.set("vid", "no")
+            else:
+                self.mpv.set("vid", "auto")
+                self.mpv.set("mute", self.muted)
+                self.playing_slot_id = None
+                self._forget_slot()
+                self.play_live()
+                self.show_badge()
+        except MpvError as exc:
+            log.warning("standby switch failed: %s", exc)
 
     def _step_channel(self, step: int) -> None:
         if not self.channels or self.channel is None:
@@ -715,27 +795,22 @@ class Player:
     # --- control socket / state ---------------------------------------------------------------------------
 
     def _handle_control(self, req: dict[str, Any]) -> dict[str, Any]:
-        cmd = req.get("cmd")
+        parsed = validate_control(req)
+        if isinstance(parsed, str):
+            return {"ok": False, "error": parsed}
+        cmd, arg = parsed
         if cmd == "state":
             return {"ok": True, **self.state()}
         if cmd == "key":
-            key = str(req.get("key", ""))
-            self.last_key = {"key": f"WEB_{key.upper()}", "action": key, "ts": now_ts(), "source": "web"}
-            self.actions.put(("key", ("web", key)))
-            return {"ok": True}
-        if cmd == "channel":
-            self.actions.put(("tune", int(req.get("number", 1))))
-            return {"ok": True}
-        if cmd == "volume":
-            self.actions.put(("volume", int(req.get("volume", self.volume))))
-            return {"ok": True}
-        if cmd == "schedule-changed":
-            self.actions.put(("schedule-changed", None))
-            return {"ok": True}
-        if cmd == "quit":
-            self.actions.put(("quit", None))
-            return {"ok": True}
-        return {"ok": False, "error": f"unknown command {cmd!r}"}
+            self.last_key = {"key": f"WEB_{arg.upper()}", "action": arg, "ts": now_ts(), "source": "web"}
+            self.actions.put(("key", ("web", arg)))
+        elif cmd == "channel":
+            self.actions.put(("tune", arg))
+        elif cmd == "volume":
+            self.actions.put(("volume", arg))
+        else:
+            self.actions.put((cmd, None))
+        return {"ok": True}
 
     def _schedule_changed(self) -> None:
         self.actions.put(("schedule-changed", None))
@@ -750,7 +825,7 @@ class Player:
             "channel": {"id": self.channel["id"], "number": self.channel["number"], "name": self.channel["name"],
                         "colour": self.channel.get("colour")} if self.channel else None,
             "slot": {k: slot.get(k) for k in ("id", "kind", "title", "subtitle", "start_ts", "end_ts", "media_id")} if slot else None,
-            "position": pos, "paused": self.paused, "behind_live": self.behind_live,
+            "position": pos, "paused": self.paused, "behind_live": self.behind_live, "standby": self.standby,
             "volume": self.volume, "muted": self.muted, "guide_open": self.guide_open,
             "playing": self.playing_path not in (None, TESTCARD), "testcard": self.playing_path == TESTCARD,
             "hwdec": self.hwdec_current, "on_pi": self.on_pi, "last_key": self.last_key, "error": self.last_error,
@@ -766,8 +841,10 @@ class Player:
             log.exception("state snapshot failed")
             return
         key = json.dumps({k: v for k, v in st.items() if k not in ("ts", "position", "cache")}, sort_keys=True)
-        if force or key != self._state_cache or st.get("playing"):
+        now = time.time()
+        if force or key != self._state_cache or st.get("playing") or now - self._last_heartbeat >= HEARTBEAT_SECONDS:
             self._state_cache = key
+            self._last_heartbeat = now
             self.control.broadcast(st)
 
 

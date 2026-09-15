@@ -6,15 +6,16 @@ from __future__ import annotations
 import json
 import sqlite3
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 from ...content import apply_report, manifest, protect_manifest
-from ...db import DEFAULT_SETTINGS, all_settings
+from ...db import DEFAULT_SETTINGS, all_settings, get_setting
 from ...logsetup import tail
 from ...player.cache import MediaCache
 from ...readiness import check as readiness_check
@@ -49,14 +50,25 @@ def make_room(body: dict[str, Any] = Body(default={}), conn: sqlite3.Connection 
     cache = MediaCache.from_settings(all_settings(conn))
     if not cache.enabled:
         return {"ok": False, "error": "no cache_dir configured"}
+    try:
+        needed = max(0, int(body.get("bytes", 0)))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "bytes must be a number") from exc
     protect_manifest(conn, cache)
-    return {"ok": True, "free_bytes": cache.make_room(int(body.get("bytes", 0)))}
+    return {"ok": True, "free_bytes": cache.make_room(needed)}
 
 
 @router.post("/readiness")
-def readiness(body: dict[str, Any] = Body(default={}), conn: sqlite3.Connection = Depends(admin_conn)):
+def readiness(request: Request, body: dict[str, Any] = Body(default={}), conn: sqlite3.Connection = Depends(admin_conn)):
     """Check that everything scheduled through tomorrow is playable; substitute what is missing."""
-    return readiness_check(conn, days=int(body.get("days", 1)), substitute=bool(body.get("substitute", True)))
+    try:
+        days = max(1, min(int(body.get("days", 1)), 7))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "days must be a number") from exc
+    result = readiness_check(conn, days=days, substitute=bool(body.get("substitute", True)))
+    if result["substituted"]:
+        request.app.state.player.call("schedule-changed")
+    return result
 
 
 @router.get("/tool")
@@ -88,15 +100,15 @@ def tool_status(conn: sqlite3.Connection = Depends(admin_conn)):
 @router.post("/tool/run")
 def tool_run(conn: sqlite3.Connection = Depends(admin_conn)):
     """Start a pitv_content cache run now: through its API when it is up, else systemd."""
-    base = all_settings(conn).get("content_tool_url") or "http://127.0.0.1:8081"
+    base = get_setting(conn, "content_tool_url") or DEFAULT_SETTINGS["content_tool_url"]
     status, payload = _tool_request(base, "POST", "run", body={"mode": "cache"}, timeout=10)
     if status < 500 and not payload.get("offline"):
         if status == 409:
             return {"ok": False, "error": payload.get("error") or "a run is already active"}
         return {"ok": status < 400, **{k: v for k, v in payload.items() if k != "ok"}}
-    rc, out = run_cmd(["sudo", "-n", "systemctl", "start", "pitv-content.service"], timeout=10)
+    rc, _, err = run_cmd(["sudo", "-n", "systemctl", "start", CONTENT_SERVICE], timeout=10)
     if rc != 0:
-        return {"ok": False, "error": out or "could not start pitv-content.service"}
+        return {"ok": False, "error": err or f"could not start {CONTENT_SERVICE}"}
     return {"ok": True, "via": "systemd"}
 
 
@@ -111,6 +123,15 @@ def tool_log(conn: sqlite3.Connection = Depends(admin_conn), lines: int = 300, q
 # --- proxy to pitv_content's own local API (settings, run/cancel, providers, catalogue, jobs, log) ---
 
 _PROXY_ALLOWED = {"status", "settings", "run", "cancel", "log", "providers", "catalogue", "jobs"}
+
+
+def _proxy_path(path: str) -> str | None:
+    """The forwarded path, re-encoded segment by segment, or None when it is not one of the
+    known pitv_content endpoints or tries to climb out of them ('..', empty segments)."""
+    segments = path.split("/")
+    if len(path) > 500 or segments[0] not in _PROXY_ALLOWED or any(seg in ("", ".", "..") for seg in segments):
+        return None
+    return "/".join(urllib.parse.quote(seg, safe="") for seg in segments)
 
 
 def _tool_request(base: str, method: str, path: str, query: str = "", body: dict[str, Any] | None = None,
@@ -139,10 +160,11 @@ def _tool_request(base: str, method: str, path: str, query: str = "", body: dict
 async def tool_proxy(path: str, request: Request, conn: sqlite3.Connection = Depends(admin_conn)):
     """Forward to pitv_content's local API so its settings, providers, catalogue, jobs and
     log are controllable from this admin. Only known paths; JSON only; loopback by default."""
-    base = all_settings(conn).get("content_tool_url") or DEFAULT_SETTINGS["content_tool_url"]
-    head = path.split("/", 1)[0]
-    if head not in _PROXY_ALLOWED:
+    base = get_setting(conn, "content_tool_url") or DEFAULT_SETTINGS["content_tool_url"]
+    target = _proxy_path(path)
+    if target is None:
         return JSONResponse(status_code=404, content={"error": "unknown pitv_content endpoint"})
+    head = path.split("/", 1)[0]
     body = None
     if request.method in ("PUT", "POST"):
         try:
@@ -150,7 +172,8 @@ async def tool_proxy(path: str, request: Request, conn: sqlite3.Connection = Dep
         except ValueError:
             body = {}
     # urllib blocks; keep it off the event loop so the SSE stream and other requests carry on.
-    status, payload = await run_in_threadpool(_tool_request, base, request.method, path, request.url.query, body)
+    status, payload = await run_in_threadpool(_tool_request, base, request.method, target,
+                                              request.url.query.replace("#", "%23"), body)
     offline = isinstance(payload, dict) and payload.get("offline")
     if head == "log" and isinstance(payload, dict) and not offline:
         # Same shape as /api/logs/{name} so the Logs page can show either.

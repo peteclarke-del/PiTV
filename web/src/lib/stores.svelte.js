@@ -8,8 +8,15 @@ export const player = $state({ state: { online: false }, connected: false });
 
 export const jobs = $state({ list: [] });
 
-/** Counters bumped by SSE events; pages watch them with $effect to refetch. */
+/** Counters pages watch with $effect to refetch. Bump them through noteChange(). */
 export const changes = $state({ schedule: 0, library: 0 });
+const pendingChange = { schedule: 0, library: 0 };
+/** Bump `changes[kind]` once for a burst of notifications: an edit's own response, the SSE echo of
+ *  it and the job-finished event all land within a few hundred milliseconds and need one refetch. */
+export function noteChange(kind) {
+  if (pendingChange[kind]) return;
+  pendingChange[kind] = setTimeout(() => { pendingChange[kind] = 0; changes[kind]++; }, 250);
+}
 
 /** Wall clock in seconds, ticked once a second by App. */
 export const clock = $state({ ts: Math.floor(Date.now() / 1000) });

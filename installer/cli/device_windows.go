@@ -5,16 +5,12 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"syscall"
-	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
-
-func sprintf(f string, a ...any) string { return fmt.Sprintf(f, a...) }
 
 type psDisk struct {
 	Number       int    `json:"Number"`
@@ -152,6 +148,3 @@ func IsAdmin() bool {
 	member, err := token.IsMember(sid)
 	return err == nil && member
 }
-
-var _ = unsafe.Pointer(nil)
-var _ = os.Getenv

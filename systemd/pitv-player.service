@@ -1,9 +1,8 @@
 [Unit]
 Description=PiTV player (mpv on DRM, schedule follower)
-After=network-online.target systemd-timesyncd.service time-sync.target
-Wants=network-online.target systemd-timesyncd.service
 # Do not Require the mounts: playback starts with the test card and retries until the NAS is up.
-After=mnt-tvshows.automount mnt-movies.automount mnt-ads.automount
+After=network-online.target remote-fs.target systemd-timesyncd.service time-sync.target
+Wants=network-online.target systemd-timesyncd.service
 
 [Service]
 Type=notify
@@ -29,6 +28,14 @@ OOMPolicy=kill
 Nice=-5
 IOSchedulingClass=best-effort
 IOSchedulingPriority=2
+# The player needs the DRM, input and ALSA devices, the data dir, /run/pitv and the cache drive;
+# nothing under /usr, /etc or /boot is ever written.
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=pitv-player

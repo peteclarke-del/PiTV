@@ -1,6 +1,7 @@
 <script>
   import { player } from '../lib/stores.svelte.js';
   import { post, tryApi } from '../lib/api.js';
+  import { safeColour } from '../lib/format.js';
 
   let { channels = [] } = $props();
   let online = $derived(player.state.online);
@@ -18,7 +19,7 @@
   <div class="channels">
     {#each channels.filter((c) => c.enabled) as ch (ch.id)}
       <button class="ch" disabled={!online} onclick={() => tune(ch.number)} title={ch.name}
-              style="--c:{ch.colour}" class:busy={busy === ch.number}>
+              style="--c:{safeColour(ch.colour)}" class:busy={busy === ch.number}>
         <b>{ch.number}</b><span class="truncate">{ch.short_name}</span>
       </button>
     {/each}

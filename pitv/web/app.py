@@ -36,8 +36,14 @@ PLACEHOLDER = """<!doctype html><meta charset=utf-8><title>PiTV</title>
 <p>The JSON API is available under <a href="/api/docs">/api/docs</a>.</p>"""
 
 
+MAX_LINE = 1 << 20   # a state line is a few KB; anything bigger is a broken peer
+
+
 def _player_subscriber(app: FastAPI, stop: threading.Event) -> None:
-    """Keep a subscription to the player's state stream and relay it to the event bus."""
+    """Keep a subscription to the player's state stream and relay it to the event bus.
+
+    The player heartbeats every few seconds; a quiet socket therefore means a wedged player,
+    not an idle one, and the connection is dropped so the UI shows it offline."""
     cfg: Config = app.state.cfg
     while not stop.is_set():
         try:
@@ -45,13 +51,16 @@ def _player_subscriber(app: FastAPI, stop: threading.Event) -> None:
                 s.settimeout(5)
                 s.connect(str(cfg.player_socket))
                 s.sendall(b'{"cmd": "subscribe"}\n')
-                s.settimeout(30)
+                s.settimeout(60)
                 buf = b""
                 while not stop.is_set():
                     chunk = s.recv(65536)
                     if not chunk:
                         break
                     buf += chunk
+                    if len(buf) > MAX_LINE:
+                        log.warning("player state line too long; reconnecting")
+                        break
                     while b"\n" in buf:
                         line, buf = buf.split(b"\n", 1)
                         if not line.strip():
@@ -118,8 +127,9 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception):
+        # The traceback goes to the log only: exception text can carry file paths and SQL.
         log.error("unhandled error in %s %s", request.method, request.url.path, exc_info=exc)
-        return JSONResponse(status_code=500, content={"detail": f"{exc!r}"})
+        return JSONResponse(status_code=500, content={"detail": "internal error (see the web log)"})
 
     index = STATIC_DIR / "index.html"
     if index.exists():
@@ -133,8 +143,10 @@ def create_app(cfg: Config) -> FastAPI:
 
         @app.get("/{path:path}", include_in_schema=False)
         async def spa(path: str):
-            candidate = STATIC_DIR / path
-            if path and candidate.is_file():
+            # Only files inside the built bundle are served; anything that resolves elsewhere
+            # (".." segments, symlinks) falls through to the app shell.
+            candidate = (STATIC_DIR / path).resolve()
+            if path and candidate.is_relative_to(STATIC_DIR) and candidate.is_file():
                 if path.startswith("assets/"):
                     return FileResponse(candidate, headers={"Cache-Control": "public, max-age=31536000, immutable"})
                 return FileResponse(candidate, headers=no_cache)

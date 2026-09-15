@@ -3,6 +3,7 @@
   // {key, label, help, type, default, value, choices?, min?, max?, group, restart_required};
   // only changed keys are submitted, and secrets are never echoed back (blank = keep).
   import ChipList from './ChipList.svelte';
+  import { num } from '../lib/util.js';
 
   let { schema = [], onsave, saving = false, errors = {}, groups = ['Providers', 'Search', 'Encoding', 'Schedule', 'Advanced'] } = $props();
   const SECRET_MASK = '••••';
@@ -30,8 +31,7 @@
   const secretSet = (f) => f.value === SECRET_MASK || (typeof f.value === 'string' && f.value.length > 0);
 
   function coerce(f, v) {
-    if (f.type === 'int') return v === '' || v === null ? null : parseInt(v, 10);
-    if (f.type === 'float') return v === '' || v === null ? null : Number(v);
+    if (f.type === 'int' || f.type === 'float') return num(v, { min: f.min ?? -Infinity, max: f.max ?? Infinity, int: f.type === 'int' });
     if (f.type === 'hours') return String(v ?? '').trim();
     return v;
   }
@@ -67,9 +67,9 @@
                 {:else if f.type === 'int' || f.type === 'float'}
                   <input type="number" step={f.type === 'float' ? 'any' : '1'} min={f.min ?? undefined} max={f.max ?? undefined} bind:value={values[f.key]} placeholder={placeholder(f)} />
                 {:else if f.type === 'list'}
-                  <ChipList value={values[f.key] ?? []} onchange={(v) => (values[f.key] = v)} placeholder="add…" />
+                  <ChipList value={values[f.key] ?? []} onchange={(v) => (values[f.key] = v)} placeholder="add…" label={f.label ?? f.key} />
                 {:else if f.type === 'secret'}
-                  <input type="password" autocomplete="new-password" bind:value={values[f.key]} placeholder={secretSet(f) ? 'set – leave blank to keep' : 'not set'} />
+                  <input type="password" autocomplete="new-password" bind:value={values[f.key]} placeholder={secretSet(f) ? 'set: leave blank to keep' : 'not set'} />
                 {:else}
                   <input type="text" class:mono={f.type === 'path' || f.type === 'time' || f.type === 'hours'} bind:value={values[f.key]} placeholder={placeholder(f)} />
                 {/if}

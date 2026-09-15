@@ -92,7 +92,18 @@ func sshClient(o UpgradeOpts) (*ssh.Client, error) {
 	if o.Password != "" {
 		auth = append(auth, ssh.Password(o.Password))
 	}
-	cfg := &ssh.ClientConfig{User: o.User, Auth: auth, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 15 * time.Second} //nolint:gosec // LAN appliance; fingerprint is shown to the user
+	khPath, err := knownHostsPath()
+	if err != nil {
+		return nil, err
+	}
+	hostKey, err := hostKeyCallback(khPath, func(host, fingerprint string) bool {
+		fmt.Printf("The authenticity of host %s cannot be established.\n  %s\n", host, fingerprint)
+		return newPrompter().askBool("Trust this host and remember its key", false)
+	})
+	if err != nil {
+		return nil, err
+	}
+	cfg := &ssh.ClientConfig{User: o.User, Auth: auth, HostKeyCallback: hostKey, Timeout: 15 * time.Second}
 	addr := o.Host
 	if _, _, err := net.SplitHostPort(addr); err != nil {
 		addr = net.JoinHostPort(addr, "22")
@@ -114,14 +125,15 @@ func runRemote(c *ssh.Client, cmd string, stdin []byte, out io.Writer) error {
 }
 
 // Upgrade uploads the trees and runs the install scripts with sudo (the maintenance user
-// is in the sudo group; the password is passed on stdin, never on the command line).
+// is in the sudo group; the password is passed on stdin, never on the command line, and
+// -k makes sudo read it every time so it never lands on a script's stdin instead).
 func Upgrade(o UpgradeOpts, out io.Writer) error {
 	client, err := sshClient(o)
 	if err != nil {
 		return fmt.Errorf("ssh %s@%s: %w", o.User, o.Host, err)
 	}
 	defer client.Close()
-	sudo := "sudo -S -p '' "
+	sudo := "sudo -S -k -p '' "
 	pw := []byte(o.Password + "\n")
 	fmt.Fprintln(out, "==> uploading PiTV sources")
 	tree, err := tarTree(o.PiTVSrc)

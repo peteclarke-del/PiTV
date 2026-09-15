@@ -4,16 +4,17 @@
   import { changes, clock, toast } from '../../lib/stores.svelte.js';
   import { fmtAgo, fmtEpisode } from '../../lib/format.js';
   import { poll } from '../../lib/poll.svelte.js';
+  import { guard } from '../../lib/guard.svelte.js';
+  import { num } from '../../lib/util.js';
   import ProgressBar from '../../components/ProgressBar.svelte';
   import StatusBadge from '../../components/StatusBadge.svelte';
   import Drawer from '../../components/Drawer.svelte';
 
   let wanted = $state(null);
   let adding = $state(null);       // add-wanted form
-  let busy = $state(false);
 
   async function load() {
-    try { wanted = await get('/api/wanted'); } catch { wanted = wanted ?? []; }
+    wanted = (await tryApi(get('/api/wanted'))) ?? wanted ?? [];
   }
   $effect(() => { changes.library; untrack(load); });
   poll(load, 20000); // pitv_content updates progress without an SSE event
@@ -24,31 +25,29 @@
   function openAdd(preset = {}) {
     adding = { kind: 'episode', title: '', artist: '', year: '', season: '', episode: '', ref: '', genre: '', ...preset };
   }
-  async function submitAdd() {
-    const b = { kind: adding.kind, title: adding.title.trim(), year: adding.year === '' ? null : Number(adding.year) };
+  const submitAdd = guard(async () => {
+    const b = { kind: adding.kind, title: adding.title.trim(), year: num(adding.year, { min: 1900, max: 2100, int: true }) };
     if (adding.ref.trim()) b.ref = adding.ref.trim();
-    if (adding.kind === 'episode') { b.season = adding.season === '' ? null : Number(adding.season); b.episode = adding.episode === '' ? null : Number(adding.episode); }
+    if (adding.kind === 'episode') { b.season = num(adding.season, { min: 0, int: true }); b.episode = num(adding.episode, { min: 0, int: true }); }
     if (adding.kind === 'music') { if (adding.genre.trim()) b.genre = adding.genre.trim().toLowerCase(); if (adding.artist.trim()) b.artist = adding.artist.trim(); }
-    busy = true;
     const r = await tryApi(post('/api/wanted', b), { success: `Queued "${b.title}"` });
-    busy = false;
     if (r) { adding = null; load(); }
-  }
+  });
   const retry = (w) => tryApi(post(`/api/wanted/${w.id}/retry`), { success: 'Re-queued' }).then(load);
   async function removeWanted(w) {
     if (await confirmApi(`Remove "${w.title}" from the wanted list?`, { title: 'Remove', okLabel: 'Remove', danger: true }, () => del(`/api/wanted/${w.id}`))) load();
   }
-  async function scanGaps() {
+  const scanGaps = guard(async () => {
     const r = await tryApi(post('/api/wanted/scan-gaps'));
     if (r) { toast.success(r.added ? `${r.added} missing episode(s) queued` : 'No gaps found in the shows on disk'); load(); }
-  }
+  });
 </script>
 
 <div class="stack">
-  <div class="note">Wanted programmes are fetched by <b>pitv_content</b>, the desktop app, on its next run (see the Content tab). Add a title here or let it search; give a URL only when you know exactly where the file is.</div>
+  <div class="note">Wanted programmes are fetched by <b>pitv_content</b>, the support app on the Pi, on its next run (see the Content tab). Add a title here or let it search; give a URL only when you know exactly where the file is.</div>
   <div class="card">
     <div class="card-title"><h3>Wanted</h3>
-      <button class="small" onclick={scanGaps}>Queue missing episodes</button>
+      <button class="small" onclick={scanGaps} disabled={scanGaps.busy}>Queue missing episodes</button>
       <button class="small primary" onclick={() => openAdd()}>Add wanted</button>
     </div>
     <div class="table-wrap">
@@ -101,6 +100,6 @@
   {/if}
   {#snippet footer()}
     <button onclick={() => (adding = null)}>Cancel</button>
-    <button class="primary" onclick={submitAdd} disabled={busy || !adding?.title?.trim()}>Add</button>
+    <button class="primary" onclick={submitAdd} disabled={submitAdd.busy || !adding?.title?.trim()}>Add</button>
   {/snippet}
 </Drawer>

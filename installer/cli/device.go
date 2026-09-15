@@ -1,7 +1,10 @@
 // A raw block device the image is written to, plus disk discovery, per platform.
 package main
 
-import "io"
+import (
+	"fmt"
+	"io"
+)
 
 type Disk struct {
 	Path      string // /dev/sdb or \\.\PhysicalDrive2
@@ -28,7 +31,7 @@ func humanSize(b int64) string {
 }
 
 func formatFloat(f float64) string {
-	return trimZero(sprintf("%.1f", f))
+	return trimZero(fmt.Sprintf("%.1f", f))
 }
 
 func trimZero(s string) string {

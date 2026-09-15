@@ -42,7 +42,7 @@
         <input type="password" bind:value={confirmPw} autocomplete="new-password" minlength="6" required />
       </label>
     {/if}
-    {#if error}<div class="badge danger">{error}</div>{/if}
+    {#if error}<div class="badge danger" role="alert">{error}</div>{/if}
     <div class="row">
       <button class="primary" type="submit" disabled={busy}>{mode === 'setup' ? 'Set password' : 'Log in'}</button>
       {#if mode === 'setup'}

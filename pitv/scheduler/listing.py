@@ -9,7 +9,7 @@ from ..db import all_settings, enabled_channels, now_ts
 from .rules import broadcast_day_for, day_bounds, tz_of
 
 
-def day_slots(conn: sqlite3.Connection, channel_id: int, day: date, include_replay: bool):
+def day_slots(conn: sqlite3.Connection, channel_id: int, day: date, include_replay: bool) -> list[sqlite3.Row]:
     q = ("SELECT s.*, m.year AS myear, m.certificate AS mcert, m.duration AS mduration, m.kind AS mkind"
          " FROM schedule s LEFT JOIN media m ON m.id = s.media_id"
          " WHERE s.channel_id = ? AND s.day = ?")

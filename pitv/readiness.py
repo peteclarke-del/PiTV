@@ -17,7 +17,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .content import manifest_window
-from .db import all_settings, now_ts, run_log_finish, run_log_start
+from .db import all_settings, now_ts, run_log_finish, run_log_start, tx
 from .player.cache import MediaCache
 from .scheduler.build import rebuild_from
 from .scheduler.rules import tz_of
@@ -64,6 +64,7 @@ def check(conn: sqlite3.Connection, *, now: int | None = None, days: int = 1, su
         log.error("share not mounted: %s (%s); programmes from it cannot be verified", src["name"], src["path"])
     substituted = 0
     if substitute:
+        mark_missing(conn, {s["id"] for slots in missing.values() for s in slots}, "File not found at readiness check")
         for channel_id, slots in missing.items():
             exclude = {s["id"] for s in slots}
             first = min(s["start_ts"] for s in slots)
@@ -85,3 +86,14 @@ def check(conn: sqlite3.Connection, *, now: int | None = None, days: int = 1, su
 
 def _hhmm(ts: int, tz: ZoneInfo) -> str:
     return datetime.fromtimestamp(ts, tz).strftime("%a %H:%M")
+
+
+def mark_missing(conn: sqlite3.Connection, media_ids: set[int], reason: str) -> None:
+    """Take files that have vanished (while their share is up) out of the library until the
+    next scan sees them again; otherwise every rebuild could pick them straight back."""
+    if not media_ids:
+        return
+    marks = ",".join("?" for _ in media_ids)
+    with tx(conn):
+        conn.execute(f"UPDATE media SET missing = 1, attention = ? WHERE id IN ({marks})",
+                     (reason, *media_ids))

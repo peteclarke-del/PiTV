@@ -38,15 +38,19 @@ if [ ! -x "$INSTALL_DIR/.venv/bin/python" ]; then
 fi
 "$INSTALL_DIR/.venv/bin/pip" install -q --upgrade pip
 "$INSTALL_DIR/.venv/bin/pip" install -q -e "$INSTALL_DIR"
-chown -R pitv:pitv "$INSTALL_DIR"
+# The code is root-owned and read-only to the service user: a compromised web session must
+# not be able to rewrite the program it runs under. Bytecode is compiled now, as root.
+"$INSTALL_DIR/.venv/bin/python" -m compileall -q "$INSTALL_DIR/pitv"
+chown -R root:root "$INSTALL_DIR"
+chmod -R u+rwX,go+rX,go-w "$INSTALL_DIR"
 
 log "SMB credentials"
 if [ ! -f /etc/pitv/smb-credentials ]; then
   read -rp "NAS username for $NAS_HOST: " smb_user
   read -rsp "NAS password: " smb_pass; echo
-  printf 'username=%s\npassword=%s\n' "$smb_user" "$smb_pass" > /etc/pitv/smb-credentials
+  (umask 077; printf 'username=%s\npassword=%s\n' "$smb_user" "$smb_pass" > /etc/pitv/smb-credentials)
 fi
-chmod 600 /etc/pitv/smb-credentials
+chown root:root /etc/pitv/smb-credentials; chmod 600 /etc/pitv/smb-credentials
 
 log "CIFS automounts for: $SHARES"
 for share in $SHARES; do
@@ -57,19 +61,19 @@ for share in $SHARES; do
 done
 
 log "Local cache directory ($CACHE_DIR)"
-mkdir -p "$CACHE_DIR"/acquired/{tvshows,tvsports,movies,ads,"music videos"} "$CACHE_DIR"/logs "$CACHE_DIR"/reports && chown -R pitv:pitv "$CACHE_DIR" || true
-
-log "Export the cache over NFS so pitv_content on the desktop can fill it (EXPORT_TO=${EXPORT_TO:-192.168.0.0/24})"
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nfs-kernel-server >/dev/null
-CACHE_ROOT="$(dirname "$CACHE_DIR")"
-grep -q "^$CACHE_ROOT " /etc/exports 2>/dev/null || echo "$CACHE_ROOT ${EXPORT_TO:-192.168.0.0/24}(rw,sync,no_subtree_check,all_squash,anonuid=$(id -u pitv),anongid=$(id -g pitv))" >> /etc/exports
-exportfs -ra || true
-systemctl enable --now nfs-server >/dev/null 2>&1 || true
+# Only on a mounted drive: created on the SD card it would fill the card and hide the missing mount.
+if mountpoint -q "$CACHE_DIR" || mountpoint -q "$(dirname "$CACHE_DIR")"; then
+  mkdir -p "$CACHE_DIR"/acquired/{tvshows,tvsports,movies,ads,"music videos"} "$CACHE_DIR"/logs "$CACHE_DIR"/reports
+  chown -R pitv:pitv "$CACHE_DIR"
+else
+  echo "WARNING: $(dirname "$CACHE_DIR") is not a mounted drive; skipping the cache directory (mount the work drive and re-run)"
+fi
 
 log "systemd services"
 cp "$SRC_DIR/systemd/pitv-player.service" "$SRC_DIR/systemd/pitv-web.service" "$SRC_DIR/systemd/pitv-splash.service" /etc/systemd/system/
+# Exactly the commands pitv/web/api/admin.py SERVICE_ACTIONS and content.py tool_run issue.
 cat > /etc/sudoers.d/pitv <<'SUDO'
-pitv ALL=(root) NOPASSWD: /usr/bin/systemctl restart pitv-player, /usr/bin/systemctl stop pitv-player, /usr/bin/systemctl start pitv-player, /usr/bin/systemctl restart pitv-web, /usr/bin/systemctl start pitv-content.service, /usr/bin/systemctl reboot
+pitv ALL=(root) NOPASSWD: /usr/bin/systemctl restart pitv-player, /usr/bin/systemctl stop pitv-player, /usr/bin/systemctl start pitv-player, /usr/bin/systemctl restart pitv-web, /usr/bin/systemctl start pitv-content.service
 SUDO
 chmod 440 /etc/sudoers.d/pitv
 systemctl daemon-reload
@@ -77,24 +81,28 @@ for share in $SHARES; do systemctl enable --now "mnt-$(mount_name "$share").auto
 systemctl enable pitv-splash pitv-player pitv-web
 
 log "Database, sources and cache settings"
-sudo -u pitv PITV_DATA="$DATA_DIR" "$INSTALL_DIR/.venv/bin/python" - <<PY
+# Values reach Python through the environment, never by splicing them into the source.
+sudo -u pitv PITV_DATA="$DATA_DIR" PITV_SHARES="$SHARES" PITV_NAS_HOST="$NAS_HOST" PITV_CACHE_DIR="$CACHE_DIR" \
+  "$INSTALL_DIR/.venv/bin/python" - <<'PY'
+import os
 from pitv import db as dbm
 from pitv.config import load_config
+shares, nas_host, cache_dir = os.environ["PITV_SHARES"].split(), os.environ["PITV_NAS_HOST"], os.environ["PITV_CACHE_DIR"]
 cfg = load_config(); cfg.ensure_dirs()
 conn = dbm.connect(cfg.db_path); dbm.init_db(conn)
 with dbm.tx(conn):
     for stype, name, share, cat in (("tv", "TV Shows", "tvshows", "general"), ("movie", "Movies", "movies", "general"),
                                     ("advert", "Adverts", "ads", "general"), ("tv", "Sport", "tvsports", "sport"),
                                     ("music", "Music videos", "music%20videos", "general")):
-        if share in "$SHARES".split():
+        if share in shares:
             path = f"/mnt/{share.replace('%20', '')}"
             if not conn.execute("SELECT 1 FROM sources WHERE path = ?", (path,)).fetchone():
                 conn.execute("INSERT INTO sources(type, name, path, remote, category) VALUES (?,?,?,?,?)",
-                             (stype, name, path, f"smb://$NAS_HOST/{share}/", cat))
+                             (stype, name, path, f"smb://{nas_host}/{share}/", cat))
     if not dbm.get_setting(conn, "cache_dir"):
-        dbm.set_setting(conn, "cache_dir", "$CACHE_DIR")
+        dbm.set_setting(conn, "cache_dir", cache_dir)
     # Everything pitv_content downloads lands under the cache, never on the NAS; register those folders.
-    acq = "$CACHE_DIR/acquired"
+    acq = f"{cache_dir}/acquired"
     for stype, name, sub, cat in (("tv", "Acquired shows", "tvshows", "general"), ("tv", "Acquired sport", "tvsports", "sport"),
                                   ("movie", "Acquired movies", "movies", "general"), ("advert", "Acquired adverts", "ads", "general"),
                                   ("music", "Acquired music videos", "music videos", "general")):

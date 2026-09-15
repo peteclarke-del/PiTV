@@ -7,6 +7,8 @@ import socket
 from pathlib import Path
 from typing import Any
 
+MAX_REPLY = 1 << 20   # a state reply is a few KB
+
 
 class PlayerClient:
     def __init__(self, path: Path) -> None:
@@ -22,7 +24,7 @@ class PlayerClient:
                 buf = b""
                 while not buf.endswith(b"\n"):
                     chunk = s.recv(65536)
-                    if not chunk:
+                    if not chunk or len(buf) + len(chunk) > MAX_REPLY:
                         break
                     buf += chunk
             return json.loads(buf.decode() or "{}")

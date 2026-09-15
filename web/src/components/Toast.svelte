@@ -2,7 +2,7 @@
   import { toasts, toast } from '../lib/stores.svelte.js';
 </script>
 
-<div class="toasts" aria-live="polite">
+<div class="toasts" role="status" aria-live="polite">
   {#each toasts.list as t (t.id)}
     <button class="toast {t.kind}" onclick={() => toast.dismiss(t.id)}>{t.text}</button>
   {/each}

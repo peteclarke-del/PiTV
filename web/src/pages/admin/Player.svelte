@@ -1,6 +1,6 @@
 <script>
   import { untrack } from 'svelte';
-  import { get, post, confirmApi } from '../../lib/api.js';
+  import { get, post, tryApi, confirmApi } from '../../lib/api.js';
   import { changes, player, clock } from '../../lib/stores.svelte.js';
   import { fmtDateTime, fmtDuration, fmtRange, fmtBytes, fmtAgo } from '../../lib/format.js';
   import Remote from '../../components/Remote.svelte';
@@ -13,10 +13,8 @@
   let history = $state([]);
   let s = $derived(player.state);
   async function load() {
-    try {
-      const [c, h] = await Promise.all([get('/api/channels'), get('/api/history', { limit: 50 })]);
-      channels = c; history = h;
-    } catch { /* ignore */ }
+    const r = await tryApi(Promise.all([get('/api/channels'), get('/api/history', { limit: 50 })]));
+    if (r) [channels, history] = r;
   }
   $effect(() => { changes.library; untrack(load); });
   // The airing history grows whenever the player moves to a new slot.
@@ -69,7 +67,7 @@
           {#if s.error}<p class="warn-box mt"><b>Player error:</b> {s.error}</p>{/if}
           <dl class="kv small mt">
             <dt>Input devices</dt><dd>{s.input_devices?.length ? s.input_devices.join(', ') : 'none detected'}</dd>
-            {#if s.last_key}<dt>Last key</dt><dd><code>{s.last_key.key}</code> → {s.last_key.action ?? 'unmapped'} <span class="muted">({fmtAgo(s.last_key.ts, clock.ts)})</span></dd>{/if}
+            {#if s.last_key}<dt>Last key</dt><dd><code>{s.last_key.key}</code> maps to {s.last_key.action ?? 'unmapped'} <span class="muted">({fmtAgo(s.last_key.ts, clock.ts)})</span></dd>{/if}
             <dt>State time</dt><dd>{fmtDateTime(s.ts)}</dd>
           </dl>
         {:else}
@@ -96,7 +94,7 @@
       <div class="card">
         <div class="card-title"><h3>Cache</h3></div>
         {#if !s.online}<p class="muted small">Unknown while the player is offline.</p>
-        {:else if !cache.enabled}<p class="muted small">Local cache disabled. Set a cache directory under Weighting → Cache.</p>
+        {:else if !cache.enabled}<p class="muted small">Local cache disabled. Set a cache directory under Weighting, Cache.</p>
         {:else}
           <ProgressBar value={cacheFrac} />
           <p class="small muted" style="margin:.4rem 0 0">{fmtBytes(cache.used)} of {fmtBytes(cache.max)} used · {cache.files} files{cache.free != null ? ` · ${fmtBytes(cache.free)} free on disk` : ''}</p>

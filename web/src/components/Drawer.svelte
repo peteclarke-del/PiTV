@@ -1,5 +1,7 @@
 <script>
   let { open = false, title = '', subtitle = '', onclose, children, footer, wide = false } = $props();
+  let box = $state(null);
+  $effect(() => { if (open) box?.focus(); });
 
   function onkey(e) {
     if (e.key === 'Escape' && open) onclose?.();
@@ -10,7 +12,7 @@
 
 {#if open}
   <div class="backdrop" onclick={(e) => { if (e.target === e.currentTarget) onclose?.(); }} role="presentation">
-    <div class="drawer" class:wide role="dialog" aria-modal="true" aria-label={title}>
+    <div class="drawer" class:wide role="dialog" aria-modal="true" aria-label={title} tabindex="-1" bind:this={box}>
       <div class="head">
         <div class="titles">
           <h2 class="truncate">{title}</h2>

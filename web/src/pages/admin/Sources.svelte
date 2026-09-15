@@ -3,6 +3,7 @@
   import { get, post, put, del, tryApi, confirmApi } from '../../lib/api.js';
   import { scanAll } from '../../lib/actions.js';
   import { changes, clock } from '../../lib/stores.svelte.js';
+  import { guard } from '../../lib/guard.svelte.js';
   import { fmtAgo } from '../../lib/format.js';
   import Drawer from '../../components/Drawer.svelte';
   import FolderPicker from './FolderPicker.svelte';
@@ -12,35 +13,38 @@
   let sources = $state(null);
   let editing = $state(null); // {id?, type, name, path, remote, enabled}
   let picking = $state(false);
-  let saving = $state(false);
+  let scanning = $state(null); // source id while its scan request is in flight
 
   async function load() {
-    try { sources = await get('/api/sources'); } catch { sources = sources ?? []; }
+    sources = (await tryApi(get('/api/sources'))) ?? sources ?? [];
   }
   $effect(() => { changes.library; untrack(load); });
 
   const CATEGORIES = [['general', 'General'], ['sport', 'Sport'], ['kids', 'Children\'s']];
   function add() { editing = { type: 'tv', name: '', path: '', remote: '', enabled: true, category: 'general' }; }
   function edit(s) { editing = { ...s, enabled: !!s.enabled, category: s.category || 'general' }; }
-  async function save() {
-    saving = true;
+  const save = guard(async () => {
     const body = { type: editing.type, name: editing.name, path: editing.path, remote: editing.remote || null, enabled: editing.enabled,
                    category: editing.type === 'tv' ? editing.category || 'general' : 'general' };
     const r = await tryApi(editing.id ? put(`/api/sources/${editing.id}`, body) : post('/api/sources', body), { success: 'Source saved' });
-    saving = false;
     if (r) { editing = null; load(); }
-  }
+  });
+  const scanAllOnce = guard(scanAll);
   async function remove(s) {
     if (await confirmApi(`Delete source "${s.name}"? Its ${s.item_count} scanned items will be removed from the library.`, { title: 'Delete source', okLabel: 'Delete', danger: true },
       () => del(`/api/sources/${s.id}`), { success: 'Source deleted' })) load();
   }
-  const scan = (s) => tryApi(post(`/api/sources/${s.id}/scan`), { success: `Scanning ${s.name}` });
+  async function scan(s) {
+    scanning = s.id;
+    await tryApi(post(`/api/sources/${s.id}/scan`), { success: `Scanning ${s.name}` });
+    scanning = null;
+  }
 </script>
 
 <div class="stack">
   <div class="row">
     <button class="primary" onclick={add}>Add source</button>
-    <button onclick={scanAll} disabled={!sources?.length}>Scan all</button>
+    <button onclick={scanAllOnce} disabled={scanAllOnce.busy || !sources?.length}>Scan all</button>
   </div>
 
   <div class="card pad-0 table-wrap">
@@ -56,7 +60,7 @@
             <td class="num">{s.item_count}</td>
             <td class="small"><div>{fmtAgo(s.last_scanned_at, clock.ts)}</div>{#if s.last_scan_summary}<div class="tiny muted">{s.last_scan_summary}</div>{/if}</td>
             <td class="nowrap right">
-              <button class="small" onclick={() => scan(s)} disabled={!s.available}>Scan</button>
+              <button class="small" onclick={() => scan(s)} disabled={!s.available || scanning === s.id}>Scan</button>
               <button class="small" onclick={() => edit(s)}>Edit</button>
               <button class="small danger" onclick={() => remove(s)}>Delete</button>
             </td>
@@ -95,7 +99,7 @@
   {/if}
   {#snippet footer()}
     <button onclick={() => (editing = null)}>Cancel</button>
-    <button class="primary" onclick={save} disabled={saving || !editing?.path}>Save</button>
+    <button class="primary" onclick={save} disabled={save.busy || !editing?.path}>Save</button>
   {/snippet}
 </Drawer>
 

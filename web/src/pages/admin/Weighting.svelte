@@ -4,13 +4,14 @@
   import { buildSchedule } from '../../lib/actions.js';
   import { toast } from '../../lib/stores.svelte.js';
   import { CERTIFICATES } from '../../lib/format.js';
+  import { num } from '../../lib/util.js';
+  import { guard } from '../../lib/guard.svelte.js';
   import WeightRows from './WeightRows.svelte';
   import DaypartTable from './DaypartTable.svelte';
   import ChipList from '../../components/ChipList.svelte';
   const DECADES = [1930, 1940, 1950, 1960, 1970, 1980, 1990, 2000, 2010, 2020];
 
   let s = $state(null);
-  let saving = $state(false);
   let savedOnce = $state(false);
 
   let facets = $state(null);
@@ -28,51 +29,54 @@
   }
   onMount(load);
 
-  async function save() {
-    saving = true;
+  // Integer and float settings with the bounds the inputs below declare; anything outside is clamped before the PUT.
+  const INTS = { horizon_days: [1, 28], rebuild_when_days_left: [0, 27], show_daily_limit: [1], movie_repeat_days: [0],
+    duration_tolerance_minutes: [0], start_rounding_minutes: [1], end_of_day_overrun_minutes: [0], advert_year_window: [0],
+    advert_repeat_penalty_hours: [0], series_rest_weeks: [0], badge_seconds: [0, 60], cache_max_gb: [0], scan_hour: [0, 23],
+    history_keep_days: [1], music_concert_repeat_days: [0], music_video_repeat_hours: [0] };
+  const FLOATS = { show_repeat_penalty: [0, 1], same_slot_bonus: [0], genre_repeat_penalty: [0, 1], unknown_year_weight: [0, 2],
+    osd_safe_margin: [0, 0.2], osd_scale: [0.5, 2], era_pool_normalise: [0, 1] };
+  const bounded = (v, [min, max], int) => num(v, { min, max, int, fallback: min });
+  const save = guard(async () => {
     const body = { ...s };
-    for (const k of ['horizon_days', 'rebuild_when_days_left', 'show_daily_limit', 'movie_repeat_days',
-                     'duration_tolerance_minutes', 'start_rounding_minutes', 'end_of_day_overrun_minutes', 'advert_year_window',
-                     'advert_repeat_penalty_hours', 'series_rest_weeks', 'badge_seconds', 'cache_max_gb', 'scan_hour', 'history_keep_days']) body[k] = parseInt(body[k], 10) || 0;
-    body.readiness_hours = [...new Set((s.readiness_hours ?? []).map((h) => parseInt(h, 10)).filter((h) => h >= 0 && h <= 23))].sort((a, b) => a - b);
-    for (const k of ['show_repeat_penalty', 'same_slot_bonus', 'genre_repeat_penalty', 'unknown_year_weight', 'osd_safe_margin', 'osd_scale']) body[k] = Number(body[k]) || 0;
-    body.kind_weights = { tv: Number(s.kind_weights.tv), movie: Number(s.kind_weights.movie) };
+    for (const [k, b] of Object.entries(INTS)) body[k] = bounded(s[k], b, true);
+    for (const [k, b] of Object.entries(FLOATS)) body[k] = bounded(s[k], b, false);
+    body.readiness_hours = [...new Set((s.readiness_hours ?? []).map((h) => num(h, { min: 0, max: 23, int: true })).filter((h) => h !== null))].sort((a, b) => a - b);
+    body.kind_weights = { tv: bounded(s.kind_weights.tv, [0, 1]), movie: bounded(s.kind_weights.movie, [0, 1]) };
     const cleanDp = (rows) => (rows ?? []).map((d) => {
-      const o = { name: d.name, start: d.start, tv: Number(d.tv) || 0, movie: Number(d.movie) || 0, kids: Number(d.kids) || 0, sport: Number(d.sport) || 0 };
-      if (d.max_minutes) o.max_minutes = Number(d.max_minutes);
+      const o = { name: d.name, start: d.start, tv: bounded(d.tv, [0]), movie: bounded(d.movie, [0]), kids: bounded(d.kids, [0]), sport: bounded(d.sport, [0]) };
+      const max = num(d.max_minutes, { min: 1, int: true });
+      if (max !== null) o.max_minutes = max;
       return o;
     });
     body.dayparts = cleanDp(s.dayparts);
     body.dayparts_saturday = cleanDp(s.dayparts_saturday);
     body.dayparts_sunday = cleanDp(s.dayparts_sunday);
-    body.era_pool_normalise = Math.max(0, Math.min(1, Number(s.era_pool_normalise) || 0));
     body.music_blocks = (s.music_blocks ?? []).map((b) => {
       const o = { start: b.start, name: b.name, genres: (b.genres ?? []).map((g) => String(g).toLowerCase()), decades: (b.decades ?? []).map(Number).sort() };
       if (b.concert) o.concert = true;
       return o;
     });
-    for (const k of ['music_concert_repeat_days', 'music_video_repeat_hours']) body[k] = parseInt(body[k], 10) || 0;
     body.music_decades = (s.music_decades ?? []).map(Number).sort();
     body.adult_advert_keywords = (s.adult_advert_keywords ?? []).map((k) => String(k).toLowerCase());
     const r = await tryApi(put('/api/settings', body), { success: 'Settings saved' });
-    saving = false;
     if (r) { s = r; savedOnce = true; }
-  }
-  async function reset() {
+  });
+  const reset = guard(async () => {
     const r = await confirmApi('Reset every weighting setting to its default?', { title: 'Reset to defaults', okLabel: 'Reset', danger: true },
       () => post('/api/settings/reset', {}), { success: 'Settings reset' });
     if (r) { s = r; savedOnce = true; }
-  }
-  const build = () => buildSchedule().then((r) => { if (r) toast.info('Changes apply to newly built days; use "Rebuild week" on the dashboard to redo existing days.'); });
+  });
+  const build = guard(() => buildSchedule().then((r) => { if (r) toast.info('Changes apply to newly built days; use Rebuild week on the dashboard to redo existing days.'); }));
 </script>
 
 {#if s}
   <div class="stack">
     <div class="row">
-      <button class="primary" onclick={save} disabled={saving}>Save settings</button>
-      <button onclick={reset}>Reset to defaults</button>
+      <button class="primary" onclick={save} disabled={save.busy}>Save settings</button>
+      <button onclick={reset} disabled={reset.busy}>Reset to defaults</button>
       <span class="spacer"></span>
-      <button onclick={build}>Build schedule</button>
+      <button onclick={build} disabled={build.busy}>Build schedule</button>
     </div>
     {#if savedOnce}<div class="note">Saved. The schedule only picks up these changes when it is (re)built: use Build schedule for new days or Rebuild week on the dashboard to regenerate everything.</div>{/if}
 
@@ -202,9 +206,9 @@
             <tbody>
               {#each s.music_blocks as b, i (i)}
                 <tr>
-                  <td><input type="time" bind:value={b.start} /></td>
-                  <td><input bind:value={b.name} placeholder="Block name" /></td>
-                  <td style="min-width:200px"><ChipList value={b.genres ?? []} onchange={(v) => (b.genres = v)} placeholder="genre…" lower /></td>
+                  <td><input type="time" bind:value={b.start} aria-label="Block start" /></td>
+                  <td><input bind:value={b.name} placeholder="Block name" aria-label="Block name" /></td>
+                  <td style="min-width:200px"><ChipList value={b.genres ?? []} onchange={(v) => (b.genres = v)} placeholder="genre…" label="Block genres" lower /></td>
                   <td class="decades">{#each DECADES as d (d)}<label class="dec" class:on={(b.decades ?? []).includes(d)}><input type="checkbox" checked={(b.decades ?? []).includes(d)} onchange={() => toggleDecade(b, d)} />{d}s</label>{/each}</td>
                   <td class="center"><input type="checkbox" checked={!!b.concert} onchange={(e) => (b.concert = e.currentTarget.checked)} aria-label="Concert block" /></td>
                   <td class="nowrap"><button class="small ghost" disabled={i === 0} onclick={() => moveBlock(i, -1)} aria-label="Move up">↑</button><button class="small ghost" disabled={i === s.music_blocks.length - 1} onclick={() => moveBlock(i, 1)} aria-label="Move down">↓</button><button class="small ghost" onclick={() => s.music_blocks.splice(i, 1)} aria-label="Remove">✕</button></td>
@@ -247,7 +251,7 @@
 
     <div class="card">
       <div class="card-title"><h3>Family-safe adverts</h3></div>
-      <label class="field">Adult advert keywords<ChipList value={s.adult_advert_keywords} onchange={(v) => (s.adult_advert_keywords = v)} placeholder="add word…" lower /><span class="help">Adverts whose file name contains one of these words are flagged as not family-safe and never air on a channel with family-safe adverts on. Individual adverts can be overridden in Library → Adverts.</span></label>
+      <label class="field">Adult advert keywords<ChipList value={s.adult_advert_keywords} onchange={(v) => (s.adult_advert_keywords = v)} placeholder="add word…" lower /><span class="help">Adverts whose file name contains one of these words are flagged as not family-safe and never air on a channel with family-safe adverts on. Individual adverts can be overridden in Library, Adverts.</span></label>
     </div>
 
     <div class="card">
@@ -261,7 +265,7 @@
       <DaypartTable bind:rows={s.dayparts_sunday} />
     </div>
 
-    <div class="row"><button class="primary" onclick={save} disabled={saving}>Save settings</button></div>
+    <div class="row"><button class="primary" onclick={save} disabled={save.busy}>Save settings</button></div>
   </div>
 {:else}
   <div class="skeleton" style="height:300px"></div>
@@ -274,7 +278,8 @@
   .blocks input[type="time"] { min-width: 6.5rem; }
   .decades { min-width: 220px; display: flex; flex-wrap: wrap; gap: .2rem; }
   .dec { font-size: .72rem; padding: .1rem .4rem; border: 1px solid var(--border); border-radius: 999px; cursor: pointer; user-select: none; }
-  .dec input { display: none; }
+  .dec input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
+  .dec:has(input:focus-visible) { outline: 2px solid var(--info); outline-offset: 1px; }
   .dec.on { background: var(--accent); color: #fff; border-color: var(--accent); }
   .facets { background: var(--bg-sunken); border-radius: var(--radius-sm); padding: .75rem; }
   .facets h4 { margin: 0 0 .4rem; font-size: .85rem; }

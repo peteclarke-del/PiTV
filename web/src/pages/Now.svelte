@@ -1,8 +1,8 @@
 <script>
   import { untrack } from 'svelte';
   import { get, post, tryApi, normalisePlayer } from '../lib/api.js';
-  import { changes, clock, player } from '../lib/stores.svelte.js';
-  import { fmtRange, fmtTime, fmtDuration, plural } from '../lib/format.js';
+  import { changes, clock, player, toast } from '../lib/stores.svelte.js';
+  import { fmtRange, fmtTime, fmtDuration, plural, safeColour } from '../lib/format.js';
   import ChannelBadge from '../components/ChannelBadge.svelte';
   import ProgressBar from '../components/ProgressBar.svelte';
   import PlayerStatus from '../components/PlayerStatus.svelte';
@@ -20,7 +20,10 @@
       if (d.player && !player.connected) player.state = normalisePlayer(d.player);
       error = '';
     } catch (e) {
-      error = e.message;
+      // Shown inline until the first load succeeds; after that a toast, once per outage, so a
+      // refetch every few seconds does not stack them up.
+      if (data && !error) toast.error(e.detail || e.message);
+      error = e.detail || e.message;
     }
     loading = false;
     lastLoad = Date.now();
@@ -62,12 +65,12 @@
   {:else if !data}
     <div class="grid">{#each [1, 2, 3, 4] as i (i)}<div class="card skeleton" style="height:180px"></div>{/each}</div>
   {:else if !data.channels.length}
-    <div class="empty">No channels are enabled. Set some up in <a href="#/admin/channels">Admin → Channels</a>.</div>
+    <div class="empty">No channels are enabled. Set some up in <a href="#/admin/channels">Admin, Channels</a>.</div>
   {:else}
     <div class="grid">
       {#each data.channels as c (c.channel.id)}
         {@const s = c.now}
-        <article class="card ch" style="--c:{c.channel.colour}">
+        <article class="card ch" style="--c:{safeColour(c.channel.colour)}">
           <div class="chhead">
             <ChannelBadge channel={c.channel} size="lg" />
             <button class="primary small" onclick={() => watch(c.channel.number)}

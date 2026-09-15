@@ -2,7 +2,10 @@
 
 Protocol: one JSON object per line. Request {"cmd": ..., ...} -> reply {"ok": bool, ...}.
 {"cmd": "subscribe"} keeps the connection open and streams the player state whenever it
-changes (one JSON object per line)."""
+changes (one JSON object per line).
+
+The socket is group-writable only: the web service runs as the same user/group, and nothing
+else on the Pi has a reason to drive the television."""
 
 from __future__ import annotations
 
@@ -15,6 +18,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 log = logging.getLogger("pitv.control")
+
+SOCKET_MODE = 0o660
+MAX_REQUEST = 64 * 1024   # a command is a few dozen bytes; anything larger is not a client
 
 
 class ControlServer:
@@ -34,7 +40,7 @@ class ControlServer:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.bind(str(self.path))
-        os.chmod(self.path, 0o666)
+        os.chmod(self.path, SOCKET_MODE)
         s.listen(8)
         s.settimeout(1.0)
         self._sock = s
@@ -64,6 +70,10 @@ class ControlServer:
                     dead.append(c)
             for c in dead:
                 self._subs.discard(c)
+                try:
+                    c.close()
+                except OSError:
+                    pass
 
     def _accept_loop(self) -> None:
         while not self._stop.is_set() and self._sock:
@@ -75,18 +85,25 @@ class ControlServer:
                 break
             threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
 
-    def _serve(self, conn: socket.socket) -> None:
-        conn.settimeout(10)
+    @staticmethod
+    def _read_request(conn: socket.socket) -> dict[str, Any] | None:
+        """One JSON object terminated by a newline, or None for anything else."""
         buf = b""
         try:
             while b"\n" not in buf:
                 chunk = conn.recv(65536)
-                if not chunk:
-                    return
+                if not chunk or len(buf) + len(chunk) > MAX_REQUEST:
+                    return None
                 buf += chunk
-            line = buf.split(b"\n", 1)[0]
-            req = json.loads(line or b"{}")
+            req = json.loads(buf.split(b"\n", 1)[0] or b"{}")
         except (OSError, ValueError):
+            return None
+        return req if isinstance(req, dict) else None
+
+    def _serve(self, conn: socket.socket) -> None:
+        conn.settimeout(10)
+        req = self._read_request(conn)
+        if req is None:
             conn.close()
             return
         if req.get("cmd") == "subscribe":
@@ -98,6 +115,7 @@ class ControlServer:
             except OSError:
                 with self._lock:
                     self._subs.discard(conn)
+                conn.close()
             return
         try:
             reply = self.handler(req)

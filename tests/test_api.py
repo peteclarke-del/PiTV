@@ -1,14 +1,22 @@
 import os
+from datetime import timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
 
 from pitv import db as dbm
 from pitv.config import Config
+from pitv.db import DEFAULT_SETTINGS, now_ts
 from pitv.devtools import build_fake_library
 from pitv.library.scanner import scan_all
-from pitv.scheduler.build import build_horizon, parse_day
-from pitv.scheduler.rules import local_ts, tz_of
+from pitv.scheduler.build import build_horizon
+from pitv.scheduler.rules import broadcast_day_for
+
+# The schedule editor refuses slots that have already started on the real clock, so the
+# fixture builds today and tomorrow rather than fixed dates.
+DAY0 = broadcast_day_for(now_ts(), DEFAULT_SETTINGS, ZoneInfo(DEFAULT_SETTINGS["timezone"]))
+DAY1 = DAY0 + timedelta(days=1)
 
 
 @pytest.fixture(scope="module")
@@ -25,8 +33,7 @@ def env(tmp_path_factory):
                                ("advert", "Ads", lib["pitv"] / "Adverts"), ("ident", "Idents", lib["pitv"] / "Idents")):
             conn.execute("INSERT INTO sources(type, name, path) VALUES (?,?,?)", (stype, name, str(p)))
     scan_all(conn)
-    now = local_ts(parse_day("2026-09-14"), "12:00", tz_of(conn))
-    build_horizon(conn, start_day=parse_day("2026-09-14"), days=2, now=now, seed=7)
+    build_horizon(conn, start_day=DAY0, days=2, seed=7)
     conn.close()
     return cfg
 
@@ -42,12 +49,12 @@ def test_now_and_schedule(client):
     r = client.get("/api/now")
     assert r.status_code == 200
     assert len(r.json()["channels"]) == 6
-    d = client.get("/api/schedule/day/2026-09-14").json()
+    d = client.get(f"/api/schedule/day/{DAY0}").json()
     assert d["slots"]
     kinds = {s["kind"] for s in d["slots"]}
     assert kinds <= {"programme", "filler"}
     days = client.get("/api/schedule/days").json()
-    assert [x["day"] for x in days["days"]] == ["2026-09-14", "2026-09-15"]
+    assert [x["day"] for x in days["days"]] == [DAY0.isoformat(), DAY1.isoformat()]
 
 
 def test_admin_open_until_password(client):
@@ -89,7 +96,7 @@ def test_channels_and_settings(client):
 
 
 def test_schedule_edit(client):
-    day = client.get("/api/schedule/day/2026-09-15").json()
+    day = client.get(f"/api/schedule/day/{DAY1}").json()
     ch1 = [s for s in day["slots"] if s["channel_id"] == day["channels"][0]["id"] and s["kind"] == "programme"]
     target = ch1[5]
     r = client.post(f"/api/schedule/slots/{target['id']}/lock", json={"locked": True})
@@ -98,7 +105,7 @@ def test_schedule_edit(client):
     assert movies
     r = client.post(f"/api/schedule/slots/{ch1[6]['id']}/replace", json={"media_id": movies[0]["id"]})
     assert r.status_code == 200, r.text
-    day2 = client.get("/api/schedule/day/2026-09-15").json()
+    day2 = client.get(f"/api/schedule/day/{DAY1}").json()
     titles = [s["title"] for s in day2["slots"] if s["channel_id"] == day["channels"][0]["id"]]
     assert "Labyrinth" in titles
     r = client.delete(f"/api/schedule/slots/{ch1[7]['id']}")
@@ -236,3 +243,144 @@ def test_content_tool_proxy_non_json_and_log_shape(client):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+# --- security -------------------------------------------------------------------------------------
+
+def test_session_cookie_flags(client):
+    r = client.post("/api/auth/login", json={"password": "secret123"})
+    cookie = r.headers["set-cookie"].lower()
+    assert "httponly" in cookie and "samesite=lax" in cookie and "secure" not in cookie
+    r = client.post("/api/auth/login", json={"password": "secret123"}, headers={"X-Forwarded-Proto": "https"})
+    assert "secure" in r.headers["set-cookie"].lower()
+
+
+def test_legacy_password_hash_is_upgraded_on_login(client, env):
+    from pitv.web import auth
+    old = auth.hash_password("secret123", iterations=auth._LEGACY_ITERATIONS)
+    legacy = "pbkdf2$" + old.split("$", 2)[2]          # the pre-upgrade 3-part format
+    assert auth.verify_password("secret123", legacy) and auth.needs_rehash(legacy)
+    assert not auth.verify_password("wrong", legacy) and not auth.verify_password("x", "garbage")
+    conn = dbm.connect(env.db_path)
+    with dbm.tx(conn):
+        dbm.set_setting(conn, "admin_password_hash", legacy)
+    try:
+        assert client.post("/api/auth/login", json={"password": "secret123"}).status_code == 200
+        stored = dbm.get_setting(conn, "admin_password_hash")
+        assert stored.startswith(f"pbkdf2_sha256${auth.PBKDF2_ITERATIONS}$") and not auth.needs_rehash(stored)
+    finally:
+        conn.close()
+
+
+def test_public_player_state_hides_machine_details(client):
+    from pitv.web.api.deps import player_public
+    state = {"online": True, "channel": {"number": 1}, "file": "/mnt/tvshows/x.mkv", "error": "file not available: /mnt/x",
+             "cache": {"enabled": True, "dir": "/mnt/cache/pitv", "files": 3}, "input_devices": ["OSMC RF Remote"],
+             "stream": {"vcodec": "h264"}, "volume": 80}
+    assert player_public(state, True) is state
+    pub = player_public(state, False)
+    assert "file" not in pub and "input_devices" not in pub and "stream" not in pub
+    assert "dir" not in pub["cache"] and "/mnt" not in pub["error"] and pub["volume"] == 80
+    # Anonymous callers of the public endpoints get the filtered view.
+    client.app.state.player_state = state
+    try:
+        anon = TestClient(client.app)
+        assert "file" not in anon.get("/api/now").json()["player"]
+        assert "file" in client.get("/api/now").json()["player"]   # logged in
+    finally:
+        client.app.state.player_state = {"online": False}
+
+
+def test_remote_endpoint_only_takes_remote_keys(client):
+    anon = TestClient(client.app)
+    assert anon.post("/api/player/key", json={"key": "quit"}).status_code == 400
+    assert anon.post("/api/player/key", json={"key": "guide"}).json()["offline"] is True
+    assert anon.post("/api/player/channel", json={"number": 0}).status_code == 400
+    assert anon.get("/api/sources").status_code == 401
+    assert anon.get("/api/logs").status_code == 401
+    assert anon.get("/api/browse", params={"path": "/"}).status_code == 401
+
+
+def test_control_socket_commands_are_validated():
+    from pitv.player.controller import validate_control
+    assert validate_control({"cmd": "key", "key": "GUIDE"}) == ("key", "guide")
+    assert validate_control({"cmd": "channel", "number": "3"}) == ("channel", 3)
+    assert validate_control({"cmd": "volume", "volume": 250}) == ("volume", 100)
+    assert validate_control({"cmd": "state"}) == ("state", None)
+    for bad in ({"cmd": "key", "key": "rm -rf"}, {"cmd": "channel", "number": "x"}, {"cmd": "channel", "number": 0},
+                {"cmd": "exec"}, {}):
+        assert isinstance(validate_control(bad), str), bad
+
+
+def test_browse_is_confined_to_allowed_roots(client, tmp_path):
+    (tmp_path / "cache" / "sub").mkdir(parents=True)
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "cache" / "link").symlink_to(tmp_path / "outside")
+    client.put("/api/settings", json={"cache_dir": str(tmp_path / "cache")})
+    try:
+        root = client.get("/api/browse", params={"path": "/"}).json()
+        assert root["parent"] is None and str(tmp_path / "cache")[1:] in root["dirs"]
+        r = client.get("/api/browse", params={"path": str(tmp_path / "cache")}).json()
+        assert r["dirs"] == ["link", "sub"] and r["parent"] == "/"
+        assert client.get("/api/browse", params={"path": "/etc"}).status_code == 403
+        assert client.get("/api/browse", params={"path": f"{tmp_path}/cache/../outside"}).status_code == 403
+        assert client.get("/api/browse", params={"path": f"{tmp_path}/cache/link"}).status_code == 403
+        assert client.get("/api/browse", params={"path": "relative"}).status_code == 400
+        # sources use the same rule
+        assert client.post("/api/sources", json={"type": "tv", "path": "/etc"}).status_code == 403
+        src = client.post("/api/sources", json={"type": "tv", "path": f"{tmp_path}/cache/sub"}).json()
+        assert src["path"] == str(tmp_path / "cache" / "sub")
+        assert client.delete(f"/api/sources/{src['id']}").json()["ok"]
+    finally:
+        client.put("/api/settings", json={"cache_dir": ""})
+
+
+def test_settings_are_validated(client):
+    bad = [{"cache_dir": "relative/path"}, {"cache_dir": "/mnt/../etc"}, {"content_tool_url": "http://example.com:8081"},
+           {"content_tool_url": "ftp://127.0.0.1"}, {"content_tool_url": "http://127.0.0.1/api"},
+           {"audio_device": "alsa/hw:0; rm -rf /"}, {"drm_connector": "HDMI-A-1 --vo=x"}, {"timezone": "Mars/Olympus"},
+           {"horizon_days": "7"}, {"horizon_days": 0}, {"keymap": ["KEY_UP"]}, {"keymap": {"exec": ["KEY_UP"]}},
+           {"day_start": "8am"}, {"readiness_hours": [25]}, {"channel_switch_static": 1}, {"movie_repeat_days": -1},
+           {"browse_roots": ["relative"]}]
+    for body in bad:
+        assert client.put("/api/settings", json=body).status_code == 400, body
+    good = {"content_tool_url": "http://pitv.local:8081", "audio_device": "alsa/hdmi:CARD=vc4hdmi0,DEV=0",
+            "drm_connector": "HDMI-A-1", "timezone": "Europe/Dublin", "horizon_days": 7, "keymap": {"guide": ["KEY_G"]},
+            "day_start": "08:00", "browse_roots": ["/mnt", "/media"]}
+    r = client.put("/api/settings", json=good)
+    assert r.status_code == 200, r.text
+    client.put("/api/settings", json={"timezone": "Europe/London", "keymap": {}, "browse_roots": ["/mnt", "/media", "/srv"]})
+
+
+def test_proxy_rejects_path_escapes(client):
+    from pitv.web.api.content import _proxy_path
+    # httpx normalises dot segments before sending, so the raw forms are checked on the function.
+    for path in ("settings/../admin", "settings//x", "settings/./x", "admin", "", "x" * 600):
+        assert _proxy_path(path) is None, path
+    assert _proxy_path("settings/a b/c?d") == "settings/a%20b/c%3Fd"
+    client.put("/api/settings", json={"content_tool_url": "http://127.0.0.1:9"})
+    for path in ("settings/%2e%2e/admin", "settings//x", "admin", "..%2fsettings"):
+        assert client.get(f"/api/content/tool/api/{path}").status_code == 404, path
+    assert client.get("/api/content/tool/api/settings/providers").status_code == 503   # allowed, tool offline
+
+
+def test_service_actions_match_sudoers(client):
+    assert client.post("/api/system/service/pitv-web/stop").status_code == 400
+    assert client.post("/api/system/service/sshd/restart").status_code == 400
+
+
+def test_spa_never_serves_outside_the_bundle(client):
+    from pitv.web.app import STATIC_DIR
+    if not (STATIC_DIR / "index.html").exists():
+        pytest.skip("web bundle not built")
+    r = client.get("/%2e%2e/%2e%2e/%2e%2e/etc/passwd")
+    assert r.status_code == 200 and b"root:" not in r.content and b"<!doctype html>" in r.content.lower()
+
+
+def test_unhandled_errors_do_not_leak_details(client):
+    import asyncio
+    from fastapi import Request
+    handler = client.app.exception_handlers[Exception]
+    request = Request({"type": "http", "method": "GET", "path": "/api/x", "headers": [], "query_string": b""})
+    r = asyncio.run(handler(request, RuntimeError("/mnt/tvshows/secret.mkv")))
+    assert r.status_code == 500 and b"secret" not in r.body

@@ -1,8 +1,9 @@
 <script>
   import { untrack } from 'svelte';
-  import { get, confirmApi, upsertJob } from '../../lib/api.js';
+  import { get, tryApi, confirmApi, upsertJob } from '../../lib/api.js';
   import { scanAll, buildSchedule, checkReadiness } from '../../lib/actions.js';
   import { changes, clock } from '../../lib/stores.svelte.js';
+  import { guard } from '../../lib/guard.svelte.js';
   import { fmtDay, fmtDateTime, fmtAgo } from '../../lib/format.js';
   import StatusBadge from '../../components/StatusBadge.svelte';
   import JobList from './JobList.svelte';
@@ -11,36 +12,35 @@
   let days = $state(null);
   let runs = $state([]);
   let readiness = $state(null);
-  let checking = $state(false);
 
   async function load() {
-    try {
-      const [s, d, j, r] = await Promise.all([
-        get('/api/library/summary'), get('/api/schedule/days'), get('/api/jobs'), get('/api/runs', { limit: 5 }),
-      ]);
-      summary = s; days = d; runs = r;
-      j.forEach(upsertJob); // jobs that finished before this page connected to the event stream
-    } catch { /* toasts come from actions; silent here */ }
+    const r = await tryApi(Promise.all([
+      get('/api/library/summary'), get('/api/schedule/days'), get('/api/jobs'), get('/api/runs', { limit: 5 }),
+    ]));
+    if (!r) return;
+    [summary, days] = r;
+    runs = r[3];
+    r[2].forEach(upsertJob); // jobs that finished before this page connected to the event stream
   }
   $effect(() => { changes.library; changes.schedule; untrack(load); });
 
-  async function readinessCheck() {
-    checking = true;
+  const scan = guard(scanAll);
+  const build = guard(() => buildSchedule());
+  const readinessCheck = guard(async () => {
     const r = await checkReadiness();
-    checking = false;
     if (r) { readiness = r; load(); }
-  }
-  const rebuild = () => confirmApi('Throw away the whole generated week (locked slots included) and rebuild it from scratch?',
-    { title: 'Rebuild week', okLabel: 'Rebuild', danger: true }, () => buildSchedule(true));
+  });
+  const rebuild = guard(() => confirmApi('Throw away the whole generated week (locked slots included) and rebuild it from scratch?',
+    { title: 'Rebuild week', okLabel: 'Rebuild', danger: true }, () => buildSchedule(true)));
   let daysLeft = $derived(days?.horizon_end ? Math.max(0, (days.horizon_end - clock.ts) / 86400) : null);
 </script>
 
 <div class="stack">
   <div class="row">
-    <button class="primary" onclick={scanAll}>Scan all sources</button>
-    <button onclick={() => buildSchedule()}>Build schedule</button>
-    <button class="danger" onclick={rebuild}>Rebuild week</button>
-    <button onclick={readinessCheck} disabled={checking}>{checking ? 'Checking…' : 'Check readiness'}</button>
+    <button class="primary" onclick={scan} disabled={scan.busy}>Scan all sources</button>
+    <button onclick={build} disabled={build.busy}>Build schedule</button>
+    <button class="danger" onclick={rebuild} disabled={rebuild.busy}>Rebuild week</button>
+    <button onclick={readinessCheck} disabled={readinessCheck.busy}>{readinessCheck.busy ? 'Checking…' : 'Check readiness'}</button>
   </div>
   {#if readiness}
     <div class="card">
@@ -76,7 +76,7 @@
             <div class="stat"><b>{days.days.length}</b><span>Days built</span></div>
             <div class="stat"><b>{daysLeft?.toFixed(1)}</b><span>Days left</span></div>
           </div>
-          <p class="small muted mt">{fmtDay(days.days[0].day)} → {fmtDay(days.days.at(-1).day)} · ends {fmtDateTime(days.horizon_end)}</p>
+          <p class="small muted mt">{fmtDay(days.days[0].day)} to {fmtDay(days.days.at(-1).day)} · ends {fmtDateTime(days.horizon_end)}</p>
         {:else}
           <p class="muted">No schedule built yet.</p>
         {/if}

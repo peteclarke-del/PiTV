@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { auth, route, toast } from '../lib/stores.svelte.js';
-  import { post, refreshAuth } from '../lib/api.js';
+  import { post, tryApi, refreshAuth } from '../lib/api.js';
   import Login from './admin/Login.svelte';
   import Dashboard from './admin/Dashboard.svelte';
   import Sources from './admin/Sources.svelte';
@@ -26,9 +26,7 @@
   onMount(refreshAuth);
 
   async function logout() {
-    await post('/api/auth/logout');
-    toast.info('Logged out');
-    await refreshAuth();
+    if (await tryApi(post('/api/auth/logout'))) { toast.info('Logged out'); await refreshAuth(); }
   }
   function skip() {
     sessionStorage.setItem('pitv-skip-setup', '1');

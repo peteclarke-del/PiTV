@@ -10,10 +10,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"time"
 
 	diskfs "github.com/diskfs/go-diskfs"
-	"github.com/diskfs/go-diskfs/filesystem"
 	"github.com/ulikunitz/xz"
 )
 
@@ -84,8 +82,6 @@ func PatchBoot(img string, files map[string][]byte) error {
 	return nil
 }
 
-var _ filesystem.FileSystem = nil
-
 // WriteImage streams the .img to the raw device, then reads the written range back and
 // compares SHA-256 so a bad card or a cable hiccup is caught before the first boot.
 func WriteImage(img string, dev RawDevice, progress func(done, total int64, phase string)) error {
@@ -102,7 +98,6 @@ func WriteImage(img string, dev RawDevice, progress func(done, total int64, phas
 	hasher := sha256.New()
 	buf := make([]byte, 4<<20)
 	var done int64
-	start := time.Now()
 	for {
 		n, rerr := in.Read(buf)
 		if n > 0 {
@@ -125,7 +120,6 @@ func WriteImage(img string, dev RawDevice, progress func(done, total int64, phas
 	if err := dev.Sync(); err != nil {
 		return err
 	}
-	_ = start
 	want := hex.EncodeToString(hasher.Sum(nil))
 	if err := dev.SeekStart(); err != nil {
 		return err

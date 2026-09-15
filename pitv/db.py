@@ -12,7 +12,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterable, Iterator
 
 SCHEMA_VERSION = 1
 
@@ -185,7 +185,6 @@ CREATE TABLE IF NOT EXISTS wanted (
     progress REAL NOT NULL DEFAULT 0,
     message TEXT,
     dest_path TEXT,
-    media_id INTEGER REFERENCES media(id) ON DELETE SET NULL,
     auto INTEGER NOT NULL DEFAULT 0,
     attempts INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
@@ -327,6 +326,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # requests to pitv_content (which fetches, encodes and fills the cache; see docs/PLAN.md §7)
     "acquire_dir": "",                 # empty = <cache_dir>/acquired ; where pitv_content files what it fetches
     "acquire_fill_gaps": False,        # queue missing episodes between the ones on disk
+    # folders an admin may browse and register as sources (plus the cache, acquire and home dirs)
+    "browse_roots": ["/mnt", "/media", "/srv"],
     "content_profile": {"width": 768, "height": 576, "vcodec": "h264", "acodec": "aac", "max_bitrate_kbps": 4000,
                         "deinterlace": "if_interlaced"},
     "content_tool_url": "http://127.0.0.1:8081",   # pitv_content's local API (settings, run, log, providers)
@@ -545,7 +546,7 @@ def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return d
 
 
-def rows_to_dicts(rows) -> list[dict[str, Any]]:
+def rows_to_dicts(rows: Iterable[sqlite3.Row]) -> list[dict[str, Any]]:
     return [row_to_dict(r) for r in rows]  # type: ignore[misc]
 
 

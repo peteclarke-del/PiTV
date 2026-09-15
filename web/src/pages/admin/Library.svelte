@@ -4,7 +4,8 @@
   import { changes, clock, route } from '../../lib/stores.svelte.js';
   import { navigate } from '../../lib/router.js';
   import { fmtDuration, fmtAgo, fmtEpisode, CERTIFICATES } from '../../lib/format.js';
-  import { debounce, onEnter } from '../../lib/util.js';
+  import { debounce, onEnter, num } from '../../lib/util.js';
+  import { guard } from '../../lib/guard.svelte.js';
   import ChannelBadge from '../../components/ChannelBadge.svelte';
   import ShowEditor from './ShowEditor.svelte';
   import MediaEditor from './MediaEditor.svelte';
@@ -27,12 +28,11 @@
   let chById = $derived(new Map(channels.map((c) => [c.id, c])));
 
   async function load() {
-    try {
-      if (!channels.length) channels = await get('/api/channels');
-      if (tab === 'shows') shows = await get('/api/shows', { q });
-      else if (tab === 'attention') attention = await get('/api/library/attention');
-      else media = await get('/api/media', { kind: KIND[tab], q, limit: PAGE, offset });
-    } catch { /* api errors toast elsewhere */ }
+    const t = tab; // read before any await: the tab may change, or the page unmount, while a request is in flight
+    if (!channels.length) channels = (await tryApi(get('/api/channels'))) ?? [];
+    if (t === 'shows') shows = (await tryApi(get('/api/shows', { q }))) ?? shows ?? [];
+    else if (t === 'attention') attention = (await tryApi(get('/api/library/attention'))) ?? attention ?? [];
+    else media = (await tryApi(get('/api/media', { kind: KIND[t], q, limit: PAGE, offset }))) ?? media;
   }
   $effect(() => { tab; changes.library; offset; untrack(load); });
   const reload = debounce(() => { offset = 0; load(); }, 250);
@@ -49,14 +49,15 @@
   async function setFamilySafe(m, v) {
     if (await tryApi(put(`/api/media/${m.id}`, { family_safe: v }), { success: v ? 'Marked family-safe' : 'Marked not family-safe' })) m.family_safe = v ? 1 : 0;
   }
-  async function fix(item) {
+  const fix = guard(async (item) => {
     const f = fixes[item.id] ?? {};
     const body = {};
-    if (f.year) body.year = Number(f.year);
+    const year = num(f.year, { min: 1900, max: 2100, int: true });
+    if (year !== null) body.year = year;
     if (f.certificate) body.certificate = f.certificate;
     if (!Object.keys(body).length) return;
     if (await tryApi(put(`/api/media/${item.id}`, body), { success: 'Saved' })) { delete fixes[item.id]; load(); }
-  }
+  });
 </script>
 
 <div class="stack">
@@ -68,7 +69,7 @@
 
   {#if tab !== 'attention'}
     <div class="row">
-      <input type="search" placeholder="Search titles…" value={q} oninput={(e) => search(e.currentTarget.value)} style="flex:1;max-width:360px" />
+      <input type="search" placeholder="Search titles…" aria-label="Search titles" value={q} oninput={(e) => search(e.currentTarget.value)} style="flex:1;max-width:360px" />
       {#if tab !== 'shows' && media}
         <span class="small muted">{media.total} items</span>
         <span class="btn-group">
@@ -118,7 +119,7 @@
                   <select value={fixes[item.id]?.certificate ?? ''} aria-label="Certificate" onchange={(e) => (fixes[item.id] = { ...fixes[item.id], certificate: e.currentTarget.value })}>
                     <option value="">Cert</option>{#each CERTIFICATES as c (c)}<option value={c}>{c}</option>{/each}
                   </select>
-                  <button class="small primary" onclick={() => fix(item)} disabled={!fixes[item.id]?.year && !fixes[item.id]?.certificate}>Save</button>
+                  <button class="small primary" onclick={() => fix(item)} disabled={fix.busy || (!fixes[item.id]?.year && !fixes[item.id]?.certificate)}>Save</button>
                 </div>
               </td>
             </tr>

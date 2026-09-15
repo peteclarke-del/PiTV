@@ -1,7 +1,7 @@
 <script>
   import { untrack } from 'svelte';
   import { get, post, del, tryApi, confirmApi } from '../../lib/api.js';
-  import { changes, clock, toast } from '../../lib/stores.svelte.js';
+  import { changes, clock, toast, noteChange } from '../../lib/stores.svelte.js';
   import { fmtDay, fmtRange, fmtDuration, fmtDateTime, fmtTime, tsToLocalDay, tsToLocalTime, localToTs, plural } from '../../lib/format.js';
   import { dayBounds, pickDay, builtToday, defaultPpm } from '../../lib/schedule.js';
   import EpgGrid from '../../components/EpgGrid.svelte';
@@ -13,6 +13,7 @@
   import JobList from './JobList.svelte';
 
   let days = $state(null);
+  let failed = $state(false);
   let day = $state('');
   let ads = $state(false);
   let data = $state(null);
@@ -30,17 +31,20 @@
   let editable = $derived(selected && selected.start_ts > clock.ts && !selected.replay);
 
   async function loadDays() {
-    days = await get('/api/schedule/days');
+    const d = await tryApi(get('/api/schedule/days'));
+    failed = !d;
+    if (!d) return;
+    days = d;
     day = pickDay(days, day);
   }
   async function loadSlots() {
     if (!dayInfo) { data = null; return; }
     loading = true;
-    try { data = await get('/api/schedule', { start: dayInfo.start, end: dayInfo.end, ads: ads ? 1 : 0 }); }
-    finally { loading = false; }
+    data = (await tryApi(get('/api/schedule', { start: dayInfo.start, end: dayInfo.end, ads: ads ? 1 : 0 }))) ?? data;
+    loading = false;
   }
   // Every schedule change refetches the day list; a new dayInfo (new day or new bounds) or the ads toggle refetches the slots.
-  $effect(() => { changes.schedule; untrack(() => loadDays().catch(() => {})); });
+  $effect(() => { changes.schedule; untrack(loadDays); });
   let first = true;
   $effect(() => {
     if (!dayInfo) return;
@@ -48,7 +52,7 @@
     untrack(() => loadSlots().then(() => {
       if (first) { first = false; if (day === days?.today) setTimeout(() => grid?.scrollTo(clock.ts, 80), 30); }
       if (selected) selected = data?.slots.find((s) => s.id === selected.id) ?? null;
-    }).catch(() => {}));
+    }));
   });
   function goNow() {
     const today = builtToday(days);
@@ -61,13 +65,13 @@
     notes = r.notes ?? [];
     toast.success(r.summary ? `${msg}: ${r.summary}` : msg);
     selected = null;
-    changes.schedule++;
+    noteChange('schedule');
   }
   async function lock(locked) {
     busy = true;
     const r = await tryApi(post(`/api/schedule/slots/${selected.id}/lock`, { locked }), { success: locked ? 'Slot locked' : 'Slot unlocked' });
     busy = false;
-    if (r) { selected.locked = r.locked; changes.schedule++; }
+    if (r) { selected.locked = r.locked; noteChange('schedule'); }
   }
   async function remove() {
     busy = true;
@@ -110,7 +114,9 @@
     <button class="small primary" onclick={() => openInsert(null)} disabled={!data}>Insert programme…</button>
   </div>
 
-  {#if days && !days.days.length}
+  {#if failed && !days}
+    <div class="empty">The schedule could not be loaded. <button class="small" onclick={loadDays}>Retry</button></div>
+  {:else if days && !days.days.length}
     <div class="empty">No schedule built yet. Use Build schedule on the dashboard.</div>
   {:else if dayInfo}
     <EpgGrid bind:this={grid} channels={data?.channels ?? []} slots={data?.slots ?? []} start={dayInfo.start} end={dayInfo.end}
@@ -157,7 +163,7 @@
       {:else if selected.replay}
         <p class="note">Overnight replays follow the day's schedule; edit the original slot instead.</p>
       {:else}
-        <p class="note">This slot has already started, so it can't be edited.</p>
+        <p class="note">This slot has already started, so it cannot be edited.</p>
       {/if}
     </div>
   {/if}

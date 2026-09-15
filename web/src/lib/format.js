@@ -87,6 +87,12 @@ export function statusClass(status) {
   }
 }
 
+/** A channel colour as a CSS value. Anything but #rrggbb (the colour is admin-typed text that ends
+ *  up inside a style attribute) falls back to grey rather than being interpolated into CSS. */
+export function safeColour(hex) {
+  return typeof hex === 'string' && /^#[0-9a-f]{6}$/i.test(hex) ? hex : '#888888';
+}
+
 export const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 export const CERTIFICATES = ['U', 'PG', '12', '12A', '15', '18'];
 export const PATTERN_TOKENS = ['show', 'tv', 'movie', 'ad', 'ident', 'break'];

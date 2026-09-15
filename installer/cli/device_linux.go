@@ -12,8 +12,6 @@ import (
 	"strings"
 )
 
-func sprintf(f string, a ...any) string { return fmt.Sprintf(f, a...) }
-
 // ListDisks reads /sys/block; only removable or USB/MMC disks are offered so a system
 // drive can never be picked by accident.
 func ListDisks() ([]Disk, error) {

@@ -1,6 +1,6 @@
 <script>
   // Editable list of short strings shown as chips; type and press Enter or comma to add.
-  let { value = [], onchange, placeholder = 'Add…', lower = false } = $props();
+  let { value = [], onchange, placeholder = 'Add…', label = '', lower = false } = $props();
   let text = $state('');
   function add() {
     const parts = text.split(',').map((t) => t.trim()).filter(Boolean).map((t) => (lower ? t.toLowerCase() : t));
@@ -19,7 +19,7 @@
 
 <div class="chips">
   {#each value as v, i (v)}<span class="chip">{v}<button type="button" onclick={() => remove(i)} aria-label="Remove {v}">✕</button></span>{/each}
-  <input bind:value={text} {placeholder} onkeydown={onkey} onblur={add} />
+  <input bind:value={text} {placeholder} aria-label={label || placeholder} onkeydown={onkey} onblur={add} />
 </div>
 
 <style>

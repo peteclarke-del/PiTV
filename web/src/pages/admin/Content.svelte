@@ -1,5 +1,10 @@
+<script module>
+  // Shared across mounts of this tab so switching tabs does not re-probe an offline tool within the window.
+  let probedAt = 0;
+</script>
+
 <script>
-  // Admin tab for pitv_content, the desktop app that fills the cache. Two sources of truth: PiTV's
+  // Admin tab for pitv_content, the support app on the Pi that fetches, encodes and fills the cache. Two sources of truth: PiTV's
   // file-based view (GET /api/content/tool: status file, systemd state) and, when it answers, the
   // app's own API proxied at /api/content/tool/api/*; the live document wins where both exist.
   import { onMount, untrack } from 'svelte';
@@ -10,6 +15,7 @@
   import { navigate } from '../../lib/router.js';
   import { fmtAgo, fmtDateTime, fmtDuration } from '../../lib/format.js';
   import { poll } from '../../lib/poll.svelte.js';
+  import { guard } from '../../lib/guard.svelte.js';
   import ProgressBar from '../../components/ProgressBar.svelte';
   import SchemaForm from '../../components/SchemaForm.svelte';
   import StatusBadge from '../../components/StatusBadge.svelte';
@@ -28,9 +34,7 @@
   let online = $derived(live !== null);
   let toolUrl = $state('');
   let error = $state('');
-  let running = $state(false);
   let readiness = $state(null);
-  let checking = $state(false);
   let schema = $state([]);
   let schemaErrors = $state({});
   let savingSchema = $state(false);
@@ -39,8 +43,14 @@
   let jobs = $state(null);
   let loadedSub = $state({});
 
+  // While the tool API is offline it is probed every 30 s rather than on every 5 s status refresh:
+  // each probe is a 503 from the proxy, which the browser logs as an error on the console.
+  const PROBE_MS = 30000;
   async function loadStatus() {
+    const wasOnline = online; // read before the await: the tab may have unmounted by the time it resolves
     try { tool = await get('/api/content/tool'); error = ''; } catch (e) { error = e.detail || e.message; }
+    if (!wasOnline && Date.now() - probedAt < PROBE_MS) return;
+    probedAt = Date.now();
     try {
       const s = await toolGet('status');
       // A foreign service on the port answers too; only accept a document that looks like pitv_content's.
@@ -61,7 +71,7 @@
     } catch (e) { if (!isOffline(e)) toast.error(e.detail || e.message); }
   }
   onMount(async () => {
-    try { toolUrl = (await get('/api/settings')).content_tool_url ?? ''; } catch { /* banner just omits the url */ }
+    toolUrl = (await tryApi(get('/api/settings')))?.content_tool_url ?? '';
     loadStatus();
   });
   poll(loadStatus, 5000);
@@ -79,18 +89,12 @@
     }
     savingSchema = false;
   }
-  async function readinessCheck() {
-    checking = true;
-    readiness = (await checkReadiness()) ?? readiness;
-    checking = false;
-  }
-  async function runNow() {
-    running = true;
+  const readinessCheck = guard(async () => { readiness = (await checkReadiness()) ?? readiness; });
+  const runNow = guard(async () => {
     const r = await tryApi(post('/api/content/tool/run', {}));
-    running = false;
     if (r?.ok) toast.success('pitv_content started'); else if (r) toast.error(r.error || 'Could not start pitv_content');
     loadStatus();
-  }
+  });
   let st = $derived(live ?? tool?.status ?? null);
   let isRunning = $derived(st?.state === 'running');
   let stateBadge = $derived(st?.state === 'running' ? 'info' : st?.state === 'failed' ? 'danger' : 'ok');
@@ -107,8 +111,8 @@
   <div class="card">
     <div class="card-title"><h3>pitv_content</h3>
       {#if online}<span class="badge ok">API online{live?.version ? ` · ${live.version}` : ''}{live?.api_version ? ` (api ${live.api_version})` : ''}</span>{:else}<span class="badge warn">API offline</span>{/if}
-      <button class="small" onclick={readinessCheck} disabled={checking}>{checking ? 'Checking…' : 'Check readiness'}</button>
-      <button class="small primary" onclick={runNow} disabled={running || !tool || isRunning}>Run now</button>
+      <button class="small" onclick={readinessCheck} disabled={readinessCheck.busy}>{readinessCheck.busy ? 'Checking…' : 'Check readiness'}</button>
+      <button class="small primary" onclick={runNow} disabled={runNow.busy || !tool || isRunning}>Run now</button>
     </div>
     {#if tool}
       <div class="row small">
@@ -163,7 +167,7 @@
         <div class="card-title"><h3>Last run</h3></div>
         {#if st?.last_run}
           <div class="row small"><StatusBadge status={st.last_run.status} /><span>{st.last_run.summary}</span></div>
-          <div class="tiny muted mt">{fmtDateTime(st.last_run.started_ts)}{st.last_run.finished_ts ? ` → ${fmtDateTime(st.last_run.finished_ts)}` : ''}</div>
+          <div class="tiny muted mt">{fmtDateTime(st.last_run.started_ts)}{st.last_run.finished_ts ? ` to ${fmtDateTime(st.last_run.finished_ts)}` : ''}</div>
         {:else}<p class="muted small">No completed run reported.</p>{/if}
         <h4 class="mt">Reports</h4>
         {#if tool?.reports?.length}
@@ -178,7 +182,7 @@
     </div>
     <ManifestCard />
   {:else if sub === 'run'}
-    {#if online}<ToolRun running={isRunning} onchange={loadStatus} />{:else}<div class="empty">Starting runs with options needs the pitv_content API. "Run now" above still starts the service.</div>{/if}
+    {#if online}<ToolRun running={isRunning} onchange={loadStatus} />{:else}<div class="empty">Starting runs with options needs the pitv_content API. Run now above still starts the service.</div>{/if}
   {:else if sub === 'settings'}
     {#if !online}<div class="empty">Settings need the pitv_content API.</div>
     {:else if !loadedSub.settings}<div class="skeleton" style="height:200px"></div>

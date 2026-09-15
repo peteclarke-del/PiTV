@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from datetime import date, datetime, timedelta
+from functools import lru_cache
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -23,7 +24,9 @@ def tz_of(conn: sqlite3.Connection) -> ZoneInfo:
         return ZoneInfo("Europe/London")
 
 
+@lru_cache(maxsize=1024)
 def hhmm_to_minutes(value: str) -> int:
+    """Cached: the scheduler asks this for the same handful of setting strings per candidate."""
     h, m = value.strip().split(":")
     return int(h) * 60 + int(m)
 
@@ -75,22 +78,40 @@ def broadcast_day_for(ts: int | float, settings: dict[str, Any], tz: ZoneInfo) -
     return dt.date()
 
 
-def era_weight(year: int | None, era_weights: dict[str, float], end_year: int | None = None,
-               unknown: float = 0.0) -> float:
+EraSpans = tuple[tuple[int, int, float], ...]
+
+
+def era_spans(era_weights: dict[str, Any] | None) -> EraSpans:
+    """Parse {"1980-1989": 0.4, ...} once into (lo, hi, weight) triples; malformed keys are ignored."""
+    out: list[tuple[int, int, float]] = []
+    for span, weight in (era_weights or {}).items():
+        try:
+            lo, hi = (int(x) for x in str(span).split("-"))
+            out.append((lo, hi, float(weight)))
+        except (ValueError, TypeError):
+            continue
+    return tuple(out)
+
+
+def era_weight_spans(year: int | None, spans: EraSpans, end_year: int | None = None,
+                     unknown: float = 0.0) -> float:
     """Weight for an item made in `year`. A series running from `year` to `end_year` gets the
     best weight of any year in its run, so a 1978 show that ran into the 80s still counts.
     Items with no year get `unknown` (0 excludes them)."""
     if year is None:
         return float(unknown)
     best = 0.0
-    for span, weight in era_weights.items():
-        try:
-            lo, hi = (int(x) for x in span.split("-"))
-        except ValueError:
-            continue
+    for lo, hi, weight in spans:
         if lo <= year <= hi or (end_year is not None and year <= hi and end_year >= lo):
-            best = max(best, float(weight))
+            best = max(best, weight)
     return best
+
+
+def era_weight(year: int | None, era_weights: dict[str, float], end_year: int | None = None,
+               unknown: float = 0.0) -> float:
+    """`era_weight_spans` for callers that hold the raw setting (parses on every call; the
+    builder pre-parses instead)."""
+    return era_weight_spans(year, era_spans(era_weights), end_year, unknown)
 
 
 def normalise_cert(cert: str | None) -> str | None:

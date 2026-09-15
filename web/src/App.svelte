@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { startRouter } from './lib/router.js';
   import { route, clock } from './lib/stores.svelte.js';
-  import { connectEvents, refreshAuth } from './lib/api.js';
+  import { connectEvents } from './lib/api.js';
   import { fmtTime } from './lib/format.js';
   import { poll } from './lib/poll.svelte.js';
   import Logo from './components/Logo.svelte';
@@ -24,7 +24,6 @@
   onMount(() => {
     startRouter();
     connectEvents();
-    refreshAuth();
   });
   poll(() => { clock.ts = Math.floor(Date.now() / 1000); }, 1000);
 </script>

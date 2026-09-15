@@ -86,3 +86,20 @@ def slot_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         except ValueError:
             out["genres"] = []
     return out
+
+
+# Player state fields that describe the machine rather than the picture: file paths on the
+# NAS, input devices, cache location, codec details. Admin sessions see them; the public
+# guide and remote do not.
+_PLAYER_PRIVATE = ("file", "input_devices", "maintenance", "stream", "hwdec", "on_pi", "clock_offset")
+
+
+def player_public(state: dict[str, Any], admin: bool) -> dict[str, Any]:
+    if admin or not state:
+        return state
+    out = {k: v for k, v in state.items() if k not in _PLAYER_PRIVATE}
+    if isinstance(out.get("cache"), dict):
+        out["cache"] = {k: v for k, v in out["cache"].items() if k != "dir"}
+    if out.get("error"):
+        out["error"] = "playback problem (details in the admin log)"
+    return out

@@ -3,6 +3,10 @@
 # (/boot/Automation_Custom_Script.sh). Everything it does is idempotent and logged to the
 # install log on the work partition. On success it marks the boot done and starts the apps;
 # every later boot is a normal boot.
+#
+# Secrets (NAS password, user passwords, Wi-Fi key) are read from pitv-install.json and
+# written only to root-only files; they never go on a command line or into the install log,
+# and the JSON and DietPi's copies are scrubbed from the FAT partition at the end.
 set -uo pipefail
 
 BOOT=/boot
@@ -76,7 +80,11 @@ if [ -n "$DEV" ] && [ -b "$DEV" ]; then
 else
   log "WARNING: no USB work drive found; the apps will run without a cache"
 fi
-mkdir -p "$CACHE_DIR"/{acquired/{tvshows,tvsports,movies,ads,"music videos"},logs,reports}
+if mountpoint -q "$CACHE_ROOT"; then
+  mkdir -p "$CACHE_DIR"/{acquired/{tvshows,tvsports,movies,ads,"music videos"},logs,reports}
+else
+  log "WARNING: $CACHE_ROOT is not mounted; not creating $CACHE_DIR on the SD card"
+fi
 
 # ---- 3. Users ---------------------------------------------------------------------------------
 MU="$(json maintenance_user.name)"
@@ -93,23 +101,26 @@ fi
 NAS_HOST="$(json nas.host)"; NAS_USER="$(json nas.username)"; NAS_PASS="$(json nas.password)"
 SHARES="$(python3 -c "import json; print(' '.join(json.load(open('$CONF')).get('nas',{}).get('shares',[])))")"
 mkdir -p /etc/pitv
-printf 'username=%s\npassword=%s\n' "$NAS_USER" "$NAS_PASS" > /etc/pitv/smb-credentials; chmod 600 /etc/pitv/smb-credentials
+(umask 077; printf 'username=%s\npassword=%s\n' "$NAS_USER" "$NAS_PASS" > /etc/pitv/smb-credentials)
+chown root:root /etc/pitv/smb-credentials; chmod 600 /etc/pitv/smb-credentials
 log "installing PiTV (display $(json display_mode), shares: $SHARES)"
 ( cd "$SRC_PITV" && NAS_HOST="$NAS_HOST" SHARES="$SHARES" CACHE_DIR="$CACHE_DIR" DISPLAY_MODE="$(json display_mode)" \
   ./setup/install.sh ) >> "$LOG" 2>&1 || fail "PiTV install failed (see above)"
 ADMIN_PW="$(json pitv.admin_password)"
 if [ -n "$ADMIN_PW" ]; then
-  sudo -u pitv PITV_DATA=/var/lib/pitv /opt/pitv/.venv/bin/python - "$ADMIN_PW" <<'PY' >> "$LOG" 2>&1
-import sys
+  # Through the environment (runuser keeps it), never as an argument where ps would show it.
+  PITV_ADMIN_PASSWORD="$ADMIN_PW" PITV_DATA=/var/lib/pitv runuser -u pitv -- /opt/pitv/.venv/bin/python - <<'PY' >> "$LOG" 2>&1
+import os
 from pitv import db as dbm
 from pitv.config import load_config
 from pitv.web.auth import hash_password
 cfg = load_config(); conn = dbm.connect(cfg.db_path); dbm.init_db(conn)
 with dbm.tx(conn):
-    dbm.set_setting(conn, "admin_password_hash", hash_password(sys.argv[1]))
+    dbm.set_setting(conn, "admin_password_hash", hash_password(os.environ["PITV_ADMIN_PASSWORD"]))
 print("admin password set")
 PY
 fi
+unset ADMIN_PW NAS_PASS MP
 
 # ---- 5. pitv_content ---------------------------------------------------------------------------
 if [ -d "$SRC_CONTENT" ] && [ -x "$SRC_CONTENT/setup/install-on-pi.sh" ]; then
@@ -126,6 +137,9 @@ touch "$DONE_MARK"
 log "first boot complete; rebooting into normal operation"
 cp "$LOG" "$BOOT/pitv-install.log" 2>/dev/null || true
 sed -i 's/^\(AUTO_SETUP_CUSTOM_SCRIPT_EXEC\)=.*/\1=0/' "$BOOT/dietpi.txt"
-rm -f "$CONF"   # credentials must not stay on the FAT partition
+# Nothing secret may stay on the FAT partition: the install JSON, DietPi's Wi-Fi key file and
+# the global password it was given (reset to DietPi's shipped placeholder).
+sed -i 's/^\(AUTO_SETUP_GLOBAL_PASSWORD\)=.*/\1=dietpi/' "$BOOT/dietpi.txt"
+rm -f "$CONF" "$BOOT/dietpi-wifi.txt"
 sync
 reboot

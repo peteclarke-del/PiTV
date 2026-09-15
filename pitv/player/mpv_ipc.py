@@ -14,6 +14,9 @@ from typing import Any, Callable
 log = logging.getLogger("pitv.mpv")
 
 
+MAX_LINE = 4 << 20   # a property reply is small; only a broken peer sends more without a newline
+
+
 class MpvError(RuntimeError):
     pass
 
@@ -58,6 +61,7 @@ class Mpv:
                 time.sleep(0.1)
         if self.sock is None:
             self.proc.kill()  # do not leave a headless mpv behind
+            self.proc.wait(timeout=5)
             raise MpvError("mpv IPC socket did not appear")
         self.alive = True
         self._reader = threading.Thread(target=self._read_loop, name="mpv-reader", daemon=True)
@@ -67,14 +71,15 @@ class Mpv:
         self.alive = False
         try:
             if self.sock:
-                self.command("quit")
+                self.command("quit", timeout=1.0)
         except MpvError:
-            pass  # already gone; the wait/kill below tidies up
+            pass  # already gone, or it quit without answering; the wait/kill below tidies up
         if self.proc:
             try:
                 self.proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
+                self.proc.wait(timeout=5)
         if self.sock:
             try:
                 self.sock.close()
@@ -97,6 +102,9 @@ class Mpv:
             if not chunk:
                 break
             buf += chunk
+            if len(buf) > MAX_LINE:
+                log.error("mpv sent %d bytes without a newline; dropping the buffer", len(buf))
+                buf = b""
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
                 if not line.strip():

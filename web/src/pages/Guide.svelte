@@ -11,6 +11,7 @@
   import ChannelBadge from '../components/ChannelBadge.svelte';
 
   let days = $state(null);          // /api/schedule/days
+  let failed = $state(false);       // the day list could not be fetched (toasted)
   let day = $state(route.query.day || '');
   let data = $state(null);          // /api/schedule for the chosen day
   let loading = $state(false);
@@ -23,23 +24,26 @@
   let isCurrent = $derived(selected && selected.start_ts <= clock.ts && selected.end_ts > clock.ts);
 
   async function loadDays() {
-    days = await get('/api/schedule/days');
+    const d = await tryApi(get('/api/schedule/days'));
+    failed = !d;
+    if (!d) return;
+    days = d;
     day = pickDay(days, day);
   }
   async function loadSlots() {
     if (!dayInfo) { data = null; return; }
     loading = true;
-    try { data = await get('/api/schedule', { start: dayInfo.start, end: dayInfo.end, ads: 0 }); }
-    finally { loading = false; }
+    data = (await tryApi(get('/api/schedule', { start: dayInfo.start, end: dayInfo.end, ads: 0 }))) ?? data;
+    loading = false;
   }
   // Every schedule change refetches the day list; a new dayInfo (new day or new bounds) refetches the slots.
-  $effect(() => { changes.schedule; untrack(() => loadDays().catch(() => {})); });
+  $effect(() => { changes.schedule; untrack(loadDays); });
   let firstScroll = true;
   $effect(() => {
     if (!dayInfo) return;
     untrack(() => loadSlots().then(() => {
       if (firstScroll && day === days?.today) { firstScroll = false; setTimeout(() => grid?.scrollTo(clock.ts, 80), 30); }
-    }).catch(() => {}));
+    }));
   });
 
   function pick(d) {
@@ -66,7 +70,9 @@
     </div>
   </div>
 
-  {#if days && !days.days.length}
+  {#if failed && !days}
+    <div class="empty">The schedule could not be loaded. <button class="small" onclick={loadDays}>Retry</button></div>
+  {:else if days && !days.days.length}
     <div class="empty">No schedule has been built yet. Build one from <a href="#/admin">Admin</a>.</div>
   {:else if dayInfo}
     <EpgGrid bind:this={grid} channels={data?.channels ?? []} slots={data?.slots ?? []}

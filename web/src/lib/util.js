@@ -18,5 +18,15 @@ export function downloadJson(data, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/** Coerce a form value to a number within [min, max] before it goes on the wire.
+ *  Blank or non-numeric input gives `fallback` (null unless given), so a field can be cleared. */
+export function num(v, { min = -Infinity, max = Infinity, int = false, fallback = null } = {}) {
+  if (v === '' || v === null || v === undefined) return fallback;
+  let n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  if (int) n = Math.trunc(n);
+  return Math.min(max, Math.max(min, n));
+}
+
 /** Keyboard twin of an onclick handler for focusable non-button elements (table rows). */
 export const onEnter = (fn) => (e) => { if (e.key === 'Enter') fn(e); };
