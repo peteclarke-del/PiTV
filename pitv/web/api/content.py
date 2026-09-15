@@ -112,3 +112,56 @@ def tool_log(conn: sqlite3.Connection = Depends(admin_conn), lines: int = 300, q
     p = Path(cache) / "logs" / "pitv-content.log"
     entries = tail(p, max(10, min(lines, 5000)), q, level.upper()) if cache else []
     return {"name": "pitv-content", "path": str(p) if cache else None, "exists": p.exists() if cache else False, "lines": entries}
+
+
+# --- proxy to pitv_content's own local API (settings, run/cancel, providers, catalogue, jobs, log) ---
+
+_PROXY_ALLOWED = {"status", "settings", "run", "cancel", "log", "providers", "catalogue", "jobs"}
+
+
+def _tool_request(base: str, method: str, path: str, query: str = "", body: dict[str, Any] | None = None,
+                  timeout: float = 15) -> tuple[int, Any]:
+    import json
+    import urllib.error
+    import urllib.request
+    url = f"{base.rstrip('/')}/api/{path}" + (f"?{query}" if query else "")
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read().decode("utf-8", errors="replace")
+            return r.status, (json.loads(raw) if raw else {})
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            return exc.code, json.loads(raw)
+        except ValueError:
+            return exc.code, {"error": raw[:500] or exc.reason}
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return 503, {"error": f"pitv_content API unavailable at {base}: {exc}", "offline": True}
+
+
+@router.api_route("/tool/api/{path:path}", methods=["GET", "PUT", "POST"])
+async def tool_proxy(path: str, request: Request):
+    """Forward to pitv_content's local API so its settings, providers, catalogue, jobs and
+    log are controllable from this admin. Only known paths; JSON only; loopback by default."""
+    from fastapi.responses import JSONResponse
+    from ...db import all_settings, connect
+    from ..auth import require_admin
+    conn = connect(request.app.state.cfg.db_path)
+    try:
+        require_admin(request, conn)
+        base = all_settings(conn).get("content_tool_url") or "http://127.0.0.1:8081"
+    finally:
+        conn.close()
+    head = path.split("/", 1)[0]
+    if head not in _PROXY_ALLOWED:
+        return JSONResponse(status_code=404, content={"error": "unknown pitv_content endpoint"})
+    body = None
+    if request.method in ("PUT", "POST"):
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+    status, payload = _tool_request(base, request.method, path, request.url.query, body)
+    return JSONResponse(status_code=status if status < 500 else (503 if payload.get("offline") else status), content=payload)

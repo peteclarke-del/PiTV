@@ -327,6 +327,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "acquire_fill_gaps": False,        # queue missing episodes between the ones on disk
     "content_profile": {"width": 768, "height": 576, "vcodec": "h264", "acodec": "aac", "max_bitrate_kbps": 4000,
                         "deinterlace": "if_interlaced"},
+    "content_tool_url": "http://127.0.0.1:8081",   # pitv_content's local API (settings, run, log, providers)
+    # resilience
+    "clock_wait_seconds": 120,         # at boot, wait this long for NTP before tuning (no RTC on the Pi)
+    "memory_limit_mb": 700,            # the player restarts itself above this; systemd also caps it
     # maintenance
     "readiness_hours": [6, 7],         # verify tomorrow's files exist and substitute what is missing
     "scan_hour": 4,
@@ -448,7 +452,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_settings(conn: sqlite3.Connection) -> None:
-    """Fill in keys added to stored daypart rows since they were saved (e.g. `sport`)."""
+    """Drop settings that no longer exist and fill in keys added to stored daypart rows."""
+    stale = [r["key"] for r in conn.execute("SELECT key FROM settings")
+             if r["key"] not in DEFAULT_SETTINGS and r["key"] not in _EXTRA_SETTING_KEYS]
+    if stale:
+        with tx(conn):
+            conn.executemany("DELETE FROM settings WHERE key = ?", [(k,) for k in stale])
     for key, defaults in (("dayparts", DEFAULT_DAYPARTS), ("dayparts_saturday", DEFAULT_DAYPARTS_SATURDAY),
                           ("dayparts_sunday", DEFAULT_DAYPARTS_SUNDAY)):
         row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
@@ -502,10 +511,15 @@ def set_setting(conn: sqlite3.Connection, key: str, value: Any) -> None:
                  (key, json.dumps(value)))
 
 
+_EXTRA_SETTING_KEYS = {"session_secret"}
+
+
 def all_settings(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Defaults overlaid with stored values; keys that no longer exist are ignored."""
     out = dict(DEFAULT_SETTINGS)
     for row in conn.execute("SELECT key, value FROM settings"):
-        out[row["key"]] = json.loads(row["value"])
+        if row["key"] in DEFAULT_SETTINGS or row["key"] in _EXTRA_SETTING_KEYS:
+            out[row["key"]] = json.loads(row["value"])
     return out
 
 

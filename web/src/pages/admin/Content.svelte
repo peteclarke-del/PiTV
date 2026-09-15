@@ -49,15 +49,12 @@
     </div>
     {#if tool}
       <div class="row small">
-        <span>Provider <b>{tool.provider}</b></span>
-        <span class="sep">·</span>
         {#if tool.installed}<span class="badge ok">installed{tool.version ? ` ${tool.version}` : ''}</span>{:else}<span class="badge warn">not installed</span>{/if}
         <span class="sep">·</span><span>service <span class="badge {svc(tool.service)}">{tool.service}</span></span>
         <span>timer <span class="badge {svc(tool.timer)}">{tool.timer}</span></span>
         {#if tool.running_marker}<span class="badge info">running marker present</span>{/if}
       </div>
       {#if tool.timers}<div class="tiny muted mono mt">{tool.timers}</div>{/if}
-      {#if tool.provider !== 'pitv_content'}<p class="note small mt">The content provider is set to <b>{tool.provider}</b>; switch it to pitv_content under Weighting → Cache to hand copying and fetching to the desktop tool.</p>{/if}
     {:else}<div class="skeleton" style="height:40px"></div>{/if}
   </div>
 

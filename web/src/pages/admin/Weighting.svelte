@@ -12,7 +12,6 @@
   let saving = $state(false);
   let savedOnce = $state(false);
 
-  let providers = $state({ archive: true, url: false });
   let facets = $state(null);
   function addBlock() {
     const last = s.music_blocks.at(-1);
@@ -25,7 +24,7 @@
     s = await tryApi(get('/api/settings'));
     if (s) { s.dayparts_saturday ??= []; s.dayparts_sunday ??= []; s.music_blocks ??= []; s.music_genres ??= []; s.cartoon_genres ??= []; s.music_decades ??= []; s.adult_advert_keywords ??= []; }
     tryApi(get('/api/music/facets')).then((f) => (facets = f ?? null));
-    if (s) providers = { archive: (s.acquire_providers ?? []).includes('archive'), url: (s.acquire_providers ?? []).includes('url') };
+    if (s) s.readiness_hours ??= [];
   }
   onMount(load);
 
@@ -34,9 +33,11 @@
     const body = { ...s };
     for (const k of ['horizon_days', 'rebuild_when_days_left', 'show_daily_limit', 'movie_repeat_days', 'episode_recency_days',
                      'duration_tolerance_minutes', 'start_rounding_minutes', 'end_of_day_overrun_minutes', 'advert_year_window',
-                     'advert_repeat_penalty_hours', 'series_rest_weeks', 'badge_seconds', 'cache_max_gb', 'cache_copy_mbps',
-                     'prefetch_hours', 'prefetch_days', 'transcode_max_height', 'transcode_bitrate_kbps', 'scan_hour', 'history_keep_days']) body[k] = parseInt(body[k], 10) || 0;
-    body.acquire_providers = ['archive', 'url'].filter((p) => providers[p]);
+                     'advert_repeat_penalty_hours', 'series_rest_weeks', 'badge_seconds', 'cache_max_gb', 'scan_hour', 'history_keep_days']) body[k] = parseInt(body[k], 10) || 0;
+    body.readiness_hours = [...new Set((s.readiness_hours ?? []).map((h) => parseInt(h, 10)).filter((h) => h >= 0 && h <= 23))].sort((a, b) => a - b);
+    // Fetching and transcoding live in the separate pitv_content app now; never send its retired keys.
+    for (const k of ['content_provider', 'acquire_enabled', 'acquire_providers', 'acquire_hours', 'transcode_enabled', 'transcode_hours',
+                     'transcode_max_height', 'transcode_bitrate_kbps', 'cache_copy_mbps', 'prefetch_hours', 'prefetch_days']) delete body[k];
     for (const k of ['show_repeat_penalty', 'same_slot_bonus', 'genre_repeat_penalty', 'unknown_year_weight', 'osd_safe_margin', 'osd_scale']) body[k] = Number(body[k]) || 0;
     body.kind_weights = { tv: Number(s.kind_weights.tv), movie: Number(s.kind_weights.movie) };
     const cleanDp = (rows) => (rows ?? []).map((d) => {
@@ -58,7 +59,7 @@
     body.adult_advert_keywords = (s.adult_advert_keywords ?? []).map((k) => String(k).toLowerCase());
     const r = await tryApi(put('/api/settings', body), { success: 'Settings saved' });
     saving = false;
-    if (r) { s = r; savedOnce = true; providers = { archive: (s.acquire_providers ?? []).includes('archive'), url: (s.acquire_providers ?? []).includes('url') }; }
+    if (r) { s = r; savedOnce = true; s.readiness_hours ??= []; }
   }
   async function reset() {
     if (!(await confirm('Reset every weighting setting to its default?', { title: 'Reset to defaults', okLabel: 'Reset', danger: true }))) return;
@@ -174,36 +175,13 @@
       <div class="card">
         <div class="card-title"><h3>Cache</h3></div>
         <div class="stack">
-          <label class="field">Content provider
-            <select bind:value={s.content_provider}><option value="builtin">builtin – PiTV copies and fetches itself</option><option value="pitv_content">pitv_content – desktop tool</option></select>
-            <span class="help">pitv_content is the separate desktop tool that copies/transcodes tomorrow's programmes into the Pi's cache overnight and fetches the wanted list; builtin uses PiTV's own copier and archive.org/yt-dlp fetcher.</span>
-          </label>
+          <label class="field">Cache directory<input class="mono" bind:value={s.cache_dir} placeholder="/mnt/cache/pitv" /><span class="help">Folder on the attached drive where pitv_content puts local copies of upcoming programmes; empty disables the cache.</span></label>
+          <label class="field">Maximum size (GB)<input type="number" min="0" bind:value={s.cache_max_gb} /><span class="help">pitv_content fills the cache; PiTV only evicts under this cap.</span></label>
+          <label class="field">Download directory<input class="mono" bind:value={s.acquire_dir} placeholder="(cache dir)/acquired" /><span class="help">Where pitv_content stores fetched wanted items, scanned as a library source; empty uses the cache directory.</span></label>
+          <label class="check"><input type="checkbox" bind:checked={s.acquire_fill_gaps} /> Queue missing episodes automatically<span class="help">Looks for gaps between the episodes already on disk and adds them to the wanted list.</span></label>
           {#if s.content_profile}
-            <div class="note small">Content profile: {s.content_profile.width}×{s.content_profile.height} {s.content_profile.vcodec}{s.content_profile.acodec ? `/${s.content_profile.acodec}` : ''}{s.content_profile.max_bitrate_kbps ? ` · ≤${s.content_profile.max_bitrate_kbps} kbit/s` : ''}{s.content_profile.deinterlace ? ` · deinterlace: ${s.content_profile.deinterlace}` : ''} <span class="muted">(what transcoded copies are made to; read-only)</span></div>
+            <div class="note small">Content profile: {s.content_profile.width}×{s.content_profile.height} {s.content_profile.vcodec}{s.content_profile.acodec ? `/${s.content_profile.acodec}` : ''}{s.content_profile.max_bitrate_kbps ? ` · ≤${s.content_profile.max_bitrate_kbps} kbit/s` : ''}{s.content_profile.deinterlace ? ` · deinterlace: ${s.content_profile.deinterlace}` : ''} <span class="muted">(what pitv_content transcodes to; read-only)</span></div>
           {/if}
-          <label class="field">Cache directory<input class="mono" bind:value={s.cache_dir} placeholder="/mnt/cache/pitv" /><span class="help">Folder on the attached drive for local copies of upcoming programmes; empty disables the cache.</span></label>
-          <label class="field">Maximum size (GB)<input type="number" min="0" bind:value={s.cache_max_gb} /><span class="help">Oldest copies are removed once the cache exceeds this.</span></label>
-          <label class="field">Copy speed limit (Mbit/s)<input type="number" min="0" bind:value={s.cache_copy_mbps} /><span class="help">0 = unlimited. Throttle to keep the NAS responsive while a programme plays.</span></label>
-          <label class="field">Prefetch hours<input type="number" min="0" max="48" bind:value={s.prefetch_hours} /><span class="help">Always keep at least this many hours of programmes cached ahead.</span></label>
-          <label class="field">Prefetch days<input type="number" min="0" max="7" bind:value={s.prefetch_days} /><span class="help">Also cache everything through the end of the next N broadcast days, so tomorrow is local before 08:00.</span></label>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-title"><h3>Acquisition</h3></div>
-        <div class="stack">
-          <label class="check"><input type="checkbox" bind:checked={s.acquire_enabled} /> Fetch wanted programmes<span class="help">Downloads items from the Acquire page in the background.</span></label>
-          <label class="field">Download directory<input class="mono" bind:value={s.acquire_dir} placeholder="(cache dir)/acquired" /><span class="help">Where downloaded files are stored and scanned from; empty uses the cache directory.</span></label>
-          <div class="field"><span>Providers</span>
-            <div class="row"><label class="check"><input type="checkbox" bind:checked={providers.archive} /> archive.org</label><label class="check"><input type="checkbox" bind:checked={providers.url} /> Direct URLs</label></div>
-            <span class="help">Only archive.org searches and explicit URLs are supported.</span>
-          </div>
-          <label class="check"><input type="checkbox" bind:checked={s.acquire_fill_gaps} /> Queue missing episodes automatically<span class="help">Looks for gaps between the episodes already on disk.</span></label>
-          <label class="field">Acquisition hours<input class="mono" style="width:9rem" bind:value={s.acquire_hours} placeholder="00:00-23:59" /><span class="help">Window (HH:MM-HH:MM) in which downloads may run.</span></label>
-          <label class="check"><input type="checkbox" bind:checked={s.transcode_enabled} /> Transcode software-decoded files<span class="help">Re-encode to H.264 so the Pi can hardware-decode them.</span></label>
-          <label class="field">Transcode hours<input class="mono" style="width:9rem" bind:value={s.transcode_hours} placeholder="01:00-07:00" /><span class="help">Window (HH:MM-HH:MM) for CPU-heavy transcoding, ideally overnight.</span></label>
-          <label class="field">Max height (pixels)<input type="number" min="240" max="2160" step="1" bind:value={s.transcode_max_height} /><span class="help">Taller sources are scaled down, e.g. 720.</span></label>
-          <label class="field">Bitrate (kbit/s)<input type="number" min="500" bind:value={s.transcode_bitrate_kbps} /><span class="help">Target video bitrate for transcoded copies.</span></label>
         </div>
       </div>
 
@@ -212,6 +190,7 @@
         <div class="stack">
           <label class="field">Nightly scan hour<input type="number" min="0" max="23" bind:value={s.scan_hour} /><span class="help">Hour of the day (0–23) when the library is rescanned and the schedule extended.</span></label>
           <label class="field">Keep history (days)<input type="number" min="1" bind:value={s.history_keep_days} /><span class="help">Airing history older than this is pruned.</span></label>
+          <label class="field">Readiness check hours<ChipList value={(s.readiness_hours ?? []).map(String)} onchange={(v) => (s.readiness_hours = v.map((h) => parseInt(h, 10)).filter((h) => h >= 0 && h <= 23))} placeholder="hour 0–23…" /><span class="help">PiTV verifies tomorrow's files at these hours and substitutes anything missing.</span></label>
         </div>
       </div>
     </div>

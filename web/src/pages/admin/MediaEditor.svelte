@@ -1,6 +1,5 @@
 <script>
-  import { get, put, post, tryApi } from '../../lib/api.js';
-  import { toast } from '../../lib/stores.svelte.js';
+  import { get, put, tryApi } from '../../lib/api.js';
   import { fmtDuration, fmtBytes, fmtDateTime, CERTIFICATES } from '../../lib/format.js';
   import Drawer from '../../components/Drawer.svelte';
 
@@ -35,11 +34,6 @@
     if (r) { await load(); onsaved?.(); }
   }
   let overridden = $derived(item ? Object.keys(item.overrides ?? {}) : []);
-  let queued = $state(false);
-  async function transcode() {
-    const r = await tryApi(post('/api/transcode', { media_id: id }));
-    if (r) { queued = true; toast.success(r.added ? 'Queued for transcoding' : 'Already in the transcode queue'); }
-  }
 </script>
 
 <Drawer open={true} title={item?.title ?? 'Item'} subtitle={item?.filename ?? ''} {onclose}>
@@ -49,12 +43,12 @@
         <span class="badge">{item.kind}</span>{#if item.kind === 'music' && item.concert}<span class="badge info">concert</span>{/if}{#if item.kind === 'advert' && item.family_safe === 0}<span class="badge warn">not family-safe</span>{/if}
         <span class="mono small">{item.vcodec ?? '?'}{item.acodec ? `/${item.acodec}` : ''}</span>
         {#if item.width}<span class="small muted">{item.width}×{item.height}{item.interlaced ? 'i' : ''}</span>{/if}
-        {#if item.hwdec}<span class="badge ok">Hardware decode</span>{:else}<span class="badge warn">Software decode</span>{/if}
+        {#if item.hwdec}<span class="badge ok">Hardware decode</span>{:else}<span class="badge warn" title="pitv_content transcodes this file to an H.264 copy when it is scheduled">Software decode</span>{/if}
         {#if item.transcoded_path}<span class="badge info">transcoded copy</span>{/if}
-        {#if !item.hwdec && !item.transcoded_path && (item.kind === 'movie' || item.kind === 'episode')}
-          <button class="small" onclick={transcode} disabled={queued}>{queued ? 'Queued' : 'Transcode'}</button>
-        {/if}
       </div>
+      {#if !item.hwdec && (item.kind === 'movie' || item.kind === 'episode' || item.kind === 'music')}
+        <p class="tiny muted">The Pi cannot hardware-decode this file; pitv_content transcodes it into the cache when it is scheduled{item.transcoded_path ? ' (a copy already exists)' : ''}.</p>
+      {/if}
       <dl class="kv small">
         <dt>Duration</dt><dd>{fmtDuration(item.duration)}</dd>
         <dt>Size</dt><dd>{fmtBytes(item.size)}</dd>

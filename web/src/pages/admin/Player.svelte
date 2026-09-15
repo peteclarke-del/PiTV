@@ -36,7 +36,6 @@
   });
   let cache = $derived(s.cache ?? { enabled: false });
   let cacheFrac = $derived(cache.enabled && cache.max ? cache.used / cache.max : 0);
-  let acq = $derived(s.acquire?.current ?? null);
   let maint = $derived(s.maintenance ?? {});
 </script>
 
@@ -104,16 +103,12 @@
           <ProgressBar value={cacheFrac} />
           <p class="small muted" style="margin:.4rem 0 0">{fmtBytes(cache.used)} of {fmtBytes(cache.max)} used · {cache.files} files{cache.free != null ? ` · ${fmtBytes(cache.free)} free on disk` : ''}</p>
           <p class="tiny muted mono" style="margin:0">{cache.dir}</p>
-          {#if cache.copying}
-            <div class="mt small">Copying <b>{cache.copying.name}</b></div>
-            <ProgressBar value={cache.copying.size ? cache.copying.done / cache.copying.size : 0} />
-            <div class="tiny muted">{fmtBytes(cache.copying.done)} of {fmtBytes(cache.copying.size)}</div>
-          {/if}
+          {#if cache.tool_running}<div class="mt"><span class="badge info">pitv_content running</span> <span class="tiny muted">filling the cache now</span></div>{/if}
         {/if}
       </div>
 
       <div class="card">
-        <div class="card-title"><h3>Maintenance &amp; acquisition</h3></div>
+        <div class="card-title"><h3>Maintenance</h3></div>
         {#if !s.online}<p class="muted small">Unknown while the player is offline.</p>
         {:else}
           <dl class="kv small">
@@ -121,13 +116,7 @@
             <dt>Last scan</dt><dd>{maint.last_scan ? fmtAgo(maint.last_scan, clock.ts) : 'not yet'}</dd>
             <dt>Readiness</dt><dd>{#if maint.last_readiness}<span class="badge {maint.last_readiness.status === 'ok' ? 'ok' : 'warn'}">{maint.last_readiness.status}</span> {maint.last_readiness.summary} <span class="muted">({fmtAgo(maint.last_readiness.at, clock.ts)})</span>{:else}<span class="muted">not checked yet</span>{/if}</dd>
             {#if maint.error}<dt>Error</dt><dd><span class="badge danger">{maint.error}</span></dd>{/if}
-            <dt>Acquiring</dt><dd>
-              {#if acq}
-                <span class="badge info">{acq.kind}</span> {acq.title ?? `#${acq.id}`} · {acq.status}{acq.message ? ` · ${acq.message}` : ''}
-                {#if acq.progress}<ProgressBar value={acq.progress > 1 ? acq.progress / 100 : acq.progress} />{/if}
-              {:else}<span class="muted">idle</span>{/if}
-              <a class="small" href="#/admin/acquire">Open queue</a>
-            </dd>
+            <dt>Wanted</dt><dd><a class="small" href="#/admin/wanted">Open the wanted list</a> · fetched by pitv_content</dd>
           </dl>
         {/if}
       </div>

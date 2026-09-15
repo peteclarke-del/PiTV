@@ -494,6 +494,31 @@ tab reads its status file, service and timer state, log and reports, and can sta
 
 ---
 
+## 8.1 Resilience: 24/7 operation and recovery
+
+- **Watchdogs.** Both services are `Type=notify` with `WatchdogSec`: the player pings systemd
+  from its main loop every half second, the web service from an async heartbeat; a hung
+  process is killed and restarted (`Restart=always`, no start-rate limit). The Pi's hardware
+  watchdog is enabled (`dtparam=watchdog=on`, `RuntimeWatchdogSec=15`), so a kernel or
+  systemd hang reboots the board. pitv_content's timer job has a 6 h `TimeoutStartSec`; its
+  API service is expected to carry the same watchdog pattern.
+- **Memory.** Units carry `MemoryHigh`/`MemoryMax` (player 900 M/1.2 G, web 400 M/600 M) so a
+  leak is killed and restarted rather than taking the Pi down; the player also logs its own
+  and mpv's RSS every five minutes and exits for a clean restart above `memory_limit_mb`
+  (playback resumes at the live position within seconds). The web process does the same
+  above 400 MB. History, old schedule days and run logs are pruned; logs rotate.
+- **Power loss.** The schedule lives in SQLite (WAL, `synchronous=NORMAL`, safe against
+  corruption) and every state file is written atomically, so nothing needs replaying. The
+  player derives its position from the wall clock, so after a two-hour outage it tunes to
+  what is on *now*. Because the Pi has no RTC, at boot it shows the test card and waits up to
+  `clock_wait_seconds` (120 s) for NTP before tuning, and if the clock steps by more than a
+  minute at any later time it re-tunes live at once. pitv_content resumes where it left off:
+  it skips targets that already exist, cleans stale `.part` files, and its catch-up run and
+  PiTV's readiness checks cover anything a reboot interrupted.
+- **Storage.** The cache drive is mounted `nofail` so a missing or failing disk never blocks
+  boot; the NAS shares are automounts that retry; the player falls back to the NAS original
+  or the test card and logs an error.
+
 ## 9. Code layout
 
 ```

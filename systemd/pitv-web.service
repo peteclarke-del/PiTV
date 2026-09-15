@@ -4,7 +4,9 @@ After=network-online.target pitv-player.service
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=all
+WatchdogSec=60
 User=pitv
 Group=pitv
 Environment=PITV_DATA=/var/lib/pitv
@@ -14,6 +16,10 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 ExecStart=/opt/pitv/.venv/bin/pitv web
 Restart=always
 RestartSec=3
+StartLimitIntervalSec=0
+MemoryHigh=400M
+MemoryMax=600M
+OOMPolicy=kill
 Nice=5
 StandardOutput=journal
 StandardError=journal

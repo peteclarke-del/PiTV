@@ -94,5 +94,6 @@ class Maintenance:
             with tx(conn):
                 conn.execute("DELETE FROM history WHERE started_at < ?", (now - keep,))
                 conn.execute("DELETE FROM schedule WHERE end_ts < ?", (now - 14 * 86400,))
+                conn.execute("DELETE FROM run_log WHERE started_at < ?", (now - 30 * 86400,))
         finally:
             conn.close()

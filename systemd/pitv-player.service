@@ -1,12 +1,14 @@
 [Unit]
 Description=PiTV player (mpv on DRM, schedule follower)
-After=network-online.target systemd-timesyncd.service
-Wants=network-online.target
+After=network-online.target systemd-timesyncd.service time-sync.target
+Wants=network-online.target systemd-timesyncd.service
 # Do not Require the mounts: playback starts with the test card and retries until the NAS is up.
 After=mnt-tvshows.automount mnt-movies.automount mnt-ads.automount
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
+WatchdogSec=90
 User=pitv
 Group=pitv
 SupplementaryGroups=video render audio input tty
@@ -17,6 +19,12 @@ RuntimeDirectoryPreserve=yes
 ExecStart=/opt/pitv/.venv/bin/pitv play
 Restart=always
 RestartSec=2
+StartLimitIntervalSec=0
+TimeoutStopSec=10
+# Memory: a leak gets killed and restarted rather than taking the Pi down.
+MemoryHigh=900M
+MemoryMax=1200M
+OOMPolicy=kill
 # Give mpv real-time-ish priority so audio never stutters under a scan or copy.
 Nice=-5
 IOSchedulingClass=best-effort

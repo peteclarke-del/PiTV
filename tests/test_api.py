@@ -172,3 +172,10 @@ def test_content_tool_status(client):
     assert "installed" in t and "reports" in t
     r = client.post("/api/content/readiness", json={"days": 1}).json()
     assert r["status"] in ("ok", "warning", "error") and r["checked"] > 0
+
+
+def test_content_tool_proxy_offline(client):
+    client.put("/api/settings", json={"content_tool_url": "http://127.0.0.1:9"})  # nothing listens there
+    r = client.get("/api/content/tool/api/settings")
+    assert r.status_code == 503 and r.json()["offline"] is True
+    assert client.get("/api/content/tool/api/evil").status_code == 404

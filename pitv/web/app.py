@@ -77,10 +77,27 @@ def create_app(cfg: Config) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        from .. import sdnotify
         bus.attach(asyncio.get_running_loop())
         t = threading.Thread(target=_player_subscriber, args=(app, stop), name="pitv-player-sub", daemon=True)
         t.start()
+        sdnotify.ready()
+
+        async def heartbeat() -> None:
+            interval = sdnotify.watchdog_interval() or 15
+            while True:
+                sdnotify.watchdog()
+                rss = sdnotify.rss_mb()
+                if rss and rss > 400:
+                    import logging
+                    logging.getLogger("pitv.web").error("web process at %.0f MB; exiting for a clean restart", rss)
+                    import os
+                    os._exit(3)
+                await asyncio.sleep(interval)
+
+        hb = asyncio.create_task(heartbeat())
         yield
+        hb.cancel()
         stop.set()
 
     app = FastAPI(title="PiTV", version="0.1", docs_url="/api/docs", openapi_url="/api/openapi.json",

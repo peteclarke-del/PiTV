@@ -17,7 +17,7 @@
 
   const tabs = [
     ['dashboard', 'Dashboard'], ['sources', 'Sources'], ['library', 'Library'], ['channels', 'Channels'],
-    ['weighting', 'Weighting'], ['schedule', 'Schedule'], ['acquire', 'Acquire'], ['content', 'Content'], ['player', 'Player'], ['logs', 'Logs'], ['system', 'System'],
+    ['weighting', 'Weighting'], ['schedule', 'Schedule'], ['wanted', 'Wanted'], ['content', 'Content'], ['player', 'Player'], ['logs', 'Logs'], ['system', 'System'],
   ];
   let tab = $derived(route.parts[1] ?? 'dashboard');
   let skipSetup = $state(sessionStorage.getItem('pitv-skip-setup') === '1');
@@ -72,7 +72,7 @@
     {:else if tab === 'channels'}<Channels />
     {:else if tab === 'weighting'}<Weighting />
     {:else if tab === 'schedule'}<Schedule />
-    {:else if tab === 'acquire'}<Acquire />
+    {:else if tab === 'wanted' || tab === 'acquire'}<Acquire />
     {:else if tab === 'player'}<PlayerPage />
     {:else if tab === 'content'}<Content />
     {:else if tab === 'logs'}<Logs />

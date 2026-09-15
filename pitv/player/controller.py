@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import db as dbm
+from .. import sdnotify
 from ..config import Config
 from ..db import all_settings, now_ts, row_to_dict
 from .cache import MediaCache
@@ -80,6 +81,7 @@ class Player:
         self.stopping = False
         self._last_drift_check = 0.0
         self._stream_info_at = 0.0
+        self._started_at = time.time()
         self._substituted_slots: set[int] = set()
         self.stream_info: dict[str, Any] = {}
         self._state_cache: str = ""
@@ -201,6 +203,8 @@ class Player:
         self.evdev.start()
         if self.tty:
             self.tty.start()
+        self._wait_for_clock()
+        sdnotify.ready()
         self.maintenance.start()
         signal.signal(signal.SIGTERM, lambda *_: self.actions.put(("quit", None)))
         signal.signal(signal.SIGINT, lambda *_: self.actions.put(("quit", None)))
@@ -245,9 +249,31 @@ class Player:
 
     # --- main loop ----------------------------------------------------------------------------
 
+    def _wait_for_clock(self) -> None:
+        """No RTC on the Pi: after a power cut the clock is wrong until NTP steps it. Show the
+        test card and wait (bounded) for systemd-timesyncd so we resume from the real 'now'."""
+        if self.offset or not self.on_pi:
+            return
+        limit = int(self.settings.get("clock_wait_seconds", 120))
+        marker = Path("/run/systemd/timesync/synchronized")
+        if marker.exists():
+            return
+        log.warning("clock not yet synchronised; waiting up to %ss before tuning", limit)
+        self._show_testcard("Setting the clock", "waiting for time synchronisation")
+        deadline = time.time() + limit
+        while time.time() < deadline and not self.stopping:
+            sdnotify.watchdog()
+            if marker.exists():
+                log.info("clock synchronised")
+                return
+            time.sleep(2)
+        log.error("clock still not synchronised after %ss; carrying on with the current time", limit)
+
     def _main_loop(self) -> None:
         last_settings = time.time()
         last_publish = 0.0
+        last_wall = time.time()
+        last_health = time.time()
         while not self.stopping:
             try:
                 action, arg = self.actions.get(timeout=0.5)
@@ -265,12 +291,47 @@ class Player:
             except Exception:  # noqa: BLE001
                 log.exception("tick failed")
             now = time.time()
+            sdnotify.watchdog()
+            if abs(now - last_wall) > 60:
+                # The wall clock stepped (NTP after a power cut, or a manual change): the
+                # schedule position is stale, so rejoin live immediately.
+                log.warning("clock jumped by %.0fs; re-tuning to the live position", now - last_wall)
+                self.behind_live = False
+                self.paused = False
+                self.playing_slot_id = None
+                try:
+                    self.mpv.set("pause", False)
+                except MpvError:
+                    pass
+                if self.channel:
+                    self.play_live()
+            last_wall = now
             if now - last_settings > 60:
                 last_settings = now
                 self._reload_settings()
+            if now - last_health > 300:
+                last_health = now
+                self._health_check()
             if now - last_publish >= 1.0:
                 last_publish = now
                 self._publish()
+
+    def _health_check(self) -> None:
+        """Log memory use; a runaway process exits so systemd restarts it cleanly (playback
+        resumes at the live position within seconds)."""
+        mine = sdnotify.rss_mb()
+        mpv_rss = sdnotify.rss_mb(self.mpv.proc.pid) if self.mpv.proc else None
+        limit = float(self.settings.get("memory_limit_mb", 700))
+        log.info("health: player %.0f MB, mpv %s MB, uptime %.0f min", mine or 0,
+                 f"{mpv_rss:.0f}" if mpv_rss else "?", (time.time() - self._started_at) / 60)
+        sdnotify.status(f"ch{self.channel['number'] if self.channel else '?'} {self.slot['title'] if self.slot else ''}"
+                        f" | {mine or 0:.0f} MB")
+        if mine and mine > limit:
+            log.error("player memory %.0f MB exceeds %.0f MB; restarting", mine, limit)
+            self.stopping = True
+        elif mpv_rss and mpv_rss > limit * 1.5:
+            log.error("mpv memory %.0f MB is excessive; restarting the player", mpv_rss)
+            self.stopping = True
 
     def _reload_settings(self) -> None:
         try:

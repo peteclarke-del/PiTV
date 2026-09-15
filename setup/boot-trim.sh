@@ -37,6 +37,14 @@ case "$DISPLAY_MODE" in
     ;;
 esac
 
+# Hardware watchdog: if the kernel or systemd hangs, the SoC reboots the Pi within 15 s.
+grep -q "^dtparam=watchdog=on" "$CONFIG" || echo "dtparam=watchdog=on" >> "$CONFIG"
+mkdir -p /etc/systemd/system.conf.d
+printf '[Manager]\nRuntimeWatchdogSec=15\nRebootWatchdogSec=2min\n' > /etc/systemd/system.conf.d/watchdog.conf
+# Clock: no RTC, so fake-hwclock saves the time on shutdown and timesyncd steps it at boot.
+systemctl enable --now systemd-timesyncd 2>/dev/null || true
+systemctl enable fake-hwclock 2>/dev/null || true
+
 # Quiet kernel, no rainbow, no cursor blink, no plymouth.
 if ! grep -q "quiet" "$CMDLINE"; then sed -i 's/$/ quiet/' "$CMDLINE"; fi
 grep -q "loglevel=" "$CMDLINE" || sed -i 's/$/ loglevel=3/' "$CMDLINE"

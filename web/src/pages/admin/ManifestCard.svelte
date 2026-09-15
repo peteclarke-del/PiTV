@@ -39,7 +39,7 @@
       <button class="small" onclick={loadManifest} disabled={manifestBusy}>Refresh</button>
       <button class="small primary" onclick={downloadManifest} disabled={!manifest}>Download manifest JSON</button>
     </div>
-    <p class="small muted">What the content provider (pitv_content or the built-in copier) needs to put in the cache for the coming schedule.</p>
+    <p class="small muted">What pitv_content needs to copy or transcode into the cache for the coming schedule.</p>
     {#if manifest && manifestStats}
       <div class="stats">
         <div class="stat"><b>{manifestStats.total}</b><span>Items</span></div>
