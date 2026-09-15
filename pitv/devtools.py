@@ -133,6 +133,7 @@ FAKE_CONCERTS = [
 ]
 
 _DURATION_TEMPLATES: dict[int, Path] = {}
+_TEMPLATE_DIR: Path | None = None   # <library root>/.templates, set by build_fake_library
 
 
 def _make_video(dest: Path, seconds: int, text: str) -> None:
@@ -140,13 +141,19 @@ def _make_video(dest: Path, seconds: int, text: str) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmpl = _DURATION_TEMPLATES.get(seconds)
     if tmpl is None or not tmpl.exists():
-        tmpl = dest.parent.parent.parent / ".templates" / f"{seconds}.mp4"
+        tmpl = (_TEMPLATE_DIR or dest.parent / ".templates") / f"{seconds}.mp4"
         tmpl.parent.mkdir(parents=True, exist_ok=True)
         if not tmpl.exists():
+            # 4:3 colour bars with a running timecode and the clip length, so the preview window
+            # shows that the live offset is right; 1 fps keeps a 25-minute file around 100 KB.
+            mins, secs = divmod(seconds, 60)
+            label = f"PiTV test signal  %{{pts\\:gmtime\\:0\\:%H\\:%M\\:%S}} of {mins:02d}\\:{secs:02d}"
+            draw = (f"drawtext=text='{label}':fontsize=18:fontcolor=white:box=1:boxcolor=black@0.6:"
+                    "x=(w-text_w)/2:y=h-40")
             subprocess.run(
                 ["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
-                 "-i", f"color=c=0x203040:s=64x36:r=1:d={seconds}",
-                 "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage", "-crf", "51",
+                 "-i", f"smptebars=s=320x240:r=1:d={seconds}", "-vf", draw,
+                 "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage", "-crf", "35",
                  "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(tmpl)],
                 check=True)
         _DURATION_TEMPLATES[seconds] = tmpl
@@ -166,7 +173,10 @@ def _nfo(path: Path, root: str, fields: dict[str, object], genres: list[str]) ->
 
 def build_fake_library(root: Path, seed: int = 1, with_nfo: bool = True,
                        max_episodes_per_show: int | None = None) -> dict[str, Path]:
+    global _TEMPLATE_DIR
     rnd = random.Random(seed)
+    _TEMPLATE_DIR = root / ".templates"
+    _DURATION_TEMPLATES.clear()
     tv = root / "tvshows"
     movies = root / "movies"
     pitv = root / "pitv"
