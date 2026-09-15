@@ -55,12 +55,19 @@ def _count(value: str | None) -> int | None:
     return n if 0 <= n < 2 ** 63 else None
 
 
-def assess(u: Unit, props: dict[str, str] | None, responding: bool | None) -> tuple[str, str]:
+def assess(u: Unit, props: dict[str, str] | None, responding: bool | None, on_pi: bool = True) -> tuple[str, str]:
     """(health, description). health is ok, idle, warn, down or absent; `responding` is the live
-    check (None where there is none)."""
+    check (None where there is none). A desktop runs both apps by hand, so a unit missing there
+    is described by what stands in for it rather than reported as a fault."""
     if not props or props.get("LoadState") in ("", "not-found"):
+        if u.kind == "timer" and responding:
+            return "idle", "no timer; runs start through the API"
+        if u.kind == "run" and responding is not None:
+            return ("ok", "running") if responding else ("idle", "no unit; runs start through the API")
         if responding:
             return "ok", "running outside systemd"
+        if u.kind == "boot" and not on_pi:
+            return "idle", "Pi only"
         return ("absent", "not installed") if props else ("warn", "systemd state unavailable")
     active, sub, result = props.get("ActiveState", ""), props.get("SubState", ""), props.get("Result", "")
     if active == "failed":
@@ -78,13 +85,13 @@ def assess(u: Unit, props: dict[str, str] | None, responding: bool | None) -> tu
     return ("ok", sub) if active == "active" else ("down", "stopped")
 
 
-def services(live: dict[str, bool | None]) -> list[dict[str, Any]]:
+def services(live: dict[str, bool | None], on_pi: bool = True) -> list[dict[str, Any]]:
     """Every unit of both applications with its state. `live` maps unit ids to the live check."""
     states = systemd_state([u.unit for u in UNITS])
     rows = []
     for u in UNITS:
         props = states.get(u.unit)
-        health, state = assess(u, props, live.get(u.unit))
+        health, state = assess(u, props, live.get(u.unit), on_pi)
         known = props if (props or {}).get("LoadState") == "loaded" else {}   # systemd's numbers mean nothing otherwise
         since = known.get("ActiveEnterTimestamp", "")
         rows.append({

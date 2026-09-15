@@ -203,3 +203,25 @@ younger than two hours, and does not evict while the marker is fresh.
 01:00 pitv_content main run (index, then manifest). 04:00 PiTV imports the index and extends
 the schedule. 05:00 pitv_content catch-up run. 06:00 and 07:00 PiTV readiness checks: anything
 not playable from the cache (or the NAS, with fallback on) is replaced and logged as an error.
+
+## 7. Host details
+
+`GET {content_tool_url}/api/system` returns the machine pitv_content runs on, in the shape PiTV
+reports for itself (`pitv/hostinfo.py`). PiTV's admin shows the two side by side, which stays
+right if the applications are ever split across machines. Any reading that cannot be taken on
+the platform is `null`.
+
+```json
+{"version": "0.2.0", "python": "3.12.3",
+ "tools": {"ffmpeg": "5.1.6", "yt-dlp": "2026.08.19"},
+ "hostname": "pitv", "model": "Raspberry Pi 4 Model B Rev 1.5", "pi": true,
+ "uptime_s": 583200, "load": [1.09, 1.39, 2.29], "temperature_c": 52.0,
+ "memory": {"total": 4038000000, "available": 2511000000}}
+```
+
+- `tools` maps each external program the application depends on to its version, or `null`
+  when it is missing. PiTV reports `mpv`; pitv_content reports `ffmpeg` and `yt-dlp`.
+- `model` is the board from `/proc/device-tree/model` on a Pi, else the OS and architecture.
+- `uptime_s` is the machine's uptime from `/proc/uptime`; `temperature_c` is
+  `thermal_zone0`; `memory` comes from `MemTotal` and `MemAvailable` in `/proc/meminfo`, in
+  bytes.

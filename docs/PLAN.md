@@ -578,7 +578,7 @@ PiTV:
 | Wanted | The wanted list for pitv_content: requests raised by line-up placeholders (marked with their channel and as transient) and items added by hand (film, episode, advert or music video, optionally with a URL); retry, delete, queue missing episodes |
 | Player | Now playing and whether from the cache or the NAS, stream details, virtual remote, cache usage, maintenance status, restart the player; remote keymap editor with press-to-learn |
 | Logs | Player, web, catalogue, schedule and install logs, pitv_content's log, and the journal of both units; level and text filters, auto-refresh, copy |
-| System | Version, time sync, database and disk usage, NAS mounts, jobs; every service of both apps (systemd state, a live check that the process answers, up since, memory, restarts) with the actions the installer allows; export settings and overrides; set or change the admin password |
+| System | PiTV and pitv_content side by side (version, tool versions, host, board, uptime, load, temperature, memory), each read from its own application so the card stays right on separate machines; time sync, database and disk usage, NAS mounts, jobs; every service of both apps (systemd state, a live check that the process answers, up since, memory, restarts) with the actions the installer allows; export settings and overrides; set or change the admin password |
 
 pitv_content:
 

@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import sqlite3
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -20,13 +18,14 @@ from ... import db as dbm
 from ...db import (DEFAULT_SETTINGS, all_settings, get_setting, now_ts, row_to_dict, rows_to_dicts,
                    set_setting, tx)
 from ...guide import SLOT_QUERY
+from ...hostinfo import host_info
 from ... import catalogue, tool_client
 from ... import lineup as lineup_mod
 from ...logsetup import log_dir, tail
 from ...scheduler.build import build_horizon, parse_day, rebuild_from, slot_titles
 from ...scheduler.rules import broadcast_day_for, parse_pattern, tz_of
 from .deps import admin_conn, media_public, run_cmd, show_public, slot_public
-from .services import CONTENT_RUN, SERVICE_ACTIONS, services
+from .services import CONTENT_RUN, CONTENT_TIMER, SERVICE_ACTIONS, services
 from .settings_rules import SettingError, check_setting
 
 router = APIRouter(prefix="/api", dependencies=[Depends(admin_conn)])
@@ -749,6 +748,7 @@ def _live_checks(request: Request, conn: sqlite3.Connection) -> dict[str, bool |
         "pitv-player.service": bool(player.get("ok") and player.get("online", True)),
         "pitv-content-api.service": tool_up,
         CONTENT_RUN: bool(tool.get("active_job")) if tool_up else None,
+        CONTENT_TIMER: tool_up or None,   # without the timer, runs are started through the API
     }
 
 
@@ -772,20 +772,13 @@ def system_info(request: Request, conn: sqlite3.Connection = Depends(admin_conn)
                 usage = None
         mounts.append({"name": r["name"], "path": r["path"], "available": p.is_dir(), "usage": usage})
     data_usage = shutil.disk_usage(cfg.data_dir) if cfg.data_dir.exists() else None
-    load = os.getloadavg() if hasattr(os, "getloadavg") else None
-    temp = ""
-    tpath = Path("/sys/class/thermal/thermal_zone0/temp")
-    if tpath.exists():
-        try:
-            temp = f"{int(tpath.read_text().strip()) / 1000:.1f}"
-        except ValueError:
-            temp = ""
+    mpv = re.match(r"mpv (\S+)", _cmd([cfg.mpv_binary, "--version"]))
+    host = host_info(__version__, {"mpv": mpv.group(1) if mpv else None})
     return {
-        "version": __version__, "python": sys.version.split()[0], "mpv": _cmd([cfg.mpv_binary, "--version"]).split("\n")[0],
-        "hostname": _cmd(["hostname"]), "uptime": _cmd(["uptime", "-p"]), "load": load, "temperature_c": temp,
+        "host": host,
         "time": {"now": now_ts(), "local": datetime.now().isoformat(timespec="seconds"),
                  "ntp": time_info.get("NTPSynchronized"), "timezone": time_info.get("Timezone")},
-        "services": services(_live_checks(request, conn)), "mounts": mounts,
+        "services": services(_live_checks(request, conn), on_pi=host["pi"]), "mounts": mounts,
         "data": {"path": str(cfg.data_dir), "db": str(cfg.db_path),
                  "db_size": cfg.db_path.stat().st_size if cfg.db_path.exists() else 0,
                  "free": data_usage.free if data_usage else None, "total": data_usage.total if data_usage else None},

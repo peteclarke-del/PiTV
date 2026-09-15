@@ -36,6 +36,15 @@ export function fmtDuration(seconds) {
   return r ? `${h}h ${r}m` : `${h}h`;
 }
 
+/** Uptime as its two largest units: "6 days 18 h", "18 h 39 min", "39 min". */
+export function fmtUptime(seconds) {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d) return `${d} day${d === 1 ? '' : 's'} ${h} h`;
+  return h ? `${h} h ${m} min` : `${m} min`;
+}
+
 export function fmtBytes(n) {
   if (n === null || n === undefined) return '';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];

@@ -1,7 +1,9 @@
 <script>
   import AppBadge from '../../components/AppBadge.svelte';
   import { onMount } from 'svelte';
-  import { confirmApi, get, post, tryApi } from '../../lib/api.js';
+  import { ApiError, confirmApi, get, post, tryApi } from '../../lib/api.js';
+  import { isOffline, toolGet } from '../../lib/toolapi.js';
+  import HostCard from '../../components/HostCard.svelte';
   import { auth, toast } from '../../lib/stores.svelte.js';
   import { fmtBytes, fmtDateTime } from '../../lib/format.js';
   import { downloadJson } from '../../lib/util.js';
@@ -15,7 +17,29 @@
   let busy = $state(false);
 
   async function load() {
+    loadContent();
     try { info = await get('/api/system'); error = ''; } catch (e) { error = e.detail || e.message; }
+  }
+
+  // pitv_content's host comes from its own API, not from this machine, so the card stays right
+  // when the two apps run on separate boxes. While it is unreachable it is probed every 30 s:
+  // each failed probe is a 503 the browser logs on the console.
+  let content = $state(null);
+  let contentNote = $state('');
+  let contentProbeAt = 0;
+  async function loadContent() {
+    if (!content && contentNote && Date.now() - contentProbeAt < 30000) return;
+    contentProbeAt = Date.now();
+    try {
+      const doc = await toolGet('system');
+      if (!doc || typeof doc !== 'object' || !('hostname' in doc)) throw new ApiError(0, 'not pitv_content');
+      content = doc;
+      contentNote = '';
+    } catch (e) {
+      content = null;
+      contentNote = isOffline(e) ? 'pitv_content API offline.'
+        : e.status === 404 ? 'This version of pitv_content does not report host details.' : (e.detail || e.message);
+    }
   }
   onMount(load);
 
@@ -56,18 +80,14 @@
 <div class="stack">
   {#if error}<div class="badge danger">{error}</div>{/if}
   <div class="grid">
-    <div class="card">
-      <div class="card-title"><h3>PiTV</h3><AppBadge app="pitv" /><button class="small ghost" onclick={load}>Refresh</button></div>
-      {#if info}
-        <dl class="kv">
-          <dt>Version</dt><dd>{info.version} · Python {info.python}</dd>
-          <dt>mpv</dt><dd>{info.mpv || 'not found'}</dd>
-          <dt>Host</dt><dd>{info.hostname} · {info.uptime}</dd>
-          <dt>Load</dt><dd>{info.load ? info.load.map((l) => l.toFixed(2)).join(' / ') : '–'}</dd>
-          <dt>Temperature</dt><dd>{info.temperature_c ? `${info.temperature_c} °C` : '–'}</dd>
-        </dl>
-      {:else}<div class="skeleton" style="height:100px"></div>{/if}
-    </div>
+    <HostCard title="PiTV" app="pitv" host={info?.host}>
+      <button class="small ghost" onclick={load}>Refresh</button>
+    </HostCard>
+    <HostCard title="pitv_content" app="content" host={content} note={contentNote}>
+      {#if content && info?.host}
+        <span class="badge {content.hostname === info.host.hostname ? 'info' : ''}">{content.hostname === info.host.hostname ? 'same machine as PiTV' : 'separate machine'}</span>
+      {/if}
+    </HostCard>
     <div class="card">
       <div class="card-title"><h3>Time</h3><AppBadge app="pitv" /></div>
       {#if info}

@@ -421,6 +421,19 @@ def test_services_cover_both_apps():
     assert assess(daemon, {**loaded, "ActiveState": "active", "SubState": "running"}, False)[0] == "warn"
     assert assess(daemon, {"LoadState": "not-found"}, True) == ("ok", "running outside systemd")
     assert assess(daemon, {"LoadState": "not-found"}, None) == ("absent", "not installed")
+    # On a desktop the run goes through the API and there is no boot splash: neither is a fault.
+    assert assess(run, {"LoadState": "not-found"}, False)[0] == "idle"
+    assert assess(Unit("d.timer", "content", "", "timer"), {"LoadState": "not-found"}, True)[0] == "idle"
+    assert assess(Unit("c.service", "pitv", "", "boot"), {"LoadState": "not-found"}, None, on_pi=False) == ("idle", "Pi only")
+
+
+def test_system_reports_host_in_the_contract_shape(client):
+    host = client.get("/api/system").json()["host"]
+    assert {"version", "python", "tools", "hostname", "model", "pi", "uptime_s", "load", "temperature_c",
+            "memory"} <= set(host)
+    assert "mpv" in host["tools"]
+    from pitv.web.api.content import _proxy_path
+    assert _proxy_path("system") == "system"      # pitv_content's host document is reachable through the proxy
 
 
 def test_spa_never_serves_outside_the_bundle(client):
