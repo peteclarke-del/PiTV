@@ -13,3 +13,8 @@ npm run check      # svelte-check
 
 For `npm run dev` start the backend first, for example `setup/dev.sh start` from the
 repository root, which serves the API on port 8080.
+
+The admin is split into a PiTV section and a pitv_content section (see
+[docs/PLAN.md](../docs/PLAN.md) section 6.3) so it is clear which app a setting affects.
+pitv_content's pages reach its API through PiTV: `/api/sources` for its sources and
+`/api/content/tool/api/*` for everything else (`src/lib/toolapi.js`).

@@ -1,4 +1,5 @@
 <script>
+  import AppBadge from '../../components/AppBadge.svelte';
   import { untrack } from 'svelte';
   import { get, post, del, tryApi, confirmApi } from '../../lib/api.js';
   import { changes, clock, toast } from '../../lib/stores.svelte.js';
@@ -49,9 +50,9 @@
 </script>
 
 <div class="stack">
-  <div class="note">Wanted programmes are fetched by <b>pitv_content</b>, the support app on the Pi, on its next run (see the Content tab). Add a title here or let it search; give a URL only when you know exactly where the file is.</div>
+  <p class="scope" style="margin:0">PiTV records these requests (by hand, from line-ups, or from gaps in a series); pitv_content fetches them on its next run and delivers them into the cache. Give a URL only when you know exactly where the file is.</p>
   <div class="card">
-    <div class="card-title"><h3>Wanted</h3>
+    <div class="card-title"><h3>Wanted</h3><AppBadge app="content" title="Recorded by PiTV, fetched by pitv_content" />
       <button class="small" onclick={scanGaps} disabled={scanGaps.busy}>Queue missing episodes</button>
       <button class="small primary" onclick={() => openAdd()}>Add wanted</button>
     </div>

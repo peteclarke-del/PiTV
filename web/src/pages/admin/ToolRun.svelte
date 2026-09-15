@@ -2,6 +2,7 @@
   import { toolPost } from '../../lib/toolapi.js';
   import { tryApi } from '../../lib/api.js';
   import { toast } from '../../lib/stores.svelte.js';
+  import AppBadge from '../../components/AppBadge.svelte';
   import { num } from '../../lib/util.js';
 
   let { running = false, onchange } = $props();
@@ -28,7 +29,8 @@
 </script>
 
 <div class="card">
-  <div class="card-title"><h3>Run</h3>{#if running}<span class="badge info">running</span>{/if}</div>
+  <div class="card-title"><h3>Run</h3>{#if running}<span class="badge info">running</span>{/if}<AppBadge app="content" /></div>
+  <p class="scope">Starts a pitv_content job now with these options; its scheduled runs are set in pitv_content Settings.</p>
   <div class="inline-form">
     <label class="field">Mode
       <select bind:value={mode}><option value="cache">cache: fill the Pi's cache for the schedule</option><option value="catalogue">catalogue: refresh the catalogue</option><option value="dry-run">dry-run: report only</option></select>

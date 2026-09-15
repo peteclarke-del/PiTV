@@ -1,4 +1,5 @@
 <script>
+  import AppBadge from '../../components/AppBadge.svelte';
   import { untrack } from 'svelte';
   import { get, post, put, del, tryApi, confirmApi } from '../../lib/api.js';
   import { changes, noteChange, toast } from '../../lib/stores.svelte.js';
@@ -60,6 +61,8 @@
 </script>
 
 <div class="stack">
+  <div class="row" style="gap:.5rem"><h2 style="margin:0">Channels and line-ups</h2><AppBadge app="pitv" /></div>
+  <p class="scope" style="margin:-.4rem 0 0">What each channel carries and how PiTV schedules it. Changes apply on the next schedule build.</p>
   <div class="row">
     <button class="primary" onclick={() => (editing = {})}>Add channel</button>
     <span class="spacer"></span>

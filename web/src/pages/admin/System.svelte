@@ -1,4 +1,5 @@
 <script>
+  import AppBadge from '../../components/AppBadge.svelte';
   import { onMount } from 'svelte';
   import { get, post, tryApi } from '../../lib/api.js';
   import { auth, toast } from '../../lib/stores.svelte.js';
@@ -38,7 +39,7 @@
   {#if error}<div class="badge danger">{error}</div>{/if}
   <div class="grid">
     <div class="card">
-      <div class="card-title"><h3>PiTV</h3><button class="small ghost" onclick={load}>Refresh</button></div>
+      <div class="card-title"><h3>PiTV</h3><AppBadge app="pitv" /><button class="small ghost" onclick={load}>Refresh</button></div>
       {#if info}
         <dl class="kv">
           <dt>Version</dt><dd>{info.version} · Python {info.python}</dd>
@@ -50,7 +51,7 @@
       {:else}<div class="skeleton" style="height:100px"></div>{/if}
     </div>
     <div class="card">
-      <div class="card-title"><h3>Time</h3></div>
+      <div class="card-title"><h3>Time</h3><AppBadge app="pitv" /></div>
       {#if info}
         <dl class="kv">
           <dt>Local</dt><dd>{info.time.local}</dd>
@@ -61,7 +62,7 @@
       {/if}
     </div>
     <div class="card">
-      <div class="card-title"><h3>Services</h3></div>
+      <div class="card-title"><h3>Services</h3><AppBadge app="pitv" /></div>
       {#if info}
         <dl class="kv">
           {#each Object.entries(info.services) as [name, state] (name)}
@@ -71,7 +72,7 @@
       {/if}
     </div>
     <div class="card">
-      <div class="card-title"><h3>Data</h3></div>
+      <div class="card-title"><h3>Data</h3><AppBadge app="pitv" /></div>
       {#if info}
         <dl class="kv">
           <dt>Directory</dt><dd class="mono small">{info.data.path}</dd>
@@ -83,7 +84,10 @@
     </div>
   </div>
 
-  <div class="card pad-0 table-wrap">
+  <div class="card pad-0">
+    <div class="card-title" style="padding:.8rem 1rem 0"><h3>NAS mounts</h3><AppBadge app="content" /></div>
+    <p class="scope" style="padding:0 1rem;margin:.2rem 0 .4rem">pitv_content's sources as mounted on the Pi. pitv_content indexes them; PiTV reads them only for NAS fallback playback.</p>
+    <div class="table-wrap">
     <table>
       <thead><tr><th>Mount</th><th>Path</th><th>Status</th><th>Free</th></tr></thead>
       <tbody>
@@ -96,16 +100,17 @@
         {/each}
       </tbody>
     </table>
+    </div>
   </div>
 
   <div class="grid">
     <div class="card">
-      <div class="card-title"><h3>Backup</h3></div>
+      <div class="card-title"><h3>Backup</h3><AppBadge app="pitv" /></div>
       <p class="small muted">Download settings, channels, sources and every show/media override as JSON.</p>
       <button onclick={exportJson} disabled={exportJson.busy}>Export settings &amp; overrides</button>
     </div>
     <div class="card">
-      <div class="card-title"><h3>{auth.password_set ? 'Change admin password' : 'Set admin password'}</h3></div>
+      <div class="card-title"><h3>{auth.password_set ? 'Change admin password' : 'Set admin password'}</h3><AppBadge app="pitv" /></div>
       <form class="stack" onsubmit={changePassword}>
         {#if auth.password_set}
           <label class="field">Current password<input type="password" bind:value={pw.current} autocomplete="current-password" required /></label>
@@ -117,5 +122,5 @@
     </div>
   </div>
 
-  <div class="card"><div class="card-title"><h3>Jobs</h3></div><JobList /></div>
+  <div class="card"><div class="card-title"><h3>Jobs</h3><AppBadge app="pitv" /></div><JobList /></div>
 </div>

@@ -13,14 +13,15 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from ... import __version__
 from ... import db as dbm
 from ...db import (DEFAULT_SETTINGS, all_settings, get_setting, now_ts, row_to_dict, rows_to_dicts,
                    set_setting, tx)
 from ...guide import SLOT_QUERY
+from ... import catalogue, tool_client
 from ... import lineup as lineup_mod
-from ...library.scanner import scan_all
 from ...logsetup import log_dir, tail
 from ...scheduler.build import build_horizon, parse_day, rebuild_from, slot_titles
 from ...scheduler.rules import broadcast_day_for, parse_pattern, tz_of
@@ -40,8 +41,6 @@ CHANNEL_FIELDS = {"number", "name", "short_name", "colour", "enabled", "ads_enab
                   "overnight_replay_from", "idents_enabled", "description", "content", "family_safe_ads",
                   "allowed_genres", "excluded_genres", "nas_only"}
 JSON_CHANNEL_FIELDS = {"era_weights", "genre_weights", "kind_weights", "daypart_profile", "allowed_genres", "excluded_genres"}
-SOURCE_TYPES = ("tv", "movie", "advert", "ident", "music")
-SOURCE_CATEGORIES = ("general", "sport", "kids")
 # What the web service may ask systemd to do; must stay in step with the sudoers rule in
 # setup/install.sh. Stopping the web service from the web is deliberately not offered.
 SERVICE_ACTIONS = {"pitv-player": ("restart", "stop", "start"), "pitv-web": ("restart",)}
@@ -76,114 +75,104 @@ def allowed_dir(path: str, roots: list[Path]) -> Path:
     return real
 
 
-# --- sources -----------------------------------------------------------------------------------
+# --- sources (owned by pitv_content) -------------------------------------------------------------
 
-def _source_row(conn: sqlite3.Connection, sid: int) -> dict[str, Any]:
-    row = conn.execute("SELECT * FROM sources WHERE id = ?", (sid,)).fetchone()
-    if not row:
-        raise HTTPException(404, "source not found")
-    d = row_to_dict(row)
-    d["available"] = Path(d["path"]).is_dir()
-    d["item_count"] = conn.execute("SELECT COUNT(*) FROM media WHERE source_id = ? AND missing = 0", (sid,)).fetchone()[0]
-    return d
+SOURCE_TYPES = ("tv", "movie", "advert", "ident", "music")
+SOURCE_CATEGORIES = ("general", "sport", "kids")
+
+
+def _mirror_sources(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """The sources as last seen in pitv_content's index, for when its API is down."""
+    out = []
+    for r in rows_to_dicts(conn.execute("SELECT * FROM sources ORDER BY location, name")):
+        n = conn.execute("SELECT COUNT(*) FROM media WHERE source_id = ? AND missing = 0", (r["id"],)).fetchone()[0]
+        out.append({"id": r["uid"], "name": r["name"], "type": r["type"], "category": r["category"], "root": r["path"],
+                    "remote": r["remote"], "location": r["location"], "enabled": bool(r["enabled"]),
+                    "health": {"mounted": Path(r["path"]).is_dir(), "items": n, "last_indexed_ts": r["last_indexed_at"]}})
+    return out
 
 
 @router.get("/sources")
 def list_sources(conn: sqlite3.Connection = Depends(admin_conn)):
-    return [_source_row(conn, r["id"]) for r in conn.execute("SELECT id FROM sources ORDER BY id")]
+    """pitv_content's sources. PiTV does not read them; they are shown and edited here because
+    pitv_content has no interface of its own."""
+    status, payload = tool_client.request(tool_client.base_url(all_settings(conn)), "GET", "sources", timeout=10)
+    if status == 200 and isinstance(payload, (list, dict)):
+        items = payload if isinstance(payload, list) else payload.get("sources", [])
+        return {"owner": "pitv_content", "offline": False, "sources": items}
+    return {"owner": "pitv_content", "offline": True, "sources": _mirror_sources(conn),
+            "error": payload.get("error") if isinstance(payload, dict) else f"HTTP {status}"}
 
 
-def _source_fields(body: dict[str, Any], conn: sqlite3.Connection) -> dict[str, Any]:
-    """Validated columns from a create/update body; only keys present in the body are returned."""
-    fields: dict[str, Any] = {}
-    if "type" in body:
-        if body["type"] not in SOURCE_TYPES:
+@router.put("/sources")
+def put_source(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
+    """Add, edit or delete one of pitv_content's sources through its API."""
+    if not isinstance(body.get("id"), str) or not body["id"].strip():
+        raise HTTPException(400, "id required")
+    if not body.get("delete"):
+        if "type" in body and body["type"] not in SOURCE_TYPES:
             raise HTTPException(400, "type must be tv, movie, advert, ident or music")
-        fields["type"] = body["type"]
-    if "category" in body:
-        if (body["category"] or "general") not in SOURCE_CATEGORIES:
+        if "category" in body and (body["category"] or "general") not in SOURCE_CATEGORIES:
             raise HTTPException(400, "category must be general, sport or kids")
-        fields["category"] = body["category"] or "general"
-    if "path" in body:
-        path = str(body.get("path") or "").strip()
-        if not path:
-            raise HTTPException(400, "path required")
-        fields["path"] = str(allowed_dir(path, browse_roots(all_settings(conn))))
-    for k in ("name", "remote"):
-        if k in body:
-            v = body[k]
-            if v is not None and not isinstance(v, str):
-                raise HTTPException(400, f"{k} must be a string")
-            fields[k] = (v or "").strip()[:300] or None
-    if "enabled" in body:
-        fields["enabled"] = int(bool(body["enabled"]))
-    return fields
+        if body.get("root"):
+            body["root"] = str(allowed_dir(str(body["root"]), browse_roots(all_settings(conn))))
+    status, payload = tool_client.request(tool_client.base_url(all_settings(conn)), "PUT", "sources", body=body, timeout=15)
+    if isinstance(payload, dict) and payload.get("offline"):
+        raise HTTPException(503, "pitv_content is not running; sources can only be changed through it")
+    if status >= 400:
+        # Pass pitv_content's field errors through in the contract's shape.
+        return JSONResponse(status_code=status, content=payload if isinstance(payload, dict) else {"error": "rejected"})
+    return payload
 
 
-@router.post("/sources")
-def create_source(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
-    fields = _source_fields(body, conn)
-    if "type" not in fields or "path" not in fields:
-        raise HTTPException(400, "type and path required")
-    fields["name"] = fields.get("name") or Path(fields["path"]).name or fields["type"]
-    fields.setdefault("enabled", 1)
-    fields.setdefault("category", "general")
-    cols = ", ".join(fields)
-    with tx(conn):
-        cur = conn.execute(f"INSERT INTO sources({cols}) VALUES ({', '.join('?' for _ in fields)})", tuple(fields.values()))
-    return _source_row(conn, int(cur.lastrowid))
+# --- catalogue (imported from pitv_content's library index) ----------------------------------------
 
-
-@router.put("/sources/{sid}")
-def update_source(sid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
-    _source_row(conn, sid)
-    fields = _source_fields(body, conn)
-    if fields.get("name") is None and "name" in fields:
-        fields.pop("name")   # a blank name keeps the old one; the column is NOT NULL
-    if fields:
-        sets = ", ".join(f"{k} = ?" for k in fields)
-        with tx(conn):
-            conn.execute(f"UPDATE sources SET {sets} WHERE id = ?", (*fields.values(), sid))
-    return _source_row(conn, sid)
-
-
-@router.delete("/sources/{sid}")
-def delete_source(sid: int, conn: sqlite3.Connection = Depends(admin_conn)):
-    _source_row(conn, sid)
-    with tx(conn):
-        conn.execute("DELETE FROM sources WHERE id = ?", (sid,))
-    return {"ok": True}
-
-
-def scan_job(request: Request, source_ids: list[int] | None, label: str) -> dict[str, Any]:
-    """Queue a library scan as a background job (its own connection; progress over SSE)."""
+def catalogue_job(request: Request, reindex: bool, label: str, doc: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Import the index as a background job (its own connection; progress over SSE)."""
     cfg = request.app.state.cfg
     jobs = request.app.state.jobs
 
     def run(job):
         conn = dbm.connect(cfg.db_path)
         try:
-            def progress(msg, done, total):
-                jobs.progress(job, msg, done, total)
-            run_id = scan_all(conn, progress, cfg.ffprobe_binary, source_ids)
-            row = conn.execute("SELECT * FROM run_log WHERE id = ?", (run_id,)).fetchone()
-            job.notes.extend(json.loads(row["details"]))
+            jobs.progress(job, "asking pitv_content to re-index" if reindex else "importing the library index")
+            result = catalogue.import_and_place(conn, doc, "uploaded file") if doc is not None \
+                else catalogue.refresh(conn, reindex=reindex)
+            if result.get("status") == "error":
+                raise RuntimeError(result["summary"])   # the job reads "failed", with the reason
             request.app.state.bus.publish_threadsafe("library", {"changed": True})
-            return {"status": row["status"], "summary": row["summary"]}
+            return {"status": result.get("status", "ok"), "summary": result["summary"]}
         finally:
             conn.close()
-    return jobs.submit("scan", label, run).public()
+    return jobs.submit("catalogue", label, run).public()
 
 
-@router.post("/scan")
-def scan_all_sources(request: Request):
-    return scan_job(request, None, "Scan all sources")
+@router.get("/catalogue")
+def catalogue_status(conn: sqlite3.Connection = Depends(admin_conn)):
+    settings = all_settings(conn)
+    path = catalogue.index_file(settings)
+    return {"last_import": catalogue.last_import(conn), "index_file": str(path) if path else None,
+            "index_file_exists": bool(path and path.exists())}
 
 
-@router.post("/sources/{sid}/scan")
-def scan_source(sid: int, request: Request, conn: sqlite3.Connection = Depends(admin_conn)):
-    src = _source_row(conn, sid)
-    return scan_job(request, [sid], f"Scan {src['name']}")
+@router.post("/catalogue/refresh")
+def catalogue_refresh(request: Request, body: dict[str, Any] = Body(default={})):
+    """Import pitv_content's current index; with `reindex`, ask it to re-index the sources first."""
+    reindex = bool(body.get("reindex"))
+    return catalogue_job(request, reindex, "Re-index and import the catalogue" if reindex else "Import the catalogue")
+
+
+@router.post("/catalogue/import")
+def catalogue_import(request: Request, body: dict[str, Any] = Body(...)):
+    """Import an index document supplied directly (development, or a saved index)."""
+    if body.get("schema") != catalogue.SCHEMA:
+        raise HTTPException(400, f"expected a schema {catalogue.SCHEMA} library index")
+    return catalogue_job(request, False, "Import an uploaded index", doc=body)
+
+
+@router.get("/catalogue/export")
+def catalogue_export(conn: sqlite3.Connection = Depends(admin_conn)):
+    return catalogue.export(conn)
 
 
 @router.get("/browse")
@@ -215,8 +204,13 @@ def library_summary(conn: sqlite3.Connection = Depends(admin_conn)):
     shows = conn.execute("SELECT COUNT(*) FROM shows WHERE missing = 0").fetchone()[0]
     hours = conn.execute("SELECT SUM(duration)/3600.0 FROM media WHERE missing = 0 AND kind IN ('episode','movie')").fetchone()[0]
     concerts = conn.execute("SELECT COUNT(*) FROM media WHERE missing = 0 AND kind = 'music' AND concert = 1").fetchone()[0]
+    avail = conn.execute(
+        "SELECT SUM(cache_path IS NOT NULL OR origin != 'nas') AS cached, SUM(origin = 'nas' AND cache_path IS NULL) AS nas_only,"
+        " SUM(origin = 'online') AS online FROM media WHERE missing = 0").fetchone()
     return {"kinds": kinds, "shows": shows, "hwdec": hw["hw"] or 0, "programmes": hw["n"] or 0,
-            "attention": attention, "hours": round(hours or 0, 1), "concerts": concerts}
+            "attention": attention, "hours": round(hours or 0, 1), "concerts": concerts,
+            "cached": avail["cached"] or 0, "nas_only": avail["nas_only"] or 0, "online": avail["online"] or 0,
+            "last_import": catalogue.last_import(conn)}
 
 
 @router.get("/shows")
@@ -820,10 +814,10 @@ def jobs(request: Request):
 @router.get("/export")
 def export_overrides(conn: sqlite3.Connection = Depends(admin_conn)):
     """Everything an admin has changed, for backup: settings, channels, sources, overrides."""
-    shows = [{"folder": r["path"].rsplit("/", 1)[-1], "overrides": json.loads(r["overrides"]), "home_channel_id": r["home_channel_id"],
+    shows = [{"uid": r["path"], "title": r["title"], "overrides": json.loads(r["overrides"]), "home_channel_id": r["home_channel_id"],
               "mode": r["mode"], "anchor_time": r["anchor_time"], "anchor_days": r["anchor_days"], "rest_weeks": r["rest_weeks"], "excluded": r["excluded"]}
              for r in conn.execute("SELECT * FROM shows WHERE overrides != '{}' OR excluded = 1 OR mode != 'auto'")]
-    media = [{"filename": r["path"].rsplit("/", 1)[-1], "overrides": json.loads(r["overrides"]), "excluded": r["excluded"]}
+    media = [{"uid": r["uid"], "title": r["title"], "overrides": json.loads(r["overrides"]), "excluded": r["excluded"]}
              for r in conn.execute("SELECT * FROM media WHERE overrides != '{}' OR excluded = 1")]
     return {"exported_at": now_ts(), "settings": {k: v for k, v in all_settings(conn).items() if k not in SECRET_SETTINGS},
             "channels": rows_to_dicts(conn.execute("SELECT * FROM channels")), "sources": rows_to_dicts(conn.execute("SELECT * FROM sources")),
@@ -832,7 +826,7 @@ def export_overrides(conn: sqlite3.Connection = Depends(admin_conn)):
 
 # --- logs ---------------------------------------------------------------------------------------------
 
-LOG_NAMES = ("player", "web", "scan", "schedule", "install")
+LOG_NAMES = ("player", "web", "catalogue", "schedule", "install")
 INSTALL_LOG = Path("/work/install/install.log")   # written by the SD-card installer and first boot
 
 

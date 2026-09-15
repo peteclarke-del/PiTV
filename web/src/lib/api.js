@@ -100,7 +100,7 @@ export function normalisePlayer(raw) {
     behind_live: !!raw.behind_live,
     muted: !!raw.muted,
     volume: typeof raw.volume === 'number' ? raw.volume : null,
-    hwdec: raw.hwdec || null,
+    hwdec: raw.hwdec && raw.hwdec !== 'no' ? raw.hwdec : null, // mpv reports "no" for software decoding and the test card
     cache: raw.cache ?? { enabled: false },
     maintenance: raw.maintenance ?? {},
     input_devices: Array.isArray(raw.input_devices) ? raw.input_devices : [],
@@ -156,7 +156,7 @@ function open() {
     if (jobs.list.length > 30) jobs.list.splice(0, jobs.list.length - 30);
     if (job.status === 'done' || job.status === 'failed') {
       if (job.kind === 'schedule') noteChange('schedule');
-      if (job.kind === 'scan') noteChange('library');
+      if (job.kind === 'catalogue') noteChange('library');
     }
   });
   es.addEventListener('schedule', () => { if (Date.now() - helloAt >= 500) noteChange('schedule'); });

@@ -7,6 +7,8 @@
   import PlayerStatus from '../../components/PlayerStatus.svelte';
   import ProgressBar from '../../components/ProgressBar.svelte';
   import ChannelBadge from '../../components/ChannelBadge.svelte';
+  import AppBadge from '../../components/AppBadge.svelte';
+  import { playbackIssue } from '../../lib/playback.js';
   import KeymapEditor from './KeymapEditor.svelte';
 
   let channels = $state([]);
@@ -39,7 +41,7 @@
   <div class="two">
     <div class="stack">
       <div class="card">
-        <div class="card-title"><h3>Player</h3><button class="small danger" onclick={restart}>Restart player</button></div>
+        <div class="card-title"><h3>Player</h3><AppBadge app="pitv" /><button class="small danger" onclick={restart}>Restart player</button></div>
         <PlayerStatus />
         {#if s.online}
           <div class="nowplaying mt">
@@ -64,7 +66,11 @@
             <span class="badge {s.hwdec ? 'ok' : 'warn'}">{s.hwdec ? `hwdec ${s.hwdec}` : 'software decode'}</span>
             {#if s.on_pi}<span class="badge">on Pi</span>{:else}<span class="badge">desktop</span>{/if}
           </div>
-          {#if s.error}<p class="warn-box mt"><b>Player error:</b> {s.error}</p>{/if}
+          {#if s.error}{@const issue = playbackIssue(s.error)}
+            <p class="mt {issue.cls === 'warn' ? 'warn-box' : 'err-box'}"><span class="badge {issue.cls}">{issue.label}</span> {s.error}
+              {#if issue.label === 'NAS fallback'}<span class="tiny muted" style="display:block">Playing the NAS original because the cache copy is missing; pitv_content should deliver it before the next airing.</span>
+              {:else if issue.label === 'Technical difficulties'}<span class="tiny muted" style="display:block">Neither the cache copy nor the NAS original could be played, so the technical difficulties card is on air.</span>{/if}</p>
+          {/if}
           <dl class="kv small mt">
             <dt>Input devices</dt><dd>{s.input_devices?.length ? s.input_devices.join(', ') : 'none detected'}</dd>
             {#if s.last_key}<dt>Last key</dt><dd><code>{s.last_key.key}</code> maps to {s.last_key.action ?? 'unmapped'} <span class="muted">({fmtAgo(s.last_key.ts, clock.ts)})</span></dd>{/if}
@@ -76,7 +82,7 @@
       </div>
 
       <div class="card">
-        <div class="card-title"><h3>Stream</h3></div>
+        <div class="card-title"><h3>Stream</h3><AppBadge app="pitv" /></div>
         {#if !s.online}<p class="muted small">Unknown while the player is offline.</p>
         {:else if !s.file && !s.stream}<p class="muted small">Nothing is playing.</p>
         {:else}
@@ -92,7 +98,8 @@
       </div>
 
       <div class="card">
-        <div class="card-title"><h3>Cache</h3></div>
+        <div class="card-title"><h3>Cache</h3><AppBadge app="pitv" /></div>
+        <p class="scope">pitv_content fills the cache; PiTV plays from it and evicts under the size cap.</p>
         {#if !s.online}<p class="muted small">Unknown while the player is offline.</p>
         {:else if !cache.enabled}<p class="muted small">Local cache disabled. Set a cache directory under Weighting, Cache.</p>
         {:else}
@@ -104,12 +111,12 @@
       </div>
 
       <div class="card">
-        <div class="card-title"><h3>Maintenance</h3></div>
+        <div class="card-title"><h3>Maintenance</h3><AppBadge app="pitv" /></div>
         {#if !s.online}<p class="muted small">Unknown while the player is offline.</p>
         {:else}
           <dl class="kv small">
             <dt>Last build</dt><dd>{#if maint.last_build}<span class="badge {maint.last_build.status === 'ok' ? 'ok' : 'warn'}">{maint.last_build.status}</span> {maint.last_build.summary} <span class="muted">({fmtAgo(maint.last_build.at, clock.ts)})</span>{:else}<span class="muted">not yet</span>{/if}</dd>
-            <dt>Last scan</dt><dd>{maint.last_scan ? fmtAgo(maint.last_scan, clock.ts) : 'not yet'}</dd>
+            <dt>Last import</dt><dd>{#if maint.last_import}<span class="badge {maint.last_import.status === 'ok' ? 'ok' : 'warn'}">{maint.last_import.status}</span> {maint.last_import.summary} <span class="muted">({fmtAgo(maint.last_import.at, clock.ts)})</span>{:else}<span class="muted">not yet</span>{/if}</dd>
             <dt>Readiness</dt><dd>{#if maint.last_readiness}<span class="badge {maint.last_readiness.status === 'ok' ? 'ok' : 'warn'}">{maint.last_readiness.status}</span> {maint.last_readiness.summary} <span class="muted">({fmtAgo(maint.last_readiness.at, clock.ts)})</span>{:else}<span class="muted">not checked yet</span>{/if}</dd>
             {#if maint.error}<dt>Error</dt><dd><span class="badge danger">{maint.error}</span></dd>{/if}
             <dt>Wanted</dt><dd><a class="small" href="#/admin/wanted">Open the wanted list</a> · fetched by pitv_content</dd>
@@ -119,7 +126,7 @@
     </div>
 
     <div class="stack">
-      <div class="card"><div class="card-title"><h3>Remote</h3></div><Remote {channels} /></div>
+      <div class="card"><div class="card-title"><h3>Remote</h3><AppBadge app="pitv" /></div><Remote {channels} /></div>
       <div class="card pad-0 table-wrap">
         <table>
           <thead><tr><th>Started</th><th>Ch</th><th>Title</th><th>Length</th></tr></thead>
@@ -136,7 +143,7 @@
     </div>
   </div>
 
-  <div class="card"><div class="card-title"><h3>Remote keymap</h3></div><KeymapEditor /></div>
+  <div class="card"><div class="card-title"><h3>Remote keymap</h3><AppBadge app="pitv" /></div><KeymapEditor /></div>
 </div>
 
 <style>

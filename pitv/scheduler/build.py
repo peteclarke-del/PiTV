@@ -147,9 +147,11 @@ class Builder:
     def __init__(self, conn: sqlite3.Connection, *, now: int | None = None,
                  seed: int | None = None, progress: Progress = None,
                  exclude_media_ids: set[int] | None = None, rebuild: Rebuild | None = None,
-                 allow_external: bool = True) -> None:
+                 allow_external: bool = True, only_media_ids: set[int] | None = None) -> None:
         self.conn = conn
         self.exclude_media_ids: set[int] = set(exclude_media_ids or ())
+        # When set, only these files may be placed (readiness substitutes with what is playable now).
+        self.only_media_ids = only_media_ids
         self.allow_external = allow_external
         self.rebuild: Rebuild = rebuild or {}
         self.settings = all_settings(conn)
@@ -188,7 +190,7 @@ class Builder:
             " ORDER BY show_id, COALESCE(season, 999), COALESCE(episode, 999), path"))
         by_show: dict[int, list[dict[str, Any]]] = {}
         for e in eps:
-            if e["id"] in self.exclude_media_ids:
+            if not self._allowed(e["id"]):
                 continue
             e = effective(e)
             by_show.setdefault(e["show_id"], []).append(e)
@@ -225,25 +227,40 @@ class Builder:
                 if s.get("year") else None)
         self.movies: list[dict[str, Any]] = [effective(m) for m in rows_to_dicts(conn.execute(
             "SELECT * FROM media WHERE kind = 'movie' AND excluded = 0 AND missing = 0"
-            " AND duration IS NOT NULL")) if m["id"] not in self.exclude_media_ids]
+            " AND duration IS NOT NULL")) if self._allowed(m["id"])]
         for m in self.movies:
             m["kids"] = is_kids(m)
         self._era_pools()
         self.music: list[dict[str, Any]] = [effective(m) for m in rows_to_dicts(conn.execute(
             "SELECT * FROM media WHERE kind = 'music' AND excluded = 0 AND missing = 0 AND duration IS NOT NULL"))
-            if m["id"] not in self.exclude_media_ids]
+            if self._allowed(m["id"])]
         self.adverts: list[dict[str, Any]] = [effective(m) for m in rows_to_dicts(conn.execute(
             "SELECT * FROM media WHERE kind = 'advert' AND excluded = 0 AND missing = 0"
-            " AND duration IS NOT NULL"))]
+            " AND duration IS NOT NULL")) if self._allowed(m["id"])]
         self.idents: list[dict[str, Any]] = [effective(m) for m in rows_to_dicts(conn.execute(
             "SELECT * FROM media WHERE kind = 'ident' AND excluded = 0 AND missing = 0"
-            " AND duration IS NOT NULL"))]
+            " AND duration IS NOT NULL")) if self._allowed(m["id"])]
         self._load_externals()
+
+    def _replaceable_request(self, wanted_id: int) -> bool:
+        """True when no slot that will survive this build uses the request: every slot referring
+        to it is unlocked, still to come and inside a window being rebuilt."""
+        for sl in self.conn.execute("SELECT channel_id, start_ts, locked FROM schedule WHERE wanted_id = ?", (wanted_id,)):
+            window = self.rebuild.get(sl["channel_id"])
+            inside = window is not None and sl["start_ts"] >= window[0] and (window[1] is None or sl["start_ts"] < window[1])
+            if sl["locked"] or sl["start_ts"] <= self.now or not inside:
+                return False
+        return True
+
+    def _allowed(self, media_id: int) -> bool:
+        return media_id not in self.exclude_media_ids and (self.only_media_ids is None or media_id in self.only_media_ids)
 
     def _load_externals(self) -> None:
         """Line-up entries with no material on disk. Each becomes a candidate whose placement
-        raises a wanted item for pitv_content; episode numbers continue from any wanted rows
-        already raised for the entry, and rows whose slots were replaced are reused first."""
+        raises a wanted item for pitv_content. A request whose slots all fall inside the window
+        being rebuilt is reused first, so a rebuild keeps the same episode numbers; new episodes
+        continue from the highest request still standing, or from the entry's `next_episode`
+        when the admin has set a starting point."""
         self.externals: list[dict[str, Any]] = []
         if not self.allow_external:
             return
@@ -252,9 +269,9 @@ class Builder:
                 "SELECT * FROM lineup WHERE enabled = 1 AND source != 'library'"
                 " AND (kind = 'show' OR media_id IS NULL)")):
             raised = self.conn.execute("SELECT COALESCE(MAX(episode), 0) AS n FROM wanted WHERE lineup_id = ?", (e["id"],)).fetchone()
-            spare = rows_to_dicts(self.conn.execute(
-                "SELECT id, episode FROM wanted WHERE lineup_id = ? AND status != 'failed'"
-                " AND id NOT IN (SELECT wanted_id FROM schedule WHERE wanted_id IS NOT NULL) ORDER BY episode", (e["id"],)))
+            spare = [w for w in rows_to_dicts(self.conn.execute(
+                "SELECT id, episode FROM wanted WHERE lineup_id = ? AND status NOT IN ('failed', 'done') ORDER BY episode",
+                (e["id"],))) if self._replaceable_request(w["id"])]
             e["lineup_id"] = e["id"]
             e["id"] = -int(e["id"])   # negative: never collides with a media id
             e["genres"] = _json_field(e.get("genres")) or []
@@ -924,8 +941,22 @@ class Builder:
                 return False
             return True
 
+        # Videos a genre block needs (Disco & Soul, Rock & Metal) are held back from the other
+        # blocks, otherwise a broad block earlier in the day (Seventies Breakfast) uses them up
+        # and the genre block is left with none of its genre.
+        genre_blocks = [gb for gb in blocks if gb.get("genres")]
+        claimed = {id(gb): {m["id"] for m in library if matches(m, gb, 0)} for gb in genre_blocks}
+
+        def reserved_for_others(b: dict[str, Any]) -> set[int]:
+            out: set[int] = set()
+            for gb in genre_blocks:
+                if gb is not b:
+                    out |= claimed[id(gb)]
+            return out - claimed.get(id(b), set())
+
         def pick(b: dict[str, Any], gap: int, concert: bool) -> dict[str, Any] | None:
             repeat = concert_repeat if concert else video_repeat
+            reserved = reserved_for_others(b)
             # Widen step by step: exact block -> decade only -> anything -> already played today.
             for level, allow_recent, allow_today in ((0, False, False), (1, False, False), (2, False, False),
                                                      (0, True, False), (2, True, False), (2, True, True)):
@@ -943,7 +974,10 @@ class Builder:
                         continue
                     w = 2.0 if age is None else min(2.0, max(0.02, age / repeat))
                     if allow_today:
-                        w *= 1.0 / (1 + played_today.get(m["id"], 0))
+                        # Repeating within the day: everything is fair game, least-played first.
+                        w *= 1.0 / (1 + played_today.get(m["id"], 0)) ** 2
+                    elif m["id"] in reserved:
+                        w *= 0.1
                     cands.append((w, m))
                 if cands:
                     return rng.choices(cands, weights=[c[0] for c in cands], k=1)[0][1]
@@ -1141,9 +1175,6 @@ class Builder:
                 wid = int(cur.lastrowid)
             by_key[key] = wid
             sl.wanted_id = wid
-            if spec["episode"] is not None:
-                self.conn.execute("UPDATE lineup SET next_episode = MAX(next_episode, ?) WHERE id = ?",
-                                  (int(spec["episode"]) + 1, spec["lineup_id"]))
 
 
 def build_horizon(conn: sqlite3.Connection, *, start_day: date | None = None,
@@ -1180,6 +1211,7 @@ def build_horizon(conn: sqlite3.Connection, *, start_day: date | None = None,
             built += 1
             if progress:
                 progress(f"{day} {channel['name']}: {n} programmes")
+    withdraw_orphaned_requests(conn)
     status = "ok" if not builder.log else "warning"
     summary = f"{built} channel-days built, {programmes} programmes; {len(builder.log)} notes"
     run_log_finish(conn, run_id, status, summary, builder.log)
@@ -1188,6 +1220,15 @@ def build_horizon(conn: sqlite3.Connection, *, start_day: date | None = None,
         log.warning("note: %s", note)
     return {"status": status, "summary": summary, "notes": builder.log, "run_id": run_id,
             "start_day": start_day.isoformat(), "days": days, "built": built}
+
+
+def withdraw_orphaned_requests(conn: sqlite3.Connection) -> int:
+    """Line-up requests that no slot uses any more (their slots were rebuilt away) are withdrawn,
+    so pitv_content is never asked for material nothing will air and numbering cannot drift."""
+    with tx(conn):
+        cur = conn.execute("DELETE FROM wanted WHERE lineup_id IS NOT NULL AND status IN ('queued', 'failed')"
+                           " AND id NOT IN (SELECT wanted_id FROM schedule WHERE wanted_id IS NOT NULL)")
+    return cur.rowcount
 
 
 def horizon_end(conn: sqlite3.Connection) -> int | None:
@@ -1204,7 +1245,8 @@ def needs_rebuild(conn: sqlite3.Connection, now: int | None = None) -> bool:
 
 def rebuild_from(conn: sqlite3.Connection, channel_id: int, from_ts: int, *,
                  now: int | None = None, seed: int | None = None,
-                 exclude_media_ids: set[int] | None = None, allow_external: bool = True) -> dict[str, Any]:
+                 exclude_media_ids: set[int] | None = None, allow_external: bool = True,
+                 only_media_ids: set[int] | None = None) -> dict[str, Any]:
     """Rebuild one channel from a point in time to the end of that broadcast day.
 
     Used by the admin schedule editor after a slot is removed, replaced or inserted, and by
@@ -1217,7 +1259,7 @@ def rebuild_from(conn: sqlite3.Connection, channel_id: int, from_ts: int, *,
     if seed is None:
         seed = int(hashlib.sha256(f"{day.isoformat()}:{from_ts}".encode()).hexdigest()[:8], 16)
     builder = Builder(conn, now=now, seed=seed, exclude_media_ids=exclude_media_ids, allow_external=allow_external,
-                      rebuild={channel_id: (from_ts, day_bounds(day, settings, tz)[2])})
+                      only_media_ids=only_media_ids, rebuild={channel_id: (from_ts, day_bounds(day, settings, tz)[2])})
     if exclude_media_ids:
         # Unavailable files must not survive as kept future slots either.
         with tx(conn):
@@ -1228,6 +1270,7 @@ def rebuild_from(conn: sqlite3.Connection, channel_id: int, from_ts: int, *,
         return {"status": "error", "summary": "channel not found or disabled"}
     slots = builder.build_channel_day(channel, day, force=True, from_ts=from_ts)
     builder.save(channel_id, day, slots)
+    withdraw_orphaned_requests(conn)
     return {"status": "ok" if not builder.log else "warning",
             "summary": f"{sum(1 for s in slots if s.kind == 'programme' and not s.replay)} programmes",
             "notes": builder.log}

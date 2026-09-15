@@ -1,5 +1,6 @@
 <script>
   // A channel's line-up: the series and films it carries, including material pitv_content still has to fetch.
+  import AppBadge from '../../components/AppBadge.svelte';
   import { untrack } from 'svelte';
   import { get, post, put, del, tryApi } from '../../lib/api.js';
   import { confirm, toast } from '../../lib/stores.svelte.js';
@@ -64,6 +65,7 @@
 
 <Drawer open={true} title={`Line-up: ${channel.name}`} subtitle={`Channel ${channel.number} carries these series and films; each can be on one channel only`} {onclose} wide>
   <div class="stack">
+    <p class="scope" style="margin:0"><AppBadge app="pitv" /> The line-up is PiTV's: it decides what this channel may schedule. Entries not on disk are requested from pitv_content, which fetches them into the cache.</p>
     <div class="add">
       <input type="search" placeholder="Add a series or film… (library and pitv_content catalogue)" value={q} oninput={(e) => search(e.currentTarget.value)} />
       {#if q}

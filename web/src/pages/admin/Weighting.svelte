@@ -9,6 +9,7 @@
   import WeightRows from './WeightRows.svelte';
   import DaypartTable from './DaypartTable.svelte';
   import ChipList from '../../components/ChipList.svelte';
+  import AppBadge from '../../components/AppBadge.svelte';
   const DECADES = [1930, 1940, 1950, 1960, 1970, 1980, 1990, 2000, 2010, 2020];
 
   let s = $state(null);
@@ -24,7 +25,7 @@
   function toggleDecade(b, d) { b.decades = (b.decades ?? []).includes(d) ? b.decades.filter((x) => x !== d) : [...(b.decades ?? []), d].sort(); }
   async function load() {
     s = await tryApi(get('/api/settings'));
-    if (s) for (const k of ['dayparts_saturday', 'dayparts_sunday', 'music_blocks', 'music_genres', 'cartoon_genres', 'music_decades', 'adult_advert_keywords', 'readiness_hours']) s[k] ??= [];
+    if (s) for (const k of ['dayparts_saturday', 'dayparts_sunday', 'music_blocks', 'cartoon_genres', 'music_decades', 'adult_advert_keywords', 'readiness_hours']) s[k] ??= [];
     tryApi(get('/api/music/facets')).then((f) => (facets = f ?? null));
   }
   onMount(load);
@@ -32,7 +33,7 @@
   // Integer and float settings with the bounds the inputs below declare; anything outside is clamped before the PUT.
   const INTS = { horizon_days: [1, 28], rebuild_when_days_left: [0, 27], show_daily_limit: [1], movie_repeat_days: [0],
     duration_tolerance_minutes: [0], start_rounding_minutes: [1], end_of_day_overrun_minutes: [0], advert_year_window: [0],
-    advert_repeat_penalty_hours: [0], series_rest_weeks: [0], badge_seconds: [0, 60], cache_max_gb: [0], scan_hour: [0, 23],
+    advert_repeat_penalty_hours: [0], series_rest_weeks: [0], badge_seconds: [0, 60], cache_max_gb: [0], catalogue_hour: [0, 23],
     history_keep_days: [1], music_concert_repeat_days: [0], music_video_repeat_hours: [0] };
   const FLOATS = { show_repeat_penalty: [0, 1], same_slot_bonus: [0], genre_repeat_penalty: [0, 1], unknown_year_weight: [0, 2],
     osd_safe_margin: [0, 0.2], osd_scale: [0.5, 2], era_pool_normalise: [0, 1] };
@@ -59,6 +60,8 @@
     });
     body.music_decades = (s.music_decades ?? []).map(Number).sort();
     body.adult_advert_keywords = (s.adult_advert_keywords ?? []).map((k) => String(k).toLowerCase());
+    // Keys the backend has retired: PUT /api/settings rejects unknown keys, so never echo them back.
+    for (const k of ['music_genres', 'scan_hour']) delete body[k];
     const r = await tryApi(put('/api/settings', body), { success: 'Settings saved' });
     if (r) { s = r; savedOnce = true; }
   });
@@ -78,11 +81,13 @@
       <span class="spacer"></span>
       <button onclick={build} disabled={build.busy}>Build schedule</button>
     </div>
+    <p class="scope" style="margin:0">Everything on this page is a <AppBadge app="pitv" /> setting: it shapes the schedule, playback and what PiTV asks pitv_content for. pitv_content's own configuration is under pitv_content, Content, Settings.</p>
     {#if savedOnce}<div class="note">Saved. The schedule only picks up these changes when it is (re)built: use Build schedule for new days or Rebuild week on the dashboard to regenerate everything.</div>{/if}
 
     <div class="grid">
       <div class="card">
-        <div class="card-title"><h3>Broadcast day</h3></div>
+        <div class="card-title"><h3>Broadcast day</h3><AppBadge app="pitv" /></div>
+        <p class="scope">Shapes every channel's broadcast day and how far ahead PiTV builds.</p>
         <div class="stack">
           <label class="field">Timezone<input bind:value={s.timezone} /><span class="help">IANA zone name the schedule is built in, e.g. Europe/London.</span></label>
           <label class="field">Day start<input type="time" bind:value={s.day_start} /><span class="help">When a broadcast day begins and the overnight replay ends.</span></label>
@@ -94,24 +99,28 @@
       </div>
 
       <div class="card">
-        <div class="card-title"><h3>Era weights</h3></div>
+        <div class="card-title"><h3>Era weights</h3><AppBadge app="pitv" /></div>
+        <p class="scope">How strongly PiTV favours programmes by year when it fills slots.</p>
         <p class="help small muted">Relative preference for programme years. Channels can override this.</p>
         <WeightRows value={s.era_weights} onchange={(v) => (s.era_weights = v)} keyLabel="Years" keyPlaceholder="1980-1989" addLabel="Add era" />
         <label class="field">Unknown year weight<input type="number" min="0" max="2" step="0.05" bind:value={s.unknown_year_weight} /><span class="help">Programmes with no year found still air at this weight; 0 excludes them.</span></label>
         <label class="field">Era pool normalisation <span class="mono">{Number(s.era_pool_normalise ?? 0).toFixed(2)}</span><input type="range" min="0" max="1" step="0.05" bind:value={s.era_pool_normalise} /><span class="help">0 weights every title equally; 1 makes each era's share of airtime follow the era weights regardless of how many titles it has.</span></label>
         <hr />
-        <div class="card-title"><h3>Advert era weights</h3></div>
+        <div class="card-title"><h3>Advert era weights</h3><AppBadge app="pitv" /></div>
+        <p class="scope">Which adverts PiTV picks for breaks, by year.</p>
         <p class="help small muted">Adverts outside these years are never shown.</p>
         <WeightRows value={s.advert_era_weights} onchange={(v) => (s.advert_era_weights = v)} keyLabel="Years" keyPlaceholder="1980-1989" addLabel="Add era" />
         <hr />
-        <div class="card-title"><h3>TV / movie balance</h3></div>
+        <div class="card-title"><h3>TV / movie balance</h3><AppBadge app="pitv" /></div>
+        <p class="scope">PiTV's overall mix of episodes and films; dayparts and channels adjust it.</p>
         <p class="help small muted">Global balance between episodes and films; dayparts and channels modify it.</p>
         <label class="field">TV <span class="mono">{Number(s.kind_weights.tv).toFixed(2)}</span><input type="range" min="0" max="1" step="0.05" bind:value={s.kind_weights.tv} /></label>
         <label class="field">Movie <span class="mono">{Number(s.kind_weights.movie).toFixed(2)}</span><input type="range" min="0" max="1" step="0.05" bind:value={s.kind_weights.movie} /></label>
       </div>
 
       <div class="card">
-        <div class="card-title"><h3>Watershed</h3></div>
+        <div class="card-title"><h3>Watershed</h3><AppBadge app="pitv" /></div>
+        <p class="scope">When PiTV may schedule each certificate.</p>
         <p class="help small muted">Earliest start time for films of each certificate.</p>
         <WeightRows value={s.watershed} onchange={(v) => (s.watershed = v)} keyLabel="Certificate" valueLabel="From" type="time" keyPlaceholder="15" addLabel="Add certificate" />
         <hr />
@@ -131,7 +140,8 @@
       </div>
 
       <div class="card">
-        <div class="card-title"><h3>Variety and repeats</h3></div>
+        <div class="card-title"><h3>Variety and repeats</h3><AppBadge app="pitv" /></div>
+        <p class="scope">How often PiTV repeats films, series and genres.</p>
         <div class="stack">
           <label class="field">Movie repeat days<input type="number" min="0" bind:value={s.movie_repeat_days} /><span class="help">Minimum days before a film is shown again.</span></label>
           <label class="field">Show daily limit<input type="number" min="1" bind:value={s.show_daily_limit} /><span class="help">Maximum episodes of one show per channel per day.</span></label>
@@ -144,13 +154,15 @@
       </div>
 
       <div class="card">
-        <div class="card-title"><h3>Timing</h3></div>
+        <div class="card-title"><h3>Timing</h3><AppBadge app="pitv" /></div>
+        <p class="scope">How PiTV fits programmes into slots.</p>
         <div class="stack">
           <label class="field">Duration tolerance (minutes)<input type="number" min="0" bind:value={s.duration_tolerance_minutes} /><span class="help">How far a programme may overrun the gap it is chosen to fill.</span></label>
           <label class="field">Start rounding (minutes)<input type="number" min="1" bind:value={s.start_rounding_minutes} /><span class="help">Programme start times are rounded up to a multiple of this.</span></label>
         </div>
         <hr />
-        <div class="card-title"><h3>Adverts</h3></div>
+        <div class="card-title"><h3>Adverts</h3><AppBadge app="pitv" /></div>
+        <p class="scope">How PiTV fills ad breaks.</p>
         <div class="stack">
           <label class="field">Advert year window<input type="number" min="0" bind:value={s.advert_year_window} /><span class="help">Prefer adverts from within this many years of the programme.</span></label>
           <label class="field">Advert repeat penalty (hours)<input type="number" min="0" bind:value={s.advert_repeat_penalty_hours} /><span class="help">Avoid repeating an advert within this many hours.</span></label>
@@ -158,8 +170,10 @@
       </div>
 
       <div class="card">
-        <div class="card-title"><h3>Player</h3></div>
+        <div class="card-title"><h3>Player</h3><AppBadge app="pitv" /></div>
+        <p class="scope">How PiTV's player behaves on the TV.</p>
         <div class="stack">
+          <label class="check"><input type="checkbox" bind:checked={s.nas_fallback} /> NAS fallback<span class="help">When a programme is not in the cache, play the NAS original instead of the technical difficulties card.</span></label>
           <label class="check"><input type="checkbox" bind:checked={s.nav_keys_change_channel} /> Up / down change channel<span class="help">When the guide is closed (the OSMC remote has no channel keys).</span></label>
           <label class="check"><input type="checkbox" bind:checked={s.nav_keys_change_volume} /> Left / right change volume<span class="help">When the guide is closed.</span></label>
           <label class="field">Channel badge seconds<input type="number" min="0" max="60" bind:value={s.badge_seconds} /><span class="help">How long the channel badge stays on screen after a change.</span></label>
@@ -173,29 +187,38 @@
       </div>
 
       <div class="card">
-        <div class="card-title"><h3>Cache</h3></div>
+        <div class="card-title"><h3>Cache and pitv_content</h3><AppBadge app="pitv" /></div>
+        <p class="scope">PiTV's side of the shared cache, and how it reaches and instructs pitv_content. pitv_content's own settings are not here.</p>
         <div class="stack">
-          <label class="field">Cache directory<input class="mono" bind:value={s.cache_dir} placeholder="/mnt/cache/pitv" /><span class="help">Folder on the attached drive where pitv_content puts local copies of upcoming programmes; empty disables the cache.</span></label>
+          <label class="field">Cache directory<input class="mono" bind:value={s.cache_dir} placeholder="/mnt/cache/pitv" /><span class="help">Shared folder on the attached drive: pitv_content writes copies here, PiTV plays from it and evicts. Empty disables the cache.</span></label>
           <label class="field">Maximum size (GB)<input type="number" min="0" bind:value={s.cache_max_gb} /><span class="help">pitv_content fills the cache; PiTV only evicts under this cap.</span></label>
-          <label class="field">Download directory<input class="mono" bind:value={s.acquire_dir} placeholder="(cache dir)/acquired" /><span class="help">Where pitv_content stores fetched wanted items, scanned as a library source; empty uses the cache directory.</span></label>
+          <label class="field">Download directory<input class="mono" bind:value={s.acquire_dir} placeholder="(cache dir)/acquired" /><span class="help">Where PiTV's requests tell pitv_content to file material it fetches; it comes back through the index as a cache source. Empty uses the cache directory.</span></label>
+          <label class="field">pitv_content API URL<input class="mono" bind:value={s.content_tool_url} placeholder="http://127.0.0.1:8081" /><span class="help">Where pitv_content's local API listens; PiTV reads its index, sources and status through it.</span></label>
+          <label class="check"><input type="checkbox" bind:checked={s.acquire_fill_gaps} /> Queue missing episodes automatically<span class="help">PiTV adds gaps between the episodes it has to the wanted list, for pitv_content to fetch.</span></label>
+          {#if s.content_profile}
+            <div class="note small">Content profile: {s.content_profile.width}×{s.content_profile.height} {s.content_profile.vcodec}{s.content_profile.acodec ? `/${s.content_profile.acodec}` : ''}{s.content_profile.max_bitrate_kbps ? ` · ≤${s.content_profile.max_bitrate_kbps} kbit/s` : ''}{s.content_profile.deinterlace ? ` · deinterlace: ${s.content_profile.deinterlace}` : ''} <span class="muted">(the profile PiTV asks pitv_content to encode to; read-only)</span></div>
+          {/if}
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><h3>Material not on disk</h3><AppBadge app="pitv" /></div>
+        <p class="scope">Whether PiTV may schedule line-up titles pitv_content has not fetched yet.</p>
+        <div class="stack">
           <label class="check"><input type="checkbox" bind:checked={s.nas_only} /> NAS only<span class="help">Yes: only material on the NAS or in the cache. No: line-up entries not on disk may be scheduled ahead and fetched by pitv_content. Channels can override this.</span></label>
           <div class="form-grid">
             <label class="field">External lead days<input type="number" min="0" max="14" bind:value={s.external_lead_days} /><span class="help">Material not on disk is scheduled at least this many days ahead so pitv_content has time to fetch it.</span></label>
             <label class="field">External episode minutes<input type="number" min="1" max="240" bind:value={s.external_episode_minutes} /><span class="help">Assumed episode length for series whose files are not on disk yet.</span></label>
             <label class="field">External weight<input type="number" min="0" max="2" step="0.05" bind:value={s.external_weight} /><span class="help">How readily externals are picked next to material on disk; 1 is equal footing.</span></label>
           </div>
-          <label class="field">pitv_content API URL<input class="mono" bind:value={s.content_tool_url} placeholder="http://127.0.0.1:8081" /><span class="help">Where pitv_content's local API listens.</span></label>
-          <label class="check"><input type="checkbox" bind:checked={s.acquire_fill_gaps} /> Queue missing episodes automatically<span class="help">Looks for gaps between the episodes already on disk and adds them to the wanted list.</span></label>
-          {#if s.content_profile}
-            <div class="note small">Content profile: {s.content_profile.width}×{s.content_profile.height} {s.content_profile.vcodec}{s.content_profile.acodec ? `/${s.content_profile.acodec}` : ''}{s.content_profile.max_bitrate_kbps ? ` · ≤${s.content_profile.max_bitrate_kbps} kbit/s` : ''}{s.content_profile.deinterlace ? ` · deinterlace: ${s.content_profile.deinterlace}` : ''} <span class="muted">(what pitv_content transcodes to; read-only)</span></div>
-          {/if}
         </div>
       </div>
 
       <div class="card">
-        <div class="card-title"><h3>Maintenance</h3></div>
+        <div class="card-title"><h3>Maintenance</h3><AppBadge app="pitv" /></div>
+        <p class="scope">PiTV's own daily housekeeping.</p>
         <div class="stack">
-          <label class="field">Nightly scan hour<input type="number" min="0" max="23" bind:value={s.scan_hour} /><span class="help">Hour of the day (0–23) when the library is rescanned and the schedule extended.</span></label>
+          <label class="field">Catalogue hour<input type="number" min="0" max="23" bind:value={s.catalogue_hour} /><span class="help">Daily import of pitv_content's library index (hour 0–23); the schedule is extended afterwards.</span></label>
           <label class="field">Keep history (days)<input type="number" min="1" bind:value={s.history_keep_days} /><span class="help">Airing history older than this is pruned.</span></label>
           <label class="field">Readiness check hours<ChipList value={(s.readiness_hours ?? []).map(String)} onchange={(v) => (s.readiness_hours = v.map((h) => parseInt(h, 10)).filter((h) => h >= 0 && h <= 23))} placeholder="hour 0–23…" /><span class="help">PiTV verifies tomorrow's files at these hours and substitutes anything missing.</span></label>
         </div>
@@ -203,7 +226,8 @@
     </div>
 
     <div class="card">
-      <div class="card-title"><h3>Music channel</h3></div>
+      <div class="card-title"><h3>Music channel</h3><AppBadge app="pitv" /></div>
+      <p class="scope">How PiTV programmes the music channel.</p>
       <p class="help small muted">A music channel's day is built from these blocks in time order: each block plays videos matching any of its genres and decades (empty = any); a concert block plays one full concert. The library counts on the right show what is actually available.</p>
       <div class="music">
         <div class="table-wrap">
@@ -248,20 +272,22 @@
     </div>
 
     <div class="card">
-      <div class="card-title"><h3>Genres</h3></div>
+      <div class="card-title"><h3>Genres</h3><AppBadge app="pitv" /></div>
+      <p class="scope">How PiTV routes series to the cartoons channel.</p>
       <div class="form-grid">
-        <label class="field">Music genres<ChipList value={s.music_genres} onchange={(v) => (s.music_genres = v)} placeholder="add genre…" lower /><span class="help">Genre folder names recognised under a music source (matched case-insensitively).</span></label>
         <label class="field">Cartoon genres<ChipList value={s.cartoon_genres} onchange={(v) => (s.cartoon_genres = v)} placeholder="add genre…" lower /><span class="help">Shows with any of these genres are routed to a cartoons channel.</span></label>
       </div>
     </div>
 
     <div class="card">
-      <div class="card-title"><h3>Family-safe adverts</h3></div>
-      <label class="field">Adult advert keywords<ChipList value={s.adult_advert_keywords} onchange={(v) => (s.adult_advert_keywords = v)} placeholder="add word…" lower /><span class="help">Adverts whose file name contains one of these words are flagged as not family-safe and never air on a channel with family-safe adverts on. Individual adverts can be overridden in Library, Adverts.</span></label>
+      <div class="card-title"><h3>Family-safe adverts</h3><AppBadge app="pitv" /></div>
+      <p class="scope">Which adverts PiTV keeps off family-safe channels.</p>
+      <label class="field">Adult advert keywords<ChipList value={s.adult_advert_keywords} onchange={(v) => (s.adult_advert_keywords = v)} placeholder="add word…" lower /><span class="help">Fallback only: used when pitv_content does not say whether an advert is family-safe. Individual adverts can be overridden in Catalogue, Adverts.</span></label>
     </div>
 
     <div class="card">
-      <div class="card-title"><h3>Dayparts</h3></div>
+      <div class="card-title"><h3>Dayparts</h3><AppBadge app="pitv" /></div>
+      <p class="scope">Time-of-day weights PiTV uses when choosing programmes.</p>
       <p class="help small muted">Weights by time of day: TV, movie, kids and sport multipliers plus an optional maximum programme length. Weekdays, Saturday and Sunday each have their own table; channels may override any of them.</p>
       <h4>Weekday</h4>
       <DaypartTable bind:rows={s.dayparts} />

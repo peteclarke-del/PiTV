@@ -1,11 +1,13 @@
 <script>
   import { untrack } from 'svelte';
   import { get, tryApi, confirmApi, upsertJob } from '../../lib/api.js';
-  import { scanAll, buildSchedule, checkReadiness } from '../../lib/actions.js';
+  import { importCatalogue, buildSchedule, checkReadiness } from '../../lib/actions.js';
   import { changes, clock } from '../../lib/stores.svelte.js';
   import { guard } from '../../lib/guard.svelte.js';
   import { fmtDay, fmtDateTime, fmtAgo } from '../../lib/format.js';
   import StatusBadge from '../../components/StatusBadge.svelte';
+  import AppBadge from '../../components/AppBadge.svelte';
+  import ReadinessNotes from '../../components/ReadinessNotes.svelte';
   import JobList from './JobList.svelte';
 
   let summary = $state(null);
@@ -34,7 +36,7 @@
   }
   $effect(() => { changes.library; changes.schedule; untrack(load); });
 
-  const scan = guard(scanAll);
+  const importNow = guard(() => importCatalogue(false));
   const build = guard(() => buildSchedule());
   const readinessCheck = guard(async () => {
     const r = await checkReadiness();
@@ -47,22 +49,22 @@
 
 <div class="stack">
   <div class="row">
-    <button class="primary" onclick={scan} disabled={scan.busy}>Scan all sources</button>
+    <button class="primary" onclick={importNow} disabled={importNow.busy} title="Import pitv_content's library index into the catalogue">Import catalogue</button>
     <button onclick={build} disabled={build.busy}>Build schedule</button>
     <button class="danger" onclick={rebuild} disabled={rebuild.busy}>Rebuild week</button>
     <button onclick={readinessCheck} disabled={readinessCheck.busy}>{readinessCheck.busy ? 'Checking…' : 'Check readiness'}</button>
   </div>
   {#if readiness}
     <div class="card">
-      <div class="card-title"><h3>Readiness</h3><StatusBadge status={readiness.status} /><button class="small ghost" onclick={() => (readiness = null)} aria-label="Dismiss">✕</button></div>
+      <div class="card-title"><h3>Readiness</h3><StatusBadge status={readiness.status} /><AppBadge app="pitv" /><button class="small ghost" onclick={() => (readiness = null)} aria-label="Dismiss">✕</button></div>
       <p class="small">{readiness.summary}</p>
-      {#if readiness.notes?.length}<pre class="log">{readiness.notes.join('\n')}</pre>{:else}<p class="tiny muted">No notes: every programme for tomorrow is reachable.</p>{/if}
+      {#if readiness.notes?.length}<ReadinessNotes notes={readiness.notes} />{:else}<p class="tiny muted">No notes: every airing through tomorrow is playable from the cache.</p>{/if}
     </div>
   {/if}
 
   <div class="grid">
     <div class="card">
-      <div class="card-title"><h3>Library</h3><a class="small" href="#/admin/library">Open</a></div>
+      <div class="card-title"><h3>Catalogue</h3><AppBadge app="pitv" /><a class="small" href="#/admin/library">Open</a></div>
       {#if summary}
         <div class="stats">
           <div class="stat"><b>{summary.shows}</b><span>Shows</span></div>
@@ -75,11 +77,18 @@
         </div>
         <p class="small muted mt">{summary.hwdec} of {summary.programmes} programmes can be hardware decoded{summary.concerts ? `; ${summary.concerts} concerts` : ''}.
           {#if summary.attention}<a href="#/admin/library/attention" class="badge warn">{summary.attention} need attention</a>{:else}<span class="badge ok">Nothing needs attention</span>{/if}</p>
+        <div class="row small mt" style="gap:.35rem">
+          <span class="badge ok" title="Plays from local disk">{summary.cached ?? 0} cached</span>
+          <span class="badge" title="pitv_content copies these to the cache before they air">{summary.nas_only ?? 0} NAS only</span>
+          <span class="badge info" title="Fetched online by pitv_content">{summary.online ?? 0} online</span>
+        </div>
+        <p class="tiny muted mt">Everything scheduled is copied to the cache by pitv_content before it airs.
+          {#if summary.last_import}Last import {fmtAgo(summary.last_import.finished_at ?? summary.last_import.started_at, clock.ts)}: <StatusBadge status={summary.last_import.status} /> {summary.last_import.summary}{:else}No catalogue import yet.{/if}</p>
       {:else}<div class="skeleton" style="height:80px"></div>{/if}
     </div>
 
     <div class="card">
-      <div class="card-title"><h3>Schedule horizon</h3><a class="small" href="#/admin/schedule">Open</a></div>
+      <div class="card-title"><h3>Schedule horizon</h3><AppBadge app="pitv" /><a class="small" href="#/admin/schedule">Open</a></div>
       {#if days}
         {#if days.days.length}
           <div class="stats">
@@ -94,7 +103,7 @@
     </div>
 
     <div class="card">
-      <div class="card-title"><h3>Line-ups</h3><a class="small" href="#/admin/channels">Open</a></div>
+      <div class="card-title"><h3>Line-ups</h3><AppBadge app="pitv" /><a class="small" href="#/admin/channels">Open</a></div>
       {#if lineup}
         {#if lineup.total}
           <div class="row" style="gap:.35rem">{#each lineup.perChannel as c (c.label)}<span class="chip">{c.label} <b>{c.n}</b></span>{/each}</div>
@@ -109,19 +118,20 @@
     </div>
 
     <div class="card">
-      <div class="card-title"><h3>Recent runs</h3></div>
+      <div class="card-title"><h3>Recent runs</h3><AppBadge app="pitv" /></div>
+      <p class="scope">PiTV's run log: catalogue imports, schedule builds, readiness checks and pitv_content's delivery reports as PiTV received them.</p>
       {#if runs.length}
         <ul class="runs">
           {#each runs as r (r.id)}
             <li><StatusBadge status={r.status} label={r.kind} /><span class="small">{r.summary || r.status}</span><span class="tiny muted nowrap">{fmtAgo(r.started_at, clock.ts)}</span></li>
           {/each}
         </ul>
-      {:else}<p class="muted small">No scan or build has run yet.</p>{/if}
+      {:else}<p class="muted small">No import or build has run yet.</p>{/if}
     </div>
   </div>
 
   <div class="card">
-    <div class="card-title"><h3>Jobs</h3></div>
+    <div class="card-title"><h3>Jobs</h3><AppBadge app="pitv" /></div>
     <JobList />
   </div>
 </div>

@@ -2,7 +2,9 @@
 import { post, tryApi } from './api.js';
 import { toast } from './stores.svelte.js';
 
-export const scanAll = () => tryApi(post('/api/scan'), { success: 'Scan started' });
+/** Import pitv_content's library index into PiTV's catalogue; with reindex, ask pitv_content to re-scan its sources first. */
+export const importCatalogue = (reindex = false) =>
+  tryApi(post('/api/catalogue/refresh', { reindex }), { success: reindex ? 'Re-index requested; the import follows when pitv_content finishes' : 'Catalogue import started' });
 
 export const buildSchedule = (force = false) =>
   tryApi(post('/api/schedule/build', force ? { force: true } : {}), { success: force ? 'Rebuild started' : 'Schedule build started' });

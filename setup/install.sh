@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 # PiTV installer for Raspberry Pi OS Lite (64-bit, Bookworm). Run as root on the Pi:
 #   sudo ./setup/install.sh
-# Idempotent: safe to re-run after `git pull`.
+# Idempotent: safe to re-run after `git pull`. The first run records its choices in
+# /etc/pitv/install.env; later runs (upgrades) reuse them unless overridden in the environment.
 set -euo pipefail
 
-NAS_HOST="${NAS_HOST:-synologynas}"
+ENV_FILE=/etc/pitv/install.env
+# shellcheck disable=SC1090
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
+NAS_HOST="${NAS_HOST:-${SAVED_NAS_HOST:-synologynas}}"
 # Share names as on the NAS; a space is written as %20 (mounted at /mnt/<name without spaces>).
-SHARES="${SHARES:-tvshows movies ads tvsports music%20videos}"
+SHARES="${SHARES:-${SAVED_SHARES:-tvshows movies ads tvsports music%20videos}}"
 mount_name() { echo "$1" | sed 's/%20//g; s/ //g'; }
 share_name() { echo "$1" | sed 's/%20/ /g'; }
 INSTALL_DIR=/opt/pitv
 DATA_DIR=/var/lib/pitv
-CACHE_DIR="${CACHE_DIR:-/mnt/cache/pitv}"
+CACHE_DIR="${CACHE_DIR:-${SAVED_CACHE_DIR:-/mnt/cache/pitv}}"
+DISPLAY_MODE="${DISPLAY_MODE:-${SAVED_DISPLAY_MODE:-hdmi576}}"
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 log() { printf '\n\033[1;32m==> %s\033[0m\n' "$*"; }
@@ -80,42 +85,52 @@ systemctl daemon-reload
 for share in $SHARES; do systemctl enable --now "mnt-$(mount_name "$share").automount"; done
 systemctl enable pitv-splash pitv-player pitv-web
 
-log "Database, sources and cache settings"
+log "Database and cache settings"
 # Values reach Python through the environment, never by splicing them into the source.
-sudo -u pitv PITV_DATA="$DATA_DIR" PITV_SHARES="$SHARES" PITV_NAS_HOST="$NAS_HOST" PITV_CACHE_DIR="$CACHE_DIR" \
-  "$INSTALL_DIR/.venv/bin/python" - <<'PY'
+# PiTV does not keep sources: the NAS shares are pitv_content's (docs/CONTENT_CONTRACT.md). They
+# are written once to /etc/pitv/nas-sources.json, which seeds pitv_content's installer.
+sudo -u pitv PITV_DATA="$DATA_DIR" PITV_CACHE_DIR="$CACHE_DIR" "$INSTALL_DIR/.venv/bin/python" - <<'PY'
 import os
 from pitv import db as dbm
 from pitv.config import load_config
-shares, nas_host, cache_dir = os.environ["PITV_SHARES"].split(), os.environ["PITV_NAS_HOST"], os.environ["PITV_CACHE_DIR"]
+cache_dir = os.environ["PITV_CACHE_DIR"]
 cfg = load_config(); cfg.ensure_dirs()
 conn = dbm.connect(cfg.db_path); dbm.init_db(conn)
 with dbm.tx(conn):
-    for stype, name, share, cat in (("tv", "TV Shows", "tvshows", "general"), ("movie", "Movies", "movies", "general"),
-                                    ("advert", "Adverts", "ads", "general"), ("tv", "Sport", "tvsports", "sport"),
-                                    ("music", "Music videos", "music%20videos", "general")):
-        if share in shares:
-            path = f"/mnt/{share.replace('%20', '')}"
-            if not conn.execute("SELECT 1 FROM sources WHERE path = ?", (path,)).fetchone():
-                conn.execute("INSERT INTO sources(type, name, path, remote, category) VALUES (?,?,?,?,?)",
-                             (stype, name, path, f"smb://{nas_host}/{share}/", cat))
     if not dbm.get_setting(conn, "cache_dir"):
         dbm.set_setting(conn, "cache_dir", cache_dir)
-    # Everything pitv_content downloads lands under the cache, never on the NAS; register those folders.
-    acq = f"{cache_dir}/acquired"
-    for stype, name, sub, cat in (("tv", "Acquired shows", "tvshows", "general"), ("tv", "Acquired sport", "tvsports", "sport"),
-                                  ("movie", "Acquired movies", "movies", "general"), ("advert", "Acquired adverts", "ads", "general"),
-                                  ("music", "Acquired music videos", "music videos", "general")):
-        path = f"{acq}/{sub}"
-        if not conn.execute("SELECT 1 FROM sources WHERE path = ?", (path,)).fetchone():
-            conn.execute("INSERT INTO sources(type, name, path, category) VALUES (?,?,?,?)", (stype, name, path, cat))
     if not dbm.get_setting(conn, "acquire_dir"):
-        dbm.set_setting(conn, "acquire_dir", acq)
-print("sources:", [dict(r) for r in conn.execute("SELECT type, path FROM sources")])
+        dbm.set_setting(conn, "acquire_dir", f"{cache_dir}/acquired")
+print("cache:", dbm.get_setting(conn, "cache_dir"))
 PY
+PITV_SHARES="$SHARES" PITV_NAS_HOST="$NAS_HOST" python3 - > /etc/pitv/nas-sources.json <<'PY'
+import json, os
+# share name on the NAS -> (source id, display name, type, category) for pitv_content
+known = {"tvshows": ("tvshows", "TV Shows", "tv", "general"), "movies": ("movies", "Movies", "movie", "general"),
+         "ads": ("ads", "Adverts", "advert", "general"), "tvsports": ("tvsports", "Sport", "tv", "sport"),
+         "music%20videos": ("musicvideos", "Music videos", "music", "general")}
+host = os.environ["PITV_NAS_HOST"]
+out = []
+for share in os.environ["PITV_SHARES"].split():
+    sid, name, stype, cat = known.get(share, (share.replace("%20", ""), share.replace("%20", " "), "tv", "general"))
+    out.append({"id": sid, "name": name, "type": stype, "category": cat, "root": f"/mnt/{share.replace('%20', '')}",
+                "remote": f"smb://{host}/{share}/", "enabled": True})
+print(json.dumps(out))
+PY
+chmod 644 /etc/pitv/nas-sources.json
 
-log "Boot tuning (DISPLAY_MODE=${DISPLAY_MODE:-hdmi576}: hdmi576 | composite | hdmi43 | hdmi)"
-DISPLAY_MODE="${DISPLAY_MODE:-hdmi576}" "$SRC_DIR/setup/boot-trim.sh" || true
+log "Boot tuning (DISPLAY_MODE=$DISPLAY_MODE: hdmi576 | composite | hdmi43 | hdmi)"
+DISPLAY_MODE="$DISPLAY_MODE" "$SRC_DIR/setup/boot-trim.sh" || true
+
+# Remember this install's choices for upgrades (values are quoted; nothing secret is stored here).
+mkdir -p /etc/pitv
+{
+  printf 'SAVED_NAS_HOST=%q\n' "$NAS_HOST"
+  printf 'SAVED_SHARES=%q\n' "$SHARES"
+  printf 'SAVED_CACHE_DIR=%q\n' "$CACHE_DIR"
+  printf 'SAVED_DISPLAY_MODE=%q\n' "$DISPLAY_MODE"
+} > "$ENV_FILE"
+chmod 644 "$ENV_FILE"
 
 log "Done. Start with: systemctl start pitv-player pitv-web   (web UI on http://$(hostname -I | awk '{print $1}')/ )"
-echo "First run: open the web UI, set the admin password, check Sources, run Scan, then Build schedule."
+echo "First run: open the web UI and set the admin password. pitv_content indexes the NAS on its first run; PiTV imports the catalogue and builds the schedule from it."

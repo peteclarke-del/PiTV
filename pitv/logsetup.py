@@ -21,6 +21,9 @@ def log_dir(cfg: Config) -> Path:
     return d
 
 
+TOPIC_LOGS = {"catalogue": ("pitv.catalogue",), "schedule": ("pitv.scheduler", "pitv.readiness")}
+
+
 def setup_logging(cfg: Config, name: str, level: int = logging.INFO, console: bool = True) -> Path:
     path = log_dir(cfg) / f"{name}.log"
     root = logging.getLogger()
@@ -35,6 +38,19 @@ def setup_logging(cfg: Config, name: str, level: int = logging.INFO, console: bo
         ch.setFormatter(logging.Formatter(FORMAT))
         root.addHandler(ch)
     logging.getLogger("uvicorn.access").disabled = True
+    # Topic logs: catalogue imports and schedule builds run in the player, the web service and
+    # the CLI, so each process also writes those loggers to a shared file the admin can show.
+    for topic, loggers in TOPIC_LOGS.items():
+        if topic == name:
+            continue
+        th = logging.handlers.RotatingFileHandler(log_dir(cfg) / f"{topic}.log", maxBytes=1_000_000, backupCount=2,
+                                                  encoding="utf-8")
+        th.setFormatter(logging.Formatter(FORMAT))
+        for lg in loggers:
+            logger = logging.getLogger(lg)
+            for h in list(logger.handlers):
+                logger.removeHandler(h)
+            logger.addHandler(th)
     return path
 
 

@@ -118,8 +118,8 @@ def check_setting(key: str, value: Any) -> Any:
         _check_number(key, value, default)
         if key == "horizon_days" and not 1 <= value <= 31:
             raise SettingError("horizon_days must be between 1 and 31")
-        if key == "scan_hour" and not 0 <= value <= 23:
-            raise SettingError("scan_hour must be an hour 0-23")
+        if key == "catalogue_hour" and not 0 <= value <= 23:
+            raise SettingError("catalogue_hour must be an hour 0-23")
     elif isinstance(default, str):
         if not isinstance(value, str) or len(value) > 500:
             raise SettingError(f"{key} must be a short string")

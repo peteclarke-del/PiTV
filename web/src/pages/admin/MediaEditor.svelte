@@ -5,6 +5,7 @@
   import { num } from '../../lib/util.js';
   import { guard } from '../../lib/guard.svelte.js';
   import Drawer from '../../components/Drawer.svelte';
+  import Availability from '../../components/Availability.svelte';
 
   let { id, onclose, onsaved } = $props();
   let channels = $state([]);
@@ -54,23 +55,26 @@
         <p class="tiny muted">The Pi cannot hardware-decode this file; pitv_content transcodes it into the cache when it is scheduled{item.transcoded_path ? ' (a copy already exists)' : ''}.</p>
       {/if}
       <dl class="kv small">
+        <dt>Plays from</dt><dd><Availability {item} /> <span class="tiny muted">{item.cached ? 'the cache' : item.origin === 'online' ? 'fetched online; requested again when scheduled' : 'the NAS until pitv_content copies it before air'}</span></dd>
+        {#if item.cache_path}<dt>Cache copy</dt><dd class="mono" style="word-break:break-all">{item.cache_path}</dd>{/if}
+        {#if item.uid}<dt>Index uid</dt><dd class="mono tiny" style="word-break:break-all">{item.uid}</dd>{/if}
         <dt>Duration</dt><dd>{fmtDuration(item.duration)}</dd>
         <dt>Size</dt><dd>{fmtBytes(item.size)}</dd>
         <dt>Path</dt><dd class="mono" style="word-break:break-all">{item.path}</dd>
         {#if item.attention}<dt>Attention</dt><dd><span class="badge warn">{item.attention}</span></dd>{/if}
       </dl>
       {#if overridden.length}
-        <div class="row small muted">Overriding scanned: {overridden.join(', ')} <button class="small ghost" onclick={clearOverrides} disabled={clearOverrides.busy}>Clear overrides</button></div>
+        <div class="row small muted">Overriding the index: {overridden.join(', ')} <button class="small ghost" onclick={clearOverrides} disabled={clearOverrides.busy}>Clear overrides</button></div>
       {/if}
       <div class="form-grid">
         {#if item.kind === 'music'}
-          <label class="field">Artist<input bind:value={form.artist} /><span class="help">Scanned: {item.scanned.artist ?? 'none'}</span></label>
+          <label class="field">Artist<input bind:value={form.artist} /><span class="help">Indexed: {item.indexed?.artist ?? 'none'}</span></label>
         {/if}
-        <label class="field">Title<input bind:value={form.title} /><span class="help">Scanned: {item.scanned.title}</span></label>
-        <label class="field">Year<input type="number" bind:value={form.year} min="1900" max="2100" /><span class="help">Scanned: {item.scanned.year ?? 'none'}</span></label>
+        <label class="field">Title<input bind:value={form.title} /><span class="help">Indexed: {item.indexed?.title}</span></label>
+        <label class="field">Year<input type="number" bind:value={form.year} min="1900" max="2100" /><span class="help">Indexed: {item.indexed?.year ?? 'none'}</span></label>
         <label class="field">Certificate
           <select bind:value={form.certificate}><option value="">(none)</option>{#each CERTIFICATES as c (c)}<option value={c}>{c}</option>{/each}</select>
-          <span class="help">Scanned: {item.scanned.certificate ?? 'none'}</span>
+          <span class="help">Indexed: {item.indexed?.certificate ?? 'none'}</span>
         </label>
         <label class="field">Genres<input bind:value={form.genres} placeholder="Comedy, Drama" /></label>
         {#if item.kind === 'movie'}

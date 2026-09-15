@@ -3,6 +3,7 @@
   import { get, tryApi } from '../../lib/api.js';
   import { clock } from '../../lib/stores.svelte.js';
   import { fmtAgo, fmtDateTime } from '../../lib/format.js';
+  import AppBadge from '../../components/AppBadge.svelte';
   import { downloadJson } from '../../lib/util.js';
   import StatusBadge from '../../components/StatusBadge.svelte';
 
@@ -28,12 +29,12 @@
 </script>
 
 <div class="card">
-  <div class="card-title"><h3>Content manifest</h3>
+  <div class="card-title"><h3>Request manifest</h3><AppBadge app="pitv" />
     <select bind:value={manifestDays} onchange={loadManifest} aria-label="Days">{#each [1, 2, 3, 7] as d (d)}<option value={d}>{d} day{d > 1 ? 's' : ''}</option>{/each}</select>
     <button class="small" onclick={loadManifest} disabled={manifestBusy}>Refresh</button>
     <button class="small primary" onclick={downloadManifest} disabled={!manifest}>Download manifest JSON</button>
   </div>
-  <p class="small muted">What pitv_content needs to copy or transcode into the cache for the coming schedule.</p>
+  <p class="scope">PiTV publishes this for pitv_content: every file the schedule needs through the next broadcast day, to copy, transcode or fetch into the cache.</p>
   {#if manifest && manifestStats}
     <div class="stats">
       <div class="stat"><b>{manifestStats.total}</b><span>Items</span></div>

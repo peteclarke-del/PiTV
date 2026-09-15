@@ -5,6 +5,7 @@
   import { num } from '../../lib/util.js';
   import { guard } from '../../lib/guard.svelte.js';
   import Drawer from '../../components/Drawer.svelte';
+  import Availability from '../../components/Availability.svelte';
 
   let { id, channels = [], onclose, onsaved } = $props();
   let show = $state(null);
@@ -62,14 +63,14 @@
   {#if form}
     <div class="stack">
       {#if overridden.length}
-        <div class="row small muted">Overriding scanned: {overridden.join(', ')} <button class="small ghost" onclick={clearOverrides} disabled={clearOverrides.busy}>Clear overrides</button></div>
+        <div class="row small muted">Overriding the index: {overridden.join(', ')} <button class="small ghost" onclick={clearOverrides} disabled={clearOverrides.busy}>Clear overrides</button></div>
       {/if}
       <div class="form-grid">
-        <label class="field">Title<input bind:value={form.title} /><span class="help">Scanned: {show.scanned.title}</span></label>
-        <label class="field">Year<input type="number" bind:value={form.year} min="1900" max="2100" /><span class="help">Scanned: {show.scanned.year ?? 'none'}</span></label>
+        <label class="field">Title<input bind:value={form.title} /><span class="help">Indexed: {show.indexed?.title}</span></label>
+        <label class="field">Year<input type="number" bind:value={form.year} min="1900" max="2100" /><span class="help">Indexed: {show.indexed?.year ?? 'none'}</span></label>
         <label class="field">Certificate
           <select bind:value={form.certificate}><option value="">(none)</option>{#each CERTIFICATES as c (c)}<option value={c}>{c}</option>{/each}</select>
-          <span class="help">Scanned: {show.scanned.certificate ?? 'none'}</span>
+          <span class="help">Indexed: {show.indexed?.certificate ?? 'none'}</span>
         </label>
         <label class="field">Genres<input bind:value={form.genres} placeholder="Comedy, Drama" /><span class="help">Comma separated</span></label>
         <label class="field wide">Plot<textarea bind:value={form.plot}></textarea></label>
@@ -123,7 +124,7 @@
       <h3>Episodes ({show.episodes.length})</h3>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Ep</th><th>Title</th><th>Length</th><th>Codec</th><th></th></tr></thead>
+          <thead><tr><th>Ep</th><th>Title</th><th>Length</th><th>Codec</th><th>Plays from</th><th></th></tr></thead>
           <tbody>
             {#each show.episodes as e (e.id)}
               <tr class:dim={e.missing || e.excluded}>
@@ -131,6 +132,7 @@
                 <td>{e.title}{#if e.attention}<span class="badge warn" title={e.attention}>!</span>{/if}{#if e.missing}<span class="badge danger">missing</span>{/if}</td>
                 <td class="small">{fmtDuration(e.duration)}</td>
                 <td class="small"><span class="mono">{e.vcodec ?? '?'}</span> {#if e.hwdec}<span class="badge ok">HW</span>{:else}<span class="badge warn">SW</span>{/if}</td>
+                <td><Availability item={e} /></td>
                 <td class="right"><button class="small ghost" onclick={() => setCursor(e.season ?? 0, e.episode ?? 0)}>Next</button></td>
               </tr>
             {/each}

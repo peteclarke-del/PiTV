@@ -23,8 +23,6 @@ from ..config import Config
 from ..db import all_settings, enabled_channels, now_ts
 from ..guide import block_entry, next_programmes, slot_at
 from ..logsetup import setup_logging
-from ..readiness import mark_missing
-from ..scheduler.build import rebuild_from
 from .cache import MediaCache
 from .control_socket import ControlServer
 from .hwdec import decode_options, is_raspberry_pi
@@ -39,7 +37,6 @@ log = logging.getLogger("pitv.player")
 TESTCARD = "testcard"   # sentinel in `playing_path` while the test card is on screen
 SLOT_RECHECK_SECONDS = 5   # how stale the cached "slot on air" may be before it is re-read
 HEARTBEAT_SECONDS = 10     # the web service treats a longer silence as a wedged player
-SUBSTITUTION_MEMORY = 86400
 
 WINDOW_KEYS = {"UP": "up", "DOWN": "down", "LEFT": "left", "RIGHT": "right", "ENTER": "ok", "ESC": "back",
                "g": "guide", "i": "info", "SPACE": "pause", "m": "mute", "+": "vol_up", "=": "vol_up",
@@ -111,7 +108,7 @@ class Player:
         self._last_drift_check = 0.0
         self._stream_info_at = 0.0
         self._started_at = time.time()
-        self._substituted: dict[int, float] = {}   # slot id -> when a live substitution was tried
+        self.playing_where: str | None = None   # where the current file came from: cache or nas
         self._slot_cache: tuple[int, dict[str, Any] | None, int] = (0, None, 0)  # (channel, slot, valid until)
         self._last_heartbeat = 0.0
         self.stream_info: dict[str, Any] = {}
@@ -127,7 +124,7 @@ class Player:
         self.control = ControlServer(cfg.player_socket, self._handle_control, self.state)
         self.evdev = EvdevInput(self._on_key, self.settings.get("keymap") or {})
         self.tty = TerminalInput(self._on_key) if keyboard else None
-        self.maintenance = Maintenance(cfg.db_path, cfg.ffprobe_binary, self.clock, self._schedule_changed, self.cache)
+        self.maintenance = Maintenance(cfg.db_path, self.clock, self._schedule_changed, self.cache)
 
     # --- helpers ---------------------------------------------------------------------------
 
@@ -431,6 +428,8 @@ class Player:
         self._publish(force=True)
 
     def play_live(self) -> None:
+        """Play what the schedule says is on now, from the cache, else (with `nas_fallback`) the
+        NAS original, else the technical difficulties card. Every fallback is logged."""
         assert self.channel is not None
         now = self.clock()
         slot = self.slot_at(self.channel["id"], now)
@@ -440,47 +439,70 @@ class Player:
             self._show_testcard("No programme scheduled", f"{self.channel['name']}")
             self.playing_slot_id = None
             return
-        if slot["kind"] == "filler" or not slot.get("media_id") or slot.get("media_missing"):
+        if slot["kind"] == "filler" or not slot.get("media_id"):
             self._show_testcard(slot.get("title") or "Programmes will continue shortly", "")
             self.playing_slot_id = slot["id"]
             return
-        media = {"id": slot["media_id"], "path": slot["media_path"], "transcoded_path": slot.get("transcoded_path"),
-                 "vcodec": slot.get("vcodec"), "interlaced": slot.get("interlaced")}
-        path = self.cache.resolve(media)
+        media = self._slot_media(slot)
+        path, where = self.cache.locate(media, bool(self.settings.get("nas_fallback", True)))
+        if where == "nas":
+            log.error("not in the cache, playing the NAS original: ch%s '%s' (media %s)",
+                      self.channel["number"], slot.get("title"), media["id"])
         if path is None:
-            self.failed_slot_id = slot["id"]
-            self.playing_slot_id = None
-            self.playing_path = None
-            self.last_error = f"file not available: {slot['media_path']}"
-            log.error("%s (channel %s, '%s')", self.last_error, self.channel["number"], slot.get("title"))
-            if self._substitute_live(slot):
-                return
-            self._show_testcard("Waiting for the file server", slot.get("title") or "")
+            self._technical_difficulties(slot, where)
             return
-        offset = max(0.0, now - slot["start_ts"] + float(slot.get("offset") or 0))
-        opts = decode_options(media, self.on_pi, self.settings)
+        self._load(slot, media, path, where, max(0.0, now - slot["start_ts"] + float(slot.get("offset") or 0)))
+
+    @staticmethod
+    def _slot_media(slot: dict[str, Any]) -> dict[str, Any]:
+        return {"id": slot["media_id"], "path": slot["media_path"], "cache_path": slot.get("cache_path"),
+                "origin": slot.get("origin") or "nas", "vcodec": slot.get("vcodec"), "interlaced": slot.get("interlaced"),
+                "cache_vcodec": slot.get("cache_vcodec"), "cache_interlaced": slot.get("cache_interlaced")}
+
+    @staticmethod
+    def _decode_props(media: dict[str, Any], where: str) -> dict[str, Any]:
+        """Decode by the file actually played: a transcoded cache copy is H.264 and progressive
+        even when the NAS original was MPEG-2 and interlaced. When pitv_content did not report
+        the copy's properties, the original's are the best guess (a plain copy keeps them)."""
+        if where == "cache" and media.get("cache_vcodec"):
+            return {**media, "vcodec": media["cache_vcodec"],
+                    "interlaced": media["cache_interlaced"] if media.get("cache_interlaced") is not None else media.get("interlaced")}
+        return media
+
+    def _load(self, slot: dict[str, Any], media: dict[str, Any], path: str, where: str, offset: float) -> None:
+        opts = decode_options(self._decode_props(media, where), self.on_pi, self.settings)
         try:
             for k, v in opts.items():
                 self.mpv.set(k, v)
             self.mpv.loadfile(path, start=offset)
         except MpvError as exc:
             self.last_error = f"mpv: {exc}"
-            log.warning(self.last_error)
-            self.failed_slot_id = slot["id"]
-            self.playing_slot_id = None
-            self.playing_path = None
+            log.error("mpv refused %s: %s", path, exc)
+            self._technical_difficulties(slot, f"mpv refused the file: {exc}")
             return
         self.playing_slot_id = slot["id"]
         self.playing_path = path
+        self.playing_where = where
         self.failed_slot_id = None
-        self.last_error = None
+        self.last_error = None if where == "cache" else "playing from the NAS: not in the cache"
         self.mpv.overlay_remove(OVERLAY_MESSAGE)
         self._start_history(slot)
-        origin = "cache" if self.cache.cached_path(media["id"], media["path"] or "") else (
-            "transcoded" if path == media.get("transcoded_path") else "source")
-        log.info("ch%s %s '%s' start=+%.0fs origin=%s hwdec=%s deint=%s file=%s", self.channel["number"], slot["kind"],
-                 slot["title"], offset, origin, opts.get("hwdec"), opts.get("deinterlace"), path)
+        log.info("ch%s %s '%s' start=+%.0fs from=%s hwdec=%s deint=%s file=%s", self.channel["number"], slot["kind"],
+                 slot["title"], offset, where, opts.get("hwdec"), opts.get("deinterlace"), path)
         self._stream_info_at = time.time() + 2.0  # log codec/stream details once mpv has opened the file
+
+    def _technical_difficulties(self, slot: dict[str, Any], reason: str) -> None:
+        """Nothing playable for the slot on air. Show the card, log why, and try again shortly in
+        case pitv_content delivers the file late."""
+        self.failed_slot_id = slot["id"]
+        self.playing_slot_id = None
+        self.playing_path = None
+        self.retry_at = time.time() + 30
+        self.last_error = f"'{slot.get('title')}' not playable: {reason}"
+        log.error("TECHNICAL DIFFICULTIES ch%s '%s' (media %s): %s", self.channel["number"] if self.channel else "?",
+                  slot.get("title"), slot.get("media_id"), reason)
+        self._show_testcard("We are experiencing technical difficulties",
+                            "Normal service will be resumed as soon as possible")
 
     def _log_stream_info(self) -> None:
         """One line per programme with what mpv actually ended up doing."""
@@ -499,33 +521,6 @@ class Player:
             log.info("stream: %s", " ".join(f"{k}={v}" for k, v in info.items()))
         except Exception as exc:  # noqa: BLE001
             log.warning("could not read stream info: %s", exc)
-
-    def _substitute_live(self, slot: dict[str, Any]) -> bool:
-        """The file for the slot on air is gone but its share is mounted: replace it and
-        rebalance the rest of the channel's day, then play whatever is now scheduled."""
-        src = self.conn.execute("SELECT s.path FROM media m JOIN sources s ON s.id = m.source_id WHERE m.id = ?",
-                                (slot["media_id"],)).fetchone()
-        if not src or not Path(src["path"]).is_dir():
-            return False  # the whole share is down; nothing sensible to substitute with
-        cutoff = time.time() - SUBSTITUTION_MEMORY
-        self._substituted = {k: v for k, v in self._substituted.items() if v > cutoff}
-        if slot["id"] in self._substituted:
-            return False  # already tried once for this slot; do not loop on a bad rebuild
-        self._substituted[slot["id"]] = time.time()
-        try:
-            mark_missing(self.conn, {slot["media_id"]}, "File not found when it was due on air")
-            result = rebuild_from(self.conn, self.channel["id"], self.clock(), now=self.clock(),
-                                  exclude_media_ids={slot["media_id"]})
-            log.error("substituted missing '%s' on channel %s and rebalanced the day: %s", slot.get("title"),
-                      self.channel["number"], result.get("summary"))
-        except Exception:  # noqa: BLE001
-            log.exception("live substitution failed")
-            return False
-        self.failed_slot_id = None
-        self._forget_slot()
-        self.play_live()
-        self._schedule_changed()
-        return True
 
     def _show_testcard(self, text: str, sub: str) -> None:
         try:
@@ -586,16 +581,24 @@ class Player:
         elif action == "eof":
             self.behind_live = False
             self.paused = False
+            slot = self.slot_at(self.channel["id"], self.clock()) if self.channel else None
+            if slot is not None and slot["id"] == self.playing_slot_id:
+                # The file ended before its slot did (it is shorter than scheduled): hold the
+                # continuity card until the next slot rather than reloading past the end.
+                self._show_testcard("Programmes will continue shortly", "")
+                return
             self.playing_slot_id = None
             self.play_live()
         elif action == "file-error":
-            self.last_error = f"playback error: {arg}"
-            self.failed_slot_id = self.playing_slot_id
-            self.playing_slot_id = None
-            self.playing_path = None
-            self.retry_at = time.time() + 10
-            if self.channel:
-                self._show_testcard("Playback problem", str(arg or ""))
+            slot = self.slot
+            media = self._slot_media(slot) if slot and slot.get("media_id") else None
+            nas = media and media["origin"] == "nas" and self.settings.get("nas_fallback", True) \
+                and self.playing_where == "cache" and Path(media["path"]).is_file()
+            if nas:
+                log.error("cache copy unplayable (%s), falling back to the NAS original: %s", arg, media["path"])
+                self._load(slot, media, media["path"], "nas", max(0.0, self.clock() - slot["start_ts"] + float(slot.get("offset") or 0)))
+            elif slot is not None:
+                self._technical_difficulties(slot, f"playback error: {arg}")
         elif action == "tune":
             self.tune(int(arg))
         elif action == "volume":

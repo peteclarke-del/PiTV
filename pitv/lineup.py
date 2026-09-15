@@ -1,7 +1,7 @@
 """Channel line-ups: the list of series and films each channel carries.
 
 The line-up is the source of truth for which programme belongs to which channel. Library
-items (a series or film found by the scanner) belong to exactly one channel; external
+items (a series or film in the catalogue) belong to exactly one channel; external
 entries name material that is not on disk yet, which the scheduler may place ahead of time
 and request from pitv_content. `shows.home_channel_id` and `media.home_channel_id` are
 derived from this table so the scheduler's hot path stays a column comparison.
@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import all_settings, now_ts, row_to_dict, rows_to_dicts, tx
+from .player.cache import MediaCache
 
 log = logging.getLogger("pitv.lineup")
 
@@ -349,7 +350,7 @@ def write_mirror(conn: sqlite3.Connection) -> None:
 
 def import_doc(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, int]:
     """Apply a line-up document: channels matched by number; library entries matched by title
-    and year against the scanned library, everything else becomes an external entry."""
+    and year against the catalogue, everything else becomes an external entry."""
     result = {"entries": 0, "unknown_channels": 0}
     channels = {r["number"]: r["id"] for r in conn.execute("SELECT id, number FROM channels")}
     with tx(conn):
@@ -412,58 +413,42 @@ def restore_if_empty(conn: sqlite3.Connection) -> bool:
 
 # --- material arriving from pitv_content -------------------------------------------------------
 
-def bind_fetched(conn: sqlite3.Connection) -> dict[str, int]:
-    """After a scan: attach fetched files to the placeholder slots that requested them and mark
-    the media transient where the request said so.
+def attach_delivery(conn: sqlite3.Connection, wanted_id: int, media_id: int) -> dict[int, int]:
+    """Hand a delivered file (already a catalogue entry) to its line-up entry and to the
+    placeholder slots that requested it. Runs inside the caller's transaction.
 
     A fetched film becomes an ordinary library entry. A fetched series stays external, so later
     placements keep requesting the next episode, but links to its show so the show is owned by
     the entry's channel and never generated onto another one. Each bound slot takes the file's
-    real length (a film is never cut off), and the rest of that channel-day is rebuilt from the
-    earliest point that changed."""
-    from .scheduler.build import rebuild_from, slot_titles
-    bound = converted = 0
-    refill: dict[int, int] = {}
-    with tx(conn):
-        rows = rows_to_dicts(conn.execute(
-            "SELECT w.id AS wanted_id, w.transient, w.lineup_id, m.id AS media_id, m.duration, m.show_id, m.kind"
-            " FROM wanted w JOIN media m ON m.path = w.dest_path"
-            " WHERE w.status = 'done' AND w.dest_path IS NOT NULL AND m.missing = 0"))
-        for r in rows:
-            conn.execute("UPDATE media SET transient = ? WHERE id = ?", (int(r["transient"] or 0), r["media_id"]))
-            entry = conn.execute("SELECT * FROM lineup WHERE id = ?", (r["lineup_id"],)).fetchone() if r["lineup_id"] else None
-            if entry is not None:
-                if r["kind"] == "episode" and r["show_id"] and entry["show_id"] != r["show_id"]:
-                    # The entry owns the series: drop anything the generator placed for it.
-                    conn.execute("DELETE FROM lineup WHERE show_id = ? AND id != ?", (r["show_id"], entry["id"]))
-                    conn.execute("UPDATE lineup SET show_id = ?, updated_at = ? WHERE id = ?", (r["show_id"], now_ts(), entry["id"]))
-                    converted += 1
-                elif r["kind"] == "movie" and entry["media_id"] is None:
-                    conn.execute("DELETE FROM lineup WHERE media_id = ? AND id != ?", (r["media_id"], entry["id"]))
-                    conn.execute("UPDATE lineup SET media_id = ?, key = ?, source = 'library', updated_at = ? WHERE id = ?",
-                                 (r["media_id"], f"movie:{r['media_id']}", now_ts(), entry["id"]))
-                    converted += 1
-            media = dict(conn.execute("SELECT m.*, s.title AS show_title FROM media m LEFT JOIN shows s ON s.id = m.show_id"
-                                      " WHERE m.id = ?", (r["media_id"],)).fetchone())
-            title, subtitle = slot_titles(media, media.get("show_title"))
-            real = int(round(float(r["duration"] or 0)))
-            for sl in conn.execute("SELECT id, channel_id, start_ts, end_ts, replay FROM schedule WHERE wanted_id = ? AND media_id IS NULL",
-                                   (r["wanted_id"],)).fetchall():
-                end = sl["end_ts"]
-                if real and not sl["replay"] and sl["start_ts"] + real != end:
-                    changed_at = min(end, sl["start_ts"] + real)
-                    end = sl["start_ts"] + real
-                    refill[sl["channel_id"]] = min(refill.get(sl["channel_id"], changed_at), changed_at)
-                conn.execute("UPDATE schedule SET media_id = ?, end_ts = ?, title = ?, subtitle = ? WHERE id = ?",
-                             (r["media_id"], end, title, subtitle, sl["id"]))
-                bound += 1
+    real length (a film is never cut off). Returns {channel_id: earliest change} for the caller
+    to rebuild from."""
+    from .scheduler.build import slot_titles
+    w = conn.execute("SELECT lineup_id FROM wanted WHERE id = ?", (wanted_id,)).fetchone()
+    media = dict(conn.execute("SELECT m.*, s.title AS show_title FROM media m LEFT JOIN shows s ON s.id = m.show_id"
+                              " WHERE m.id = ?", (media_id,)).fetchone())
+    entry = conn.execute("SELECT * FROM lineup WHERE id = ?", (w["lineup_id"],)).fetchone() if w and w["lineup_id"] else None
+    if entry is not None:
+        if media["kind"] == "episode" and media["show_id"] and entry["show_id"] != media["show_id"]:
+            conn.execute("DELETE FROM lineup WHERE show_id = ? AND id != ?", (media["show_id"], entry["id"]))
+            conn.execute("UPDATE lineup SET show_id = ?, updated_at = ? WHERE id = ?", (media["show_id"], now_ts(), entry["id"]))
+        elif media["kind"] == "movie" and entry["media_id"] is None:
+            conn.execute("DELETE FROM lineup WHERE media_id = ? AND id != ?", (media_id, entry["id"]))
+            conn.execute("UPDATE lineup SET media_id = ?, key = ?, source = 'library', updated_at = ? WHERE id = ?",
+                         (media_id, f"movie:{media_id}", now_ts(), entry["id"]))
         sync_home_channels(conn)
-    for channel_id, from_ts in refill.items():
-        if from_ts > now_ts():
-            rebuild_from(conn, channel_id, from_ts, allow_external=False)
-    if converted:
-        write_mirror(conn)
-    return {"bound": bound, "converted": converted}
+    title, subtitle = slot_titles(media, media.get("show_title"))
+    real = int(round(float(media.get("duration") or 0)))
+    changed: dict[int, int] = {}
+    for sl in conn.execute("SELECT id, channel_id, start_ts, end_ts, replay FROM schedule WHERE wanted_id = ? AND media_id IS NULL",
+                           (wanted_id,)).fetchall():
+        end = sl["end_ts"]
+        if real and not sl["replay"] and sl["start_ts"] + real != end:
+            at = min(end, sl["start_ts"] + real)
+            end = sl["start_ts"] + real
+            changed[sl["channel_id"]] = min(changed.get(sl["channel_id"], at), at)
+        conn.execute("UPDATE schedule SET media_id = ?, end_ts = ?, title = ?, subtitle = ? WHERE id = ?",
+                     (media_id, end, title, subtitle, sl["id"]))
+    return changed
 
 
 def remove_aired_transients(conn: sqlite3.Connection, now: int | None = None) -> int:
@@ -471,9 +456,10 @@ def remove_aired_transients(conn: sqlite3.Connection, now: int | None = None) ->
     straight away when the entry says remove-after-airing, otherwise after transient_keep_days.
     Acquired files live outside the cache's size-capped LRU area, so this is what bounds them."""
     now = now or now_ts()
-    keep_days = int(all_settings(conn).get("transient_keep_days", 7))
+    settings = all_settings(conn)
+    keep_days = int(settings.get("transient_keep_days", 7))
     rows = rows_to_dicts(conn.execute(
-        "SELECT m.id, m.path, m.transcoded_path, COALESCE(l.remove_after_airing, 0) AS immediate,"
+        "SELECT m.id, m.path, m.cache_path, COALESCE(l.remove_after_airing, 0) AS immediate,"
         " (SELECT MAX(h.ended_at) FROM history h WHERE h.media_id = m.id) AS last_aired"
         " FROM media m LEFT JOIN wanted w ON w.dest_path = m.path LEFT JOIN lineup l ON l.id = w.lineup_id"
         " WHERE m.transient = 1 AND m.missing = 0"
@@ -484,7 +470,11 @@ def remove_aired_transients(conn: sqlite3.Connection, now: int | None = None) ->
             continue  # never removed before it has been shown
         if not r["immediate"] and now - r["last_aired"] < keep_days * 86400:
             continue
-        for path in (r["path"], r.get("transcoded_path")):
+        # Only ever delete inside the cache: a NAS original is never PiTV's to remove.
+        cache_root = MediaCache.from_settings(settings).dir
+        for path in {r["path"], r.get("cache_path")} - {None}:
+            if cache_root is None or not Path(path).resolve().is_relative_to(cache_root.resolve()):
+                continue
             if path:
                 try:
                     Path(path).unlink(missing_ok=True)

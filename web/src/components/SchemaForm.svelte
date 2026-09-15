@@ -3,9 +3,10 @@
   // {key, label, help, type, default, value, choices?, min?, max?, group, restart_required};
   // only changed keys are submitted, and secrets are never echoed back (blank = keep).
   import ChipList from './ChipList.svelte';
+  import AppBadge from './AppBadge.svelte';
   import { num } from '../lib/util.js';
 
-  let { schema = [], onsave, saving = false, errors = {}, groups = ['Providers', 'Search', 'Encoding', 'Schedule', 'Advanced'] } = $props();
+  let { schema = [], onsave, saving = false, errors = {}, groups = ['Providers', 'Search', 'Encoding', 'Schedule', 'Advanced'], app = '' } = $props();
   const SECRET_MASK = '••••';
   let values = $state({});
   // Re-seed the editable copy only when a new schema arrives, not on every keystroke.
@@ -52,7 +53,7 @@
   <div class="stack">
     {#each grouped as [group, fields] (group)}
       <div class="card">
-        <div class="card-title"><h3>{group}</h3></div>
+        <div class="card-title"><h3>{group}</h3>{#if app}<AppBadge {app} />{/if}</div>
         <div class="form-grid">
           {#each fields as f (f.key)}
             {@const err = errors[f.key]}

@@ -1,10 +1,11 @@
 """The local cache on the Pi's attached drive, filled by pitv_content.
 
-PiTV only reads from it (cache copy > transcoded copy > NAS original) and evicts
-least-recently-used files under the size cap. Files are named ``<media_id>_<name>`` so the
-index is just a directory listing.
+PiTV only reads from it and evicts least-recently-used files under the size cap. `locate`
+decides what plays: the cache copy, else the NAS original when `nas_fallback` is on, else
+nothing (the player shows the technical difficulties card). Copies are named
+``<media_id>_<name>`` so finding one is a directory listing.
 
-Shared-drive rules (docs/PLAN.md §7): pitv_content writes ``.part`` files and renames them
+Shared-drive rules (docs/CONTENT_CONTRACT.md section 5): pitv_content writes ``.part`` files and renames them
 atomically when complete, never deletes, and touches RUNNING_MARKER while it works. PiTV
 ignores ``.part`` files, never evicts files under MIN_AGE_SECONDS old or in the current
 manifest (see `protect`), and does not evict at all while the marker is fresh.
@@ -33,8 +34,14 @@ LISTING_TTL = 5.0                 # the player asks for usage every second; a US
 
 
 def _settled(p: Path) -> bool:
-    """A finished file: not a directory and not something pitv_content is still writing."""
-    return p.is_file() and not p.name.endswith(".part")
+    """A finished, non-empty file that pitv_content is not still writing (`.part`). An empty
+    file is a failed write, never something to play."""
+    if p.name.endswith(".part") or ".part." in p.name:
+        return False
+    try:
+        return p.is_file() and p.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def _stat(p: Path, attr: str) -> float:
@@ -127,16 +134,33 @@ class MediaCache:
         prefix = f"{media_id}_"
         return next((c for c in self._files() if c.name.startswith(prefix)), None)
 
-    def resolve(self, media: dict[str, Any] | None) -> str | None:
-        """Best available path: cached copy > transcoded copy > original."""
-        if not media:
-            return None
-        original = media.get("path")
-        for cand in (self.cached_path(media["id"], original) if original else None,
-                     media.get("transcoded_path"), original):
-            if cand and Path(cand).is_file():
-                return str(cand)
+    def cache_copy(self, media: dict[str, Any]) -> Path | None:
+        """The playable cache file for a catalogue item: the path pitv_content reported, the
+        `<media_id>_*` target it was asked to fill, or (for material that only ever lived in the
+        cache) the item's own path."""
+        for cand in (media.get("cache_path"),
+                     media.get("path") if media.get("origin") in ("cache", "online") else None):
+            if cand and _settled(Path(cand)):
+                return Path(cand)
+        if media.get("id") and media.get("path"):
+            return self.cached_path(int(media["id"]), str(media["path"]))
         return None
+
+    def locate(self, media: dict[str, Any] | None, nas_fallback: bool) -> tuple[str | None, str]:
+        """Where to play a catalogue item from: (path, "cache") normally; (path, "nas") when the
+        cache copy is missing and fallback is on; (None, reason) when nothing is playable."""
+        if not media:
+            return None, "no programme"
+        copy = self.cache_copy(media)
+        if copy is not None:
+            return str(copy), "cache"
+        if media.get("origin", "nas") == "nas" and media.get("path"):
+            if not nas_fallback:
+                return None, "not in the cache and NAS fallback is off"
+            if Path(media["path"]).is_file():
+                return str(media["path"]), "nas"
+            return None, "not in the cache and not on the NAS"
+        return None, "not in the cache (fetched material has no other copy)"
 
     def usage(self) -> dict[str, Any]:
         if not self.enabled or not self.dir:

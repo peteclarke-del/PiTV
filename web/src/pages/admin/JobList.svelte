@@ -15,7 +15,7 @@
     {#each list as j (j.id)}
       <li>
         <div class="row">
-          <StatusBadge status={j.status} />
+          <StatusBadge status={j.status === 'done' && j.result?.status && j.result.status !== 'ok' ? j.result.status : j.status} />
           <b>{j.label}</b>
           <span class="muted small truncate" style="flex:1">{j.message}{j.total ? ` (${j.done}/${j.total})` : ''}</span>
           {#if j.notes?.length || j.result?.notes?.length || j.error}

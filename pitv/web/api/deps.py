@@ -40,7 +40,7 @@ def run_cmd(args: list[str], timeout: float = 5) -> tuple[int, str, str]:
 MEDIA_PUBLIC = ("id", "kind", "show_id", "season", "episode", "title", "year", "duration", "artist", "concert", "family_safe",
                 "vcodec", "acodec", "width", "height", "interlaced", "hwdec", "certificate",
                 "genres", "plot", "channel_hint", "excluded", "missing", "attention", "overrides",
-                "transcoded_path", "size", "source_id")
+                "cache_path", "origin", "size", "source_id", "uid")
 
 
 def media_public(row: sqlite3.Row | dict[str, Any] | None, with_path: bool = False) -> dict[str, Any] | None:
@@ -49,7 +49,8 @@ def media_public(row: sqlite3.Row | dict[str, Any] | None, with_path: bool = Fal
     d = row_to_dict(row) if isinstance(row, sqlite3.Row) else dict(row)
     eff = effective(d)
     out = {k: eff.get(k) for k in MEDIA_PUBLIC if k in eff}
-    out["scanned"] = {k: d.get(k) for k in ("title", "year", "certificate", "genres", "plot")}
+    out["indexed"] = {k: d.get(k) for k in ("title", "year", "certificate", "genres", "plot")}
+    out["cached"] = bool(d.get("cache_path")) or d.get("origin") in ("cache", "online")
     out["filename"] = d.get("path", "").rsplit("/", 1)[-1]
     if with_path:
         out["path"] = d.get("path")
@@ -63,8 +64,9 @@ def show_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
             "mode", "anchor_time", "anchor_days", "rest_weeks", "excluded", "missing", "overrides",
             "source_id")
     out = {k: eff.get(k) for k in keys}
-    out["scanned"] = {k: d.get(k) for k in ("title", "year", "certificate", "genres", "plot", "kids")}
-    out["folder"] = d.get("path", "").rsplit("/", 1)[-1]
+    out["indexed"] = {k: d.get(k) for k in ("title", "year", "certificate", "genres", "plot", "kids")}
+    # path holds the index uid (show:<source>:<folder>) or fetched:show:<title>:<year>
+    out["folder"] = d.get("path", "").split(":", 2)[-1]
     for extra in ("episode_count", "next_season", "next_episode", "attention_count", "end_year"):
         if extra in d:
             out[extra] = d[extra]

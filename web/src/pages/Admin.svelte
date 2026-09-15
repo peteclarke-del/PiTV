@@ -14,10 +14,16 @@
   import Wanted from './admin/Wanted.svelte';
   import Logs from './admin/Logs.svelte';
   import Content from './admin/Content.svelte';
+  import Providers from './admin/Providers.svelte';
 
-  const tabs = [
-    ['dashboard', 'Dashboard'], ['sources', 'Sources'], ['library', 'Library'], ['channels', 'Channels'],
-    ['weighting', 'Weighting'], ['schedule', 'Schedule'], ['wanted', 'Wanted'], ['content', 'Content'], ['player', 'Player'], ['logs', 'Logs'], ['system', 'System'],
+  // Two applications share this admin: PiTV (catalogue, line-ups, schedule, playback) and pitv_content
+  // (sources, providers, fetching, encoding). The navigation keeps them apart so it is clear which app a page changes.
+  const groups = [
+    ['pitv', 'PiTV', 'Schedules and plays: what is on each channel and when',
+      [['dashboard', 'Dashboard'], ['channels', 'Channels'], ['library', 'Catalogue'], ['schedule', 'Schedule'],
+       ['weighting', 'Weighting'], ['player', 'Player'], ['logs', 'Logs'], ['system', 'System']]],
+    ['content', 'pitv_content', 'Indexes the NAS, fetches and encodes: what can be played',
+      [['sources', 'Sources'], ['providers', 'Providers'], ['wanted', 'Wanted'], ['content', 'Content']]],
   ];
   let tab = $derived(route.parts[1] ?? 'dashboard');
   let skipSetup = $state(sessionStorage.getItem('pitv-skip-setup') === '1');
@@ -50,9 +56,16 @@
         <a class="badge warn" href="#/admin/system" title="Set a password in System">No admin password</a>
       {/if}
     </div>
-    <nav class="tabs">
-      {#each tabs as [id, label] (id)}
-        <a href="#/admin/{id}" class:active={tab === id}>{label}</a>
+    <nav class="admin-nav" aria-label="Admin sections">
+      {#each groups as [app, label, blurb, items] (app)}
+        <div class="navgroup {app}">
+          <span class="app {app}" title={blurb}>{label}</span>
+          <div class="tabs">
+            {#each items as [id, name] (id)}
+              <a href="#/admin/{id}" class:active={tab === id}>{name}</a>
+            {/each}
+          </div>
+        </div>
       {/each}
     </nav>
     {#if tab === 'dashboard'}<Dashboard />
@@ -62,6 +75,7 @@
     {:else if tab === 'weighting'}<Weighting />
     {:else if tab === 'schedule'}<Schedule />
     {:else if tab === 'wanted'}<Wanted />
+    {:else if tab === 'providers'}<Providers />
     {:else if tab === 'player'}<PlayerPage />
     {:else if tab === 'content'}<Content />
     {:else if tab === 'logs'}<Logs />
@@ -69,3 +83,13 @@
     {:else}<div class="empty">Unknown section.</div>{/if}
   {/if}
 </div>
+
+<style>
+  .admin-nav { display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border); }
+  .navgroup { display: flex; align-items: center; gap: .5rem; min-width: 0; max-width: 100%; }
+  .navgroup .tabs { border-bottom: 0; margin-bottom: 0; }
+  .navgroup.pitv .tabs a.active { border-bottom-color: var(--app-pitv); }
+  .navgroup.content .tabs a.active { border-bottom-color: var(--app-content); }
+  .navgroup.content { padding-left: 1.2rem; border-left: 1px solid var(--border); }
+  @media (max-width: 700px) { .navgroup.content { padding-left: 0; border-left: 0; } .navgroup { width: 100%; } }
+</style>

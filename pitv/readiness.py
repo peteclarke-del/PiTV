@@ -1,10 +1,10 @@
-"""Is everything scheduled actually playable? Run ahead of time (and live by the player).
+"""Is everything scheduled actually playable? Run at `readiness_hours` (06:00 and 07:00) and on
+demand from the admin.
 
-For every programme in the window, the file must be readable from the cache, a transcoded
-copy, or the NAS original. Files that are missing while their share is mounted are treated as
-unavailable: the slot is replaced and the rest of that channel-day rebalanced, and an ERROR is
-logged. If a whole share is down, nothing is substituted (the outage, not the schedule, is the
-problem) and the player falls back to the test card at air time.
+A programme is ready when pitv_content has put it in the cache. With `nas_fallback` on, an
+uncached programme whose NAS original is there still counts, logged as a warning because
+pitv_content missed it. Anything else is an error: the slot and the rest of that channel-day
+are rebuilt using only programmes that are playable now, so air time never meets a gap.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .content import manifest_window
-from .db import all_settings, now_ts, run_log_finish, run_log_start, tx
+from .db import all_settings, now_ts, rows_to_dicts, run_log_finish, run_log_start
 from .player.cache import MediaCache
 from .scheduler.build import rebuild_from
 from .scheduler.rules import tz_of
@@ -25,84 +25,87 @@ from .scheduler.rules import tz_of
 log = logging.getLogger("pitv.readiness")
 
 
+def playable_media(conn: sqlite3.Connection, cache: MediaCache, nas_fallback: bool) -> set[int]:
+    """Every catalogue file that could play right now: a cache copy exists, or NAS fallback is on
+    and the file's share is mounted (checked once per share, not per file, so this stays cheap
+    over CIFS)."""
+    mounted = {r["id"]: Path(r["path"]).is_dir() for r in conn.execute("SELECT id, path FROM sources WHERE location = 'nas'")}
+    ids: set[int] = set()
+    for m in rows_to_dicts(conn.execute("SELECT id, path, cache_path, origin, source_id FROM media WHERE missing = 0 AND excluded = 0")):
+        if cache.cache_copy(m) is not None or (nas_fallback and m["origin"] == "nas" and mounted.get(m["source_id"])):
+            ids.add(m["id"])
+    return ids
+
+
 def check(conn: sqlite3.Connection, *, now: int | None = None, days: int = 1, substitute: bool = True) -> dict[str, Any]:
+    """Is everything scheduled from now through the end of the next broadcast day playable?
+    A programme counts when its cache copy exists, or when NAS fallback is on and the NAS
+    original is there (logged as a warning: pitv_content has not delivered it). Anything else is
+    an error and, with `substitute`, its channel-day is rebuilt from the first failure using
+    only programmes that are playable now."""
     settings = all_settings(conn)
     tz = tz_of(conn)
     now = now or now_ts()
     cache = MediaCache.from_settings(settings)
+    nas_fallback = bool(settings.get("nas_fallback", True))
     horizon = manifest_window(settings, tz, now, days)
-    sources = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM sources")}
-    share_up = {sid: Path(src["path"]).is_dir() for sid, src in sources.items()}
-    rows = conn.execute(
-        "SELECT s.id AS slot_id, s.channel_id, s.start_ts, s.title, s.wanted_id, c.number AS channel, c.name AS channel_name, m.*"
+    rows = rows_to_dicts(conn.execute(
+        "SELECT s.id AS slot_id, s.channel_id, s.start_ts, s.title, s.wanted_id, c.name AS channel_name,"
+        " m.id, m.path, m.cache_path, m.origin"
         " FROM schedule s LEFT JOIN media m ON m.id = s.media_id JOIN channels c ON c.id = s.channel_id"
-        " WHERE s.kind = 'programme' AND s.replay = 0 AND s.start_ts >= ? AND s.start_ts < ? ORDER BY s.start_ts",
-        (now, horizon)).fetchall()
+        " WHERE s.kind != 'filler' AND s.replay = 0 AND s.start_ts >= ? AND s.start_ts < ? ORDER BY s.start_ts",
+        (now, horizon)))
     run_id = run_log_start(conn, "readiness")
-    checked = 0
     missing: dict[int, list[dict[str, Any]]] = {}   # channel_id -> slots
-    down_shares: set[int] = set()
     notes: list[str] = []
-    seen: dict[int, bool] = {}                       # media_id -> resolvable (a file airs on several channels)
+    nas_only = 0
+    seen: dict[int, tuple[str | None, str]] = {}    # a file can air on several channels; locate it once
     for r in rows:
-        checked += 1
+        when = f"{r['channel_name']} {_hhmm(r['start_ts'], tz)} '{r['title']}'"
         if r["id"] is None:
-            # A line-up placeholder whose material has not arrived from pitv_content.
             if r["wanted_id"] is not None:
-                missing.setdefault(r["channel_id"], []).append(dict(r))
-                notes.append(f"NOT FETCHED {r['channel_name']} {_hhmm(r['start_ts'], tz)} '{r['title']}' (wanted #{r['wanted_id']})")
-                log.error("material not fetched in time: '%s' at %s on %s (wanted %s)", r["title"],
-                          _hhmm(r["start_ts"], tz), r["channel_name"], r["wanted_id"])
+                missing.setdefault(r["channel_id"], []).append(r)
+                notes.append(f"NOT FETCHED {when} (wanted #{r['wanted_id']})")
+                log.error("not fetched in time: %s (wanted %s)", when, r["wanted_id"])
             continue
-        ok = seen.get(r["id"])
-        if ok is None:
-            ok = cache.resolve({"id": r["id"], "path": r["path"], "transcoded_path": r["transcoded_path"]}) is not None
-            seen[r["id"]] = ok
-        if ok:
+        if r["id"] not in seen:
+            seen[r["id"]] = cache.locate(r, nas_fallback)
+        path, where = seen[r["id"]]
+        if where == "cache":
             continue
-        if not share_up.get(r["source_id"], True):
-            down_shares.add(r["source_id"])
+        if where == "nas":
+            nas_only += 1
+            notes.append(f"NOT CACHED {when}: will play from the NAS")   # detail in the run notes, one log line below
             continue
-        missing.setdefault(r["channel_id"], []).append(dict(r))
-        notes.append(f"MISSING {r['channel_name']} {_hhmm(r['start_ts'], tz)} '{r['title']}' ({r['path']})")
-        log.error("missing programme: %s at %s on %s: %s", r["title"], _hhmm(r["start_ts"], tz), r["channel_name"], r["path"])
-    for sid in down_shares:
-        src = sources[sid]
-        notes.append(f"SHARE DOWN {src['name']} ({src['path']}): not substituting, will retry")
-        log.error("share not mounted: %s (%s); programmes from it cannot be verified", src["name"], src["path"])
+        missing.setdefault(r["channel_id"], []).append(r)
+        notes.append(f"NOT PLAYABLE {when}: {where}")
+        log.error("not playable: %s: %s", when, where)
     substituted = 0
-    if substitute:
-        mark_missing(conn, {s["id"] for slots in missing.values() for s in slots}, "File not found at readiness check")
+    if substitute and missing:
+        playable = playable_media(conn, cache, nas_fallback)
         for channel_id, slots in missing.items():
-            exclude = {s["id"] for s in slots if s["id"] is not None}
             first = min(s["start_ts"] for s in slots)
-            # Never re-place material that is not on disk when substituting: the day must be playable.
-            result = rebuild_from(conn, channel_id, first, now=now, exclude_media_ids=exclude, allow_external=False)
+            exclude = {s["id"] for s in slots if s["id"] is not None}
+            result = rebuild_from(conn, channel_id, first, now=now, exclude_media_ids=exclude,
+                                  allow_external=False, only_media_ids=playable)
             substituted += len(slots)
-            log.warning("rebalanced %s from %s replacing %d programme(s): %s", slots[0]["channel_name"],
+            log.warning("rebuilt %s from %s replacing %d programme(s): %s", slots[0]["channel_name"],
                         _hhmm(first, tz), len(slots), result.get("summary"))
-            notes.append(f"REBALANCED {slots[0]['channel_name']} from {_hhmm(first, tz)}: {result.get('summary')}")
+            notes.append(f"REBUILT {slots[0]['channel_name']} from {_hhmm(first, tz)}: {result.get('summary')}")
     outstanding = conn.execute("SELECT COUNT(*) FROM wanted WHERE status = 'queued'").fetchone()[0]
     if outstanding:
         notes.append(f"{outstanding} wanted item(s) still outstanding for pitv_content")
-    status = "ok" if not missing and not down_shares else ("error" if missing else "warning")
-    summary = f"{checked} programmes checked, {sum(len(v) for v in missing.values())} missing, {substituted} substituted, {len(down_shares)} share(s) down"
+    if nas_only:
+        log.warning("%d scheduled items are not in the cache and will play from the NAS; pitv_content has not"
+                    " delivered them (see the readiness run notes)", nas_only)
+    n_missing = sum(len(v) for v in missing.values())
+    status = "error" if n_missing else ("warning" if nas_only else "ok")
+    summary = f"{len(rows)} items checked, {n_missing} not playable, {substituted} substituted, {nas_only} relying on NAS fallback"
     run_log_finish(conn, run_id, status, summary, notes)
     log.info("readiness: %s", summary)
-    return {"status": status, "summary": summary, "notes": notes, "missing": sum(len(v) for v in missing.values()),
-            "substituted": substituted, "checked": checked}
+    return {"status": status, "summary": summary, "notes": notes, "missing": n_missing,
+            "substituted": substituted, "checked": len(rows), "nas_fallback": nas_only}
 
 
 def _hhmm(ts: int, tz: ZoneInfo) -> str:
     return datetime.fromtimestamp(ts, tz).strftime("%a %H:%M")
-
-
-def mark_missing(conn: sqlite3.Connection, media_ids: set[int], reason: str) -> None:
-    """Take files that have vanished (while their share is up) out of the library until the
-    next scan sees them again; otherwise every rebuild could pick them straight back."""
-    if not media_ids:
-        return
-    marks = ",".join("?" for _ in media_ids)
-    with tx(conn):
-        conn.execute(f"UPDATE media SET missing = 1, attention = ? WHERE id IN ({marks})",
-                     (reason, *media_ids))

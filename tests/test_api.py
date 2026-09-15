@@ -5,11 +5,9 @@ from zoneinfo import ZoneInfo
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import make_library
 from pitv import db as dbm
-from pitv.config import Config
 from pitv.db import DEFAULT_SETTINGS, now_ts
-from pitv.devtools import build_fake_library
-from pitv.library.scanner import scan_all
 from pitv.scheduler.build import build_horizon
 from pitv.scheduler.rules import broadcast_day_for
 
@@ -21,21 +19,10 @@ DAY1 = DAY0 + timedelta(days=1)
 
 @pytest.fixture(scope="module")
 def env(tmp_path_factory):
-    root = tmp_path_factory.mktemp("pitv")
-    lib = build_fake_library(root / "lib", max_episodes_per_show=6)
-    cfg = Config(data_dir=root / "data", run_dir=root / "run")
-    os.environ.pop("PITV_DB", None)
-    cfg.ensure_dirs()
-    conn = dbm.connect(cfg.db_path)
-    dbm.init_db(conn)
-    with dbm.tx(conn):
-        for stype, name, p in (("tv", "TV", lib["tv"]), ("movie", "Movies", lib["movies"]),
-                               ("advert", "Ads", lib["pitv"] / "Adverts"), ("ident", "Idents", lib["pitv"] / "Idents")):
-            conn.execute("INSERT INTO sources(type, name, path) VALUES (?,?,?)", (stype, name, str(p)))
-    scan_all(conn)
-    build_horizon(conn, start_day=DAY0, days=2, seed=7)
-    conn.close()
-    return cfg
+    ctx = make_library(tmp_path_factory.mktemp("pitv"), max_episodes=6)
+    build_horizon(ctx["conn"], start_day=DAY0, days=2, seed=7)
+    ctx["conn"].close()
+    return ctx["cfg"]
 
 
 @pytest.fixture(scope="module")
@@ -71,7 +58,7 @@ def test_library_and_shows(client):
     upd = client.put(f"/api/shows/{sid}", json={"certificate": "18", "mode": "strip", "anchor_time": "17:30"}).json()
     assert upd["certificate"] == "18" and upd["mode"] == "strip"
     upd = client.put(f"/api/shows/{sid}", json={"certificate": None}).json()
-    assert upd["certificate"] == upd["scanned"]["certificate"]
+    assert upd["certificate"] == upd["indexed"]["certificate"]
     att = client.get("/api/library/attention").json()
     assert any("Mystery" in a["title"] for a in att)
     summary = client.get("/api/library/summary").json()
@@ -161,21 +148,41 @@ def test_gap_detection(env):
     conn.close()
 
 
-def test_content_manifest_and_report(client):
+def test_content_manifest_and_report(client, tmp_path):
+    """Schema 2: every scheduled file is one request; a delivery report records where it landed."""
     m = client.get("/api/content/manifest", params={"days": 1}).json()
-    assert m["items"] and all(k in m["items"][0] for k in ("media_id", "path", "target", "action", "first_air_ts", "channels"))
-    assert m["items"] == sorted(m["items"], key=lambda i: i["first_air_ts"])
-    assert all(i["action"] == "copy" for i in m["items"])  # fake library is tiny h264
+    assert m["schema"] == 2 and m["items"]
+    first = m["items"][0]
+    for key in ("request_id", "media_id", "kind", "title", "duration", "action", "source", "target",
+                "first_air_ts", "deadline_ts", "priority", "channels", "already_cached"):
+        assert key in first, key
+    assert first["request_id"] == f"m:{first['media_id']}" and first["source"]["path"]
+    assert m["items"] == sorted(m["items"], key=lambda i: (i["priority"], i["deadline_ts"]))
+    assert all(i["action"] == "copy" for i in m["items"])   # the fake library is H.264 at 240 lines
     w = client.post("/api/wanted", json={"kind": "music", "title": "Queen - Radio Ga Ga", "year": 1984, "genre": "pop"}).json()
     assert w["genre"] == "pop"
     m = client.get("/api/content/manifest").json()
     mine = [x for x in m["wanted"] if x["wanted_id"] == w["id"]]
-    assert mine and mine[0]["dest_dir"].endswith("music videos/Pop")
-    r = client.post("/api/content/report", json={"items": [{"media_id": m["items"][0]["media_id"], "path": "/nonexistent.mp4", "status": "done"}],
-                                                  "wanted": [{"wanted_id": w["id"], "path": "/x/y.mp4", "status": "done"}],
-                                                  "run": {"tool": "pitv_content test", "started_ts": 1, "finished_ts": 2}}).json()
-    assert r["ok"] and r["wanted_done"] == 1
+    assert mine and mine[0]["action"] == "fetch" and mine[0]["dest_dir"].endswith("music videos/Pop")
+    assert mine[0]["search"]["phrase"].startswith("Queen - Radio Ga Ga") and mine[0]["search"]["year_tolerance"] == 0
+    copy = tmp_path / "copy.mp4"
+    copy.write_bytes(b"x" * 10)
+    fetched = tmp_path / "Queen - Radio Ga Ga (1984).mp4"
+    fetched.write_bytes(b"x" * 10)
+    r = client.post("/api/content/report", json={"schema": 2, "items": [
+        {"request_id": first["request_id"], "media_id": first["media_id"], "status": "done",
+         "file": {"path": str(copy), "duration": first["duration"], "vcodec": "h264", "size": 10}},
+        {"request_id": f"w:{w['id']}", "wanted_id": w["id"], "status": "done",
+         "file": {"path": str(fetched), "duration": 245.0, "vcodec": "h264", "size": 10},
+         "meta": {"kind": "music", "title": "Queen - Radio Ga Ga", "artist": "Queen", "year": 1984, "genres": ["Pop"]}},
+        {"request_id": "m:999999", "media_id": 999999, "status": "done", "file": {"path": "/nonexistent.mp4"}},
+    ], "run": {"tool": "pitv_content test", "started_ts": 1, "finished_ts": 2}}).json()
+    assert r["ok"] and r["items_done"] == 1 and r["wanted_done"] == 1 and r["items_failed"] == 1
     assert [x for x in client.get("/api/wanted").json() if x["id"] == w["id"]][0]["status"] == "done"
+    item = client.get(f"/api/media/{first['media_id']}").json()
+    assert item["cache_path"] == str(copy) and item["cached"] is True
+    music = client.get("/api/media", params={"kind": "music", "q": "Radio Ga Ga"}).json()["items"]
+    assert any(i["origin"] == "online" and i["cache_path"] == str(fetched) for i in music)
     client.delete(f"/api/wanted/{w['id']}")
 
 
@@ -185,7 +192,8 @@ def test_content_manifest_ignores_part_files(client, tmp_path):
     cache.mkdir()
     client.put("/api/settings", json={"cache_dir": str(cache)})
     try:
-        item = client.get("/api/content/manifest").json()["items"][0]
+        # An item nothing has delivered yet (the report test records a copy for the first one).
+        item = next(i for i in client.get("/api/content/manifest").json()["items"] if not i["already_cached"])
         target = cache / os.path.basename(item["target"])
         assert item["already_cached"] is False and target.parent == cache
         target.with_name(target.name + ".part").write_bytes(b"x")
@@ -287,10 +295,13 @@ def test_public_player_state_hides_machine_details(client):
     assert "file" not in pub and "input_devices" not in pub and "stream" not in pub
     assert "dir" not in pub["cache"] and "/mnt" not in pub["error"] and pub["volume"] == 80
     # Anonymous callers of the public endpoints get the filtered view.
-    client.app.state.player_state = state
+    # The web service's player subscriber resets the state to offline when no player answers,
+    # so set it immediately before each request rather than once for both.
+    anon = TestClient(client.app)
     try:
-        anon = TestClient(client.app)
+        client.app.state.player_state = state
         assert "file" not in anon.get("/api/now").json()["player"]
+        client.app.state.player_state = state
         assert "file" in client.get("/api/now").json()["player"]   # logged in
     finally:
         client.app.state.player_state = {"online": False}
@@ -331,13 +342,32 @@ def test_browse_is_confined_to_allowed_roots(client, tmp_path):
         assert client.get("/api/browse", params={"path": f"{tmp_path}/cache/../outside"}).status_code == 403
         assert client.get("/api/browse", params={"path": f"{tmp_path}/cache/link"}).status_code == 403
         assert client.get("/api/browse", params={"path": "relative"}).status_code == 400
-        # sources use the same rule
-        assert client.post("/api/sources", json={"type": "tv", "path": "/etc"}).status_code == 403
-        src = client.post("/api/sources", json={"type": "tv", "path": f"{tmp_path}/cache/sub"}).json()
-        assert src["path"] == str(tmp_path / "cache" / "sub")
-        assert client.delete(f"/api/sources/{src['id']}").json()["ok"]
+        # pitv_content source roots are held to the same rule before they are forwarded
+        assert client.put("/api/sources", json={"id": "x", "type": "tv", "root": "/etc"}).status_code == 403
     finally:
         client.put("/api/settings", json={"cache_dir": ""})
+
+
+def test_sources_are_pitv_contents(client):
+    """With pitv_content down the Sources view falls back to the last index; edits are refused."""
+    client.put("/api/settings", json={"content_tool_url": "http://127.0.0.1:9"})
+    try:
+        r = client.get("/api/sources").json()
+        assert r["owner"] == "pitv_content" and r["offline"] is True
+        ids = {s["id"] for s in r["sources"]}
+        assert {"tvshows", "movies", "ads", "tvsports", "musicvideos"} <= ids
+        assert all(s["health"]["items"] > 0 for s in r["sources"] if s["id"] in ("tvshows", "movies"))
+        assert client.put("/api/sources", json={"id": "tvshows", "enabled": False}).status_code == 503
+        assert client.put("/api/sources", json={"type": "tv"}).status_code == 400
+    finally:
+        client.put("/api/settings", json={"content_tool_url": "http://127.0.0.1:8081"})
+
+
+def test_catalogue_import_endpoint(client, env):
+    status = client.get("/api/catalogue").json()
+    assert status["last_import"]["kind"] == "catalogue"
+    assert client.post("/api/catalogue/import", json={"schema": 1}).status_code == 400
+    assert "shows" in client.get("/api/catalogue/export").json()
 
 
 def test_settings_are_validated(client):

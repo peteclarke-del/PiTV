@@ -8,6 +8,7 @@ times are derived for display using the configured timezone.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -27,16 +28,20 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL            -- JSON
 );
 
+-- Mirror of pitv_content's sources as published in its library index (docs/CONTENT_CONTRACT.md).
+-- PiTV does not read these folders; the rows give imported items a source and the admin a view.
 CREATE TABLE IF NOT EXISTS sources (
     id INTEGER PRIMARY KEY,
+    uid TEXT UNIQUE,               -- pitv_content's source id
     type TEXT NOT NULL CHECK (type IN ('tv', 'movie', 'advert', 'ident', 'music')),
     name TEXT NOT NULL,
-    path TEXT NOT NULL,            -- local mount path
-    remote TEXT,                   -- e.g. smb://synologynas/tvshows/ (informational)
-    category TEXT NOT NULL DEFAULT 'general',   -- general | sport | kids; shows inherit it
+    path TEXT NOT NULL,            -- root on the Pi (NAS mount or cache folder)
+    remote TEXT,                   -- e.g. smb://synologynas/tvshows/
+    location TEXT NOT NULL DEFAULT 'nas',        -- nas | cache
+    category TEXT NOT NULL DEFAULT 'general',   -- general | sport | kids; series inherit it
     enabled INTEGER NOT NULL DEFAULT 1,
-    last_scanned_at INTEGER,
-    last_scan_summary TEXT
+    last_indexed_at INTEGER,       -- last index import that included this source
+    index_summary TEXT
 );
 
 CREATE TABLE IF NOT EXISTS channels (
@@ -65,10 +70,10 @@ CREATE TABLE IF NOT EXISTS channels (
 
 CREATE TABLE IF NOT EXISTS shows (
     id INTEGER PRIMARY KEY,
-    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
-    path TEXT NOT NULL UNIQUE,     -- show folder
+    source_id INTEGER REFERENCES sources(id) ON DELETE CASCADE,   -- NULL for series fetched online
+    path TEXT NOT NULL UNIQUE,     -- the index uid, or a fetched:show: key for series fetched online
     title TEXT NOT NULL,
-    year INTEGER,                  -- premiered year as scanned
+    year INTEGER,                  -- premiered year from the index
     certificate TEXT,
     genres TEXT,                   -- JSON list
     plot TEXT,
@@ -81,20 +86,25 @@ CREATE TABLE IF NOT EXISTS shows (
     rest_weeks INTEGER NOT NULL DEFAULT 4,
     excluded INTEGER NOT NULL DEFAULT 0,
     missing INTEGER NOT NULL DEFAULT 0,
-    overrides TEXT NOT NULL DEFAULT '{}',   -- JSON: fields that beat scanned values
+    overrides TEXT NOT NULL DEFAULT '{}',   -- JSON: admin edits that beat indexed values
     updated_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS media (
     id INTEGER PRIMARY KEY,
-    source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    source_id INTEGER REFERENCES sources(id) ON DELETE CASCADE,   -- NULL for material fetched online
     kind TEXT NOT NULL CHECK (kind IN ('episode', 'movie', 'advert', 'ident', 'music')),
     show_id INTEGER REFERENCES shows(id) ON DELETE CASCADE,
     season INTEGER,
     episode INTEGER,
     title TEXT NOT NULL,
     year INTEGER,
-    path TEXT NOT NULL UNIQUE,
+    uid TEXT UNIQUE,               -- index uid (nas:/cache:) or fetched:<wanted id>
+    origin TEXT NOT NULL DEFAULT 'nas',   -- nas | cache | online: where the original lives
+    path TEXT NOT NULL UNIQUE,     -- the original: NAS file (fallback only) or, for cache/online, the cache file
+    cache_path TEXT,               -- the cache copy pitv_content delivered (what playback uses)
+    cache_vcodec TEXT,             -- the delivered copy's codec and interlacing, which decide how it is decoded
+    cache_interlaced INTEGER,
     size INTEGER,
     mtime INTEGER,
     duration REAL,                 -- seconds
@@ -117,7 +127,6 @@ CREATE TABLE IF NOT EXISTS media (
     missing INTEGER NOT NULL DEFAULT 0,
     attention TEXT,                -- reason this item needs a look, or NULL
     overrides TEXT NOT NULL DEFAULT '{}',
-    transcoded_path TEXT,          -- CRT-profile copy made by pitv_content (see content.py)
     updated_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS media_show ON media(show_id, season, episode);
@@ -161,19 +170,6 @@ CREATE TABLE IF NOT EXISTS history (
     title TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS history_media ON history(media_id, started_at);
-
-CREATE TABLE IF NOT EXISTS probe_cache (
-    path TEXT PRIMARY KEY,
-    size INTEGER NOT NULL,
-    mtime INTEGER NOT NULL,
-    duration REAL,
-    vcodec TEXT,
-    acodec TEXT,
-    width INTEGER,
-    height INTEGER,
-    interlaced INTEGER NOT NULL DEFAULT 0,
-    probed_at INTEGER NOT NULL
-);
 
 CREATE TABLE IF NOT EXISTS wanted (
     id INTEGER PRIMARY KEY,
@@ -224,7 +220,7 @@ CREATE INDEX IF NOT EXISTS lineup_channel ON lineup(channel_id);
 
 CREATE TABLE IF NOT EXISTS run_log (
     id INTEGER PRIMARY KEY,
-    kind TEXT NOT NULL,            -- scan | schedule | readiness | content
+    kind TEXT NOT NULL,            -- catalogue | schedule | readiness | content
     started_at INTEGER NOT NULL,
     finished_at INTEGER,
     status TEXT NOT NULL DEFAULT 'running',
@@ -286,9 +282,6 @@ DEFAULT_MUSIC_BLOCKS = [
     {"start": "22:30", "name": "Nineties Indie & Dance", "genres": ["indie", "dance", "electronic", "britpop"], "decades": [1990]},
     {"start": "23:30", "name": "Late Soul", "genres": ["soul", "r&b", "reggae", "jazz", "blues"], "decades": []},
 ]
-MUSIC_GENRES = ["pop", "rock", "metal", "hard rock", "heavy metal", "disco", "funk", "soul", "punk", "new wave",
-                "synth", "indie", "dance", "electronic", "hip hop", "rap", "reggae", "ska", "jazz", "blues",
-                "country", "folk", "classical", "r&b", "motown", "glam"]
 CARTOON_GENRES = ["animation", "cartoon", "anime", "animated"]
 # Genres that mark children's programming (kids cutoff at 21:00, kids-friendly dayparts).
 KIDS_GENRES = {"animation", "children", "children's", "kids", "family", "cartoon"}
@@ -326,7 +319,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
                               "casino", "lottery"],
     "music_concert_repeat_days": 14,
     "music_video_repeat_hours": 36,
-    "music_genres": MUSIC_GENRES,
     "cartoon_genres": CARTOON_GENRES,
     "movie_repeat_days": 21,
     "same_slot_bonus": 3.0,
@@ -363,17 +355,18 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "external_episode_minutes": 30,    # expected length when a line-up entry does not say
     "external_weight": 0.7,            # relative to library programmes when choosing
     "transient_keep_days": 7,          # fetched transient files are deleted this long after airing
-    # folders an admin may browse and register as sources (plus the cache, acquire and home dirs)
+    # folders the admin folder picker may browse, e.g. for pitv_content source roots (plus the cache, acquire and home dirs)
     "browse_roots": ["/mnt", "/media", "/srv"],
     "content_profile": {"width": 768, "height": 576, "vcodec": "h264", "acodec": "aac", "max_bitrate_kbps": 4000,
                         "deinterlace": "if_interlaced"},
-    "content_tool_url": "http://127.0.0.1:8081",   # pitv_content's local API (settings, run, log, providers)
+    "content_tool_url": "http://127.0.0.1:8081",   # pitv_content's local API (index, sources, settings, run, log)
+    "nas_fallback": True,              # play the NAS original when the cache copy is missing or unplayable
     # resilience
     "clock_wait_seconds": 120,         # at boot, wait this long for NTP before tuning (no RTC on the Pi)
     "memory_limit_mb": 700,            # the player restarts itself above this; systemd also caps it
     # maintenance
     "readiness_hours": [6, 7],         # verify tomorrow's files exist and substitute what is missing
-    "scan_hour": 4,
+    "catalogue_hour": 4,            # daily import of pitv_content's library index
     "history_keep_days": 180,
 }
 
@@ -464,6 +457,13 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("media", "home_channel_id", "INTEGER REFERENCES channels(id) ON DELETE SET NULL"),
     ("media", "transient", "INTEGER NOT NULL DEFAULT 0"),
     ("schedule", "wanted_id", "INTEGER"),
+    ("sources", "uid", "TEXT"),
+    ("sources", "location", "TEXT NOT NULL DEFAULT 'nas'"),
+    ("media", "uid", "TEXT"),
+    ("media", "origin", "TEXT NOT NULL DEFAULT 'nas'"),
+    ("media", "cache_path", "TEXT"),
+    ("media", "cache_vcodec", "TEXT"),
+    ("media", "cache_interlaced", "INTEGER"),
 ]
 
 
@@ -472,42 +472,93 @@ def _table_sql(conn: sqlite3.Connection, table: str) -> str:
     return row["sql"] if row else ""
 
 
+def _create_statement(table: str) -> str:
+    """The CREATE TABLE statement for `table` from SCHEMA, found by matching parentheses while
+    skipping `--` comments (a comment may itself contain ");")."""
+    head = f"CREATE TABLE IF NOT EXISTS {table} ("
+    start = SCHEMA.index(head)
+    depth, i = 0, start
+    while i < len(SCHEMA):
+        ch = SCHEMA[i]
+        if SCHEMA.startswith("--", i):
+            i = SCHEMA.index("\n", i)
+            continue
+        if ch == "'":
+            i = SCHEMA.index("'", i + 1) + 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return SCHEMA[start:i + 1] + ";"
+        i += 1
+    raise ValueError(f"unterminated CREATE TABLE for {table}")
+
+
+def _index_statements() -> list[str]:
+    return [line.strip() for line in SCHEMA.splitlines() if line.strip().startswith(("CREATE INDEX", "CREATE UNIQUE INDEX"))]
+
+
 def _rebuild_table(conn: sqlite3.Connection, table: str) -> None:
-    """Recreate a table from SCHEMA (to widen a CHECK constraint), keeping all rows."""
-    start = SCHEMA.index(f"CREATE TABLE IF NOT EXISTS {table} (")
-    end = SCHEMA.index(");", start) + 2
-    create_new = SCHEMA[start:end].replace(f"CREATE TABLE IF NOT EXISTS {table} (", f"CREATE TABLE {table}__new (")
+    """Recreate a table from SCHEMA, keeping every column the two definitions share. Runs inside
+    the caller's transaction; foreign keys must already be off (SQLite ignores that switch inside
+    a transaction)."""
+    create_new = _create_statement(table).replace(f"CREATE TABLE IF NOT EXISTS {table} (", f"CREATE TABLE {table}__new (", 1)
     old_cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})")]
-    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute(f"DROP TABLE IF EXISTS {table}__new")
+    conn.execute(create_new)
+    new_cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table}__new)")]
+    common = ", ".join(c for c in old_cols if c in new_cols)
+    conn.execute(f"INSERT INTO {table}__new ({common}) SELECT {common} FROM {table}")
+    conn.execute(f"DROP TABLE {table}")
+    conn.execute(f"ALTER TABLE {table}__new RENAME TO {table}")
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Bring an existing database up to SCHEMA in one transaction: a failure leaves it exactly
+    as it was, and the service can start on the old schema's data after the fix."""
+    conn.execute("PRAGMA foreign_keys=OFF")   # outside the transaction, or SQLite ignores it
     try:
-        conn.execute("BEGIN")
-        conn.execute(create_new)
-        new_cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table}__new)")]
-        common = ", ".join(c for c in old_cols if c in new_cols)
-        conn.execute(f"INSERT INTO {table}__new ({common}) SELECT {common} FROM {table}")
-        conn.execute(f"DROP TABLE {table}")
-        conn.execute(f"ALTER TABLE {table}__new RENAME TO {table}")
-        conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
+        with tx(conn):
+            _migrate_steps(conn)
+            fk_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
+            if fk_errors:
+                # Logged, not fatal: a television that will not start is worse than a stale row.
+                logging.getLogger("pitv.db").warning("%d rows reference missing parents after migration: %s",
+                                                     len(fk_errors), [tuple(r) for r in fk_errors[:5]])
     finally:
         conn.execute("PRAGMA foreign_keys=ON")
 
 
-def _migrate(conn: sqlite3.Connection) -> None:
-    # Widened CHECK constraints (music sources and media) need a table rebuild.
-    if "'music'" not in _table_sql(conn, "sources"):
+def _migrate_steps(conn: sqlite3.Connection) -> None:
+    # Carry pitv_content's old transcode pointer into cache_path before the media table is
+    # rebuilt without it.
+    media_cols = {r["name"] for r in conn.execute("PRAGMA table_info(media)")}
+    if "transcoded_path" in media_cols:
+        if "cache_path" not in media_cols:
+            conn.execute("ALTER TABLE media ADD COLUMN cache_path TEXT")
+        conn.execute("UPDATE media SET cache_path = transcoded_path WHERE cache_path IS NULL")
+    # Rebuilds: widened CHECK constraints (music), source_id made nullable for material fetched
+    # online (SQLite cannot relax NOT NULL in place), and renamed scan-era columns.
+    if "'music'" not in _table_sql(conn, "sources") or "last_scan_summary" in _table_sql(conn, "sources"):
         _rebuild_table(conn, "sources")
-    if "'music'" not in _table_sql(conn, "media"):
+    if "'music'" not in _table_sql(conn, "media") or "transcoded_path" in media_cols \
+            or "source_id INTEGER NOT NULL" in _table_sql(conn, "media"):
         _rebuild_table(conn, "media")
+    if "source_id INTEGER NOT NULL" in _table_sql(conn, "shows"):
+        _rebuild_table(conn, "shows")
     if _table_sql(conn, "wanted") and "'music'" not in _table_sql(conn, "wanted"):
         _rebuild_table(conn, "wanted")
     for table, column, ddl in MIGRATIONS:
         cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
-    conn.executescript(SCHEMA)  # recreate any indexes dropped with a rebuilt table
+    for stmt in _index_statements():      # rebuilt tables lose their indexes
+        conn.execute(stmt)
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS media_uid ON media(uid)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS sources_uid ON sources(uid)")
+    conn.execute("DROP TABLE IF EXISTS probe_cache")   # PiTV no longer probes files; pitv_content does
 
 
 def _seed_channel_genres(conn: sqlite3.Connection) -> None:
@@ -617,7 +668,7 @@ def enabled_channels(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 def effective(row: dict[str, Any]) -> dict[str, Any]:
-    """Apply the JSON overrides column on top of scanned values."""
+    """Apply the JSON overrides column (admin edits) on top of indexed values."""
     out = dict(row)
     overrides = row.get("overrides") or {}
     if isinstance(overrides, str):

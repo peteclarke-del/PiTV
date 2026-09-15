@@ -5,21 +5,19 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import urllib.error
 import urllib.parse
-import urllib.request
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
+from ... import tool_client
 from ...content import apply_report, manifest, protect_manifest
 from ...db import DEFAULT_SETTINGS, all_settings, get_setting
 from ...logsetup import tail
 from ...player.cache import MediaCache
 from ...readiness import check as readiness_check
-from .admin import scan_job
 from .deps import admin_conn, run_cmd
 
 router = APIRouter(prefix="/api/content", dependencies=[Depends(admin_conn)])
@@ -37,10 +35,9 @@ def get_manifest(conn: sqlite3.Connection = Depends(admin_conn), days: int = 1):
 @router.post("/report")
 def post_report(request: Request, body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
     result = apply_report(conn, body)
-    if result["wanted_done"]:
-        # New files: scan the acquired folders so they become schedulable.
-        scan_job(request, None, "Scan after pitv_content report")
     request.app.state.bus.publish_threadsafe("library", {"changed": True})
+    request.app.state.bus.publish_threadsafe("schedule", {"changed": True})
+    request.app.state.player.call("schedule-changed")   # slots may have been resized or bound
     return {"ok": True, **result}
 
 
@@ -101,7 +98,7 @@ def tool_status(conn: sqlite3.Connection = Depends(admin_conn)):
 def tool_run(conn: sqlite3.Connection = Depends(admin_conn)):
     """Start a pitv_content cache run now: through its API when it is up, else systemd."""
     base = get_setting(conn, "content_tool_url") or DEFAULT_SETTINGS["content_tool_url"]
-    status, payload = _tool_request(base, "POST", "run", body={"mode": "cache"}, timeout=10)
+    status, payload = tool_client.request(base, "POST", "run", body={"mode": "cache"}, timeout=10)
     if status < 500 and not payload.get("offline"):
         if status == 409:
             return {"ok": False, "error": payload.get("error") or "a run is already active"}
@@ -134,28 +131,6 @@ def _proxy_path(path: str) -> str | None:
     return "/".join(urllib.parse.quote(seg, safe="") for seg in segments)
 
 
-def _tool_request(base: str, method: str, path: str, query: str = "", body: dict[str, Any] | None = None,
-                  timeout: float = 15) -> tuple[int, Any]:
-    """One JSON request to pitv_content. Anything that is not JSON (an unrelated service on that
-    port answering with an HTML page) means the tool is not there: 503 with `offline`."""
-    url = f"{base.rstrip('/')}/api/{path}" + (f"?{query}" if query else "")
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            code, raw = r.status, r.read()
-    except urllib.error.HTTPError as exc:
-        code, raw = exc.code, exc.read()
-    except (urllib.error.URLError, OSError) as exc:
-        return 503, {"error": f"pitv_content API unavailable at {base}: {exc}", "offline": True}
-    text = raw.decode("utf-8", errors="replace")
-    try:
-        return code, (json.loads(text) if text.strip() else {})
-    except ValueError:
-        return 503, {"error": f"pitv_content API not found at {base} (got HTTP {code}, non-JSON response)",
-                     "offline": True}
-
-
 @router.api_route("/tool/api/{path:path}", methods=["GET", "PUT", "POST"])
 async def tool_proxy(path: str, request: Request, conn: sqlite3.Connection = Depends(admin_conn)):
     """Forward to pitv_content's local API so its settings, providers, catalogue, jobs and
@@ -172,7 +147,7 @@ async def tool_proxy(path: str, request: Request, conn: sqlite3.Connection = Dep
         except ValueError:
             body = {}
     # urllib blocks; keep it off the event loop so the SSE stream and other requests carry on.
-    status, payload = await run_in_threadpool(_tool_request, base, request.method, target,
+    status, payload = await run_in_threadpool(tool_client.request, base, request.method, target,
                                               request.url.query.replace("#", "%23"), body)
     offline = isinstance(payload, dict) and payload.get("offline")
     if head == "log" and isinstance(payload, dict) and not offline:
@@ -185,7 +160,7 @@ async def tool_proxy(path: str, request: Request, conn: sqlite3.Connection = Dep
 def tool_catalogue(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """pitv_content's catalogue (titles it can fetch), or [] when it is not running."""
     base = all_settings(conn).get("content_tool_url") or "http://127.0.0.1:8081"
-    status, payload = _tool_request(base, "GET", "catalogue", timeout=3)
+    status, payload = tool_client.request(base, "GET", "catalogue", timeout=3)
     if status != 200 or not isinstance(payload, list):
         return []
     return [c for c in payload if isinstance(c, dict)]

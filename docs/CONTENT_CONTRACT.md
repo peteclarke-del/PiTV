@@ -1,0 +1,195 @@
+# PiTV and pitv_content: contract, schema 2
+
+This document is the interface between the two applications. Both run on the same Pi and
+share the cache drive. Changes to it are agreed by both projects before either side ships.
+
+## Responsibilities
+
+| | PiTV | pitv_content |
+|---|---|---|
+| Owns | the programme catalogue, channel line-ups, the schedule, playback, the web app and admin, cache eviction, readiness | the sources (NAS shares and online providers), the NAS index, finding, fetching, trimming and encoding, placing files in the cache |
+| Reads | the library index, delivery reports, the cache, the NAS (read-only, fallback playback only) | the request manifest, the NAS (read-only), online providers |
+| Writes | its database and JSON mirrors (`catalogue.json`, `lineups.json`); deletes cache files by LRU and transient expiry | the library index, files in the cache, delivery reports, its status file and log |
+
+PiTV never indexes the NAS and never downloads or encodes. pitv_content never decides what is
+scheduled and never deletes from the cache. The scheduled services never write to the NAS;
+pitv_content's `--dest nas` catalogue option is a manual operator action outside this
+contract, and anything it files reaches PiTV through the index like any other NAS file.
+
+## Flow
+
+1. pitv_content indexes its NAS sources and publishes the library index.
+2. PiTV imports the index into its catalogue. Custom programming (titles not on the NAS)
+   is added to the catalogue in PiTV's admin as line-up entries.
+3. PiTV builds the schedule from each channel's line-up and publishes the request manifest:
+   every programme, advert, ident and music video it needs through the end of the next
+   broadcast day.
+4. pitv_content works the manifest by priority and deadline: items with a NAS source are
+   copied or transcoded into the cache; items without one are searched for online, fetched,
+   encoded and cached.
+5. pitv_content reports each delivery with the file's path and properties. PiTV records the
+   cache path, corrects slot lengths where the real duration differs, and creates catalogue
+   entries for material fetched online.
+6. At air time PiTV plays the cache copy. If it is missing or unplayable PiTV logs an error
+   and, when `nas_fallback` is on, plays the NAS original. If neither is playable it shows the
+   technical difficulties card and logs the failure.
+
+## 1. Library index (pitv_content to PiTV)
+
+`GET {content_tool_url}/api/library`, and the same document written atomically to
+`<cache_dir>/index/library.json` so PiTV can import it when the API is down.
+`POST {content_tool_url}/api/index` starts a re-index; the file's `generated_ts` changes when
+it completes.
+
+```json
+{
+  "schema": 2,
+  "generated_ts": 1789430400,
+  "complete": true,
+  "sources": [
+    {"id": "tvshows", "name": "TV Shows", "type": "tv", "category": "general",
+     "root": "/mnt/tvshows", "remote": "smb://synologynas/tvshows/", "enabled": true}
+  ],
+  "shows": [
+    {"uid": "show:tvshows:Minder (1979)", "source": "tvshows", "title": "Minder", "year": 1979,
+     "genres": ["Drama", "Comedy"], "certificate": "12", "plot": "...", "category": "general"}
+  ],
+  "items": [
+    {"uid": "nas:tvshows:Minder (1979)/Season 02/Minder - S02E05 - The Beach.mkv",
+     "source": "tvshows", "kind": "episode", "show_uid": "show:tvshows:Minder (1979)",
+     "season": 2, "episode": 5, "title": "The Beach", "year": 1980,
+     "genres": [], "certificate": null, "plot": null,
+     "duration": 3120.4, "vcodec": "h264", "acodec": "aac", "width": 720, "height": 576,
+     "interlaced": true, "size": 734003200, "mtime": 1700000000,
+     "path": "/mnt/tvshows/Minder (1979)/Season 02/Minder - S02E05 - The Beach.mkv"}
+  ]
+}
+```
+
+- Every source carries `location`: `nas` for pitv_content's NAS shares, `cache` for the
+  folders under `acquire_dir` holding material it has already fetched. Items from a `cache`
+  source have uid `cache:<source id>:<relpath>`, their `path` is the cache file, and PiTV treats
+  them as already cached.
+- Source `type` (`tv`, `movie`, `advert`, `ident`, `music`) decides item kinds. `category`
+  matters only for `tv` sources and is one of `general`, `sport` (weekend blocks and sport
+  daypart weights) or `kids` (children's series).
+- `kind` is `episode`, `movie`, `advert`, `ident` or `music`. Episodes carry `show_uid`,
+  `season`, `episode`; adverts carry `family_safe` (bool) and `tags`; music carries `artist`
+  and `concert`; idents carry `channel_hint`.
+- `uid` is stable for as long as the file keeps its path: `nas:<source id>:<relpath>` for
+  items and `show:<source id>:<folder>` for series. `path` is the absolute path on the Pi's
+  read-only mount, used only for fallback playback.
+- A `complete` index lists every item; PiTV marks anything absent from it as missing. An
+  incomplete index (`"complete": false`) only adds and updates.
+- `sources` are pitv_content's NAS sources. PiTV shows them and edits them through
+  pitv_content's API; it does not use them itself.
+
+## 2. Request manifest (PiTV to pitv_content)
+
+`GET /api/content/manifest?days=1` on PiTV, or `pitv content-manifest --out file` when the web
+service is down. Schema 2.
+
+```json
+{
+  "schema": 2,
+  "generated_ts": 1789430400, "horizon_ts": 1789542000,
+  "cache_dir": "/mnt/cache/pitv", "acquire_dir": "/mnt/cache/pitv/acquired",
+  "free_bytes": 500000000000, "cache_max_bytes": 644245094400, "pi": true,
+  "profile": {"width": 768, "height": 576, "vcodec": "h264", "acodec": "aac",
+              "max_bitrate_kbps": 4000, "deinterlace": "if_interlaced"},
+  "running_marker": "/mnt/cache/pitv/.pitv_content.running",
+  "reports_dir": "/mnt/cache/pitv/reports",
+  "items": [
+    {"request_id": "m:1234", "media_id": 1234, "wanted_id": null, "uid": "nas:tvshows:...",
+     "kind": "episode", "show_title": "Minder", "season": 2, "episode": 5,
+     "title": "The Beach", "year": 1980, "artist": null, "duration": 3120.4,
+     "channels": [3], "first_air_ts": 1789462800, "deadline_ts": 1789461900, "priority": 0,
+     "source": {"path": "/mnt/tvshows/...", "vcodec": "h264", "height": 576, "interlaced": true},
+     "action": "transcode", "target": "/mnt/cache/pitv/1234_Minder - S02E05 - The Beach.mp4",
+     "already_cached": false, "transient": false},
+    {"request_id": "w:77", "media_id": null, "wanted_id": 77, "uid": null,
+     "kind": "episode", "show_title": "The Tripods", "season": 1, "episode": 3,
+     "title": "Episode 3", "year": 1984, "duration": 1500,
+     "channels": [2], "first_air_ts": 1789549200, "deadline_ts": 1789548300, "priority": 6,
+     "source": null, "action": "fetch",
+     "search": {"phrase": "The Tripods S01E03 1984 full episode", "hints": ["BBC"],
+                "duration_minutes": [20, 60], "year_tolerance": 2},
+     "dest_dir": "/mnt/cache/pitv/acquired/tvshows/The Tripods (1984)/Season 01",
+     "transient": true}
+  ],
+  "wanted": []
+}
+```
+
+- Every scheduled file appears once, however many slots or channels use it.
+- `action` is `copy` (the source already decodes in hardware on the Pi and fits the profile),
+  `transcode` (it does not), or `fetch` (there is no known source; find it online, encode it to
+  the profile and file it under `dest_dir`).
+- `target` is where a copy or transcode must end up. Fetched material is filed under
+  `dest_dir` in the Kodi layout and its path is reported.
+- `wanted` lists requests that are not scheduled yet (adverts or music videos added by hand,
+  gaps in a series); same shape as a `fetch` item without air times.
+
+## 3. Delivery report (pitv_content to PiTV)
+
+`POST /api/content/report` on PiTV; the same document may be dropped in `reports_dir`.
+
+```json
+{
+  "schema": 2,
+  "items": [
+    {"request_id": "m:1234", "media_id": 1234, "wanted_id": null, "status": "done", "message": "",
+     "file": {"path": "/mnt/cache/pitv/1234_Minder - S02E05 - The Beach.mp4", "duration": 3120.0,
+              "vcodec": "h264", "acodec": "aac", "width": 768, "height": 576, "interlaced": false,
+              "size": 1234567890}},
+    {"request_id": "w:77", "media_id": null, "wanted_id": 77, "status": "done", "message": "",
+     "file": {"path": "/mnt/cache/pitv/acquired/tvshows/The Tripods (1984)/Season 01/The Tripods - S01E03 - Episode 3.mp4",
+              "duration": 1712.0, "vcodec": "h264", "acodec": "aac", "width": 768, "height": 576,
+              "interlaced": false, "size": 456789012},
+     "meta": {"kind": "episode", "show_title": "The Tripods", "season": 1, "episode": 3,
+              "title": "The Tripods", "year": 1984, "genres": ["Science Fiction"], "certificate": "PG",
+              "plot": "...", "artist": null, "concert": false, "family_safe": true, "uid": "yt:abc123"}},
+    {"request_id": "w:78", "media_id": null, "wanted_id": 78, "status": "failed",
+     "message": "youtube bot check", "file": null}
+  ],
+  "run": {"started_ts": 1789430400, "finished_ts": 1789434000, "tool": "pitv-content 0.2.0",
+          "log_tail": "..."}
+}
+```
+
+- `status` is `done`, `failed` or `skipped` (already cached, or being written by another
+  process). A failure whose message contains "bot check" or "rate limit" is temporary and
+  does not use up an attempt; a request fails for good after three attempts.
+- `file` properties are measured by pitv_content after encoding. PiTV trusts them: it records
+  the cache path and, when the duration differs from what was scheduled, resizes the slot and
+  rebuilds the rest of that channel-day.
+- `meta` is required for fetched material, which PiTV has never seen; PiTV creates its
+  catalogue entry from it. For episodes `show_title`, `season` and `episode` echo the request
+  exactly, so the delivery is filed against it even when the fetched title differs.
+- A `skipped` item still carries a `file` block measured from the existing target.
+- Schema 1 reports (no `file` block) are still accepted during the transition: the path is
+  recorded and the requested length is kept.
+
+## 4. Sources
+
+pitv_content's API owns the source configuration; PiTV's admin Sources page is a view of it.
+
+- `GET {content_tool_url}/api/sources` returns the NAS sources as in the index, plus
+  `health` (mounted, readable, item count, last indexed).
+- `PUT {content_tool_url}/api/sources` with `{"id", "name", "type", "category", "root",
+  "remote", "enabled"}` adds or edits one; `{"id", "delete": true}` removes one. Returns the
+  list, or 400 `{"errors": {...}}`.
+- Online providers stay on `GET/PUT /api/providers` as already agreed.
+
+## 5. Shared cache rules
+
+Unchanged from schema 1: pitv_content writes `.part` files and renames atomically, never
+deletes, touches `running_marker` while working, and calls `POST /api/content/make-room`
+before a large job. PiTV ignores `.part` files, never evicts a file in the current manifest or
+younger than two hours, and does not evict while the marker is fresh.
+
+## 6. Timing
+
+01:00 pitv_content main run (index, then manifest). 04:00 PiTV imports the index and extends
+the schedule. 05:00 pitv_content catch-up run. 06:00 and 07:00 PiTV readiness checks: anything
+not playable from the cache (or the NAS, with fallback on) is replaced and logged as an error.

@@ -1,5 +1,6 @@
 <script>
   import { untrack } from 'svelte';
+  import AppBadge from '../../components/AppBadge.svelte';
   import { get, tryApi } from '../../lib/api.js';
   import { toast, clock } from '../../lib/stores.svelte.js';
   import { fmtBytes, fmtAgo } from '../../lib/format.js';
@@ -8,11 +9,14 @@
 
   /** fixed: show only this source and hide the selector (e.g. 'pitv-content' on the Content tab). */
   let { fixed = null, height = 'calc(100vh - 260px)', liveTool = false } = $props();
+  // [value, label, owning app]. The catalogue log records imports of pitv_content's index, which is PiTV's work.
   const SOURCES = [
-    ['player', 'Player log'], ['web', 'Web log'], ['scan', 'Scan log'], ['schedule', 'Schedule log'], ['install', 'Install log'],
-    ['pitv-content', 'pitv_content log'],
-    ['journal:pitv-player', 'Journal: pitv-player'], ['journal:pitv-web', 'Journal: pitv-web'],
+    ['player', 'Player log', 'pitv'], ['web', 'Web log', 'pitv'], ['catalogue', 'Catalogue import log', 'pitv'],
+    ['schedule', 'Schedule log', 'pitv'], ['install', 'Install log', 'pitv'],
+    ['journal:pitv-player', 'Journal: pitv-player', 'pitv'], ['journal:pitv-web', 'Journal: pitv-web', 'pitv'],
+    ['pitv-content', 'pitv_content log', 'content'],
   ];
+  const APP_LABEL = { pitv: 'PiTV', content: 'pitv_content' };
   const LEVELS = ['', 'DEBUG', 'INFO', 'WARNING', 'ERROR'];
   let source = $state(untrack(() => fixed) ?? 'player');
   let logPath = $state('');
@@ -84,7 +88,14 @@
 
 <div class="stack">
   <div class="row">
-    {#if !fixed}<select bind:value={source} aria-label="Log">{#each SOURCES as [v, l] (v)}<option value={v}>{l}</option>{/each}</select>{/if}
+    {#if !fixed}
+      <select bind:value={source} aria-label="Log">
+        {#each ['pitv', 'content'] as app (app)}
+          <optgroup label={APP_LABEL[app]}>{#each SOURCES.filter((x) => x[2] === app) as [v, l] (v)}<option value={v}>{APP_LABEL[app]}: {l}</option>{/each}</optgroup>
+        {/each}
+      </select>
+      <AppBadge app={SOURCES.find((x) => x[0] === source)?.[2] ?? 'pitv'} />
+    {/if}
     <select bind:value={lines} aria-label="Lines">{#each [100, 300, 1000, 3000] as n (n)}<option value={n}>{n} lines</option>{/each}</select>
     {#if !isJournal}
       <select bind:value={level} aria-label="Minimum level">{#each LEVELS as l (l)}<option value={l}>{l || 'All levels'}</option>{/each}</select>

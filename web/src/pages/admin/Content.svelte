@@ -19,16 +19,18 @@
   import ProgressBar from '../../components/ProgressBar.svelte';
   import SchemaForm from '../../components/SchemaForm.svelte';
   import StatusBadge from '../../components/StatusBadge.svelte';
+  import AppBadge from '../../components/AppBadge.svelte';
+  import ReadinessNotes from '../../components/ReadinessNotes.svelte';
   import ManifestCard from './ManifestCard.svelte';
   import Logs from './Logs.svelte';
   import ToolRun from './ToolRun.svelte';
-  import ToolProviders from './ToolProviders.svelte';
   import ToolCatalogue from './ToolCatalogue.svelte';
   import ToolJobs from './ToolJobs.svelte';
 
-  const SUBTABS = [['overview', 'Overview'], ['run', 'Run'], ['settings', 'Settings'], ['providers', 'Providers'], ['catalogue', 'Catalogue'], ['jobs', 'Jobs'], ['log', 'Log']];
-  const NEEDS_API = ['settings', 'providers', 'catalogue', 'jobs'];
-  let sub = $derived(route.parts[2] ?? 'overview');
+  // Providers moved to their own admin tab; an old #/admin/content/providers link lands on the status view.
+  const SUBTABS = [['overview', 'Status'], ['run', 'Run'], ['settings', 'Settings'], ['catalogue', 'Online catalogue'], ['jobs', 'Jobs'], ['log', 'Log']];
+  const NEEDS_API = ['settings', 'catalogue', 'jobs'];
+  let sub = $derived(SUBTABS.some(([id]) => id === route.parts[2]) ? route.parts[2] : 'overview');
   let tool = $state(null);          // GET /api/content/tool
   let live = $state(null);          // the app's own status document, null while unreachable
   let online = $derived(live !== null);
@@ -38,7 +40,6 @@
   let schema = $state([]);
   let schemaErrors = $state({});
   let savingSchema = $state(false);
-  let providers = $state(null);
   let catalogue = $state(null);
   let jobs = $state(null);
   let loadedSub = $state({});
@@ -64,7 +65,6 @@
     if (!online || (!force && loadedSub[which])) return;
     try {
       if (which === 'settings') { const r = await toolGet('settings'); schema = r?.schema ?? []; schemaErrors = {}; }
-      else if (which === 'providers') providers = (await toolGet('providers')) ?? [];
       else if (which === 'catalogue') catalogue = (await toolGet('catalogue')) ?? [];
       else if (which === 'jobs') jobs = (await toolGet('jobs', { limit: 20 })) ?? [];
       loadedSub[which] = true;
@@ -109,11 +109,12 @@
   {/if}
 
   <div class="card">
-    <div class="card-title"><h3>pitv_content</h3>
+    <div class="card-title"><h3>pitv_content</h3><AppBadge app="content" />
       {#if online}<span class="badge ok">API online{live?.version ? ` · ${live.version}` : ''}{live?.api_version ? ` (api ${live.api_version})` : ''}</span>{:else}<span class="badge warn">API offline</span>{/if}
-      <button class="small" onclick={readinessCheck} disabled={readinessCheck.busy}>{readinessCheck.busy ? 'Checking…' : 'Check readiness'}</button>
+      <span class="spacer"></span>
       <button class="small primary" onclick={runNow} disabled={runNow.busy || !tool || isRunning}>Run now</button>
     </div>
+    <p class="scope">The support app that indexes the NAS, fetches what is not on it, encodes to the Pi's profile and fills the cache. Everything on this page is pitv_content's, except the manifest and readiness, which are PiTV's side of the exchange.</p>
     {#if tool}
       <div class="row small">
         {#if tool.installed}<span class="badge ok">installed{tool.version ? ` ${tool.version}` : ''}</span>{:else}<span class="badge warn">not installed</span>{/if}
@@ -135,7 +136,7 @@
   {#if sub === 'overview'}
     <div class="overview">
       <div class="card">
-        <div class="card-title"><h3>Current run</h3>{#if st}<span class="badge {stateBadge}">{st.state}</span>{/if}{#if live}<span class="tiny muted">live</span>{/if}</div>
+        <div class="card-title"><h3>Current run</h3>{#if st}<span class="badge {stateBadge}">{st.state}</span>{/if}{#if live}<span class="tiny muted">live</span>{/if}<AppBadge app="content" /></div>
         {#if !tool && !live}<div class="skeleton" style="height:80px"></div>
         {:else if !st}
           <p class="muted small">No status file yet{tool?.status_file ? ` at ${tool.status_file}` : ''}. pitv_content writes it while it runs.</p>
@@ -164,7 +165,7 @@
       </div>
 
       <div class="card">
-        <div class="card-title"><h3>Last run</h3></div>
+        <div class="card-title"><h3>Last run</h3><AppBadge app="content" /></div>
         {#if st?.last_run}
           <div class="row small"><StatusBadge status={st.last_run.status} /><span>{st.last_run.summary}</span></div>
           <div class="tiny muted mt">{fmtDateTime(st.last_run.started_ts)}{st.last_run.finished_ts ? ` to ${fmtDateTime(st.last_run.finished_ts)}` : ''}</div>
@@ -173,12 +174,15 @@
         {#if tool?.reports?.length}
           <ul class="runs">{#each tool.reports as r (r.id)}<li><StatusBadge status={r.status} /><span class="small">{r.summary || '–'}</span><span class="tiny muted nowrap">{fmtAgo(r.started_at, clock.ts)}</span></li>{/each}</ul>
         {:else}<p class="muted small">No reports yet; the tool posts one after each run.</p>{/if}
-        {#if readiness}
-          <h4 class="mt">Readiness</h4>
-          <div class="row small"><StatusBadge status={readiness.status} /><span>{readiness.summary}</span></div>
-          {#if readiness.notes?.length}<pre class="log mt">{readiness.notes.join('\n')}</pre>{/if}
-        {/if}
       </div>
+    </div>
+    <div class="card">
+      <div class="card-title"><h3>Readiness</h3><AppBadge app="pitv" /><span class="spacer"></span><button class="small" onclick={readinessCheck} disabled={readinessCheck.busy}>{readinessCheck.busy ? 'Checking…' : 'Check readiness'}</button></div>
+      <p class="scope">PiTV verifies that tomorrow's airings are playable from the cache, or from the NAS while nas_fallback is on, and replaces anything that is not.</p>
+      {#if readiness}
+        <div class="row small mb"><StatusBadge status={readiness.status} /><span>{readiness.summary}</span></div>
+        <ReadinessNotes notes={readiness.notes} />
+      {:else}<p class="muted small">Runs automatically at the readiness hours set under Weighting, Maintenance.</p>{/if}
     </div>
     <ManifestCard />
   {:else if sub === 'run'}
@@ -186,15 +190,15 @@
   {:else if sub === 'settings'}
     {#if !online}<div class="empty">Settings need the pitv_content API.</div>
     {:else if !loadedSub.settings}<div class="skeleton" style="height:200px"></div>
-    {:else}<SchemaForm {schema} errors={schemaErrors} saving={savingSchema} onsave={saveSchema} />{/if}
-  {:else if sub === 'providers'}
-    {#if !online}<div class="empty">Providers need the pitv_content API.</div>{:else if !providers}<div class="skeleton" style="height:120px"></div>{:else}<ToolProviders {providers} onchange={(list) => { if (Array.isArray(list)) providers = list; else loadSub('providers', true); }} />{/if}
+    {:else}<p class="scope" style="margin:0">pitv_content's own configuration, stored by pitv_content. PiTV relays the edits through its API; nothing here changes PiTV.</p><SchemaForm {schema} errors={schemaErrors} saving={savingSchema} onsave={saveSchema} app="content" />{/if}
   {:else if sub === 'catalogue'}
+    <p class="scope" style="margin:0">Online titles pitv_content knows about. Enabling one lets pitv_content fetch from it; anything fetched reaches PiTV's catalogue through the library index.</p>
     {#if !online}<div class="empty">The catalogue needs the pitv_content API.</div>{:else if !catalogue}<div class="skeleton" style="height:120px"></div>{:else}<ToolCatalogue {catalogue} onchange={() => loadSub('catalogue', true)} />{/if}
   {:else if sub === 'jobs'}
+    <p class="scope" style="margin:0">pitv_content's own run history: index, copy, transcode and fetch jobs.</p>
     {#if !online}<div class="empty">Job history needs the pitv_content API.</div>{:else if !jobs}<div class="skeleton" style="height:120px"></div>{:else}<div class="row"><span class="spacer"></span><button class="small" onclick={() => loadSub('jobs', true)}>Refresh</button></div><ToolJobs {jobs} />{/if}
   {:else if sub === 'log'}
-    <div class="card"><div class="card-title"><h3>pitv_content log</h3>{#if online}<span class="badge ok">live</span>{:else}<span class="badge">file</span>{/if}</div><Logs fixed="pitv-content" height="480px" liveTool={online} /></div>
+    <div class="card"><div class="card-title"><h3>pitv_content log</h3>{#if online}<span class="badge ok">live</span>{:else}<span class="badge">file</span>{/if}<AppBadge app="content" /></div><Logs fixed="pitv-content" height="480px" liveTool={online} /></div>
   {/if}
 </div>
 

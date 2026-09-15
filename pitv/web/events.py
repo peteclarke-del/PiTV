@@ -1,6 +1,6 @@
 """In-process event bus feeding the Server-Sent Events stream.
 
-Background threads (scanner, scheduler, player subscription) publish with `publish_threadsafe`;
+Background threads (catalogue import, scheduler, player subscription) publish with `publish_threadsafe`;
 the SSE endpoint subscribes with an asyncio queue per client.
 """
 

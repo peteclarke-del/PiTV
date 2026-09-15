@@ -1,33 +1,18 @@
 """Channel line-ups: exclusive membership, genre-driven generation, external entries."""
-import os
 
 import pytest
 
+from conftest import make_library
 from pitv import db as dbm
 from pitv import lineup
-from pitv.config import Config
-from pitv.devtools import build_fake_library
-from pitv.library.scanner import scan_all
 from pitv.scheduler.build import build_horizon, parse_day
 from pitv.scheduler.rules import local_ts, tz_of
 
 
 @pytest.fixture(scope="module")
 def env(tmp_path_factory):
-    root = tmp_path_factory.mktemp("lineup")
-    lib = build_fake_library(root / "lib", max_episodes_per_show=12)
-    cfg = Config(data_dir=root / "data", run_dir=root / "run")
-    os.environ.pop("PITV_DB", None)
-    cfg.ensure_dirs()
-    c = dbm.connect(cfg.db_path)
-    dbm.init_db(c)
-    with dbm.tx(c):
-        for stype, name, p in (("tv", "TV", lib["tv"]), ("movie", "Movies", lib["movies"]),
-                               ("advert", "Ads", lib["pitv"] / "Adverts"), ("ident", "Idents", lib["pitv"] / "Idents")):
-            c.execute("INSERT INTO sources(type, name, path) VALUES (?,?,?)", (stype, name, str(p)))
-        c.execute("INSERT INTO sources(type, name, path, category) VALUES ('tv', 'Sport', ?, 'sport')", (str(lib["sport"]),))
-    scan_all(c)
-    return {"conn": c, "data_dir": cfg.data_dir}
+    ctx = make_library(tmp_path_factory.mktemp("lineup"), max_episodes=12)
+    return {"conn": ctx["conn"], "data_dir": ctx["cfg"].data_dir}
 
 
 @pytest.fixture(scope="module")
@@ -123,9 +108,11 @@ def test_external_entry_scheduled_ahead_and_requested(conn):
     # The manifest carries them for pitv_content with the series title and a search phrase.
     from pitv.content import manifest
     m = manifest(conn, days=3, now=now)
-    mine = [w for w in m["wanted"] if w["lineup_id"] == entry["id"]]
-    assert mine and mine[0]["show_title"] == "The Tripods" and mine[0]["transient"] is True
-    assert "The Tripods" in mine[0]["hints"][0]
+    ids = {w["id"] for w in wanted}
+    mine = [i for i in m["items"] if i["wanted_id"] in ids]
+    assert mine and all(i["action"] == "fetch" and i["request_id"] == f"w:{i['wanted_id']}" for i in mine)
+    assert mine[0]["show_title"] == "The Tripods" and mine[0]["transient"] is True
+    assert "The Tripods" in mine[0]["search"]["phrase"] and mine[0]["dest_dir"]
     with dbm.tx(conn):
         dbm.set_setting(conn, "nas_only", True)
         dbm.set_setting(conn, "external_weight", 0.7)
@@ -146,28 +133,33 @@ def test_readiness_substitutes_unfetched_placeholders(conn):
         assert a["end_ts"] == b["start_ts"]
 
 
-def test_bind_fetched_attaches_file_to_placeholder(conn):
+def test_delivery_report_fills_placeholder(conn, tmp_path):
+    """A film fetched online arrives in a report: it becomes a catalogue entry, takes its
+    placeholder slot at its real length and turns the external entry into a library one."""
+    from pitv.content import apply_report
     ch = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number DESC LIMIT 1").fetchone()["id"]
     entry = lineup.add(conn, ch, title="Pending Film", year=1983, kind="movie", episode_minutes=90)
+    start = 4102444800  # far future so the slot is untouched by other tests
     with dbm.tx(conn):
-        cur = conn.execute("INSERT INTO wanted(kind, title, year, provider, lineup_id, transient, created_at)"
-                           " VALUES ('movie', 'Pending Film', 1983, 'auto', ?, 1, 0)", (entry["id"],))
-        wid = cur.lastrowid
-        media = conn.execute("SELECT id, path, duration FROM media WHERE kind = 'movie' ORDER BY id DESC LIMIT 1").fetchone()
-        start = 4102444800  # far future so the slot is untouched by other tests
+        wid = conn.execute("INSERT INTO wanted(kind, title, year, provider, lineup_id, transient, created_at)"
+                           " VALUES ('movie', 'Pending Film', 1983, 'auto', ?, 1, 0)", (entry["id"],)).lastrowid
         conn.execute("INSERT INTO schedule(channel_id, day, start_ts, end_ts, media_id, offset, kind, title, subtitle, wanted_id)"
                      " VALUES (?, '2099-12-31', ?, ?, NULL, 0, 'programme', 'Pending Film', '', ?)",
                      (ch, start, start + 90 * 60, wid))
-        conn.execute("UPDATE wanted SET status = 'done', dest_path = ? WHERE id = ?", (media["path"], wid))
-    result = lineup.bind_fetched(conn)
-    assert result["bound"] == 1 and result["converted"] == 1
+    film = tmp_path / "Pending Film (1983).mp4"
+    film.write_bytes(b"x" * 10)
+    counts = apply_report(conn, {"schema": 2, "items": [{
+        "request_id": f"w:{wid}", "wanted_id": wid, "status": "done",
+        "file": {"path": str(film), "duration": 6420.0, "vcodec": "h264", "height": 576, "size": 10},
+        "meta": {"kind": "movie", "title": "Pending Film", "year": 1983, "genres": ["Drama"], "certificate": "PG",
+                 "uid": "yt:pending"}}]})
+    assert counts["wanted_done"] == 1 and counts["created"] == 1
+    media = conn.execute("SELECT * FROM media WHERE uid = 'yt:pending'").fetchone()
+    assert media["origin"] == "online" and media["cache_path"] == str(film) and media["transient"] == 1
     slot = conn.execute("SELECT media_id, end_ts, start_ts FROM schedule WHERE wanted_id = ?", (wid,)).fetchone()
-    assert slot["media_id"] == media["id"]
-    assert slot["end_ts"] - slot["start_ts"] == int(round(media["duration"]))
+    assert slot["media_id"] == media["id"] and slot["end_ts"] - slot["start_ts"] == 6420
     e = lineup.entry(conn, entry["id"])
     assert e["media_id"] == media["id"] and e["external"] is False
-    assert conn.execute("SELECT transient FROM media WHERE id = ?", (media["id"],)).fetchone()[0] == 1
     with dbm.tx(conn):
         conn.execute("DELETE FROM schedule WHERE day >= '2099-12-31'")
-        conn.execute("UPDATE media SET transient = 0 WHERE id = ?", (media["id"],))
     lineup.remove(conn, entry["id"])

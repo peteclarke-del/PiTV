@@ -1,7 +1,7 @@
-"""Housekeeping thread inside the player: keep the schedule horizon topped up, run the
-nightly library scan, apply pitv_content reports, evict from the cache, run the readiness
-checks and trim old history. Keeping this in the always-running player means no cron or
-systemd timers are needed on the Pi. The thread has its own database connection."""
+"""Housekeeping thread inside the player: import pitv_content's library index, keep the
+schedule horizon topped up, apply delivery reports dropped as files, evict from the cache, run
+the readiness checks and trim old history. Keeping this in the always-running player means no
+cron or systemd timers are needed for PiTV on the Pi. The thread has its own database connection."""
 
 from __future__ import annotations
 
@@ -11,9 +11,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from .. import catalogue
 from ..content import apply_report_files, protect_manifest
 from ..db import all_settings, connect, now_ts, tx
-from ..library.scanner import scan_all
+from ..lineup import remove_aired_transients
 from ..readiness import check as readiness_check
 from ..scheduler.build import build_horizon, needs_rebuild
 from ..wanted import queue_gaps
@@ -27,18 +28,18 @@ EMPTY_BUILD_RETRY = 3600  # a build that produced nothing (empty library) is not
 
 
 class Maintenance:
-    def __init__(self, db_path: Path, ffprobe: str, clock: Callable[[], int],
+    def __init__(self, db_path: Path, clock: Callable[[], int],
                  on_schedule_changed: Callable[[], None], cache: MediaCache) -> None:
         self.db_path = db_path
         self.cache = cache
-        self.ffprobe = ffprobe
         self.clock = clock
         self.on_schedule_changed = on_schedule_changed
         self._stop = threading.Event()
         self._readiness_done: set[str] = set()   # "YYYY-MM-DD:hour" stamps already checked today
         self._first_pass = True
         self._empty_build_at = 0
-        self.status: dict[str, Any] = {"last_build": None, "last_scan": None, "last_readiness": None, "error": None}
+        self._index_mtime = 0.0                 # the index file version last imported
+        self.status: dict[str, Any] = {"last_build": None, "last_import": None, "last_readiness": None, "error": None}
 
     def start(self) -> None:
         threading.Thread(target=self._loop, name="pitv-maintenance", daemon=True).start()
@@ -78,16 +79,19 @@ class Maintenance:
                 self._build(conn, now)
             local = datetime.fromtimestamp(now)
             today = local.date().isoformat()
-            row = conn.execute("SELECT MAX(started_at) AS t FROM run_log WHERE kind = 'scan' AND status != 'running'").fetchone()
-            last_scan = datetime.fromtimestamp(row["t"]).date().isoformat() if row and row["t"] else None
-            if local.hour == int(settings.get("scan_hour", 4)) and last_scan != today:
-                log.info("nightly scan")
-                scan_all(conn, ffprobe_binary=self.ffprobe)
-                self.status["last_scan"] = now_ts()
+            # Catalogue: import pitv_content's index daily at catalogue_hour, and whenever it
+            # rewrites the index file (after its own re-index), so new material is schedulable.
+            row = conn.execute("SELECT MAX(started_at) AS t FROM run_log WHERE kind = 'catalogue' AND status != 'running'").fetchone()
+            last_import = datetime.fromtimestamp(row["t"]).date().isoformat() if row and row["t"] else None
+            changed = catalogue.index_changed_since(settings, self._index_mtime)
+            if changed or (local.hour == int(settings.get("catalogue_hour", 4)) and last_import != today):
+                result = catalogue.refresh(conn)
+                if changed:
+                    self._index_mtime = changed
+                self.status["last_import"] = {"at": now_ts(), "status": result["status"], "summary": result["summary"]}
                 self._empty_build_at = 0
                 if needs_rebuild(conn, now):
                     self._build(conn, now)
-            from ..lineup import remove_aired_transients
             remove_aired_transients(conn)
             if apply_report_files(conn, self.cache):
                 self.cache.invalidate()
@@ -114,8 +118,5 @@ class Maintenance:
                 conn.execute("DELETE FROM history WHERE started_at < ?", (now - keep,))
                 conn.execute("DELETE FROM schedule WHERE end_ts < ?", (now - 14 * 86400,))
                 conn.execute("DELETE FROM run_log WHERE started_at < ?", (now - 30 * 86400,))
-                # Probe results outlive their media rows only while a source is deleted and re-added.
-                conn.execute("DELETE FROM probe_cache WHERE probed_at < ? AND path NOT IN (SELECT path FROM media)",
-                             (now - 30 * 86400,))
         finally:
             conn.close()

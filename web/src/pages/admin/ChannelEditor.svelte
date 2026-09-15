@@ -1,4 +1,5 @@
 <script>
+  import AppBadge from '../../components/AppBadge.svelte';
   import { untrack } from 'svelte';
   import { get, post, put, tryApi } from '../../lib/api.js';
   import { PATTERN_TOKENS } from '../../lib/format.js';
@@ -73,6 +74,7 @@
 
 <Drawer open={true} title={isNew ? 'New channel' : `Channel ${c.number}: ${c.name}`} {onclose} wide>
   <div class="stack">
+    <p class="scope" style="margin:0"><AppBadge app="pitv" /> A PiTV channel: it changes what this channel carries and how its day is built, from the next schedule build.</p>
     <div class="form-grid">
       <label class="field">Number<input type="number" class="narrow" min="1" bind:value={f.number} placeholder="auto" /><span class="help">Edit to reorder; must be unique.</span></label>
       <label class="field">Name<input bind:value={f.name} placeholder="PiTV One" /></label>

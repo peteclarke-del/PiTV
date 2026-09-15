@@ -20,6 +20,9 @@
   --font: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --nav-h: 52px;
+  /* One colour per application, used by every app badge and the admin navigation groups. */
+  --app-pitv: #c8323f;
+  --app-content: #6a4fc4;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -32,6 +35,8 @@
     --border: #2a2e37;
     --border-strong: #3b404b;
     --shadow: 0 6px 28px rgba(0, 0, 0, 0.45);
+    --app-pitv: #f0616d;
+    --app-content: #a58df0;
   }
 }
 
@@ -200,6 +205,7 @@ ul.plain { margin: 0; padding-left: 1.1rem; }
 .kv dt { color: var(--fg-muted); }
 .kv dd { margin: 0; word-break: break-word; }
 .note { font-size: .85rem; color: var(--fg-muted); background: var(--bg-sunken); padding: .5rem .75rem; border-radius: var(--radius-sm); }
+.err-box { font-size: .88rem; background: color-mix(in srgb, var(--danger) 12%, transparent); border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent); padding: .6rem .8rem; border-radius: var(--radius-sm); }
 .warn-box { font-size: .88rem; background: color-mix(in srgb, var(--warn) 18%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent); padding: .6rem .8rem; border-radius: var(--radius-sm); }
 .stat { display: flex; flex-direction: column; gap: .1rem; }
 .stat b { font-size: 1.5rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
@@ -209,3 +215,12 @@ pre.log { font-family: var(--mono); font-size: .78rem; white-space: pre-wrap; wo
 .skeleton { background: var(--bg-sunken); border-radius: var(--radius-sm); min-height: 1.2em; animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .5; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* application ownership: which app a setting, card or page belongs to */
+.app { display: inline-flex; align-items: center; font-size: .66rem; font-weight: 750; letter-spacing: .03em; padding: .08rem .42rem; border-radius: 4px; white-space: nowrap; line-height: 1.4; border: 1px solid currentColor; }
+.app.pitv { color: var(--app-pitv); background: color-mix(in srgb, var(--app-pitv) 10%, transparent); }
+.app.content { color: var(--app-content); background: color-mix(in srgb, var(--app-content) 10%, transparent); font-family: var(--mono); letter-spacing: 0; }
+.scope { font-size: .8rem; color: var(--fg-muted); margin: -.45rem 0 .75rem; }
+/* keep the app badge beside the title and push the card's actions to the right */
+.card-title h2:has(~ .app), .card-title h3:has(~ .app) { flex: 0 1 auto; }
+.card-title .app { margin-right: auto; }

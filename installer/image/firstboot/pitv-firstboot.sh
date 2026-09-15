@@ -125,7 +125,9 @@ unset ADMIN_PW NAS_PASS MP
 # ---- 5. pitv_content ---------------------------------------------------------------------------
 if [ -d "$SRC_CONTENT" ] && [ -x "$SRC_CONTENT/setup/install-on-pi.sh" ]; then
   log "installing pitv_content"
+  # The NAS shares become pitv_content's sources (seeded on its first install only).
   ( cd "$SRC_CONTENT" && CACHE_DIR="$CACHE_DIR" WORK_DIR="$WORK/pitv-content" PITV_URL="http://127.0.0.1" \
+    NAS_SOURCES="$(cat /etc/pitv/nas-sources.json 2>/dev/null || echo '[]')" INSTALL_LOG="$LOG" \
     YOUTUBE_COOKIES_FILE="$(json pitv_content.youtube_cookies_file)" ./setup/install-on-pi.sh ) >> "$LOG" 2>&1 \
     || log "WARNING: pitv_content install failed (see above); PiTV will run without it"
 else

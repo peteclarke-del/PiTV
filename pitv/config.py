@@ -39,7 +39,6 @@ class Config:
     web_host: str = field(default_factory=lambda: os.environ.get("PITV_WEB_HOST", "0.0.0.0"))
     web_port: int = field(default_factory=lambda: int(os.environ.get("PITV_WEB_PORT", "8080")))
     mpv_binary: str = field(default_factory=lambda: os.environ.get("PITV_MPV", "mpv"))
-    ffprobe_binary: str = field(default_factory=lambda: os.environ.get("PITV_FFPROBE", "ffprobe"))
     # Desktop development: run mpv in a window rather than on DRM.
     windowed: bool = field(default_factory=lambda: os.environ.get("PITV_WINDOWED", "") == "1")
     # Extra mpv arguments (space separated), e.g. "--vo=null --ao=null" for headless tests.

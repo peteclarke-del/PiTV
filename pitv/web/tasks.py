@@ -1,4 +1,4 @@
-"""Background jobs (library scan, schedule build) run one at a time in a worker thread."""
+"""Background jobs (catalogue import, schedule build) run one at a time in a worker thread."""
 
 from __future__ import annotations
 

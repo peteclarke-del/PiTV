@@ -28,62 +28,36 @@ def cmd_init(cfg: Config, args: Args) -> int:
 
 
 def cmd_fake_library(cfg: Config, args: Args) -> int:
+    from .catalogue import import_and_place
     from .devtools import build_fake_library
     root = Path(args.dir).resolve()
-    paths = build_fake_library(root, seed=args.seed, max_episodes_per_show=args.max_episodes)
-    conn = _open(cfg)
-    if args.register:
-        with dbm.tx(conn):
-            for stype, name, p, cat in (("tv", "TV Shows", paths["tv"], "general"), ("movie", "Movies", paths["movies"], "general"),
-                                        ("advert", "Adverts", paths["pitv"] / "Adverts", "general"),
-                                        ("ident", "Idents", paths["pitv"] / "Idents", "general"),
-                                        ("tv", "Sport", paths["sport"], "sport"),
-                                        ("music", "Music videos", paths["music"], "general")):
-                exists = conn.execute("SELECT id FROM sources WHERE path = ?", (str(p),)).fetchone()
-                if not exists:
-                    conn.execute("INSERT INTO sources(type, name, path, category) VALUES (?,?,?,?)",
-                                 (stype, name, str(p), cat))
-        print("Registered sources:")
-        for r in conn.execute("SELECT id, type, name, path FROM sources"):
-            print(f"  {r['id']:>2}  {r['type']:<7} {r['name']:<10} {r['path']}")
-    print(f"Fake library written under {root}")
+    lib = build_fake_library(root, seed=args.seed, max_episodes_per_show=args.max_episodes)
+    print(f"Fake library written under {root}; index at {lib['index_path']}")
+    if args.import_index:
+        conn = _open(cfg)
+        print(import_and_place(conn, lib["index"], str(lib["index_path"]))["summary"])
     return 0
 
 
-def cmd_source(cfg: Config, args: Args) -> int:
-    conn = _open(cfg)
-    if args.action == "add":
-        with dbm.tx(conn):
-            conn.execute("INSERT INTO sources(type, name, path, remote) VALUES (?,?,?,?)",
-                         (args.type, args.name, str(Path(args.path).resolve()), args.remote))
-        print("Added.")
-    for r in conn.execute("SELECT * FROM sources ORDER BY id"):
-        print(f"  {r['id']:>2}  {r['type']:<7} {'on ' if r['enabled'] else 'off'} {r['name']:<12}"
-              f" {r['path']}  {r['last_scan_summary'] or ''}")
-    return 0
+def cmd_catalogue(cfg: Config, args: Args) -> int:
+    """Import pitv_content's library index: from a file, or from its API (index file fallback)."""
+    import json as _json
 
-
-def cmd_scan(cfg: Config, args: Args) -> int:
-    from .library.scanner import scan_all
+    from .catalogue import IndexFormatError, import_and_place, refresh
     from .logsetup import setup_logging
-    setup_logging(cfg, "scan")
+    setup_logging(cfg, "catalogue")
     conn = _open(cfg)
-    last = [""]
-
-    def progress(msg: str, done: int, total: int) -> None:
-        line = f"\r  {done}/{total} {msg[:70]:<70}"
-        if line != last[0]:
-            sys.stdout.write(line)
-            sys.stdout.flush()
-            last[0] = line
-
-    run_id = scan_all(conn, progress if not args.quiet else (lambda *a: None), cfg.ffprobe_binary)
-    sys.stdout.write("\n")
-    row = conn.execute("SELECT * FROM run_log WHERE id = ?", (run_id,)).fetchone()
-    print(f"Scan {row['status']}: {row['summary']}")
-    counts = conn.execute("SELECT kind, COUNT(*) AS n FROM media WHERE missing = 0 GROUP BY kind").fetchall()
-    print("  " + ", ".join(f"{r['kind']}s: {r['n']}" for r in counts))
-    return 0 if row["status"] != "error" else 1
+    if args.file:
+        try:
+            result = import_and_place(conn, _json.loads(Path(args.file).read_text()), args.file)
+        except (OSError, ValueError, IndexFormatError) as exc:
+            print(f"Import failed: {exc}")
+            return 1
+        print(f"Catalogue: {result['summary']}")
+        return 0
+    result = refresh(conn, reindex=args.reindex)
+    print(f"Catalogue {result['status']}: {result['summary']}")
+    return 0 if result["status"] != "error" else 1
 
 
 def cmd_schedule(cfg: Config, args: Args) -> int:
@@ -170,24 +144,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("init", help="create the database").set_defaults(func=cmd_init)
 
-    f = sub.add_parser("fake-library", help="generate a tiny fake media library for development")
+    f = sub.add_parser("fake-library", help="generate a tiny fake library and its library index for development")
     f.add_argument("dir")
     f.add_argument("--seed", type=int, default=1)
     f.add_argument("--max-episodes", type=int, default=None, help="cap episodes per show")
-    f.add_argument("--register", action="store_true", help="register the folders as sources")
+    f.add_argument("--import", dest="import_index", action="store_true", help="import the generated index")
     f.set_defaults(func=cmd_fake_library)
 
-    s = sub.add_parser("source", help="list or add sources")
-    s.add_argument("action", choices=["list", "add"], nargs="?", default="list")
-    s.add_argument("--type", choices=["tv", "movie", "advert", "ident", "music"])
-    s.add_argument("--name")
-    s.add_argument("--path")
-    s.add_argument("--remote")
-    s.set_defaults(func=cmd_source)
-
-    sc = sub.add_parser("scan", help="scan all enabled sources")
-    sc.add_argument("--quiet", action="store_true")
-    sc.set_defaults(func=cmd_scan)
+    ca = sub.add_parser("catalogue", help="import pitv_content's library index")
+    ca.add_argument("--file", help="import this index file instead of asking pitv_content")
+    ca.add_argument("--reindex", action="store_true", help="ask pitv_content to re-index its sources first")
+    ca.set_defaults(func=cmd_catalogue)
 
     sh = sub.add_parser("schedule", help="build the schedule horizon")
     sh.add_argument("--start", help="first broadcast day YYYY-MM-DD (default: today)")

@@ -1,8 +1,9 @@
-"""Development helpers: generate a fake media library so everything runs without the NAS.
+"""Development helpers: a fake media library so everything runs without the NAS or pitv_content.
 
-Files are real, tiny H.264 videos with realistic durations (a 25-minute file is ~40 KB
-because it is 64x36 pixels at 1 frame per second), so ffprobe, the scanner, the scheduler
-and even mpv all work on them.
+The files are real, tiny H.264 videos (4:3 colour bars with a running timecode, one frame per
+second) with realistic durations, so the player can play them; alongside them the builder
+writes the schema 2 library index pitv_content would publish for that folder tree, which is
+what PiTV imports.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import random
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 # (title, year, seasons, episodes per season, minutes, genres, certificate, kids)
 FAKE_SHOWS = [
@@ -171,17 +173,61 @@ def _nfo(path: Path, root: str, fields: dict[str, object], genres: list[str]) ->
     path.write_text("\n".join(lines) + "\n")
 
 
+class _Index:
+    """Collects a schema 2 library index (docs/CONTENT_CONTRACT.md) while files are written, the
+    way pitv_content would publish it after indexing the NAS."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.sources: list[dict] = []
+        self.shows: list[dict] = []
+        self.items: list[dict] = []
+
+    def source(self, sid: str, name: str, stype: str, folder: Path, category: str = "general") -> None:
+        self.sources.append({"id": sid, "name": name, "type": stype, "category": category, "root": str(folder),
+                             "remote": f"smb://fakenas/{sid}/", "location": "nas", "enabled": True})
+
+    def show(self, sid: str, folder: Path, title: str, year: int | None, genres: list[str],
+             certificate: str | None, category: str = "general") -> str:
+        uid = f"show:{sid}:{folder.name}"
+        self.shows.append({"uid": uid, "source": sid, "title": title, "year": year, "genres": genres,
+                           "certificate": certificate, "plot": f"{title}, first shown in {year}." if year else None,
+                           "category": category})
+        return uid
+
+    def item(self, sid: str, path: Path, seconds: int, kind: str, title: str, **meta) -> None:
+        rel = path.relative_to(Path(next(s["root"] for s in self.sources if s["id"] == sid)))
+        self.items.append({"uid": f"nas:{sid}:{rel.as_posix()}", "source": sid, "kind": kind, "title": title,
+                           "duration": float(seconds), "vcodec": "h264", "acodec": None, "width": 320, "height": 240,
+                           "interlaced": False, "size": path.stat().st_size, "mtime": int(path.stat().st_mtime),
+                           "path": str(path), "genres": [], "certificate": None, "plot": None, **meta})
+
+    def document(self) -> dict:
+        return {"schema": 2, "generated_ts": int(__import__("time").time()), "complete": True,
+                "sources": self.sources, "shows": self.shows, "items": self.items}
+
+
 def build_fake_library(root: Path, seed: int = 1, with_nfo: bool = True,
-                       max_episodes_per_show: int | None = None) -> dict[str, Path]:
+                       max_episodes_per_show: int | None = None) -> dict[str, Any]:
+    """Write a small library of real (tiny) video files and the library index pitv_content would
+    publish for it. Returns the folders plus `index` (the document) and `index_path`."""
+    import datetime as _dt
+    import json as _json
     global _TEMPLATE_DIR
     rnd = random.Random(seed)
     _TEMPLATE_DIR = root / ".templates"
     _DURATION_TEMPLATES.clear()
-    tv = root / "tvshows"
-    movies = root / "movies"
-    pitv = root / "pitv"
-    for d in (tv, movies, pitv / "Adverts", pitv / "Idents"):
-        d.mkdir(parents=True, exist_ok=True)
+    tv, movies, pitv = root / "tvshows", root / "movies", root / "pitv"
+    sport, music = root / "tvsports", root / "music videos"
+    for folder in (tv, movies, pitv / "Adverts", pitv / "Idents", sport, music):
+        folder.mkdir(parents=True, exist_ok=True)
+    idx = _Index(root)
+    idx.source("tvshows", "TV Shows", "tv", tv)
+    idx.source("tvsports", "Sport", "tv", sport, "sport")
+    idx.source("movies", "Movies", "movie", movies)
+    idx.source("ads", "Adverts", "advert", pitv / "Adverts")
+    idx.source("idents", "Idents", "ident", pitv / "Idents")
+    idx.source("musicvideos", "Music videos", "music", music)
 
     for title, year, seasons, eps, minutes, genres, cert, _kids in FAKE_SHOWS:
         safe = title.replace(":", "").replace("/", "-")
@@ -191,38 +237,46 @@ def build_fake_library(root: Path, seed: int = 1, with_nfo: bool = True,
             _nfo(show_dir / "tvshow.nfo", "tvshow",
                  {"title": title, "year": year, "premiered": f"{year}-09-01", "mpaa": f"UK:{cert}",
                   "plot": f"{title}, first shown in {year}."}, genres)
+        show_uid = idx.show("tvshows", show_dir, title, year, list(genres), cert)
         count = 0
         for s in range(1, seasons + 1):
             for e in range(1, eps + 1):
                 if max_episodes_per_show and count >= max_episodes_per_show:
                     break
                 f = show_dir / f"Season {s:02d}" / f"{safe} - S{s:02d}E{e:02d} - Episode {e}.mp4"
-                jitter = rnd.choice([-2, -1, 0, 0, 0, 1])
-                _make_video(f, (minutes + jitter) * 60, f"{title} S{s}E{e}")
+                seconds = (minutes + rnd.choice([-2, -1, 0, 0, 0, 1])) * 60
+                _make_video(f, seconds, f"{title} S{s}E{e}")
+                idx.item("tvshows", f, seconds, "episode", f"Episode {e}", show_uid=show_uid, season=s, episode=e,
+                         year=year + s - 1)
                 count += 1
 
-    import datetime as _dt
-    sport = root / "tvsports"
-    sport.mkdir(exist_ok=True)
     for title, year, dated, eps, minutes in FAKE_SPORT:
         show_dir = sport / f"{title} ({year})"
         show_dir.mkdir(exist_ok=True)
-        if with_nfo:
-            _nfo(show_dir / "tvshow.nfo", "tvshow", {"title": title, "year": year, "mpaa": "UK:U"}, ["Sport"])
-        if dated:
-            day = _dt.date(1985, 1, 5)
-            for _i in range(eps):
-                _make_video(show_dir / "Season 1985" / f"{title} - {day.isoformat()}.mp4", minutes * 60, title)
+        show_uid = idx.show("tvsports", show_dir, title, year, ["Sport"], "U", "sport")
+        day = _dt.date(1985, 1, 5)
+        for e in range(1, eps + 1):
+            if dated:
+                f = show_dir / "Season 1985" / f"{title} - S1985E{e:02d} - {day.isoformat()}.mp4"
+                label, season, ep_year = day.strftime("%d/%m/%Y"), 1985, 1985
                 day += _dt.timedelta(days=7)
-        else:
-            for e in range(1, eps + 1):
-                _make_video(show_dir / "Season 01" / f"{title} - S01E{e:02d} - Episode {e}.mp4", minutes * 60, title)
+            else:
+                f = show_dir / "Season 01" / f"{title} - S01E{e:02d} - Episode {e}.mp4"
+                label, season, ep_year = f"Episode {e}", 1, year
+            _make_video(f, minutes * 60, title)
+            idx.item("tvsports", f, minutes * 60, "episode", label, show_uid=show_uid, season=season, episode=e,
+                     year=ep_year, genres=["Sport"])
 
-    music = root / "music videos"
     for artist, title, year, genre, minutes in FAKE_MUSIC:
-        _make_video(music / genre / f"{artist} - {title} ({year}).mp4", minutes * 60, title)
+        f = music / genre / f"{artist} - {title} ({year}).mp4"
+        _make_video(f, minutes * 60, title)
+        idx.item("musicvideos", f, minutes * 60, "music", f"{artist} - {title}", artist=artist, year=year,
+                 genres=[genre], concert=False)
     for artist, title, year, genre, minutes in FAKE_CONCERTS:
-        _make_video(music / "Concerts" / genre / f"{artist} - {title} ({year}).mp4", minutes * 60, title)
+        f = music / "Concerts" / genre / f"{artist} - {title} ({year}).mp4"
+        _make_video(f, minutes * 60, title)
+        idx.item("musicvideos", f, minutes * 60, "music", f"{artist} - {title}", artist=artist, year=year,
+                 genres=[genre], concert=True)
 
     for title, year, minutes, cert, genres in FAKE_MOVIES:
         safe = title.replace(":", "").replace("/", "-")
@@ -230,16 +284,27 @@ def build_fake_library(root: Path, seed: int = 1, with_nfo: bool = True,
         f = folder / (f"{safe} ({year}).mp4" if year else f"{safe}.mp4")
         _make_video(f, minutes * 60, title)
         if with_nfo and year:
-            _nfo(f.with_suffix(".nfo"), "movie",
-                 {"title": title, "year": year, "mpaa": f"UK:{cert}",
-                  "plot": f"{title} ({year})."}, genres)
+            _nfo(f.with_suffix(".nfo"), "movie", {"title": title, "year": year, "mpaa": f"UK:{cert}",
+                                                  "plot": f"{title} ({year})."}, genres)
+        idx.item("movies", f, minutes * 60, "movie", title, year=year, certificate=cert, genres=list(genres),
+                 plot=f"{title} ({year})." if year else None)
 
     for title, year in FAKE_ADVERTS:
         f = pitv / "Adverts" / str(year) / f"{title}.mp4"
-        _make_video(f, rnd.choice([20, 30, 30, 40, 60]), title)
+        seconds = rnd.choice([20, 30, 30, 40, 60])
+        _make_video(f, seconds, title)
+        idx.item("ads", f, seconds, "advert", title, year=year)   # family_safe left to PiTV's keyword rule
 
     for ch in (1, 2, 3, 4):
         for i in (1, 2):
-            _make_video(pitv / "Idents" / f"ch{ch}" / f"Ident {i}.mp4", rnd.choice([8, 10, 15]), f"ch{ch}")
+            f = pitv / "Idents" / f"ch{ch}" / f"Ident {i}.mp4"
+            seconds = rnd.choice([8, 10, 15])
+            _make_video(f, seconds, f"ch{ch}")
+            idx.item("idents", f, seconds, "ident", f"Ident {i}", channel_hint=ch)
     _make_video(pitv / "Static" / "static.mp4", 2, "static")
-    return {"tv": tv, "movies": movies, "pitv": pitv, "sport": sport, "music": music}
+
+    doc = idx.document()
+    index_path = root / "library.json"
+    index_path.write_text(_json.dumps(doc, indent=1))
+    return {"tv": tv, "movies": movies, "pitv": pitv, "sport": sport, "music": music, "index": doc,
+            "index_path": index_path}

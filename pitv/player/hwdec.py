@@ -12,7 +12,7 @@ def decode_options(media: dict[str, Any] | None, on_pi: bool, settings: dict[str
 
     On the Pi 4, H.264 and HEVC go through the V4L2 hardware decoder (zero-copy drm-prime
     first, v4l2m2m-copy as fallback). Everything else (MPEG-2, VC-1, DivX) is software.
-    Deinterlacing is only switched on for files ffprobe reported as interlaced."""
+    Deinterlacing is only switched on for files the library index reports as interlaced."""
     if not on_pi:
         return {"hwdec": "auto-safe", "deinterlace": bool(media and media.get("interlaced"))}
     vcodec = (media or {}).get("vcodec") or ""

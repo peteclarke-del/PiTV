@@ -1,4 +1,5 @@
 <script>
+  import AppBadge from '../../components/AppBadge.svelte';
   import { untrack } from 'svelte';
   import { get, post, del, tryApi, confirmApi } from '../../lib/api.js';
   import { changes, clock, toast, noteChange } from '../../lib/stores.svelte.js';
@@ -106,6 +107,7 @@
 </script>
 
 <div class="stack">
+  <div class="row" style="gap:.5rem"><h2 style="margin:0">Schedule</h2><AppBadge app="pitv" /><span class="small muted">PiTV's editable schedule; pitv_content is asked for anything it needs to play.</span></div>
   <div class="row">
     <DayNav {days} {day} onpick={(d) => (day = d)} />
     <button class="small" onclick={goNow}>Now</button>
@@ -127,9 +129,9 @@
   {/if}
 
   {#if notes.length}
-    <div class="card"><div class="card-title"><h3>Notes from the last edit</h3><button class="small ghost" onclick={() => (notes = [])}>Clear</button></div><pre class="log">{notes.join('\n')}</pre></div>
+    <div class="card"><div class="card-title"><h3>Notes from the last edit</h3><AppBadge app="pitv" /><button class="small ghost" onclick={() => (notes = [])}>Clear</button></div><pre class="log">{notes.join('\n')}</pre></div>
   {/if}
-  <div class="card"><div class="card-title"><h3>Build jobs</h3></div><JobList kind="schedule" limit={5} /></div>
+  <div class="card"><div class="card-title"><h3>Build jobs</h3><AppBadge app="pitv" /></div><JobList kind="schedule" limit={5} /></div>
 </div>
 
 <Drawer open={!!selected} title={selected?.title ?? ''} subtitle={selected?.subtitle ?? ''} onclose={() => (selected = null)}>

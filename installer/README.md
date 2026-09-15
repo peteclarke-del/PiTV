@@ -40,9 +40,13 @@ installer/
    - the maintenance user is created (groups sudo, video, audio, input) with its password
      and authorized keys;
    - PiTV is installed with `setup/install.sh` (NAS credentials, shares, cache directory
-     and display mode from the config) and the admin password is set;
-   - pitv_content is installed with its `setup/install-on-pi.sh` when its sources are in
-     the image;
+     and display mode from the config) and the admin password is set. PiTV keeps only the
+     cache settings; `install.sh` mounts the shares and writes them to
+     `/etc/pitv/nas-sources.json`;
+   - pitv_content is installed with its `setup/install-on-pi.sh` when its source tree is in
+     the image, with `NAS_SOURCES` set from `/etc/pitv/nas-sources.json`, so the installer's
+     shares become pitv_content's sources. It reads them on its first install only; after
+     that, sources are edited in the admin (Sources, in the pitv_content section);
    - the log is written to `/work/install/install.log` (a copy goes to
      `/boot/pitv-install.log`), the custom script is disabled in `dietpi.txt`, the config
      with its credentials is deleted from the boot partition, and the Pi reboots. Every

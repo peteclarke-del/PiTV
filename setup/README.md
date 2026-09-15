@@ -23,8 +23,11 @@ and an SMB account on the NAS with read access to the shares (read-only is enoug
    reboot into normal operation. Its log is at `/work/install/install.log` and in the admin
    under Logs.
 4. Open `http://pitv/`. The admin password is the one given to the installer (or set it on
-   first visit). Check Sources, run Scan, then Build schedule. Channel 1 is on air as soon
-   as the schedule exists.
+   first visit). The shares you gave the installer are pitv_content's sources: check them on
+   the Sources page in the pitv_content section. Once pitv_content has indexed them, PiTV
+   imports the catalogue and builds the schedule by itself within ten minutes; the
+   Dashboard's import and build buttons do it at once. Channel 1 is on air as soon as the
+   schedule exists.
 
 Later upgrades: `pitv-installer upgrade --host pitv --user <maintenance user>` syncs the
 local checkouts over SSH and re-runs both install scripts without touching the work
@@ -45,8 +48,9 @@ partition or the USB drive.
    asks once for the NAS username and password (stored root-only in
    `/etc/pitv/smb-credentials`); writes CIFS mount and automount units for the shares under
    `/mnt/` (read-only); creates the cache directory and its `acquired` folders; installs the
-   three services and a sudoers entry so the web UI can restart them; seeds the database
-   with the sources, `cache_dir` and `acquire_dir`; and runs `boot-trim.sh`. Environment
+   three services and a sudoers entry so the web UI can restart them; sets `cache_dir` and
+   `acquire_dir` in PiTV's database, which is all PiTV keeps about content; writes the share
+   list to `/etc/pitv/nas-sources.json` for pitv_content; and runs `boot-trim.sh`. Environment
    variables: `NAS_HOST` (`synologynas`), `SHARES` (`tvshows movies ads tvsports
    music%20videos`; a space in a share name is written `%20`), `CACHE_DIR`
    (`/mnt/cache/pitv`), `DISPLAY_MODE` (`hdmi576`), `EXPORT_TO` (the LAN range the cache
@@ -54,11 +58,15 @@ partition or the USB drive.
 3. Mount the USB drive at `/mnt/cache` (add it to `/etc/fstab` with `nofail`) before running
    the installer, or set the cache directory afterwards in Admin, Weighting, Cache.
 4. Install pitv_content from its own repository (private,
-   https://github.com/peteclarke-del/PiTV_content) with the same cache directory:
-   `sudo CACHE_DIR=/mnt/cache/pitv PITV_URL=http://127.0.0.1 ./setup/install-on-pi.sh`.
+   https://github.com/peteclarke-del/PiTV_content) with the same cache directory, passing the
+   share list so it becomes pitv_content's sources (read on its first install only; after
+   that, sources are edited in the admin):
+   `sudo CACHE_DIR=/mnt/cache/pitv PITV_URL=http://127.0.0.1 NAS_SOURCES="$(cat /etc/pitv/nas-sources.json)" ./setup/install-on-pi.sh`.
 5. Reboot. The test card shows within seconds, then channel 1 once the clock is
-   synchronised and a schedule exists. Open `http://pitv/`, set the admin password, check
-   Sources, run Scan, then Build schedule.
+   synchronised and a schedule exists. Open `http://pitv/`, set the admin password and check
+   the Sources page in the pitv_content section. PiTV imports the catalogue once
+   pitv_content has indexed the shares and then builds the schedule; the Dashboard's
+   buttons do both at once.
 
 Updating later: `cd ~/PiTV && git pull && sudo ./setup/install.sh`, then
 `sudo systemctl restart pitv-player pitv-web`.
@@ -89,6 +97,7 @@ resolution, so what pitv_content transcodes can be checked as it plays.
 ```sh
 journalctl -u pitv-player -f       # player log (also Admin, Logs)
 journalctl -u pitv-web -f          # web log
+sudo -u pitv /opt/pitv/.venv/bin/pitv catalogue --reindex   # ask pitv_content to re-index, then import
 systemd-analyze blame | head       # boot time breakdown
 systemctl status mnt-tvshows.automount   # one per share
 ```
