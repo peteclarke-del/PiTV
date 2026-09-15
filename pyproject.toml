@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 pi = ["evdev>=1.6"]
-dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.4"]
+dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.16"]
 
 [project.scripts]
 pitv = "pitv.cli:main"
@@ -32,3 +32,11 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
+# The curated default rule set changed in 0.16; pinning the floor keeps "lint clean" meaning
+# the same thing on every machine and in review.
+required-version = ">=0.16"
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI declares dependencies and bodies as default arguments; these calls are evaluated
+# per request by the framework, not once at import.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Body", "fastapi.Query", "fastapi.Header"]

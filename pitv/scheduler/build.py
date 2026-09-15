@@ -20,19 +20,53 @@ import json
 import logging
 import random
 import sqlite3
-from dataclasses import dataclass, field
+from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
-from typing import Any, Callable
+from typing import Any
+from zoneinfo import ZoneInfo
 
+from ..db import (
+    DEFAULT_SETTINGS,
+    all_settings,
+    effective,
+    enabled_channels,
+    now_ts,
+    rows_to_dicts,
+    run_log_finish,
+    run_log_start,
+    tx,
+)
 from ..lineup import nas_only_for
-from ..db import (all_settings, effective, enabled_channels, now_ts, rows_to_dicts,
-                  run_log_finish, run_log_start, tx)
-from .rules import (EraSpans, allowed_at, broadcast_day_for, day_bounds, daypart_end_minutes,
-                    daypart_for, dayparts_for_weekday, era_spans, era_weight_spans, hhmm_to_minutes,
-                    is_kids, local_ts, minutes_of_day, parse_pattern, tz_of)
+from .rules import (
+    EraSpans,
+    allowed_at,
+    broadcast_day_for,
+    day_bounds,
+    daypart_end_minutes,
+    daypart_for,
+    dayparts_for_weekday,
+    era_spans,
+    era_weight_spans,
+    hhmm_to_minutes,
+    is_kids,
+    local_ts,
+    minutes_of_day,
+    parse_pattern,
+    tz_of,
+)
 
 Progress = Callable[[str], None] | None
-MAX_ITERATIONS_PER_DAY = 2000
+# Per channel, the window of unlocked slots a build is about to replace: (from_ts, to_ts) with
+# to_ts None for "everything from from_ts on" (a forced horizon build).
+Rebuild = dict[int, tuple[int, int | None]]
+
+# Upper bound on walk steps for one channel-day. Only a pattern that can never place a
+# programme (adverts or idents alone) gets near it; the rest of such a day becomes filler.
+MAX_STEPS_PER_DAY = 3000
+WEEK = 7 * 86400
+FILLER_TITLE = "Programmes will continue shortly"
 log = logging.getLogger("pitv.scheduler")
 
 
@@ -53,7 +87,6 @@ class Slot:
     block: str | None = None
     wanted_id: int | None = None
     wanted_spec: dict[str, Any] | None = None   # external entry placed; a wanted row is created on save
-    id: int | None = None
     # not persisted
     show_id: int | None = None
     genres: list[str] = field(default_factory=list)
@@ -69,9 +102,6 @@ class Show:
     id: int
     title: str
     year: int | None
-    certificate: str | None
-    genres: list[str]
-    kids: bool
     home_channel_id: int | None
     mode: str
     anchor_time: str | None
@@ -92,11 +122,12 @@ class Show:
             return None
         return self.episodes[self.next_index % len(self.episodes)]
 
-    def advance(self, ts: int, rest_seconds: int) -> None:
+    def advance(self, ts: int) -> None:
+        """Move past the episode placed at `ts`; after the last one the series rests."""
         self.next_index += 1
         if self.next_index >= len(self.episodes):
             self.next_index = 0
-            self.resting_until = ts + rest_seconds
+            self.resting_until = ts + self.rest_weeks * WEEK
 
 
 def episode_subtitle(item: dict[str, Any]) -> str:
@@ -123,7 +154,8 @@ def slot_titles(item: dict[str, Any], show_title: str | None = None) -> tuple[st
 
 
 def parse_day(value: str) -> date:
-    return datetime.strptime(value, "%Y-%m-%d").date()
+    """A broadcast day as written in the schedule and the API (YYYY-MM-DD)."""
+    return date.fromisoformat(value)
 
 
 def _json_field(value: Any) -> Any:
@@ -138,16 +170,30 @@ def _json_field(value: Any) -> Any:
     return value
 
 
-# Per channel, the window of unlocked slots a build is about to replace: (from_ts, to_ts) with
-# to_ts None for "everything from from_ts on" (a forced horizon build).
-Rebuild = dict[int, tuple[int, int | None]]
+def _seconds(item: dict[str, Any]) -> int:
+    """Slot length for a file: whole seconds, never zero so a slot always has an end."""
+    return max(1, round(float(item["duration"])))
+
+
+def _cap(gap: int, room: int | None) -> int:
+    """A gap limited to the room left before a kept slot (None: nothing follows)."""
+    return gap if room is None else min(gap, room)
+
+
+def _first_minutes(slots: list[Slot], tz: ZoneInfo) -> dict[int, int]:
+    """show_id -> local minute of day of its first programme among `slots` (sorted by time)."""
+    out: dict[int, int] = {}
+    for s in slots:
+        if s.show_id is not None and s.show_id not in out:
+            out[s.show_id] = minutes_of_day(s.start_ts, tz)
+    return out
 
 
 class Builder:
     def __init__(self, conn: sqlite3.Connection, *, now: int | None = None,
-                 seed: int | None = None, progress: Progress = None,
-                 exclude_media_ids: set[int] | None = None, rebuild: Rebuild | None = None,
-                 allow_external: bool = True, only_media_ids: set[int] | None = None) -> None:
+                 seed: int | None = None, exclude_media_ids: set[int] | None = None,
+                 rebuild: Rebuild | None = None, allow_external: bool = True,
+                 only_media_ids: set[int] | None = None) -> None:
         self.conn = conn
         self.exclude_media_ids: set[int] = set(exclude_media_ids or ())
         # When set, only these files may be placed (readiness substitutes with what is playable now).
@@ -158,41 +204,55 @@ class Builder:
         self.tz = tz_of(conn)
         self.now = now or now_ts()
         self.seed = seed if seed is not None else 0
-        self.progress = progress or (lambda _m: None)
         self.log: list[str] = []
         self.channels = enabled_channels(conn)
         # Minute of day the broadcast day starts (08:00 = 480); minutes before it belong to the
         # previous day and are counted past 1440 so comparisons stay monotonic.
         self.day_start_min = hhmm_to_minutes(self.settings.get("day_start", "08:00"))
-        self.movie_placements: dict[int, list[int]] = {}  # media_id -> every placement time known
+        # Placeholders need external_lead_days counted from today's calendar date, not the
+        # broadcast day: at 07:00 the fetch runs at 01:00 and 05:00 are already over.
+        self._today = datetime.fromtimestamp(self.now, self.tz).date()
         # Parsed once: the candidate loops run tens of thousands of times per build.
         self._global_spans = era_spans(self.settings.get("era_weights"))
-        self._advert_spans = era_spans(self.settings.get("advert_era_weights") or {"1980-1989": 0.85, "1990-1999": 0.15})
-        self._advert_era_w: dict[int | None, float] = {}
+        self._advert_spans = era_spans(self.settings.get("advert_era_weights")
+                                       or DEFAULT_SETTINGS["advert_era_weights"])
+        self._pool_norm = float(self.settings.get("era_pool_normalise", 0.5))
+        self._advert_window = int(self.settings.get("advert_year_window", 3))
+        self._advert_penalty = int(self.settings.get("advert_repeat_penalty_hours", 6)) * 3600
+        self._advert_pools: dict[int, list[tuple[dict[str, Any], float, float]]] = {}
         self._era_band_cache: dict[tuple[int | None, int | None], str] = {}
         self._channel_cols: dict[tuple[int, str], Any] = {}
         self._load_library()
         self._load_history()
         self.ad_last: dict[tuple[int, int], int] = {}  # (channel, media) -> ts
-        self.day_programmes: dict[tuple[int, str], list[Slot]] = {}
-        self._cut: int | None = None                   # set by _keep_slots; save() deletes from here
+        # (channel, day) -> {show_id: minute it first aired}, for the same-slot bonus next day.
+        self._day_minutes: dict[tuple[int, str], dict[int, int]] = {}
+        # (channel, day) -> time from which save() replaces unlocked slots; None adds only.
+        self._cuts: dict[tuple[int, str], int | None] = {}
+        # (lineup_id, episode) -> wanted id, so every placement of one request in this build
+        # shares a row (a film's later airings, a placeholder's overnight replay).
+        self._requests: dict[tuple[int, int | None], int] = {}
 
     # --- loading -------------------------------------------------------------------
+
+    def _allowed(self, media_id: int) -> bool:
+        return media_id not in self.exclude_media_ids and (self.only_media_ids is None or media_id in self.only_media_ids)
+
+    def _playable(self, kind: str, tail: str = "") -> list[dict[str, Any]]:
+        """Every file of `kind` this build may place, with admin overrides applied."""
+        rows = rows_to_dicts(self.conn.execute(
+            "SELECT * FROM media WHERE kind = ? AND excluded = 0 AND missing = 0"
+            " AND duration IS NOT NULL" + tail, (kind,)))
+        return [effective(m) for m in rows if self._allowed(m["id"])]
 
     def _load_library(self) -> None:
         conn = self.conn
         self.shows: dict[int, Show] = {}
         show_rows = rows_to_dicts(conn.execute(
             "SELECT * FROM shows WHERE excluded = 0 AND missing = 0"))
-        eps = rows_to_dicts(conn.execute(
-            "SELECT * FROM media WHERE kind = 'episode' AND excluded = 0 AND missing = 0"
-            " AND duration IS NOT NULL AND show_id IS NOT NULL"
-            " ORDER BY show_id, COALESCE(season, 999), COALESCE(episode, 999), path"))
         by_show: dict[int, list[dict[str, Any]]] = {}
-        for e in eps:
-            if not self._allowed(e["id"]):
-                continue
-            e = effective(e)
+        for e in self._playable("episode", " AND show_id IS NOT NULL"
+                                " ORDER BY show_id, COALESCE(season, 999), COALESCE(episode, 999), path"):
             by_show.setdefault(e["show_id"], []).append(e)
         # Series owned by a transient external entry air only through the placeholders that
         # requested each episode; scheduling their cached files again would defeat "transient".
@@ -206,7 +266,6 @@ class Builder:
             if not episodes:
                 continue
             for e in episodes:  # episodes inherit show-level metadata when they lack it
-                e.setdefault("certificate", None)
                 e["certificate"] = e.get("certificate") or s.get("certificate")
                 e["year"] = e.get("year") or s.get("year")
                 e["genres"] = e.get("genres") or s.get("genres") or []
@@ -217,43 +276,45 @@ class Builder:
             if not days:
                 days = [0, 1, 2, 3, 4] if s.get("mode") == "strip" else [0]
             self.shows[s["id"]] = Show(
-                id=s["id"], title=s["title"], year=s.get("year"), certificate=s.get("certificate"),
-                genres=s.get("genres") or [], kids=bool(s.get("kids")),
+                id=s["id"], title=s["title"], year=s.get("year"),
                 home_channel_id=s.get("home_channel_id"), mode=s.get("mode") or "auto",
                 anchor_time=s.get("anchor_time"), anchor_days=[int(d) for d in days],
                 rest_weeks=int(s.get("rest_weeks") or self.settings.get("series_rest_weeks", 4)),
                 episodes=episodes, category=s.get("category") or "general",
                 end_year=(s.get("year") + max((int(e.get("season") or 1) for e in episodes), default=1) - 1)
                 if s.get("year") else None)
-        self.movies: list[dict[str, Any]] = [effective(m) for m in rows_to_dicts(conn.execute(
-            "SELECT * FROM media WHERE kind = 'movie' AND excluded = 0 AND missing = 0"
-            " AND duration IS NOT NULL")) if self._allowed(m["id"])]
+        self.movies = self._playable("movie")
         for m in self.movies:
             m["kids"] = is_kids(m)
         self._era_pools()
-        self.music: list[dict[str, Any]] = [effective(m) for m in rows_to_dicts(conn.execute(
-            "SELECT * FROM media WHERE kind = 'music' AND excluded = 0 AND missing = 0 AND duration IS NOT NULL"))
-            if self._allowed(m["id"])]
-        self.adverts: list[dict[str, Any]] = [effective(m) for m in rows_to_dicts(conn.execute(
-            "SELECT * FROM media WHERE kind = 'advert' AND excluded = 0 AND missing = 0"
-            " AND duration IS NOT NULL")) if self._allowed(m["id"])]
-        self.idents: list[dict[str, Any]] = [effective(m) for m in rows_to_dicts(conn.execute(
-            "SELECT * FROM media WHERE kind = 'ident' AND excluded = 0 AND missing = 0"
-            " AND duration IS NOT NULL")) if self._allowed(m["id"])]
+        self.music = self._playable("music")
+        self.adverts = self._playable("advert")
+        self.idents = self._playable("ident")
         self._load_externals()
+        # Line-ups are exclusive, so each channel's candidates are indexed once rather than
+        # filtered out of the whole library for every gap. List order follows the load order,
+        # which keeps a seeded build reproducible.
+        self._free_shows: dict[int | None, list[Show]] = {}
+        self._anchored: dict[int | None, list[Show]] = {}
+        for show in self.shows.values():
+            (self._anchored if show.anchored else self._free_shows).setdefault(show.home_channel_id, []).append(show)
+        self._movies_on: dict[int | None, list[dict[str, Any]]] = {}
+        for m in self.movies:
+            self._movies_on.setdefault(m.get("home_channel_id"), []).append(m)
+        self._externals_on: dict[int, list[dict[str, Any]]] = {}
+        for e in self.externals:
+            self._externals_on.setdefault(e["channel_id"], []).append(e)
 
-    def _replaceable_request(self, wanted_id: int) -> bool:
+    def _rebuilt(self, channel_id: int, ts: int) -> bool:
+        """True when `ts` lies inside the window of `channel_id` this build replaces."""
+        window = self.rebuild.get(channel_id)
+        return window is not None and ts >= window[0] and (window[1] is None or ts < window[1])
+
+    def _replaceable_request(self, users: list[sqlite3.Row]) -> bool:
         """True when no slot that will survive this build uses the request: every slot referring
-        to it is unlocked, still to come and inside a window being rebuilt."""
-        for sl in self.conn.execute("SELECT channel_id, start_ts, locked FROM schedule WHERE wanted_id = ?", (wanted_id,)):
-            window = self.rebuild.get(sl["channel_id"])
-            inside = window is not None and sl["start_ts"] >= window[0] and (window[1] is None or sl["start_ts"] < window[1])
-            if sl["locked"] or sl["start_ts"] <= self.now or not inside:
-                return False
-        return True
-
-    def _allowed(self, media_id: int) -> bool:
-        return media_id not in self.exclude_media_ids and (self.only_media_ids is None or media_id in self.only_media_ids)
+        to it (`users`) is unlocked, still to come and inside a window being rebuilt."""
+        return all(not sl["locked"] and sl["start_ts"] > self.now and self._rebuilt(sl["channel_id"], sl["start_ts"])
+                   for sl in users)
 
     def _load_externals(self) -> None:
         """Line-up entries with no material on disk. Each becomes a candidate whose placement
@@ -264,19 +325,31 @@ class Builder:
         self.externals: list[dict[str, Any]] = []
         if not self.allow_external:
             return
+        entries = rows_to_dicts(self.conn.execute(
+            "SELECT * FROM lineup WHERE enabled = 1 AND source != 'library'"
+            " AND (kind = 'show' OR media_id IS NULL)"))
+        if not entries:
+            return
+        raised: dict[int, int] = {}                       # lineup_id -> highest episode requested
+        standing: dict[int, list[sqlite3.Row]] = {}       # lineup_id -> requests still open
+        for w in self.conn.execute("SELECT id, lineup_id, episode, status FROM wanted"
+                                   " WHERE lineup_id IS NOT NULL ORDER BY lineup_id, episode, id"):
+            raised[w["lineup_id"]] = max(raised.get(w["lineup_id"], 0), int(w["episode"] or 0))
+            if w["status"] not in ("failed", "done"):
+                standing.setdefault(w["lineup_id"], []).append(w)
+        users: dict[int, list[sqlite3.Row]] = {}          # wanted id -> slots using it
+        for sl in self.conn.execute("SELECT wanted_id, channel_id, start_ts, locked FROM schedule"
+                                    " WHERE wanted_id IS NOT NULL"):
+            users.setdefault(sl["wanted_id"], []).append(sl)
         default_minutes = int(self.settings.get("external_episode_minutes", 30))
-        for e in rows_to_dicts(self.conn.execute(
-                "SELECT * FROM lineup WHERE enabled = 1 AND source != 'library'"
-                " AND (kind = 'show' OR media_id IS NULL)")):
-            raised = self.conn.execute("SELECT COALESCE(MAX(episode), 0) AS n FROM wanted WHERE lineup_id = ?", (e["id"],)).fetchone()
-            spare = [w for w in rows_to_dicts(self.conn.execute(
-                "SELECT id, episode FROM wanted WHERE lineup_id = ? AND status NOT IN ('failed', 'done') ORDER BY episode",
-                (e["id"],))) if self._replaceable_request(w["id"])]
-            e["lineup_id"] = e["id"]
-            e["id"] = -int(e["id"])   # negative: never collides with a media id
+        for e in entries:
+            lineup_id = int(e["id"])
+            e["lineup_id"] = lineup_id
+            e["id"] = -lineup_id   # negative: never collides with a media id
             e["genres"] = _json_field(e.get("genres")) or []
-            e["next_number"] = max(int(raised["n"] or 0), int(e.get("next_episode") or 1) - 1) + 1
-            e["spare_wanted"] = spare
+            e["next_number"] = max(raised.get(lineup_id, 0), int(e.get("next_episode") or 1) - 1) + 1
+            e["spare_wanted"] = [{"id": w["id"], "episode": w["episode"]} for w in standing.get(lineup_id, [])
+                                 if self._replaceable_request(users.get(w["id"], []))]
             e["duration"] = float(e.get("episode_minutes") or default_minutes) * 60
             e["category"] = "general"
             e["kind"] = "episode" if e["kind"] == "show" else "movie"
@@ -307,16 +380,17 @@ class Builder:
     def _pool_factor(self, kind: str, year: int | None, end_year: int | None = None) -> float:
         """Divide an item's weight by (pool size ** normalise) so eras with few titles are not
         drowned out by eras with many; normalise=1 makes airtime follow the era weights exactly."""
-        norm = float(self.settings.get("era_pool_normalise", 0.5))
-        if norm <= 0:
+        if self._pool_norm <= 0:
             return 1.0
         n = self.era_pool.get((kind, self._era_band(year, end_year)), 1)
-        return 1.0 / (max(1, n) ** norm)
+        return 1.0 / (max(1, n) ** self._pool_norm)
+
+    def _bday(self, minute: int) -> int:
+        """A local minute of day on the broadcast day's clock: +1440 after midnight."""
+        return minute if minute >= self.day_start_min else minute + 1440
 
     def _bday_minutes(self, ts: int) -> int:
-        """Minutes into the broadcast day's clock: local minute of day, or +1440 after midnight."""
-        m = minutes_of_day(ts, self.tz)
-        return m if m >= self.day_start_min else m + 1440
+        return self._bday(minutes_of_day(ts, self.tz))
 
     def _load_history(self) -> None:
         """Last time each media item was placed (history or already-scheduled), and each
@@ -325,28 +399,36 @@ class Builder:
         Slots inside a channel's rebuild window are about to be deleted, so they count for
         nothing; slots after the window on that channel (later days, already built) still
         count as repeats but not for the episode cursor, so the rebuilt day re-places the
-        episodes it replaces rather than skipping past what later days already hold."""
+        episodes it replaces rather than skipping past what later days already hold.
+
+        Only the latest airing in history matters: it is never later than now, so it is the
+        one nearest to any slot being built. Scheduled adverts and idents are skipped; their
+        repeat rule is per build (`ad_last`)."""
         conn = self.conn
         self.last_placed: dict[int, int] = {}
+        # film media_id -> its latest airing in history plus every scheduled one; the repeat
+        # rule measures to the nearest in either direction.
+        self.movie_placements: dict[int, list[int]] = {}
+        films = {m["id"] for m in self.movies}
         cursor_ts: dict[int, int] = {}
 
         def placed(media_id: int, ts: int, for_cursor: bool = True) -> None:
             self.last_placed[media_id] = max(self.last_placed.get(media_id, 0), ts)
-            self.movie_placements.setdefault(media_id, []).append(ts)
+            if media_id in films:
+                self.movie_placements.setdefault(media_id, []).append(ts)
             if for_cursor:
                 cursor_ts[media_id] = max(cursor_ts.get(media_id, 0), ts)
 
-        for r in conn.execute("SELECT media_id, started_at AS ts FROM history WHERE media_id IS NOT NULL"):
+        for r in conn.execute("SELECT media_id, MAX(started_at) AS ts FROM history"
+                              " WHERE media_id IS NOT NULL GROUP BY media_id"):
             placed(r["media_id"], r["ts"])
         for r in conn.execute("SELECT media_id, start_ts AS ts, channel_id, locked FROM schedule"
-                              " WHERE media_id IS NOT NULL AND replay = 0"):
+                              " WHERE media_id IS NOT NULL AND replay = 0 AND kind = 'programme'"):
             window = self.rebuild.get(r["channel_id"])
-            if window and not r["locked"] and r["ts"] >= window[0]:
-                if window[1] is None or r["ts"] < window[1]:
-                    continue
-                placed(r["media_id"], r["ts"], for_cursor=False)
-            else:
+            if r["locked"] or window is None or r["ts"] < window[0]:
                 placed(r["media_id"], r["ts"])
+            elif not self._rebuilt(r["channel_id"], r["ts"]):
+                placed(r["media_id"], r["ts"], for_cursor=False)
 
         cursors = {r["show_id"]: r for r in conn.execute("SELECT * FROM show_cursor")}
         for show in self.shows.values():
@@ -356,10 +438,8 @@ class Builder:
                 if ts is not None and (latest_ts is None or ts > latest_ts):
                     latest_ts, latest_idx = ts, idx
             if latest_idx is not None:
-                show.next_index = latest_idx + 1
-                if show.next_index >= len(show.episodes):
-                    show.next_index = 0
-                    show.resting_until = latest_ts + show.rest_weeks * 7 * 86400
+                show.next_index = latest_idx
+                show.advance(latest_ts)
             cur = cursors.get(show.id)
             if cur and (latest_ts is None or cur["set_at"] > latest_ts):
                 for idx, ep in enumerate(show.episodes):
@@ -398,32 +478,29 @@ class Builder:
         gw = self._channel_json(channel, "genre_weights")
         if not gw or not genres:
             return 1.0
-        weights = [float(gw.get(g, gw.get(g.lower(), 1.0))) for g in genres]
-        return max(weights) if weights else 1.0
+        return max(float(gw.get(g, gw.get(g.lower(), 1.0))) for g in genres)
 
     def _existing_slots(self, channel_id: int, day: str) -> list[Slot]:
+        """The day's persisted slots (overnight replay excluded), in time order."""
         rows = self.conn.execute(
             "SELECT s.*, m.show_id, m.genres AS mgenres, m.year AS myear FROM schedule s"
             " LEFT JOIN media m ON m.id = s.media_id"
             " WHERE s.channel_id = ? AND s.day = ? AND s.replay = 0 ORDER BY s.start_ts",
             (channel_id, day)).fetchall()
-        out = []
-        for r in rows:
-            genres = _json_field(r["mgenres"]) or []
-            out.append(Slot(channel_id=r["channel_id"], day=r["day"], start_ts=r["start_ts"],
-                            end_ts=r["end_ts"], media_id=r["media_id"], offset=r["offset"],
-                            kind=r["kind"], title=r["title"], subtitle=r["subtitle"],
-                            part=r["part"], replay=r["replay"], locked=r["locked"], id=r["id"],
-                            block=r["block"], wanted_id=r["wanted_id"], show_id=r["show_id"], genres=genres, year=r["myear"]))
-        return out
+        return [Slot(channel_id=r["channel_id"], day=r["day"], start_ts=r["start_ts"], end_ts=r["end_ts"],
+                     media_id=r["media_id"], offset=r["offset"], kind=r["kind"], title=r["title"],
+                     subtitle=r["subtitle"], part=r["part"], replay=r["replay"], locked=r["locked"],
+                     block=r["block"], wanted_id=r["wanted_id"], show_id=r["show_id"],
+                     genres=_json_field(r["mgenres"]) or [], year=r["myear"])
+                for r in rows]
 
-    def _yesterday_programmes(self, channel_id: int, day: date) -> list[Slot]:
+    def _yesterday_minutes(self, channel_id: int, day: date) -> dict[int, int]:
+        """show_id -> minute it first aired on this channel the day before."""
         key = (channel_id, (day - timedelta(days=1)).isoformat())
-        if key in self.day_programmes:
-            return self.day_programmes[key]
-        slots = [s for s in self._existing_slots(channel_id, key[1]) if s.kind == "programme"]
-        self.day_programmes[key] = slots
-        return slots
+        if key not in self._day_minutes:
+            self._day_minutes[key] = _first_minutes(
+                [s for s in self._existing_slots(channel_id, key[1]) if s.kind == "programme"], self.tz)
+        return self._day_minutes[key]
 
     # --- choosing ----------------------------------------------------------------------
 
@@ -433,33 +510,29 @@ class Builder:
         if nas_only_for(channel, self.settings):
             return False
         lead = int(self.settings.get("external_lead_days", 2))
-        # Counted from today's calendar date, not the broadcast day: at 07:00 the fetch runs at
-        # 01:00 and 05:00 are already over, so "two days ahead" means two more nights.
-        today = datetime.fromtimestamp(self.now, self.tz).date()
-        return (broadcast_day_for(t, self.settings, self.tz) - today).days >= lead
+        return (broadcast_day_for(t, self.settings, self.tz) - self._today).days >= lead
 
     def _choose_programme(self, channel: dict[str, Any], rng: random.Random, t: int, gap: int,
                           token: str, placed_today: dict[int, int], prev: Slot | None,
-                          yesterday: list[Slot], relax: int = 0,
-                          last_show_id: int | None = None,
-                          avoid_show_ids: set[int] = frozenset(),
+                          yesterday: dict[int, int], barred: set[int], relax: int = 0,
                           slack: int = 0) -> tuple[dict[str, Any], Show | None] | None:
         """Pick a programme for a gap. Selection is two-stage so the TV/movie balance follows the
         channel's kind weights rather than the size of each pool: choose the kind, then the item.
 
         relax=0 normal rules; relax=1 ignore daypart preferences and daily show limits;
         relax=2 additionally allow movies that aired recently. Certificates are never relaxed.
+        `barred` holds the series either side of the gap (never two episodes back to back).
         `slack` is how far past the gap a programme may run: the duration tolerance at closedown,
         zero when a fixed slot follows (it must not be overlapped)."""
         start_min = minutes_of_day(t, self.tz)
+        bday_min = self._bday_minutes(t)
         weekday_n = datetime.fromtimestamp(t, self.tz).weekday()
         dayparts = dayparts_for_weekday(weekday_n, self.settings, self._channel_json(channel, "daypart_profile"))
-        dp = daypart_for(start_min, dayparts)
-        sport_block = float(dp.get("sport", 1.0)) >= 3.0   # docs/PLAN.md §4.5: above 3 sport forms a block
-        dp_end = daypart_end_minutes(self._bday_minutes(t), dayparts, 1440)
+        dp = daypart_for(bday_min, dayparts)
+        sport_block = float(dp.get("sport", 1.0)) >= 3.0   # docs/PLAN.md section 4.6: 3 and above forms a block
+        dp_end = daypart_end_minutes(bday_min, dayparts, 1440)
         spans = self._channel_spans(channel)
         kind_weights = self._channel_setting(channel, "kind_weights")
-        tol = slack
         movie_repeat = int(self.settings.get("movie_repeat_days", 21)) * 86400
         same_slot_bonus = float(self.settings.get("same_slot_bonus", 3.0))
         genre_penalty = float(self.settings.get("genre_repeat_penalty", 0.4))
@@ -468,17 +541,18 @@ class Builder:
         max_minutes = dp.get("max_minutes")
         weekend = weekday_n >= 5
         relaxed = relax >= 1
-        external_ok = bool(self.externals) and self._external_allowed(channel, t)
         kids_rule = channel.get("content") != "cartoons"
         kids_breakfast = weekend and bool(self.settings.get("weekend_kids_breakfast")) and dp.get("name") == "Breakfast"
         unknown_w = float(self.settings.get("unknown_year_weight", 0.0))
+        prev_genres = ({g.lower() for g in prev.genres}
+                       if prev is not None and prev.kind == "programme" and prev.genres else set())
 
         def common_weight(item: dict[str, Any], kind: str, end_year: int | None = None) -> float:
             w = era_weight_spans(item.get("year"), spans, end_year, unknown_w)
             if w <= 0:
                 return 0.0
             duration = float(item["duration"])
-            if duration > gap + tol:
+            if duration > gap + slack:
                 return 0.0
             if not allowed_at(item, start_min, self.settings, kids_rule=kids_rule):
                 return 0.0
@@ -503,13 +577,14 @@ class Builder:
                 w *= 0.15
             # Running well past the end of the daypart changes the feel of the next one: a sport
             # block must not swallow the evening, and a long film should not start at teatime.
-            overrun_min = (start_min + duration / 60) - dp_end
+            overrun_min = (bday_min + duration / 60) - dp_end
             if overrun_min > 30 and not relaxed:
                 w *= 0.02 if is_sport else (0.5 if kind == "movie" and overrun_min < 75 else 0.25)
-            if prev is not None and prev.kind == "programme" and prev.genres and item.get("genres"):
-                if set(g.lower() for g in prev.genres) & set(g.lower() for g in item["genres"]):
-                    if not (is_sport and sport_block):   # sport blocks are meant to run together
-                        w *= genre_penalty
+            # Sharing a genre with the previous programme is penalised, except within a sport
+            # block, which is meant to run together.
+            if (prev_genres and item.get("genres") and not (is_sport and sport_block)
+                    and prev_genres & {g.lower() for g in item["genres"]}):
+                w *= genre_penalty
             if gap - duration < 600:
                 w *= 1.5  # fills the gap neatly
             return w
@@ -518,16 +593,12 @@ class Builder:
         movie_cands: list[tuple[float, dict[str, Any], Show | None]] = []
 
         if token in ("show", "tv"):
-            for show in self.shows.values():
-                if show.anchored:
-                    continue
-                if show.id == last_show_id or show.id in avoid_show_ids:
+            for show in self._free_shows.get(channel["id"], ()):
+                if show.id in barred:
                     sport_ok = (show.category == "sport" and weekend
                                 and self.settings.get("sport_back_to_back_weekends", True))
                     if not sport_ok:
                         continue  # never two episodes of the same series back to back
-                if show.home_channel_id != channel["id"]:
-                    continue  # a series belongs to exactly one channel's line-up
                 resting = bool(show.resting_until and t < show.resting_until)
                 if resting and relax < 2:
                     continue
@@ -544,16 +615,12 @@ class Builder:
                     w *= repeat_penalty ** times_today
                 if resting:
                     w *= 0.3
-                for y in yesterday:
-                    if y.show_id == show.id:
-                        y_min = minutes_of_day(y.start_ts, self.tz)
-                        w *= same_slot_bonus if abs(y_min - start_min) <= 30 else 0.6
-                        break
+                y_min = yesterday.get(show.id)
+                if y_min is not None:
+                    w *= same_slot_bonus if abs(y_min - start_min) <= 30 else 0.6
                 tv_cands.append((w, ep, show))
         if token in ("show", "movie"):
-            for m in self.movies:
-                if m.get("home_channel_id") != channel["id"]:
-                    continue  # films belong to one channel too
+            for m in self._movies_on.get(channel["id"], ()):
                 placements = self.movie_placements.get(m["id"], [])
                 # Distance to the nearest airing in either direction: a film already placed later
                 # today on another channel is just as "recent" as one shown yesterday.
@@ -573,58 +640,59 @@ class Builder:
                     w *= 2.0
                 movie_cands.append((w, m, None))
 
-        if external_ok and not relaxed:
+        externals = self._externals_on.get(channel["id"])
+        if externals and not relaxed and self._external_allowed(channel, t):
             ext_w = float(self.settings.get("external_weight", 0.7))
-            for e in self.externals:
-                if e["channel_id"] != channel["id"]:
+            for e in externals:
+                if e["id"] in barred or (e.get("show_id") and e["show_id"] in barred):
                     continue
-                if e["id"] == last_show_id or e["id"] in avoid_show_ids or (
-                        e.get("show_id") and (e["show_id"] == last_show_id or e["show_id"] in avoid_show_ids)):
+                episode = e["kind"] == "episode"
+                if token not in ("show", "tv" if episode else "movie"):
                     continue
-                wanted_token = ("show", "tv") if e["kind"] == "episode" else ("show", "movie")
-                if token not in wanted_token:
+                if placed_today.get(e["id"], 0) >= (daily_limit if episode else 1):
                     continue
-                if placed_today.get(e["id"], 0) >= (daily_limit if e["kind"] == "episode" else 1):
-                    continue
-                w = common_weight(e, "tv" if e["kind"] == "episode" else "movie") * ext_w
+                w = common_weight(e, "tv" if episode else "movie") * ext_w
                 if w <= 0:
                     continue
-                (tv_cands if e["kind"] == "episode" else movie_cands).append((w, e, None))
+                (tv_cands if episode else movie_cands).append((w, e, None))
 
-        kinds: list[tuple[float, list]] = []
-        if tv_cands:
-            kinds.append((float(kind_weights.get("tv", 1.0)) * (1.0 if relaxed else float(dp.get("tv", 1.0))), tv_cands))
-        if movie_cands:
-            kinds.append((float(kind_weights.get("movie", 1.0)) * (1.0 if relaxed else float(dp.get("movie", 1.0))), movie_cands))
+        kinds: list[tuple[float, list[tuple[float, dict[str, Any], Show | None]]]] = [
+            (float(kind_weights.get(kind, 1.0)) * (1.0 if relaxed else float(dp.get(kind, 1.0))), cands)
+            for kind, cands in (("tv", tv_cands), ("movie", movie_cands)) if cands]
         if not kinds:
             return None
         pool = rng.choices(kinds, weights=[max(k[0], 1e-6) for k in kinds], k=1)[0][1]
         pick = rng.choices(pool, weights=[c[0] for c in pool], k=1)[0]
         return pick[1], pick[2]
 
+    def _advert_pool(self, channel: dict[str, Any]) -> list[tuple[dict[str, Any], float, float]]:
+        """(advert, duration, era weight) for every advert the channel may carry, in library
+        order. Built once per channel: `_choose_advert` runs for every break of every day."""
+        pool = self._advert_pools.get(channel["id"])
+        if pool is None:
+            family_only = bool(channel.get("family_safe_ads")) or channel.get("content") == "cartoons"
+            pool = []
+            for ad in self.adverts:
+                if family_only and not ad.get("family_safe", 1):
+                    continue  # no alcohol, tobacco or adult adverts on a family channel
+                w = era_weight_spans(ad.get("year"), self._advert_spans)
+                if w > 0:     # adverts must be from the configured decades
+                    pool.append((ad, float(ad["duration"]), w))
+            self._advert_pools[channel["id"]] = pool
+        return pool
+
     def _choose_advert(self, channel: dict[str, Any], rng: random.Random, t: int, gap: int,
                        near_year: int | None) -> dict[str, Any] | None:
-        window = int(self.settings.get("advert_year_window", 3))
-        penalty_s = int(self.settings.get("advert_repeat_penalty_hours", 6)) * 3600
         cands: list[tuple[float, dict[str, Any]]] = []
         fresh: list[tuple[float, dict[str, Any]]] = []
-        family_only = bool(channel.get("family_safe_ads")) or channel.get("content") == "cartoons"
-        era_w = self._advert_era_w
-        for ad in self.adverts:
-            if float(ad["duration"]) > gap:
+        for ad, duration, w in self._advert_pool(channel):
+            if duration > gap:
                 continue
-            if family_only and not ad.get("family_safe", 1):
-                continue  # no alcohol, tobacco or adult adverts on a family channel
             year = ad.get("year")
-            w = era_w.get(year)
-            if w is None:
-                w = era_w[year] = era_weight_spans(year, self._advert_spans)
-            if w <= 0:
-                continue  # adverts must be from the configured decades
-            if near_year and ad.get("year") is not None:
-                w *= 3.0 if abs(ad["year"] - near_year) <= window else 1.0
+            if near_year and year is not None and abs(year - near_year) <= self._advert_window:
+                w *= 3.0
             last = self.ad_last.get((channel["id"], ad["id"]))
-            if last is not None and t - last < penalty_s:
+            if last is not None and t - last < self._advert_penalty:
                 w *= 0.1
             cands.append((w, ad))
             if last is None or t - last > 900:
@@ -637,8 +705,10 @@ class Builder:
     def _choose_ident(self, channel: dict[str, Any], rng: random.Random, gap: int) -> dict[str, Any] | None:
         if not channel.get("idents_enabled", 1):
             return None
-        mine = [i for i in self.idents if i.get("channel_hint") == channel["number"] and float(i["duration"]) <= gap]
-        pool = mine or [i for i in self.idents if float(i["duration"]) <= gap]
+        fits = [i for i in self.idents if float(i["duration"]) <= gap]
+        # The channel's own idents, else generic ones; never another channel's, which name it.
+        pool = [i for i in fits if i.get("home_channel_id") == channel["id"]] or \
+            [i for i in fits if not i.get("home_channel_id")]
         return rng.choice(pool) if pool else None
 
     # --- building ----------------------------------------------------------------------
@@ -646,55 +716,54 @@ class Builder:
     def _anchors_for(self, channel: dict[str, Any], day: date, day_start: int, day_end: int) -> list[tuple[int, Show]]:
         out = []
         weekday = day.weekday()
-        for show in self.shows.values():
-            if not show.anchored or show.home_channel_id != channel["id"]:
-                continue
+        for show in self._anchored.get(channel["id"], ()):
             if weekday not in show.anchor_days:
                 continue
             if show.resting_until and day_start < show.resting_until:
                 continue
-            ts = local_ts(day, show.anchor_time or "00:00", self.tz)
-            if ts < day_start:
-                ts += 86400
+            ts = local_ts(day, show.anchor_time, self.tz)
+            if ts < day_start:   # after midnight, so on the next calendar day
+                ts = local_ts(day + timedelta(days=1), show.anchor_time, self.tz)
             if day_start <= ts < day_end:
                 out.append((ts, show))
         out.sort(key=lambda x: x[0])
         return out
 
-    def _keep_slots(self, existing: list[Slot], day_end: int, force: bool, from_ts: int | None) -> list[Slot] | None:
-        """The day's slots that survive this build, sorted, or None when the day is already
-        complete and nothing was asked to be rebuilt. Records the cut point `save()` deletes from.
+    def _keep_slots(self, channel_id: int, day_str: str, day_end: int, force: bool,
+                    from_ts: int | None) -> list[Slot] | None:
+        """The day's slots that survive this build, in time order, or None when the day is
+        already complete and nothing was asked to be rebuilt. Records where `save()` cuts.
 
         force: rebuild everything that has not started and is not locked.
         from_ts: rebuild from this time onwards only (implies force for that part)."""
+        existing = self._existing_slots(channel_id, day_str)
         if force or from_ts is not None:
-            self._cut = max(self.now, from_ts) if from_ts is not None else self.now
-            keep = [s for s in existing if s.locked or s.start_ts < self._cut]
-        else:
-            self._cut = None
-            if existing and max(s.end_ts for s in existing) >= day_end - 60:
-                return None
-            keep = list(existing)
-        keep.sort(key=lambda s: s.start_ts)
-        return keep
+            cut = max(self.now, from_ts) if from_ts is not None else self.now
+            self._cuts[(channel_id, day_str)] = cut
+            return [s for s in existing if s.locked or s.start_ts < cut]
+        if existing and max(s.end_ts for s in existing) >= day_end - 60:
+            return None
+        self._cuts[(channel_id, day_str)] = None
+        return existing
 
-    def _show_airing_at(self, channel_id: int, boundary: str, ts: int) -> int | None:
-        """show_id of the nearest programme on the far side of a day boundary: the last one
-        starting before ts (`end_ts`, the previous day's tail) or the first one starting at or
-        after it (`start_ts`, the next day's opening). Adverts, idents and a closedown filler
+    def _adjacent_show(self, channel_id: int, ts: int, before: bool) -> int | None:
+        """show_id of the nearest programme across a day boundary: the last one starting before
+        ts (the previous day's tail) or the first starting at or after it (the next day's
+        opening), looking no further than 12 hours. Adverts, idents and a closedown filler
         between the two do not break the no-same-series-back-to-back rule."""
-        if boundary == "end_ts":
-            sql = ("SELECT m.show_id FROM schedule s JOIN media m ON m.id = s.media_id WHERE s.channel_id = ?"
-                   " AND s.start_ts < ? AND s.start_ts > ? AND s.kind = 'programme' ORDER BY s.start_ts DESC LIMIT 1")
-            params = (channel_id, ts, ts - 12 * 3600)
-        elif boundary == "start_ts":
-            sql = ("SELECT m.show_id FROM schedule s JOIN media m ON m.id = s.media_id WHERE s.channel_id = ?"
-                   " AND s.start_ts >= ? AND s.start_ts < ? AND s.kind = 'programme' ORDER BY s.start_ts LIMIT 1")
-            params = (channel_id, ts, ts + 12 * 3600)
+        if before:
+            where, params, order = "s.start_ts < ? AND s.start_ts > ?", (channel_id, ts, ts - 12 * 3600), "DESC"
         else:
-            raise ValueError(boundary)
-        row = self.conn.execute(sql, params).fetchone()
+            where, params, order = "s.start_ts >= ? AND s.start_ts < ?", (channel_id, ts, ts + 12 * 3600), "ASC"
+        row = self.conn.execute(
+            "SELECT m.show_id FROM schedule s JOIN media m ON m.id = s.media_id WHERE s.channel_id = ?"
+            f" AND {where} AND s.kind = 'programme' ORDER BY s.start_ts {order} LIMIT 1", params).fetchone()
         return row["show_id"] if row else None
+
+    def _filler(self, channel: dict[str, Any], day_str: str, start: int, end: int, title: str = FILLER_TITLE,
+                **extra: Any) -> Slot:
+        return Slot(channel_id=channel["id"], day=day_str, start_ts=start, end_ts=end, media_id=None,
+                    offset=0, kind="filler", title=title, **extra)
 
     def build_channel_day(self, channel: dict[str, Any], day: date, force: bool,
                           from_ts: int | None = None) -> list[Slot]:
@@ -705,18 +774,14 @@ class Builder:
         day_str = day.isoformat()
         day_start, day_end, next_day_start = day_bounds(day, self.settings, self.tz)
         rng = self._rng(channel["id"], day)
-        rest_seconds = 7 * 86400
 
-        keep = self._keep_slots(self._existing_slots(channel["id"], day_str), day_end, force, from_ts)
+        keep = self._keep_slots(channel["id"], day_str, day_end, force, from_ts)
         if keep is None:
             return []
         placed_today: dict[int, int] = {}
         for s in keep:
             if s.show_id:
                 placed_today[s.show_id] = placed_today.get(s.show_id, 0) + 1
-        for s in keep:
-            if s.media_id:
-                self.last_placed[s.media_id] = max(self.last_placed.get(s.media_id, 0), s.start_ts)
 
         fixed: list[tuple[int, int, Any]] = [(s.start_ts, s.end_ts, s) for s in keep]
         for ts, show in self._anchors_for(channel, day, day_start, day_end):
@@ -725,7 +790,7 @@ class Builder:
             ep = show.next_episode()
             if ep is None:
                 continue
-            end = ts + int(float(ep["duration"]))
+            end = ts + _seconds(ep)
             if any(not (end <= fs or ts >= fe) for fs, fe, _ in fixed):
                 self.log.append(f"{channel['name']} {day_str}: anchor {show.title} at {show.anchor_time} clashes with a kept slot")
                 continue
@@ -740,20 +805,21 @@ class Builder:
             pattern = [tok for tok in pattern if tok not in ("ad", "break")] or ["show"]
         rounding = int(self.settings.get("start_rounding_minutes", 5)) * 60
         tol = int(self.settings.get("duration_tolerance_minutes", 5)) * 60
+        overrun = int(self.settings.get("end_of_day_overrun_minutes", 30)) * 60
 
         new_slots: list[Slot] = []
         all_slots: list[Slot] = list(keep)
-        yesterday = self._yesterday_programmes(channel["id"], day)
+        yesterday = self._yesterday_minutes(channel["id"], day)
         t = day_start
         pat_idx = 0
-        overrun = int(self.settings.get("end_of_day_overrun_minutes", 30)) * 60
-        prev: Slot | None = keep[-1] if keep else None
+        # Kept slots update these (and the advert repeat times) as the walk passes them, so
+        # nothing is seeded from `keep`: its last entry may be a locked slot late in the day.
+        # What precedes 08:00 is the tail of yesterday's overnight replay.
+        prev: Slot | None = None
         last_programme_year: int | None = None
-        # What precedes 08:00 is the tail of yesterday's overnight replay; kept slots update this
-        # as the walk passes them (they are in fixed_queue), so do not pre-seed from `keep`.
-        last_show_id = self._show_airing_at(channel["id"], "end_ts", day_start)
-        iterations = 0
-        fixed_queue = [f for f in fixed if f[0] >= t]
+        last_show_id = self._adjacent_show(channel["id"], day_start, before=True)
+        steps = 0
+        fixed_queue = deque(fixed)
 
         def emit(slot: Slot) -> None:
             nonlocal prev
@@ -761,21 +827,22 @@ class Builder:
             all_slots.append(slot)
             prev = slot
 
-        def fill_to(target: int) -> None:
-            """Close a small gap before a fixed item with adverts or idents, then filler, so the
+        def fill_to(target: int, note: bool = False) -> None:
+            """Close the gap up to `target` with adverts or idents, then filler, so the
             channel-day stays contiguous (the guide and the player both rely on that)."""
             nonlocal t
-            t = self._pad(channel, rng, day_str, t, target, last_programme_year, emit, limit=target)
+            t = self._pad(channel, rng, day_str, t, target, last_programme_year, emit)
             if t < target:
-                emit(Slot(channel_id=channel["id"], day=day_str, start_ts=t, end_ts=target, media_id=None,
-                          offset=0, kind="filler", title="Programmes will continue shortly"))
+                if note and target - t > 120:
+                    self.log.append(f"{channel['name']} {day_str}: filler {(target - t) // 60} min at {self._hhmm(t)}")
+                emit(self._filler(channel, day_str, t, target))
                 t = target
 
-        while t < day_end and iterations < MAX_ITERATIONS_PER_DAY:
-            iterations += 1
+        while t < day_end and steps < MAX_STEPS_PER_DAY:
+            steps += 1
             # A fixed item starting now (or that we have run into)?
             if fixed_queue and t >= fixed_queue[0][0] - 60:
-                fs, fe, payload = fixed_queue.pop(0)
+                fs, fe, payload = fixed_queue.popleft()
                 if t < fs:
                     fill_to(fs)
                 if isinstance(payload, Slot):
@@ -783,12 +850,15 @@ class Builder:
                     prev = payload
                     if payload.kind == "programme":
                         last_show_id = payload.show_id
+                        last_programme_year = payload.year
+                    elif payload.kind == "advert" and payload.media_id:
+                        self.ad_last[(channel["id"], payload.media_id)] = payload.start_ts
                     continue
                 _, show, ep = payload
                 start = max(t, fs)
                 slot = self._programme_slot(channel, day_str, start, ep, show)
                 emit(slot)
-                show.advance(start, show.rest_weeks * rest_seconds)
+                show.advance(start)
                 last_programme_year = ep.get("year")
                 last_show_id = show.id
                 t = slot.end_ts
@@ -801,24 +871,9 @@ class Builder:
                 continue
             token = pattern[pat_idx % len(pattern)]
             pat_idx += 1
-            next_fixed = fixed_queue[0][2] if fixed_queue else None
-            next_show_id = (next_fixed.show_id if isinstance(next_fixed, Slot)
-                            else next_fixed[1].id if next_fixed else None)
-
-            if token in ("show", "tv", "movie") and rounding and ads_on:
-                # Tidy start time: pad with adverts up to the next 5-minute boundary.
-                target = -(-t // rounding) * rounding
-                if 0 < target - t <= 4 * 60 and target < boundary:
-                    t = self._pad(channel, rng, day_str, t, target, last_programme_year, emit, limit=boundary)
-                    gap = boundary - t
-            slack = 0
-            if not fixed_queue and token in ("show", "tv", "movie"):
-                gap += overrun  # the last programme of the day may run past closedown
-                slack = tol
 
             if token in ("ad", "break"):
-                count = ads_per_break if token == "break" else 1
-                for _ in range(count):
+                for _ in range(ads_per_break if token == "break" else 1):
                     ad = self._choose_advert(channel, rng, t, boundary - t, last_programme_year)
                     if ad is None:
                         break
@@ -835,26 +890,30 @@ class Builder:
                     t = slot.end_ts
                 continue
 
-            avoid = {next_show_id} if next_show_id else set()
-            choice = self._choose_programme(channel, rng, t, gap, token, placed_today, prev, yesterday,
-                                            last_show_id=last_show_id, avoid_show_ids=avoid, slack=slack)
-            if choice is None and token != "show":
-                choice = self._choose_programme(channel, rng, t, gap, "show", placed_today, prev, yesterday,
-                                                last_show_id=last_show_id, avoid_show_ids=avoid, slack=slack)
-            for relax in (1, 2):
-                if choice is None:
-                    choice = self._choose_programme(channel, rng, t, gap, "show", placed_today, prev, yesterday, relax=relax,
-                                                    last_show_id=last_show_id, avoid_show_ids=avoid, slack=slack)
+            if rounding and ads_on:
+                # Tidy start time: pad with adverts up to the next rounding boundary.
+                target = -(-t // rounding) * rounding
+                if 0 < target - t <= 4 * 60 and target < boundary:
+                    t = self._pad(channel, rng, day_str, t, target, last_programme_year, emit)
+                    gap = boundary - t
+            slack = 0
+            if not fixed_queue:
+                gap += overrun  # the last programme of the day may run past closedown
+                slack = tol
+
+            next_fixed = fixed_queue[0][2] if fixed_queue else None
+            next_show_id = (next_fixed.show_id if isinstance(next_fixed, Slot)
+                            else next_fixed[1].id if next_fixed else None)
+            barred = {x for x in (last_show_id, next_show_id) if x}
+            attempts = [(token, 0)] + ([("show", 0)] if token != "show" else []) + [("show", 1), ("show", 2)]
+            choice = None
+            for tok, relax in attempts:
+                choice = self._choose_programme(channel, rng, t, gap, tok, placed_today, prev, yesterday,
+                                                barred, relax=relax, slack=slack)
+                if choice is not None:
+                    break
             if choice is None:
-                # Nothing fits this gap: pad with adverts/idents, then filler up to the boundary.
-                t = self._pad(channel, rng, day_str, t, boundary, last_programme_year, emit, limit=boundary)
-                if t < boundary:
-                    if boundary - t > 120:
-                        self.log.append(f"{channel['name']} {day_str}: filler {(boundary - t)//60} min at {self._hhmm(t)}")
-                    emit(Slot(channel_id=channel["id"], day=day_str, start_ts=t, end_ts=boundary,
-                              media_id=None, offset=0, kind="filler",
-                              title="Programmes will continue shortly"))
-                    t = boundary
+                fill_to(boundary, note=True)   # nothing fits this gap
                 continue
             item, show = choice
             if item["id"] < 0:   # external line-up entry: placeholder slot plus a wanted request
@@ -868,7 +927,7 @@ class Builder:
             slot = self._programme_slot(channel, day_str, t, item, show)
             emit(slot)
             if show is not None:
-                show.advance(t, show.rest_weeks * rest_seconds)
+                show.advance(t)
                 placed_today[show.id] = placed_today.get(show.id, 0) + 1
                 last_show_id = show.id
             else:
@@ -878,9 +937,19 @@ class Builder:
             last_programme_year = item.get("year")
             t = slot.end_ts
 
-        # Overnight replay.
-        replay_slots = self._overnight(channel, day_str, day_end, next_day_start, all_slots)
-        return new_slots + replay_slots
+        if t < day_end:
+            self.log.append(f"{channel['name']} {day_str}: gave up after {MAX_STEPS_PER_DAY} steps at"
+                            f" {self._hhmm(t)}; check the channel pattern")
+            for fs, fe, payload in fixed_queue:
+                if isinstance(payload, Slot):   # kept slots stay; only the gaps become filler
+                    if t < fs:
+                        emit(self._filler(channel, day_str, t, fs))
+                    t = max(t, fe)
+            if t < day_end:
+                emit(self._filler(channel, day_str, t, day_end))
+        self._day_minutes[(channel["id"], day_str)] = _first_minutes(
+            sorted((s for s in all_slots if s.kind == "programme"), key=lambda s: s.start_ts), self.tz)
+        return new_slots + self._overnight(channel, day, day_end, next_day_start, all_slots)
 
     # --- music channel ------------------------------------------------------------------
 
@@ -890,134 +959,140 @@ class Builder:
         the block name so guides show one entry per block."""
         day_str = day.isoformat()
         day_start, day_end, next_day_start = day_bounds(day, self.settings, self.tz)
-        keep = self._keep_slots(self._existing_slots(channel["id"], day_str), day_end, force, from_ts)
+        keep = self._keep_slots(channel["id"], day_str, day_end, force, from_ts)
         if keep is None:
             return []
         rng = self._rng(channel["id"], day)
-        blocks = self.settings.get("music_blocks") or []
+        blocks = self.settings.get("music_blocks") or [
+            {"name": "Music", "start": self.settings.get("day_start", "08:00"), "genres": [], "decades": []}]
         video_repeat = int(self.settings.get("music_video_repeat_hours", 36)) * 3600
         concert_repeat = int(self.settings.get("music_concert_repeat_days", 14)) * 86400
         allowed_decades = [int(d) for d in (self.settings.get("music_decades") or [])]
         library = [m for m in self.music if not allowed_decades or m.get("year") is None
                    or (m["year"] // 10) * 10 in allowed_decades]
+        pools = {c: [m for m in library if bool(m.get("concert")) == c] for c in (False, True)}
         used_today: set[int] = {s.media_id for s in keep if s.media_id}
         played_today: dict[int, int] = {}
         new_slots: list[Slot] = []
-        all_slots: list[Slot] = list(keep)
-        t = max(day_start, max((s.end_ts for s in keep), default=day_start))
         if not library:
             self.log.append(f"{channel['name']} {day_str}: no music videos in the library for decades {allowed_decades}")
-            new_slots.append(Slot(channel_id=channel["id"], day=day_str, start_ts=t, end_ts=day_end, media_id=None,
-                                  offset=0, kind="filler", title="No music videos"))
-            return new_slots + self._overnight(channel, day_str, day_end, next_day_start, all_slots + new_slots)
 
-        def block_start(b: dict[str, Any]) -> int:
-            bm = hhmm_to_minutes(b["start"])
-            return bm if bm >= self.day_start_min else bm + 1440
+        starts = [self._bday(hhmm_to_minutes(b["start"])) for b in blocks]
 
-        def block_for(ts: int) -> dict[str, Any]:
+        def block_at(ts: int) -> int:
+            """Index of the block on air at `ts`: the last one started (the first before any has)."""
             mins = self._bday_minutes(ts)
-            current = blocks[0] if blocks else {"name": "Music", "genres": [], "decades": []}
-            for b in blocks:
-                if mins >= block_start(b):
-                    current = b
+            current = 0
+            for i, bm in enumerate(starts):
+                if mins >= bm:
+                    current = i
             return current
 
         def block_end(ts: int) -> int:
             mins = self._bday_minutes(ts)
-            ends = [block_start(b) for b in blocks if block_start(b) > mins]
-            if not ends:
-                return day_end
-            return ts + (min(ends) - mins) * 60
+            later = [bm for bm in starts if bm > mins]
+            return ts + (min(later) - mins) * 60 if later else day_end
 
-        def matches(m: dict[str, Any], b: dict[str, Any], level: int) -> bool:
-            """level 0: genre and decade; 1: decade only; 2: anything (within the channel's decades)."""
-            genres = [g.lower() for g in (m.get("genres") or [])]
-            want_g = [g.lower() for g in (b.get("genres") or [])]
-            want_d = [int(d) for d in (b.get("decades") or [])]
-            if level <= 0 and want_g and not any(g in genres for g in want_g):
-                return False
-            if level <= 1 and want_d and (m.get("year") is None or (m["year"] // 10) * 10 not in want_d):
-                return False
-            return True
+        # Which videos satisfy each block at the two strict levels: 0 genre and decade, 1 decade
+        # only (level 2 is anything within the channel's decades).
+        def matching(b: dict[str, Any], level: int) -> set[int]:
+            want_g = {g.lower() for g in (b.get("genres") or [])}
+            want_d = {int(d) for d in (b.get("decades") or [])}
+            out = set()
+            for m in library:
+                if level == 0 and want_g and want_g.isdisjoint(g.lower() for g in (m.get("genres") or [])):
+                    continue
+                if want_d and (m.get("year") is None or (m["year"] // 10) * 10 not in want_d):
+                    continue
+                out.add(m["id"])
+            return out
 
+        levels = [(matching(b, 0), matching(b, 1)) for b in blocks]
         # Videos a genre block needs (Disco & Soul, Rock & Metal) are held back from the other
         # blocks, otherwise a broad block earlier in the day (Seventies Breakfast) uses them up
         # and the genre block is left with none of its genre.
-        genre_blocks = [gb for gb in blocks if gb.get("genres")]
-        claimed = {id(gb): {m["id"] for m in library if matches(m, gb, 0)} for gb in genre_blocks}
+        claimed = [levels[i][0] if b.get("genres") else set() for i, b in enumerate(blocks)]
+        reserved = [set().union(*(c for j, c in enumerate(claimed) if j != i)) - claimed[i]
+                    for i in range(len(blocks))]
 
-        def reserved_for_others(b: dict[str, Any]) -> set[int]:
-            out: set[int] = set()
-            for gb in genre_blocks:
-                if gb is not b:
-                    out |= claimed[id(gb)]
-            return out - claimed.get(id(b), set())
-
-        def pick(b: dict[str, Any], gap: int, concert: bool) -> dict[str, Any] | None:
+        def pick(bi: int, at: int, gap: int, concert: bool) -> dict[str, Any] | None:
             repeat = concert_repeat if concert else video_repeat
-            reserved = reserved_for_others(b)
             # Widen step by step: exact block -> decade only -> anything -> already played today.
             for level, allow_recent, allow_today in ((0, False, False), (1, False, False), (2, False, False),
                                                      (0, True, False), (2, True, False), (2, True, True)):
+                wanted = levels[bi][level] if level < 2 else None
                 cands: list[tuple[float, dict[str, Any]]] = []
-                for m in library:
-                    if bool(m.get("concert")) != concert:
-                        continue
+                for m in pools[concert]:
                     if m["id"] in used_today and not allow_today:
                         continue
-                    if float(m["duration"]) > gap or not matches(m, b, level):
+                    if float(m["duration"]) > gap or (wanted is not None and m["id"] not in wanted):
                         continue
                     last = self.last_placed.get(m["id"])
-                    age = (t - last) if last is not None else None
+                    age = (at - last) if last is not None else None
                     if age is not None and age < repeat and not allow_recent:
                         continue
                     w = 2.0 if age is None else min(2.0, max(0.02, age / repeat))
                     if allow_today:
                         # Repeating within the day: everything is fair game, least-played first.
                         w *= 1.0 / (1 + played_today.get(m["id"], 0)) ** 2
-                    elif m["id"] in reserved:
+                    elif m["id"] in reserved[bi]:
                         w *= 0.1
                     cands.append((w, m))
                 if cands:
                     return rng.choices(cands, weights=[c[0] for c in cands], k=1)[0][1]
             return None
 
-        guard = 0
-        concert_done_in_block: str | None = None
-        while t < day_end and guard < 3000:
-            guard += 1
-            b = block_for(t)
-            b_end = min(block_end(t), day_end)
-            gap = b_end - t
-            item = None
-            if b.get("concert") and concert_done_in_block != f"{b['name']}@{b['start']}":
-                item = pick(b, gap + 20 * 60, True)   # a concert may overrun its block a little
-                concert_done_in_block = f"{b['name']}@{b['start']}"
-            if item is None:
-                item = pick(b, max(gap, 60), False)
-            if item is None:
-                item = pick(b, 24 * 3600, False)   # anything at all
-            if item is None:
-                new_slots.append(Slot(channel_id=channel["id"], day=day_str, start_ts=t, end_ts=b_end, media_id=None,
-                                      offset=0, kind="filler", title=b.get("name", "Music"), block=b.get("name")))
-                t = b_end
-                continue
-            duration = max(1, int(round(float(item["duration"]))))
-            title, sub = slot_titles(item)
-            slot = Slot(channel_id=channel["id"], day=day_str, start_ts=t, end_ts=t + duration, media_id=item["id"],
-                        offset=0, kind="programme", title=title, subtitle=sub, block=b.get("name", "Music"),
-                        genres=item.get("genres") or [], year=item.get("year"))
-            new_slots.append(slot)
-            all_slots.append(slot)
-            used_today.add(item["id"])
-            played_today[item["id"]] = played_today.get(item["id"], 0) + 1
-            self.last_placed[item["id"]] = t
-            t = slot.end_ts
-        return new_slots + self._overnight(channel, day_str, day_end, next_day_start, all_slots)
+        steps = 0
+        concert_done: int | None = None   # index of the concert block already given its concert
+
+        def fill(t: int, end: int, open_end: bool) -> None:
+            """Videos from t to `end`. Only at closedown (`open_end`) may one run past `end`;
+            before a kept slot the gap is a hard limit."""
+            nonlocal steps, concert_done
+            if not library:
+                new_slots.append(self._filler(channel, day_str, t, end, title="No music videos"))
+                return
+            while t < end and steps < MAX_STEPS_PER_DAY:
+                steps += 1
+                bi = block_at(t)
+                b = blocks[bi]
+                b_end = min(block_end(t), end)
+                gap = b_end - t
+                room = None if open_end else end - t
+                item = None
+                if b.get("concert") and concert_done != bi:
+                    item = pick(bi, t, _cap(gap + 20 * 60, room), True)   # a concert may overrun its block a little
+                    concert_done = bi
+                if item is None:
+                    item = pick(bi, t, _cap(max(gap, 60), room), False)
+                if item is None and open_end:
+                    item = pick(bi, t, 24 * 3600, False)   # anything at all
+                if item is None:
+                    new_slots.append(self._filler(channel, day_str, t, b_end, title=b.get("name", "Music"),
+                                                  block=b.get("name")))
+                    t = b_end
+                    continue
+                slot = self._programme_slot(channel, day_str, t, item, None, block=b.get("name", "Music"))
+                new_slots.append(slot)
+                used_today.add(item["id"])
+                played_today[item["id"]] = played_today.get(item["id"], 0) + 1
+                self.last_placed[item["id"]] = t
+                t = slot.end_ts
+            if t < end:
+                self.log.append(f"{channel['name']} {day_str}: gave up after {MAX_STEPS_PER_DAY} steps at {self._hhmm(t)}")
+                new_slots.append(self._filler(channel, day_str, t, end))
+
+        t = day_start
+        for s in keep:   # fill around kept slots, which may include locked ones later in the day
+            if s.start_ts > t:
+                fill(t, s.start_ts, open_end=False)
+            t = max(t, s.end_ts)
+        if t < day_end:
+            fill(t, day_end, open_end=True)
+        return new_slots + self._overnight(channel, day, day_end, next_day_start, keep + new_slots)
 
     def _pad(self, channel: dict[str, Any], rng: random.Random, day_str: str, t: int, target: int,
-             near_year: int | None, emit: Callable[[Slot], None], limit: int) -> int:
+             near_year: int | None, emit: Callable[[Slot], None]) -> int:
         """Fill t..target with adverts (ad channels) or idents; returns the new t. Idents are
         continuity clips, so at most two run together; the caller puts filler after that."""
         guard = 0
@@ -1043,13 +1118,12 @@ class Builder:
         return t
 
     def _programme_slot(self, channel: dict[str, Any], day_str: str, start: int, item: dict[str, Any],
-                        show: Show | None) -> Slot:
-        duration = int(round(float(item["duration"])))
+                        show: Show | None, block: str | None = None) -> Slot:
         title, subtitle = slot_titles(item, show.title if show else None)
-        return Slot(channel_id=channel["id"], day=day_str, start_ts=start, end_ts=start + duration,
+        return Slot(channel_id=channel["id"], day=day_str, start_ts=start, end_ts=start + _seconds(item),
                     media_id=item["id"], offset=0, kind="programme", title=title, subtitle=subtitle,
                     show_id=show.id if show else None, genres=item.get("genres") or [],
-                    year=item.get("year"))
+                    year=item.get("year"), block=block)
 
     def _external_slot(self, channel: dict[str, Any], day_str: str, start: int, e: dict[str, Any]) -> Slot:
         """A programme that is not on disk yet. Episodes number on from the entry's counter; a
@@ -1066,6 +1140,7 @@ class Builder:
             spec = {"kind": "episode", "lineup_id": e["lineup_id"], "title": subtitle, "season": 1,
                     "episode": number, "year": e.get("year"), "reuse": reuse}
         else:
+            # One request serves every airing of a film, so a spare is shared rather than used up.
             spare = e["spare_wanted"][0] if e["spare_wanted"] else None
             subtitle = f"({e['year']})" if e.get("year") else ""
             spec = {"kind": "movie", "lineup_id": e["lineup_id"], "title": e["title"], "season": None,
@@ -1076,58 +1151,53 @@ class Builder:
 
     def _media_slot(self, channel: dict[str, Any], day_str: str, start: int, item: dict[str, Any], kind: str) -> Slot:
         """An advert or ident slot; the subtitle is just the year."""
-        duration = max(1, int(round(float(item["duration"]))))
-        return Slot(channel_id=channel["id"], day=day_str, start_ts=start, end_ts=start + duration,
+        return Slot(channel_id=channel["id"], day=day_str, start_ts=start, end_ts=start + _seconds(item),
                     media_id=item["id"], offset=0, kind=kind, title=item["title"],
                     subtitle=str(item.get("year") or ""), year=item.get("year"))
 
-    def _overnight(self, channel: dict[str, Any], day_str: str, day_end: int, next_day_start: int,
+    def _overnight(self, channel: dict[str, Any], day: date, day_end: int, next_day_start: int,
                    day_slots: list[Slot]) -> list[Slot]:
         """00:00 to 08:00: replay the day from the channel's `overnight_replay_from`, looping a
         short day, without butting the same series against the day's end or tomorrow's start."""
+        day_str = day.isoformat()
         replay_from = channel.get("overnight_replay_from") or self.settings.get("day_start", "08:00")
-        day = parse_day(day_str)
-        from_ts = local_ts(day, replay_from, self.tz)
-        if from_ts < local_ts(day, self.settings.get("day_start", "08:00"), self.tz):
-            from_ts += 86400
-        source = [s for s in sorted(day_slots, key=lambda s: s.start_ts)
-                  if s.start_ts >= from_ts and s.kind != "filler"]
+        from_day = day + timedelta(days=1) if hhmm_to_minutes(replay_from) < self.day_start_min else day
+        from_ts = local_ts(from_day, replay_from, self.tz)
+        ordered = sorted(day_slots, key=lambda s: s.start_ts)
+        source = [s for s in ordered if s.start_ts >= from_ts and s.kind != "filler"]
         # The replay follows straight on from the day's last programme: never start it with
         # another episode of that same series.
-        last_prog = next((s for s in reversed(day_slots) if s.kind == "programme"), None)
+        last_prog = next((s for s in reversed(ordered) if s.kind == "programme"), None)
         if last_prog is not None and last_prog.show_id is not None:
-            while source and (source[0].kind != "programme" or source[0].show_id == last_prog.show_id):
-                source.pop(0)
+            first = next((i for i, s in enumerate(source)
+                          if s.kind == "programme" and s.show_id != last_prog.show_id), len(source))
+            source = source[first:]
         # If tomorrow is already built, the replay must not end with tomorrow's opening series.
-        tomorrow_first = self._show_airing_at(channel["id"], "start_ts", next_day_start)
+        tomorrow_first = self._adjacent_show(channel["id"], next_day_start, before=False)
         out: list[Slot] = []
         t = max(day_end, max((s.end_ts for s in day_slots), default=day_end))
-        queue = list(source)
+        queue = deque(source)
         loops = 0
-        while True:
+        while t < next_day_start:
             if not queue:
                 # A short day (thin library) is replayed again until 08:00.
                 loops += 1
                 if not source or loops > 12:
                     break
-                queue = list(source)
-            s = queue.pop(0)
-            if t >= next_day_start:
-                break
+                queue.extend(source)
+            s = queue.popleft()
             if (s.kind == "programme" and tomorrow_first is not None and s.show_id == tomorrow_first
                     and t + s.duration >= next_day_start):
                 continue  # would run straight into the same series at 08:00
-            if out and out[-1].kind == "programme" and s.kind == "programme" and s.show_id is not None \
-                    and out[-1].show_id == s.show_id and not queue:
-                continue  # looping a very short day: do not butt the same series together
             end = min(t + s.duration, next_day_start)
-            out.append(Slot(channel_id=channel["id"], day=day_str, start_ts=t, end_ts=end,
-                            media_id=s.media_id, offset=s.offset, kind=s.kind, title=s.title,
-                            subtitle=s.subtitle, part=s.part, replay=1, block=s.block, wanted_id=s.wanted_id))
+            # A replayed placeholder keeps its request (wanted_id, or wanted_spec until save)
+            # so the delivered file binds to the replay too.
+            out.append(replace(s, day=day_str, start_ts=t, end_ts=end, replay=1, locked=0))
             t = end
         if t < next_day_start:
-            out.append(Slot(channel_id=channel["id"], day=day_str, start_ts=t, end_ts=next_day_start, media_id=None,
-                            offset=0, kind="filler", title="Programmes will resume at 08:00", replay=1))
+            out.append(self._filler(channel, day_str, t, next_day_start,
+                                    title=f"Programmes will resume at {self.settings.get('day_start', '08:00')}",
+                                    replay=1))
         return out
 
     def _hhmm(self, ts: int) -> str:
@@ -1136,16 +1206,17 @@ class Builder:
     # --- persistence ---------------------------------------------------------------------
 
     def save(self, channel_id: int, day: date, slots: list[Slot]) -> None:
-        """Persist a channel-day built by `build_channel_day` (which set the cut point)."""
+        """Persist a channel-day built by `build_channel_day`: replace the old overnight replay
+        and every unlocked slot from the build's cut point, then insert the new slots."""
         day_str = day.isoformat()
+        cut = self._cuts.pop((channel_id, day_str), None)
         conn = self.conn
         with tx(conn):
-            # Remove replaced slots: unlocked, not started, plus all old replay slots for the day.
             conn.execute("DELETE FROM schedule WHERE channel_id = ? AND day = ? AND replay = 1",
                          (channel_id, day_str))
-            if self._cut is not None:
+            if cut is not None:
                 conn.execute("DELETE FROM schedule WHERE channel_id = ? AND day = ? AND locked = 0"
-                             " AND start_ts >= ? AND replay = 0", (channel_id, day_str, self._cut))
+                             " AND start_ts >= ? AND replay = 0", (channel_id, day_str, cut))
             self._raise_wanted(slots)
             conn.executemany(
                 "INSERT INTO schedule(channel_id, day, start_ts, end_ts, media_id, offset, kind, part,"
@@ -1154,33 +1225,39 @@ class Builder:
                   s.replay, s.locked, s.title, s.subtitle, s.block, s.wanted_id) for s in slots])
 
     def _raise_wanted(self, slots: list[Slot]) -> None:
-        """Turn placeholder slots into wanted rows for pitv_content, one per episode or film; the
-        overnight replay of a placeholder shares its row."""
-        by_key: dict[tuple[int, int | None], int] = {}
+        """Turn placeholder slots into wanted rows for pitv_content, one per episode or film;
+        every other placement of the same episode or film in this build shares the row."""
         for sl in slots:
             spec = sl.wanted_spec
             if not spec:
                 continue
             key = (spec["lineup_id"], spec["episode"])
-            if key in by_key:
-                sl.wanted_id = by_key[key]
-                continue
-            if spec.get("reuse"):
-                wid = int(spec["reuse"])
-            else:
-                cur = self.conn.execute(
-                    "INSERT INTO wanted(kind, title, year, season, episode, provider, lineup_id, transient, created_at)"
-                    " VALUES (?,?,?,?,?,'auto',?,1,?)",
-                    (spec["kind"], spec["title"], spec["year"], spec["season"], spec["episode"], spec["lineup_id"], now_ts()))
-                wid = int(cur.lastrowid)
-            by_key[key] = wid
+            wid = self._requests.get(key)
+            if wid is None:
+                if spec.get("reuse"):
+                    wid = int(spec["reuse"])
+                else:
+                    cur = self.conn.execute(
+                        "INSERT INTO wanted(kind, title, year, season, episode, provider, lineup_id, transient, created_at)"
+                        " VALUES (?,?,?,?,?,'auto',?,1,?)",
+                        (spec["kind"], spec["title"], spec["year"], spec["season"], spec["episode"],
+                         spec["lineup_id"], now_ts()))
+                    wid = int(cur.lastrowid)
+                self._requests[key] = wid
             sl.wanted_id = wid
+
+
+def _seed_for(text: str) -> int:
+    return int(hashlib.sha256(text.encode()).hexdigest()[:8], 16)
 
 
 def build_horizon(conn: sqlite3.Connection, *, start_day: date | None = None,
                   days: int | None = None, force: bool = False,
                   channel_numbers: list[int] | None = None, seed: int | None = None,
                   progress: Progress = None, now: int | None = None) -> dict[str, Any]:
+    """Build `days` broadcast days from `start_day` for the enabled channels (or those
+    numbered in `channel_numbers`). Without `force` only incomplete days are extended; with it
+    everything unlocked from now on is rebuilt. Logged as a `schedule` run."""
     settings = all_settings(conn)
     tz = tz_of(conn)
     now = now or now_ts()
@@ -1188,37 +1265,43 @@ def build_horizon(conn: sqlite3.Connection, *, start_day: date | None = None,
         start_day = broadcast_day_for(now, settings, tz)
     days = days or int(settings.get("horizon_days", 7))
     if seed is None:
-        seed = int(hashlib.sha256(start_day.isoformat().encode()).hexdigest()[:8], 16)
+        seed = _seed_for(start_day.isoformat())
     run_id = run_log_start(conn, "schedule")
     channels = enabled_channels(conn)
     if channel_numbers:
         channels = [c for c in channels if c["number"] in channel_numbers]
-    rebuild: Rebuild = {c["id"]: (now, None) for c in channels} if force else {}
-    builder = Builder(conn, now=now, seed=seed, progress=progress, rebuild=rebuild)
     built = 0
     programmes = 0
-    for i in range(days):
-        day = start_day + timedelta(days=i)
-        for channel in channels:
-            slots = builder.build_channel_day(channel, day, force)
-            if not slots:
-                continue
-            builder.save(channel["id"], day, slots)
-            builder.day_programmes[(channel["id"], day.isoformat())] = [
-                s for s in slots if s.kind == "programme" and not s.replay]
-            n = sum(1 for s in slots if s.kind == "programme" and not s.replay)
-            programmes += n
-            built += 1
-            if progress:
-                progress(f"{day} {channel['name']}: {n} programmes")
-    withdraw_orphaned_requests(conn)
-    status = "ok" if not builder.log else "warning"
-    summary = f"{built} channel-days built, {programmes} programmes; {len(builder.log)} notes"
-    run_log_finish(conn, run_id, status, summary, builder.log)
+    notes: list[str] = []
+    try:
+        builder = Builder(conn, now=now, seed=seed,
+                          rebuild={c["id"]: (now, None) for c in channels} if force else None)
+        notes = builder.log
+        for i in range(days):
+            day = start_day + timedelta(days=i)
+            for channel in channels:
+                slots = builder.build_channel_day(channel, day, force)
+                if not slots:
+                    continue
+                builder.save(channel["id"], day, slots)
+                n = sum(1 for s in slots if s.kind == "programme" and not s.replay)
+                programmes += n
+                built += 1
+                if progress:
+                    progress(f"{day} {channel['name']}: {n} programmes")
+        withdraw_orphaned_requests(conn)
+    except Exception as exc:
+        # Days saved before the failure stand (each is its own transaction); the run log must
+        # not be left showing a build still running.
+        run_log_finish(conn, run_id, "error", f"failed after {built} channel-days: {exc}", [*notes, repr(exc)])
+        raise
+    status = "ok" if not notes else "warning"
+    summary = f"{built} channel-days built, {programmes} programmes; {len(notes)} notes"
+    run_log_finish(conn, run_id, status, summary, notes)
     log.info("build from %s for %d days (force=%s): %s", start_day, days, force, summary)
-    for note in builder.log:
+    for note in notes:
         log.warning("note: %s", note)
-    return {"status": status, "summary": summary, "notes": builder.log, "run_id": run_id,
+    return {"status": status, "summary": summary, "notes": notes, "run_id": run_id,
             "start_day": start_day.isoformat(), "days": days, "built": built}
 
 
@@ -1257,19 +1340,22 @@ def rebuild_from(conn: sqlite3.Connection, channel_id: int, from_ts: int, *,
     from_ts = max(from_ts, now)
     day = broadcast_day_for(from_ts, settings, tz)
     if seed is None:
-        seed = int(hashlib.sha256(f"{day.isoformat()}:{from_ts}".encode()).hexdigest()[:8], 16)
+        seed = _seed_for(f"{day.isoformat()}:{from_ts}")
     builder = Builder(conn, now=now, seed=seed, exclude_media_ids=exclude_media_ids, allow_external=allow_external,
                       only_media_ids=only_media_ids, rebuild={channel_id: (from_ts, day_bounds(day, settings, tz)[2])})
-    if exclude_media_ids:
-        # Unavailable files must not survive as kept future slots either.
-        with tx(conn):
-            conn.execute("DELETE FROM schedule WHERE channel_id = ? AND start_ts >= ? AND replay = 0 AND media_id IN (%s)"
-                         % ",".join("?" * len(exclude_media_ids)), (channel_id, from_ts, *exclude_media_ids))
     channel = next((c for c in builder.channels if c["id"] == channel_id), None)
     if channel is None:
         return {"status": "error", "summary": "channel not found or disabled"}
-    slots = builder.build_channel_day(channel, day, force=True, from_ts=from_ts)
-    builder.save(channel_id, day, slots)
+    # One transaction: losing power between dropping the unavailable slots and saving their
+    # replacements would leave a hole that a later build takes for a complete day.
+    with tx(conn):
+        if exclude_media_ids:
+            # Unavailable files must not survive as kept future slots either.
+            ids = sorted(exclude_media_ids)
+            conn.execute("DELETE FROM schedule WHERE channel_id = ? AND start_ts >= ? AND replay = 0"
+                         f" AND media_id IN ({','.join('?' * len(ids))})", (channel_id, from_ts, *ids))
+        slots = builder.build_channel_day(channel, day, force=True, from_ts=from_ts)
+        builder.save(channel_id, day, slots)
     withdraw_orphaned_requests(conn)
     return {"status": "ok" if not builder.log else "warning",
             "summary": f"{sum(1 for s in slots if s.kind == 'programme' and not s.replay)} programmes",

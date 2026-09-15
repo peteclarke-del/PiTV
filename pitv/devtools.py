@@ -8,48 +8,51 @@ what PiTV imports.
 
 from __future__ import annotations
 
+import datetime as dt
+import json
 import random
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
-# (title, year, seasons, episodes per season, minutes, genres, certificate, kids)
+# (title, year, seasons, episodes per season, minutes, genres, certificate)
 FAKE_SHOWS = [
-    ("Blake's 7", 1978, 4, 13, 50, ["Science Fiction", "Drama"], "PG", False),
-    ("Only Fools and Horses", 1981, 7, 7, 30, ["Comedy"], "PG", False),
-    ("Minder", 1979, 5, 11, 52, ["Drama", "Comedy"], "12", False),
-    ("The Young Ones", 1982, 2, 6, 35, ["Comedy"], "15", False),
-    ("Grange Hill", 1978, 6, 18, 25, ["Children", "Drama"], "U", True),
-    ("Danger Mouse", 1981, 5, 12, 10, ["Animation", "Children"], "U", True),
-    ("Bergerac", 1981, 5, 10, 50, ["Crime", "Drama"], "PG", False),
-    ("Yes Minister", 1980, 3, 7, 30, ["Comedy"], "U", False),
-    ("Boys from the Blackstuff", 1982, 1, 5, 65, ["Drama"], "15", False),
-    ("Auf Wiedersehen, Pet", 1983, 2, 13, 50, ["Comedy", "Drama"], "12", False),
-    ("Knightmare", 1987, 4, 14, 25, ["Children", "Game Show"], "U", True),
-    ("Blackadder", 1983, 4, 6, 30, ["Comedy"], "12", False),
-    ("Howards' Way", 1985, 4, 13, 50, ["Drama"], "PG", False),
-    ("Red Dwarf", 1988, 3, 6, 30, ["Comedy", "Science Fiction"], "12", False),
-    ("The Bill", 1984, 3, 12, 25, ["Crime", "Drama"], "12", False),
-    ("Countdown", 1982, 2, 20, 30, ["Game Show"], "U", False),
-    ("Byker Grove", 1989, 2, 10, 25, ["Children", "Drama"], "U", True),
-    ("One Foot in the Grave", 1990, 3, 6, 30, ["Comedy"], "12", False),
-    ("Spitting Image", 1984, 3, 8, 25, ["Comedy"], "15", False),
-    ("Inspector Morse", 1987, 3, 4, 100, ["Crime", "Drama"], "15", False),
-    ("Bread", 1986, 3, 8, 30, ["Comedy"], "PG", False),
-    ("Robin of Sherwood", 1984, 3, 7, 50, ["Adventure", "Drama"], "PG", False),
-    ("Willo the Wisp", 1981, 1, 26, 5, ["Animation", "Children"], "U", True),
-    ("Cracker", 1993, 2, 5, 100, ["Crime", "Drama"], "18", False),
-    ("Dad's Army", 1968, 5, 8, 30, ["Comedy"], "U", False),
-    ("The Prisoner", 1967, 1, 17, 50, ["Drama", "Science Fiction"], "PG", False),
-    ("Fawlty Towers", 1975, 2, 6, 30, ["Comedy"], "PG", False),
-    ("The Clangers", 1969, 2, 13, 10, ["Animation", "Children"], "U", True),
-    ("The Sweeney", 1975, 4, 13, 50, ["Crime", "Drama"], "15", False),
-    ("Bananaman", 1983, 3, 13, 5, ["Animation", "Children"], "U", True),
-    ("Dungeons & Dragons", 1983, 3, 9, 22, ["Animation", "Fantasy"], "U", True),
-    ("Thundercats", 1985, 4, 20, 22, ["Animation", "Action"], "U", True),
-    ("SuperTed", 1983, 3, 12, 10, ["Animation", "Children"], "U", True),
-    ("Count Duckula", 1988, 4, 15, 22, ["Animation", "Comedy"], "U", True),
+    ("Blake's 7", 1978, 4, 13, 50, ["Science Fiction", "Drama"], "PG"),
+    ("Only Fools and Horses", 1981, 7, 7, 30, ["Comedy"], "PG"),
+    ("Minder", 1979, 5, 11, 52, ["Drama", "Comedy"], "12"),
+    ("The Young Ones", 1982, 2, 6, 35, ["Comedy"], "15"),
+    ("Grange Hill", 1978, 6, 18, 25, ["Children", "Drama"], "U"),
+    ("Danger Mouse", 1981, 5, 12, 10, ["Animation", "Children"], "U"),
+    ("Bergerac", 1981, 5, 10, 50, ["Crime", "Drama"], "PG"),
+    ("Yes Minister", 1980, 3, 7, 30, ["Comedy"], "U"),
+    ("Boys from the Blackstuff", 1982, 1, 5, 65, ["Drama"], "15"),
+    ("Auf Wiedersehen, Pet", 1983, 2, 13, 50, ["Comedy", "Drama"], "12"),
+    ("Knightmare", 1987, 4, 14, 25, ["Children", "Game Show"], "U"),
+    ("Blackadder", 1983, 4, 6, 30, ["Comedy"], "12"),
+    ("Howards' Way", 1985, 4, 13, 50, ["Drama"], "PG"),
+    ("Red Dwarf", 1988, 3, 6, 30, ["Comedy", "Science Fiction"], "12"),
+    ("The Bill", 1984, 3, 12, 25, ["Crime", "Drama"], "12"),
+    ("Countdown", 1982, 2, 20, 30, ["Game Show"], "U"),
+    ("Byker Grove", 1989, 2, 10, 25, ["Children", "Drama"], "U"),
+    ("One Foot in the Grave", 1990, 3, 6, 30, ["Comedy"], "12"),
+    ("Spitting Image", 1984, 3, 8, 25, ["Comedy"], "15"),
+    ("Inspector Morse", 1987, 3, 4, 100, ["Crime", "Drama"], "15"),
+    ("Bread", 1986, 3, 8, 30, ["Comedy"], "PG"),
+    ("Robin of Sherwood", 1984, 3, 7, 50, ["Adventure", "Drama"], "PG"),
+    ("Willo the Wisp", 1981, 1, 26, 5, ["Animation", "Children"], "U"),
+    ("Cracker", 1993, 2, 5, 100, ["Crime", "Drama"], "18"),
+    ("Dad's Army", 1968, 5, 8, 30, ["Comedy"], "U"),
+    ("The Prisoner", 1967, 1, 17, 50, ["Drama", "Science Fiction"], "PG"),
+    ("Fawlty Towers", 1975, 2, 6, 30, ["Comedy"], "PG"),
+    ("The Clangers", 1969, 2, 13, 10, ["Animation", "Children"], "U"),
+    ("The Sweeney", 1975, 4, 13, 50, ["Crime", "Drama"], "15"),
+    ("Bananaman", 1983, 3, 13, 5, ["Animation", "Children"], "U"),
+    ("Dungeons & Dragons", 1983, 3, 9, 22, ["Animation", "Fantasy"], "U"),
+    ("Thundercats", 1985, 4, 20, 22, ["Animation", "Action"], "U"),
+    ("SuperTed", 1983, 3, 12, 10, ["Animation", "Children"], "U"),
+    ("Count Duckula", 1988, 4, 15, 22, ["Animation", "Comedy"], "U"),
 ]
 
 # (title, year, minutes, certificate, genres)
@@ -134,31 +137,25 @@ FAKE_CONCERTS = [
     ("Prince", "Sign o' the Times", 1987, "Funk", 85), ("The Who", "Live at Shea", 1982, "Rock", 100),
 ]
 
-_DURATION_TEMPLATES: dict[int, Path] = {}
-_TEMPLATE_DIR: Path | None = None   # <library root>/.templates, set by build_fake_library
-
-
-def _make_video(dest: Path, seconds: int, text: str) -> None:
-    """Create (or copy from a cached template of the same length) a tiny video file."""
+def _make_video(dest: Path, seconds: int, templates: Path) -> None:
+    """Copy a tiny video of `seconds` into place, encoding it into `templates` the first time
+    that length is needed (ffmpeg is slow; most files share a handful of lengths)."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmpl = _DURATION_TEMPLATES.get(seconds)
-    if tmpl is None or not tmpl.exists():
-        tmpl = (_TEMPLATE_DIR or dest.parent / ".templates") / f"{seconds}.mp4"
+    tmpl = templates / f"{seconds}.mp4"
+    if not tmpl.exists():
         tmpl.parent.mkdir(parents=True, exist_ok=True)
-        if not tmpl.exists():
-            # 4:3 colour bars with a running timecode and the clip length, so the preview window
-            # shows that the live offset is right; 1 fps keeps a 25-minute file around 100 KB.
-            mins, secs = divmod(seconds, 60)
-            label = f"PiTV test signal  %{{pts\\:gmtime\\:0\\:%H\\:%M\\:%S}} of {mins:02d}\\:{secs:02d}"
-            draw = (f"drawtext=text='{label}':fontsize=18:fontcolor=white:box=1:boxcolor=black@0.6:"
-                    "x=(w-text_w)/2:y=h-40")
-            subprocess.run(
-                ["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
-                 "-i", f"smptebars=s=320x240:r=1:d={seconds}", "-vf", draw,
-                 "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage", "-crf", "35",
-                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(tmpl)],
-                check=True)
-        _DURATION_TEMPLATES[seconds] = tmpl
+        # 4:3 colour bars with a running timecode and the clip length, so the preview window
+        # shows that the live offset is right; 1 fps keeps a 25-minute file around 100 KB.
+        mins, secs = divmod(seconds, 60)
+        label = f"PiTV test signal  %{{pts\\:gmtime\\:0\\:%H\\:%M\\:%S}} of {mins:02d}\\:{secs:02d}"
+        draw = (f"drawtext=text='{label}':fontsize=18:fontcolor=white:box=1:boxcolor=black@0.6:"
+                "x=(w-text_w)/2:y=h-40")
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+             "-i", f"smptebars=s=320x240:r=1:d={seconds}", "-vf", draw,
+             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage", "-crf", "35",
+             "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(tmpl)],
+            check=True)
     shutil.copyfile(tmpl, dest)
 
 
@@ -177,13 +174,14 @@ class _Index:
     """Collects a schema 2 library index (docs/CONTENT_CONTRACT.md) while files are written, the
     way pitv_content would publish it after indexing the NAS."""
 
-    def __init__(self, root: Path) -> None:
-        self.root = root
+    def __init__(self) -> None:
         self.sources: list[dict] = []
         self.shows: list[dict] = []
         self.items: list[dict] = []
+        self._roots: dict[str, Path] = {}
 
     def source(self, sid: str, name: str, stype: str, folder: Path, category: str = "general") -> None:
+        self._roots[sid] = folder
         self.sources.append({"id": sid, "name": name, "type": stype, "category": category, "root": str(folder),
                              "remote": f"smb://fakenas/{sid}/", "location": "nas", "enabled": True})
 
@@ -196,14 +194,15 @@ class _Index:
         return uid
 
     def item(self, sid: str, path: Path, seconds: int, kind: str, title: str, **meta) -> None:
-        rel = path.relative_to(Path(next(s["root"] for s in self.sources if s["id"] == sid)))
+        rel = path.relative_to(self._roots[sid])
+        stat = path.stat()
         self.items.append({"uid": f"nas:{sid}:{rel.as_posix()}", "source": sid, "kind": kind, "title": title,
                            "duration": float(seconds), "vcodec": "h264", "acodec": None, "width": 320, "height": 240,
-                           "interlaced": False, "size": path.stat().st_size, "mtime": int(path.stat().st_mtime),
+                           "interlaced": False, "size": stat.st_size, "mtime": int(stat.st_mtime),
                            "path": str(path), "genres": [], "certificate": None, "plot": None, **meta})
 
     def document(self) -> dict:
-        return {"schema": 2, "generated_ts": int(__import__("time").time()), "complete": True,
+        return {"schema": 2, "generated_ts": int(time.time()), "complete": True,
                 "sources": self.sources, "shows": self.shows, "items": self.items}
 
 
@@ -211,17 +210,13 @@ def build_fake_library(root: Path, seed: int = 1, with_nfo: bool = True,
                        max_episodes_per_show: int | None = None) -> dict[str, Any]:
     """Write a small library of real (tiny) video files and the library index pitv_content would
     publish for it. Returns the folders plus `index` (the document) and `index_path`."""
-    import datetime as _dt
-    import json as _json
-    global _TEMPLATE_DIR
     rnd = random.Random(seed)
-    _TEMPLATE_DIR = root / ".templates"
-    _DURATION_TEMPLATES.clear()
+    templates = root / ".templates"
     tv, movies, pitv = root / "tvshows", root / "movies", root / "pitv"
     sport, music = root / "tvsports", root / "music videos"
     for folder in (tv, movies, pitv / "Adverts", pitv / "Idents", sport, music):
         folder.mkdir(parents=True, exist_ok=True)
-    idx = _Index(root)
+    idx = _Index()
     idx.source("tvshows", "TV Shows", "tv", tv)
     idx.source("tvsports", "Sport", "tv", sport, "sport")
     idx.source("movies", "Movies", "movie", movies)
@@ -229,7 +224,7 @@ def build_fake_library(root: Path, seed: int = 1, with_nfo: bool = True,
     idx.source("idents", "Idents", "ident", pitv / "Idents")
     idx.source("musicvideos", "Music videos", "music", music)
 
-    for title, year, seasons, eps, minutes, genres, cert, _kids in FAKE_SHOWS:
+    for title, year, seasons, eps, minutes, genres, cert in FAKE_SHOWS:
         safe = title.replace(":", "").replace("/", "-")
         show_dir = tv / f"{safe} ({year})"
         show_dir.mkdir(exist_ok=True)
@@ -245,7 +240,7 @@ def build_fake_library(root: Path, seed: int = 1, with_nfo: bool = True,
                     break
                 f = show_dir / f"Season {s:02d}" / f"{safe} - S{s:02d}E{e:02d} - Episode {e}.mp4"
                 seconds = (minutes + rnd.choice([-2, -1, 0, 0, 0, 1])) * 60
-                _make_video(f, seconds, f"{title} S{s}E{e}")
+                _make_video(f, seconds, templates)
                 idx.item("tvshows", f, seconds, "episode", f"Episode {e}", show_uid=show_uid, season=s, episode=e,
                          year=year + s - 1)
                 count += 1
@@ -254,27 +249,27 @@ def build_fake_library(root: Path, seed: int = 1, with_nfo: bool = True,
         show_dir = sport / f"{title} ({year})"
         show_dir.mkdir(exist_ok=True)
         show_uid = idx.show("tvsports", show_dir, title, year, ["Sport"], "U", "sport")
-        day = _dt.date(1985, 1, 5)
+        day = dt.date(1985, 1, 5)
         for e in range(1, eps + 1):
             if dated:
                 f = show_dir / "Season 1985" / f"{title} - S1985E{e:02d} - {day.isoformat()}.mp4"
                 label, season, ep_year = day.strftime("%d/%m/%Y"), 1985, 1985
-                day += _dt.timedelta(days=7)
+                day += dt.timedelta(days=7)
             else:
                 f = show_dir / "Season 01" / f"{title} - S01E{e:02d} - Episode {e}.mp4"
                 label, season, ep_year = f"Episode {e}", 1, year
-            _make_video(f, minutes * 60, title)
+            _make_video(f, minutes * 60, templates)
             idx.item("tvsports", f, minutes * 60, "episode", label, show_uid=show_uid, season=season, episode=e,
                      year=ep_year, genres=["Sport"])
 
     for artist, title, year, genre, minutes in FAKE_MUSIC:
         f = music / genre / f"{artist} - {title} ({year}).mp4"
-        _make_video(f, minutes * 60, title)
+        _make_video(f, minutes * 60, templates)
         idx.item("musicvideos", f, minutes * 60, "music", f"{artist} - {title}", artist=artist, year=year,
                  genres=[genre], concert=False)
     for artist, title, year, genre, minutes in FAKE_CONCERTS:
         f = music / "Concerts" / genre / f"{artist} - {title} ({year}).mp4"
-        _make_video(f, minutes * 60, title)
+        _make_video(f, minutes * 60, templates)
         idx.item("musicvideos", f, minutes * 60, "music", f"{artist} - {title}", artist=artist, year=year,
                  genres=[genre], concert=True)
 
@@ -282,7 +277,7 @@ def build_fake_library(root: Path, seed: int = 1, with_nfo: bool = True,
         safe = title.replace(":", "").replace("/", "-")
         folder = movies / (f"{safe} ({year})" if year else safe)
         f = folder / (f"{safe} ({year}).mp4" if year else f"{safe}.mp4")
-        _make_video(f, minutes * 60, title)
+        _make_video(f, minutes * 60, templates)
         if with_nfo and year:
             _nfo(f.with_suffix(".nfo"), "movie", {"title": title, "year": year, "mpaa": f"UK:{cert}",
                                                   "plot": f"{title} ({year})."}, genres)
@@ -292,19 +287,19 @@ def build_fake_library(root: Path, seed: int = 1, with_nfo: bool = True,
     for title, year in FAKE_ADVERTS:
         f = pitv / "Adverts" / str(year) / f"{title}.mp4"
         seconds = rnd.choice([20, 30, 30, 40, 60])
-        _make_video(f, seconds, title)
+        _make_video(f, seconds, templates)
         idx.item("ads", f, seconds, "advert", title, year=year)   # family_safe left to PiTV's keyword rule
 
     for ch in (1, 2, 3, 4):
         for i in (1, 2):
             f = pitv / "Idents" / f"ch{ch}" / f"Ident {i}.mp4"
             seconds = rnd.choice([8, 10, 15])
-            _make_video(f, seconds, f"ch{ch}")
+            _make_video(f, seconds, templates)
             idx.item("idents", f, seconds, "ident", f"Ident {i}", channel_hint=ch)
-    _make_video(pitv / "Static" / "static.mp4", 2, "static")
+    _make_video(pitv / "Static" / "static.mp4", 2, templates)
 
     doc = idx.document()
     index_path = root / "library.json"
-    index_path.write_text(_json.dumps(doc, indent=1))
+    index_path.write_text(json.dumps(doc, indent=1))
     return {"tv": tv, "movies": movies, "pitv": pitv, "sport": sport, "music": music, "index": doc,
             "index_path": index_path}

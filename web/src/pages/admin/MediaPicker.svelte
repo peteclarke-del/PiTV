@@ -1,5 +1,6 @@
 <script>
   // Search shows (pick an episode) or movies for the schedule editor. onpick({media_id, label, duration}).
+  import { untrack } from 'svelte';
   import { get, tryApi } from '../../lib/api.js';
   import { fmtDuration, fmtEpisode } from '../../lib/format.js';
   import { debounce } from '../../lib/util.js';
@@ -19,7 +20,9 @@
   }
   const searchSoon = debounce(search, 250);
   function input(v) { q = v; searchSoon(); }
-  $effect(() => { if (open) { q = ''; results = []; search(); } });
+  // Start from a blank search each time the picker opens; only `open` is tracked, so typing or
+  // changing the kind does not re-run this.
+  $effect(() => { if (open) untrack(() => { q = ''; results = []; search(); }); });
 
   function pickEpisode(show) {
     const id = Number(episodeChoice[show.id] ?? show.episodes[0]?.id);

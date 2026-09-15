@@ -2,10 +2,12 @@
   import { untrack } from 'svelte';
   import { get, put, post, del, tryApi } from '../../lib/api.js';
   import { fmtDuration, fmtDateTime, fmtEpisode, WEEKDAYS, CERTIFICATES } from '../../lib/format.js';
-  import { num } from '../../lib/util.js';
+  import { num, splitList } from '../../lib/util.js';
   import { guard } from '../../lib/guard.svelte.js';
+  import AppBadge from '../../components/AppBadge.svelte';
   import Drawer from '../../components/Drawer.svelte';
   import Availability from '../../components/Availability.svelte';
+  import Codec from '../../components/Codec.svelte';
 
   let { id, channels = [], onclose, onsaved } = $props();
   let show = $state(null);
@@ -26,7 +28,7 @@
   $effect(() => { id; untrack(load); });
 
   function body() {
-    const genres = form.genres.split(',').map((g) => g.trim()).filter(Boolean);
+    const genres = splitList(form.genres);
     return {
       title: form.title, year: num(form.year, { min: 1900, max: 2100, int: true }), certificate: form.certificate || null,
       genres: genres.length ? genres : null, plot: form.plot, kids: form.kids ? 1 : 0,
@@ -47,7 +49,7 @@
   const setCursor = guard(async (season, episode) => {
     season = num(season, { min: 0, int: true, fallback: 0 });
     episode = num(episode, { min: 0, int: true, fallback: 0 });
-    if (await tryApi(post(`/api/shows/${id}/cursor`, { season, episode }), { success: `Next episode set to S${season}E${episode}` })) load();
+    if (await tryApi(post(`/api/shows/${id}/cursor`, { season, episode }), { success: `Next episode set to ${fmtEpisode(season, episode)}` })) load();
   });
   const clearCursor = guard(async () => {
     if (await tryApi(del(`/api/shows/${id}/cursor`), { success: 'Cursor cleared' })) load();
@@ -62,6 +64,7 @@
 <Drawer open={true} title={show?.title ?? 'Show'} subtitle={show?.folder ?? ''} {onclose} wide>
   {#if form}
     <div class="stack">
+      <p class="scope" style="margin:0"><AppBadge app="pitv" /> PiTV's catalogue entry: these overrides and scheduling rules win over pitv_content's index.</p>
       {#if overridden.length}
         <div class="row small muted">Overriding the index: {overridden.join(', ')} <button class="small ghost" onclick={clearOverrides} disabled={clearOverrides.busy}>Clear overrides</button></div>
       {/if}
@@ -102,10 +105,10 @@
       <h3>Next episode</h3>
       <div class="row small">
         {#if show.cursor}
-          <span>Cursor: S{show.cursor.next_season}E{show.cursor.next_episode}</span>
+          <span>Cursor: {fmtEpisode(show.cursor.next_season, show.cursor.next_episode)}</span>
           <button class="small ghost" onclick={clearCursor} disabled={clearCursor.busy}>Clear</button>
         {:else}
-          <span class="muted">No cursor set{show.last_aired ? ` (last aired S${show.last_aired.season}E${show.last_aired.episode})` : ''}.</span>
+          <span class="muted">No cursor set{show.last_aired ? ` (last aired ${fmtEpisode(show.last_aired.season, show.last_aired.episode)})` : ''}.</span>
         {/if}
         <span class="inline-form">
           <input class="xnarrow" type="number" min="0" bind:value={cursorForm.season} aria-label="Season" />
@@ -127,11 +130,11 @@
           <thead><tr><th>Ep</th><th>Title</th><th>Length</th><th>Codec</th><th>Plays from</th><th></th></tr></thead>
           <tbody>
             {#each show.episodes as e (e.id)}
-              <tr class:dim={e.missing || e.excluded}>
+              <tr class:off={e.missing || e.excluded}>
                 <td class="nowrap mono small">{fmtEpisode(e.season, e.episode)}</td>
                 <td>{e.title}{#if e.attention}<span class="badge warn" title={e.attention}>!</span>{/if}{#if e.missing}<span class="badge danger">missing</span>{/if}</td>
                 <td class="small">{fmtDuration(e.duration)}</td>
-                <td class="small"><span class="mono">{e.vcodec ?? '?'}</span> {#if e.hwdec}<span class="badge ok">HW</span>{:else}<span class="badge warn">SW</span>{/if}</td>
+                <td class="small"><Codec item={e} /></td>
                 <td><Availability item={e} /></td>
                 <td class="right"><button class="small ghost" onclick={() => setCursor(e.season ?? 0, e.episode ?? 0)}>Next</button></td>
               </tr>
@@ -149,6 +152,3 @@
   {/snippet}
 </Drawer>
 
-<style>
-  .dim td { opacity: .55; }
-</style>

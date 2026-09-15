@@ -7,20 +7,24 @@ import json
 import logging
 import os
 import socket
+import sqlite3
 import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .. import db as dbm
 from .. import sdnotify
 from ..config import Config
 from ..logsetup import setup_logging
 from .api import admin, content, public, wanted
+from .auth import content_token
 from .events import EventBus
 from .player_client import PlayerClient
 from .tasks import JobRunner
@@ -35,8 +39,85 @@ PLACEHOLDER = """<!doctype html><meta charset=utf-8><title>PiTV</title>
 <pre><code>cd web &amp;&amp; npm install &amp;&amp; npm run build</code></pre>
 <p>The JSON API is available under <a href="/api/docs">/api/docs</a>.</p>"""
 
+MAX_LINE = 1 << 20          # a player state line is a few KB; anything bigger is a broken peer
+MAX_BODY = 1 << 20          # every JSON request the UI sends is a few KB
+MAX_DOCUMENT_BODY = 32 << 20
+# Whole documents: a library index, a line-up export, a pitv_content delivery report. These
+# endpoints read their body only after the admin check (deps.admin_json), so the larger cap
+# is not something an anonymous caller can make the service parse.
+DOCUMENT_PATHS = frozenset({"/api/catalogue/import", "/api/lineup/import", "/api/content/report"})
+UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+SECURITY_HEADERS = [(b"x-content-type-options", b"nosniff"), (b"x-frame-options", b"DENY"),
+                    (b"referrer-policy", b"same-origin")]
 
-MAX_LINE = 1 << 20   # a state line is a few KB; anything bigger is a broken peer
+
+def _cross_site(headers: dict[str, str]) -> bool:
+    """True for a browser request sent on behalf of another site.
+
+    The admin is open until a password is set, and SameSite=Lax does not cover a page on
+    another port of the same host, so a cookie alone cannot tell a request the admin made from
+    one a hostile page made in the admin's browser. Browsers say which it is: Sec-Fetch-Site
+    where supported, otherwise Origin against Host. Scripts and pitv_content send neither."""
+    site = headers.get("sec-fetch-site")
+    if site is not None:
+        return site not in ("same-origin", "none")
+    origin = headers.get("origin")
+    if origin is None:
+        return False
+    # "null" (a sandboxed frame, a file: page) has no host and never matches.
+    netloc = urlsplit(origin).netloc.lower()
+    ours = {h.lower() for h in (headers.get("host"), headers.get("x-forwarded-host")) if h}
+    return not netloc or netloc not in ours
+
+
+async def _refuse(send: Send, status: int, detail: str) -> None:
+    body = json.dumps({"detail": detail}).encode()
+    await send({"type": "http.response.start", "status": status,
+                "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode()),
+                            *SECURITY_HEADERS]})
+    await send({"type": "http.response.body", "body": body})
+
+
+class RequestGuard:
+    """Refuses cross-site state changes and oversized bodies before any route sees them, and
+    adds the standard hardening headers to every response.
+
+    Pure ASGI rather than BaseHTTPMiddleware so the SSE stream is passed through untouched."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
+        if scope["method"] in UNSAFE_METHODS and _cross_site(headers):
+            await _refuse(send, 403, "cross-site request refused")
+            return
+        limit = MAX_DOCUMENT_BODY if scope["path"] in DOCUMENT_PATHS else MAX_BODY
+        declared = headers.get("content-length", "")
+        if declared.isdigit() and int(declared) > limit:
+            await _refuse(send, 413, "request body too large")
+            return
+        received = 0
+
+        async def capped_receive() -> Message:
+            # A chunked body declares no length, so count what actually arrives.
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    raise HTTPException(413, "request body too large")
+            return message
+
+        async def send_with_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                message["headers"] = [*message.get("headers", []), *SECURITY_HEADERS]
+            await send(message)
+
+        await self.app(scope, capped_receive, send_with_headers)
 
 
 def _player_subscriber(app: FastAPI, stop: threading.Event) -> None:
@@ -71,7 +152,7 @@ def _player_subscriber(app: FastAPI, stop: threading.Event) -> None:
                             continue
                         app.state.player_state = state
                         app.state.bus.publish_threadsafe("player", state)
-        except (OSError, socket.timeout) as exc:
+        except OSError as exc:
             log.debug("player socket: %s", exc)  # normal while the player is down; retried below
         if app.state.player_state.get("online", False):
             app.state.player_state = {"online": False}
@@ -119,11 +200,21 @@ def create_app(cfg: Config) -> FastAPI:
     app.state.player = PlayerClient(cfg.player_socket)
     app.state.player_state = {"online": False}
     app.state.started = time.time()
+    app.state.content_token = content_token(cfg.data_dir)
 
+    app.add_middleware(RequestGuard)
     app.include_router(public.router)
     app.include_router(admin.router)
     app.include_router(wanted.router)
+    app.include_router(content.exchange)
     app.include_router(content.router)
+
+    @app.exception_handler(sqlite3.IntegrityError)
+    async def _conflict(request: Request, exc: sqlite3.IntegrityError):
+        # An id in the body that names nothing (foreign keys are enforced) or a duplicate;
+        # the caller's mistake, not a fault, and the constraint text stays in the log.
+        log.info("integrity error in %s %s: %s", request.method, request.url.path, exc)
+        return JSONResponse(status_code=409, content={"detail": "the request names a record that does not exist, or duplicates one"})
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception):
@@ -142,7 +233,7 @@ def create_app(cfg: Config) -> FastAPI:
         no_cache = {"Cache-Control": "no-cache, no-store, must-revalidate"}
 
         @app.get("/{path:path}", include_in_schema=False)
-        async def spa(path: str):
+        def spa(path: str):   # sync: resolve() and is_file() touch the disk, so off the event loop
             # Only files inside the built bundle are served; anything that resolves elsewhere
             # (".." segments, symlinks) falls through to the app shell.
             candidate = (STATIC_DIR / path).resolve()

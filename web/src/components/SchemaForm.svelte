@@ -94,6 +94,6 @@
 
 <style>
   .changed > span:first-child, label.check.changed { font-weight: 650; }
-  .help.err { color: var(--danger); font-weight: 550; }
+
   .field > span .badge { margin-left: .4rem; }
 </style>

@@ -8,7 +8,9 @@
   "maintenance_user": {
     "name": "pete",
     "password": "change-me",
-    "ssh_authorized_keys": ["ssh-ed25519 AAAA... pete@desktop"]
+    "ssh_authorized_keys": [
+      "ssh-ed25519 AAAA... pete@desktop"
+    ]
   },
   "wifi": {
     "enabled": false,
@@ -26,21 +28,24 @@
     "host": "synologynas",
     "username": "pitv",
     "password": "change-me",
-    "shares": ["tvshows", "movies", "ads", "tvsports", "music%20videos"]
+    "shares": [
+      "tvshows",
+      "movies",
+      "ads",
+      "tvsports",
+      "music%20videos"
+    ]
   },
   "display_mode": "hdmi576",
   "system_partition_gb": 8,
   "work_drive": {
     "device": "auto",
-    "label": "PITVWORK",
     "cache_dir": "/mnt/cache/pitv"
   },
   "pitv": {
-    "admin_password": "",
-    "web_port": 80
+    "admin_password": ""
   },
   "pitv_content": {
-    "youtube_cookies_file": "",
-    "settings": {}
+    "youtube_cookies_file": ""
   }
 }

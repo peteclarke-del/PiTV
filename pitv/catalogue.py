@@ -8,13 +8,16 @@ enters the catalogue from delivery reports (content.py).
 Import keeps row ids stable across imports (rows are matched by index uid, then by path for
 rows created before uids existed), so schedules, history, overrides and line-ups keep their
 references. A complete index marks anything it no longer lists as missing.
+
+The index comes from another process, so every field is read defensively: a record without a
+usable uid, kind, source or path is rejected and counted, an optional field of the wrong type
+is dropped, and neither stops the rest of the import.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import sqlite3
 import time
@@ -22,8 +25,28 @@ from pathlib import Path
 from typing import Any
 
 from . import tool_client
-from .db import (CARTOON_GENRES, KIDS_GENRES, all_settings, now_ts, row_to_dict, rows_to_dicts, run_log_finish,
-                 run_log_start, tx)
+from .db import (
+    CARTOON_GENRES,
+    KIDS_GENRES,
+    all_settings,
+    as_bool,
+    as_float,
+    as_int,
+    as_text,
+    assign_ident_channels,
+    find_id,
+    genre_list,
+    insert_row,
+    now_ts,
+    row_to_dict,
+    rows_to_dicts,
+    run_log_finish,
+    run_log_start,
+    tx,
+    update_row,
+    write_data_file,
+)
+from .lineup import generate, restore_if_empty
 from .player.hwdec import PI_HW_CODECS
 
 log = logging.getLogger("pitv.catalogue")
@@ -36,6 +59,8 @@ REINDEX_TIMEOUT = 1800        # seconds to wait for a NAS re-index before import
 REINDEX_POLL = 3
 CONCERT_MINUTES = 35          # a music item this long is a concert even when not tagged
 UNSAFE_TAGS = {"alcohol", "tobacco", "adult", "gambling", "18"}
+REJECTS_KEPT = 50             # rejected records described in the run log; the rest are only counted
+MIRROR = "catalogue.json"
 
 
 class IndexFormatError(ValueError):
@@ -88,191 +113,237 @@ def _reindex(base: str, timeout: float = REINDEX_TIMEOUT) -> None:
     log.warning("re-index %s still running after %ds; importing the current index", job_id, timeout)
 
 
-def _genres(value: Any) -> list[str]:
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except ValueError:
-            value = [value]
-    return [str(g) for g in (value or []) if str(g).strip()]
+def keyword_pattern(keywords: Any) -> re.Pattern[str] | None:
+    """One pattern for the adult advert keywords, matching whole words only ("ale" must not match
+    "sale", nor "gin" "engineering"). Lookarounds rather than \\b, so keywords that start or end
+    with punctuation ("18+") still match when followed by a space."""
+    names = (as_text(k) for k in (keywords if isinstance(keywords, list) else []))
+    words = [re.escape(k.lower()) for k in names if k and k.strip()]
+    return re.compile(rf"(?<!\w)(?:{'|'.join(words)})(?!\w)") if words else None
 
 
-def _family_safe(item: dict[str, Any], keywords: list[str]) -> int:
-    """pitv_content's verdict wins; tags next; PiTV's keyword list only when neither is given."""
+def family_safe(item: dict[str, Any], unsafe: re.Pattern[str] | None) -> int:
+    """Whether an advert may air on a family channel: pitv_content's verdict (a bool) wins; its
+    tags next; PiTV's keyword list only when neither is given. Used for indexed adverts and for
+    adverts fetched online alike."""
     if isinstance(item.get("family_safe"), bool):
         return int(item["family_safe"])
-    tags = {str(t).lower() for t in (item.get("tags") or [])}
-    if tags & UNSAFE_TAGS:
+    tags = item.get("tags")
+    if not isinstance(tags, list):
+        tags = [tags]
+    if {t.lower() for t in map(as_text, tags) if t} & UNSAFE_TAGS:
         return 0
-    name = f"{item.get('title') or ''} {Path(str(item.get('path') or '')).stem}".lower()
-    # Whole words only: "ale" must not match "sale", nor "gin" "engineering".
-    return int(not any(re.search(rf"\b{re.escape(k.lower())}\b", name) for k in keywords))
+    name = f"{as_text(item.get('title')) or ''} {Path(as_text(item.get('path')) or '').stem}".lower()
+    return int(unsafe is None or unsafe.search(name) is None)
 
 
-def _attention(item: dict[str, Any], hwdec: bool) -> str | None:
+def _attention(fields: dict[str, Any]) -> str | None:
+    """Why an imported item needs a look in the admin, from its stored fields."""
     notes = []
-    if not item.get("duration"):
+    if not fields["duration"]:
         notes.append("No duration in the library index")
-    if item.get("year") is None and item["kind"] in ("episode", "movie", "advert"):
+    if fields["year"] is None and fields["kind"] in ("episode", "movie", "advert"):
         notes.append("No year found")
-    if item["kind"] == "movie" and not item.get("certificate"):
+    if fields["kind"] == "movie" and not fields["certificate"]:
         notes.append("No certificate (treated as 15, post-watershed)")
-    if not hwdec and (item.get("height") or 0) >= 720:
-        notes.append(f"Software decode only ({item.get('vcodec')}, {item.get('height')}p): pitv_content transcodes it when scheduled")
+    if not fields["hwdec"] and (fields["height"] or 0) >= 720:
+        notes.append(f"Software decode only ({fields['vcodec']}, {fields['height']}p): pitv_content transcodes it when scheduled")
     return "; ".join(notes) or None
 
 
-def _upsert(conn: sqlite3.Connection, table: str, key_col: str, key: Any, fields: dict[str, Any],
-            fallback: tuple[str, Any] | None = None) -> int:
-    """Insert or update one row matched on `key_col`, or on `fallback` (column, value) for rows
-    created before the key existed. Returns the row id."""
-    row = conn.execute(f"SELECT id FROM {table} WHERE {key_col} = ?", (key,)).fetchone()
-    if row is None and fallback is not None:
-        row = conn.execute(f"SELECT id FROM {table} WHERE {fallback[0]} = ?", (fallback[1],)).fetchone()
-    if row is not None:
-        sets = ", ".join(f"{k} = ?" for k in fields)
-        conn.execute(f"UPDATE {table} SET {sets} WHERE id = ?", (*fields.values(), row["id"]))
-        return int(row["id"])
-    cols = ", ".join(fields)
-    cur = conn.execute(f"INSERT INTO {table}({cols}) VALUES ({', '.join('?' * len(fields))})", tuple(fields.values()))
-    return int(cur.lastrowid)
+def _save(conn: sqlite3.Connection, table: str, row_id: int | None, fields: dict[str, Any]) -> int:
+    """Update row `row_id`, or insert when there is none. Returns the row id."""
+    if row_id is None:
+        return insert_row(conn, table, fields)
+    update_row(conn, table, row_id, fields)
+    return row_id
+
+
+def _records(doc: dict[str, Any], key: str) -> list[Any]:
+    value = doc.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise IndexFormatError(f"library index '{key}' is not a list")
+    return value
 
 
 def import_index(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, Any]:
-    """Apply a library index. Idempotent; returns counts for the run log."""
+    """Apply a library index in one transaction. Idempotent; returns counts for the run log and
+    `rejects`, a description of the first REJECTS_KEPT records that could not be used."""
     if not isinstance(doc, dict) or doc.get("schema") != SCHEMA:
-        raise IndexFormatError(f"expected a schema {SCHEMA} library index, got schema {doc.get('schema') if isinstance(doc, dict) else '?'}")
+        got = doc.get("schema") if isinstance(doc, dict) else type(doc).__name__
+        raise IndexFormatError(f"expected a schema {SCHEMA} library index, got schema {got}")
+    sources_in, shows_in, items_in = (_records(doc, k) for k in ("sources", "shows", "items"))
     settings = all_settings(conn)
-    keywords = settings.get("adult_advert_keywords") or []
-    cartoon = {g.lower() for g in (settings.get("cartoon_genres") or CARTOON_GENRES)}
+    unsafe = keyword_pattern(settings.get("adult_advert_keywords"))
+    cartoon = {g.lower() for g in genre_list(settings.get("cartoon_genres") or CARTOON_GENRES)}
     complete = bool(doc.get("complete", True))
-    counts = {"sources": 0, "shows": 0, "items": 0, "new": 0, "missing": 0, "rejected": 0}
-    source_ids: dict[str, int] = {}
-    source_meta: dict[str, dict[str, Any]] = {}
+    now = now_ts()
+    counts: dict[str, Any] = {"sources": 0, "shows": 0, "items": 0, "new": 0, "missing": 0, "rejected": 0}
+    rejects: list[str] = []
+
+    def reject(what: str, uid: Any, why: str) -> None:
+        counts["rejected"] += 1
+        if len(rejects) < REJECTS_KEPT:
+            rejects.append(f"{what} {as_text(uid) or '?'}: {why}")
+
+    sources: dict[str, dict[str, Any]] = {}     # index source id -> row id, category, location
     show_ids: dict[str, int] = {}
     seen: set[str] = set()
     with tx(conn):
-        for src in doc.get("sources") or []:
-            sid = str(src.get("id") or "")
-            stype = src.get("type")
-            if not sid or stype not in SOURCE_TYPES:
-                counts["rejected"] += 1
+        for src in sources_in:
+            sid = as_text(src.get("id")) if isinstance(src, dict) else None
+            if not sid or src.get("type") not in SOURCE_TYPES:
+                reject("source", sid, "no id or an unknown type")
                 continue
             category = src.get("category") if src.get("category") in CATEGORIES else "general"
             location = "cache" if src.get("location") == "cache" else "nas"
-            source_ids[sid] = _upsert(conn, "sources", "uid", fallback=("path", str(src.get("root") or "")), fields={
-                "uid": sid, "type": stype, "name": str(src.get("name") or sid), "path": str(src.get("root") or ""),
-                "remote": src.get("remote"), "location": location, "category": category,
-                "enabled": int(bool(src.get("enabled", True))), "last_indexed_at": now_ts()}, key=sid)
-            source_meta[sid] = {"category": category, "location": location}
+            root = as_text(src.get("root")) or ""
+            fields = {"uid": sid, "type": src["type"], "name": as_text(src.get("name")) or sid, "path": root,
+                      "remote": as_text(src.get("remote")), "location": location, "category": category,
+                      "enabled": int(as_bool(src.get("enabled"), True)), "last_indexed_at": now}
+            row_id = find_id(conn, "sources", "uid", sid)
+            if row_id is None:
+                row_id = find_id(conn, "sources", "path", root)
+            sources[sid] = {"id": _save(conn, "sources", row_id, fields), "category": category, "location": location}
             counts["sources"] += 1
         if complete:
-            conn.execute("UPDATE sources SET enabled = 0 WHERE uid IS NULL OR uid NOT IN (%s)"
-                         % ",".join("?" * len(source_ids)) if source_ids else "UPDATE sources SET enabled = 0",
-                         tuple(source_ids))
+            listed = {s["id"] for s in sources.values()}
+            conn.executemany("UPDATE sources SET enabled = 0 WHERE id = ?",
+                             [(r["id"],) for r in conn.execute("SELECT id FROM sources WHERE enabled = 1").fetchall()
+                              if r["id"] not in listed])
 
-        for sh in doc.get("shows") or []:
-            uid = str(sh.get("uid") or "")
-            if not uid or sh.get("source") not in source_ids:
-                counts["rejected"] += 1
+        for sh in shows_in:
+            uid = as_text(sh.get("uid")) if isinstance(sh, dict) else None
+            src = sources.get(as_text(sh.get("source")) or "") if uid else None
+            if not uid or src is None:
+                reject("show", uid, "no uid or an unknown source")
                 continue
-            genres = _genres(sh.get("genres"))
-            category = sh.get("category") if sh.get("category") in CATEGORIES else source_meta[sh["source"]]["category"]
+            genres = genre_list(sh.get("genres"))
+            category = sh.get("category") if sh.get("category") in CATEGORIES else src["category"]
             kids = int(category == "kids" or any(g.lower() in KIDS_GENRES for g in genres))
             if category != "sport" and any(g.lower() in cartoon for g in genres):
                 category = "cartoon"   # informational (dayparts, the admin); pitv_content may send it as kids
-            fields = {"source_id": source_ids[sh["source"]], "path": uid, "title": str(sh.get("title") or uid),
-                      "year": sh.get("year"), "certificate": sh.get("certificate"), "genres": json.dumps(genres),
-                      "plot": sh.get("plot"), "kids": kids, "category": category, "missing": 0, "updated_at": now_ts()}
-            legacy = conn.execute("SELECT id FROM shows WHERE path NOT LIKE 'show:%' AND lower(title) = lower(?)"
-                                  " AND (year IS ? OR year = ?)", (fields["title"], sh.get("year"), sh.get("year"))).fetchone()
-            show_ids[uid] = _upsert(conn, "shows", "path", uid, fields,
-                                    fallback=("id", legacy["id"]) if legacy else None)
+            year = as_int(sh.get("year"))
+            fields = {"source_id": src["id"], "path": uid, "title": as_text(sh.get("title")) or uid,
+                      "year": year, "certificate": as_text(sh.get("certificate")), "genres": json.dumps(genres),
+                      "plot": as_text(sh.get("plot")), "kids": kids, "category": category, "missing": 0,
+                      "updated_at": now}
+            row_id = find_id(conn, "shows", "path", uid)
+            if row_id is None:
+                # A series first seen before index uids (a scan-era folder path, or one fetched
+                # online) keeps its id, and with it its line-up entry and history.
+                legacy = conn.execute("SELECT id FROM shows WHERE path NOT LIKE 'show:%' AND lower(title) = lower(?)"
+                                      " AND year IS ?", (fields["title"], year)).fetchone()
+                row_id = legacy["id"] if legacy else None
+            try:
+                show_ids[uid] = _save(conn, "shows", row_id, fields)
+            except sqlite3.IntegrityError as exc:
+                reject("show", uid, str(exc))
+                continue
             counts["shows"] += 1
 
-        for it in doc.get("items") or []:
-            uid = str(it.get("uid") or "")
+        for it in items_in:
+            uid = as_text(it.get("uid")) if isinstance(it, dict) else None
+            if not uid:
+                reject("item", None, "no uid")
+                continue
             kind = it.get("kind")
-            src = it.get("source")
-            if not uid or kind not in KINDS or src not in source_ids or not it.get("path"):
-                counts["rejected"] += 1
+            src = sources.get(as_text(it.get("source")) or "")
+            path = it["path"] if isinstance(it.get("path"), str) else None
+            show_id = show_ids.get(as_text(it.get("show_uid")) or "") if kind == "episode" else None
+            if kind not in KINDS or src is None or not path or (kind == "episode" and show_id is None):
+                reject("item", uid, "unknown kind, source or series, or no path")
                 continue
-            show_id = show_ids.get(str(it.get("show_uid") or "")) if kind == "episode" else None
-            if kind == "episode" and show_id is None:
-                counts["rejected"] += 1
-                continue
-            vcodec = it.get("vcodec")
-            hwdec = (vcodec or "") in PI_HW_CODECS
-            location = source_meta[src]["location"]
+            vcodec = as_text(it.get("vcodec"))
+            duration = as_float(it.get("duration"))
             concert = it.get("concert")
-            if concert is None and kind == "music":
-                concert = (it.get("duration") or 0) >= CONCERT_MINUTES * 60
             fields = {
-                "uid": uid, "source_id": source_ids[src], "kind": kind, "show_id": show_id,
-                "season": it.get("season"), "episode": it.get("episode"), "title": str(it.get("title") or uid),
-                "year": it.get("year"), "path": str(it["path"]), "origin": location,
-                "size": it.get("size"), "mtime": it.get("mtime"), "duration": it.get("duration"),
-                "vcodec": vcodec, "acodec": it.get("acodec"), "width": it.get("width"), "height": it.get("height"),
-                "interlaced": int(bool(it.get("interlaced"))), "hwdec": int(hwdec),
-                "certificate": it.get("certificate"), "genres": json.dumps(_genres(it.get("genres"))),
-                "plot": it.get("plot"), "channel_hint": it.get("channel_hint"), "artist": it.get("artist"),
-                "concert": int(bool(concert)),
-                "family_safe": _family_safe(it, keywords) if kind == "advert" else 1,
-                "attention": _attention({**it, "kind": kind}, hwdec), "missing": 0, "updated_at": now_ts(),
+                "uid": uid, "source_id": src["id"], "kind": kind, "show_id": show_id,
+                "season": as_int(it.get("season")), "episode": as_int(it.get("episode")),
+                "title": as_text(it.get("title")) or uid, "year": as_int(it.get("year")), "path": path,
+                "origin": src["location"], "size": as_int(it.get("size")), "mtime": as_int(it.get("mtime")),
+                "duration": duration, "vcodec": vcodec, "acodec": as_text(it.get("acodec")),
+                "width": as_int(it.get("width")), "height": as_int(it.get("height")),
+                "interlaced": int(as_bool(it.get("interlaced"))), "hwdec": int((vcodec or "") in PI_HW_CODECS),
+                "certificate": as_text(it.get("certificate")), "genres": json.dumps(genre_list(it.get("genres"))),
+                "plot": as_text(it.get("plot")), "channel_hint": as_int(it.get("channel_hint")),
+                "artist": as_text(it.get("artist")),
+                "concert": int(as_bool(concert) if concert is not None
+                               else kind == "music" and (duration or 0) >= CONCERT_MINUTES * 60),
+                "family_safe": family_safe(it, unsafe) if kind == "advert" else 1,
+                "missing": 0, "updated_at": now,
             }
-            if location == "cache":
-                fields["cache_path"] = str(it["path"])   # already where playback wants it
-            existed = conn.execute("SELECT 1 FROM media WHERE uid = ? OR path = ?", (uid, fields["path"])).fetchone()
-            _upsert(conn, "media", "uid", uid, fields, fallback=("path", fields["path"]))
+            fields["attention"] = _attention(fields)
+            if src["location"] == "cache":
+                fields["cache_path"] = path   # already where playback wants it
+            row_id = find_id(conn, "media", "uid", uid)
+            if row_id is None:
+                row_id = find_id(conn, "media", "path", path)
+            try:
+                _save(conn, "media", row_id, fields)
+            except sqlite3.IntegrityError as exc:   # e.g. its path already belongs to another uid
+                reject("item", uid, str(exc))
+                continue
             counts["items"] += 1
-            counts["new"] += existed is None
+            counts["new"] += row_id is None
             seen.add(uid)
 
+        assign_ident_channels(conn)
         if complete:
             # Online material is managed through delivery reports, not the index.
-            for r in conn.execute("SELECT id, uid FROM media WHERE missing = 0 AND origin != 'online'").fetchall():
-                if r["uid"] not in seen:
-                    conn.execute("UPDATE media SET missing = 1 WHERE id = ?", (r["id"],))
-                    counts["missing"] += 1
+            gone = [(r["id"],) for r in conn.execute("SELECT id, uid FROM media WHERE missing = 0 AND origin != 'online'")
+                    .fetchall() if r["uid"] not in seen]
+            conn.executemany("UPDATE media SET missing = 1 WHERE id = ?", gone)
+            counts["missing"] = len(gone)
             conn.execute("UPDATE shows SET missing = 1 WHERE missing = 0 AND id NOT IN"
                          " (SELECT DISTINCT show_id FROM media WHERE show_id IS NOT NULL AND missing = 0)")
-        for rid in source_ids.values():
-            n = conn.execute("SELECT COUNT(*) FROM media WHERE source_id = ? AND missing = 0", (rid,)).fetchone()[0]
-            conn.execute("UPDATE sources SET index_summary = ? WHERE id = ?", (f"{n} items in the index", rid))
-    return counts
+        per_source = {r["source_id"]: r["n"] for r in conn.execute(
+            "SELECT source_id, COUNT(*) AS n FROM media WHERE missing = 0 AND source_id IS NOT NULL GROUP BY source_id")}
+        conn.executemany("UPDATE sources SET index_summary = ? WHERE id = ?",
+                         [(f"{per_source.get(s['id'], 0)} items in the index", s["id"]) for s in sources.values()])
+    if rejects:
+        log.warning("library index: %d records rejected, first: %s", counts["rejected"], rejects[0])
+    return {**counts, "rejects": rejects}
 
 
 def import_and_place(conn: sqlite3.Connection, doc: dict[str, Any], origin: str = "") -> dict[str, Any]:
     """Import, then place new series and films into line-ups and refresh the JSON mirror.
-    Logged as a `catalogue` run."""
-    from .lineup import generate, restore_if_empty
+    Logged as a `catalogue` run; a failed import is logged as an error and re-raised."""
     run_id = run_log_start(conn, "catalogue")
     try:
         counts = import_index(conn, doc)
-    except IndexFormatError as exc:
+        restore_if_empty(conn)
+        placed = generate(conn)
+    except Exception as exc:
         run_log_finish(conn, run_id, "error", str(exc), [str(exc)])
         raise
-    restore_if_empty(conn)
-    placed = generate(conn)
     write_mirror(conn)
     summary = (f"{counts['items']} items ({counts['new']} new, {counts['missing']} now missing,"
                f" {counts['rejected']} rejected) from {counts['sources']} sources; line-ups: {placed['assigned']} placed,"
                f" {placed['unmatched']} matched no channel")
-    run_log_finish(conn, run_id, "warning" if counts["rejected"] or placed["unmatched"] else "ok", summary,
-                   [f"source: {origin}"] if origin else [])
+    details = ([f"source: {origin}"] if origin else []) + [f"rejected {r}" for r in counts["rejects"]]
+    run_log_finish(conn, run_id, "warning" if counts["rejected"] or placed["unmatched"] else "ok", summary, details)
     log.info("catalogue import: %s", summary)
     return {**counts, **{f"lineup_{k}": v for k, v in placed.items()}, "summary": summary, "run_id": run_id}
 
 
 def refresh(conn: sqlite3.Connection, reindex: bool = False) -> dict[str, Any]:
-    """Fetch pitv_content's index (API first, file second) and import it."""
+    """Fetch pitv_content's index (API first, file second) and import it. A missing or malformed
+    index is reported as {"status": "error"} rather than raised, so the maintenance pass that
+    calls this carries on with its other work."""
     doc, origin = fetch_index(all_settings(conn), reindex=reindex)
     if doc is None:
         run_id = run_log_start(conn, "catalogue")
         run_log_finish(conn, run_id, "error", origin, [origin])
         log.error("catalogue refresh failed: %s", origin)
         return {"status": "error", "summary": origin}
-    result = import_and_place(conn, doc, origin)
+    try:
+        result = import_and_place(conn, doc, origin)
+    except IndexFormatError as exc:
+        log.error("catalogue refresh failed: %s: %s", origin, exc)
+        return {"status": "error", "summary": f"{origin}: {exc}"}
     return {"status": "ok", **result}
 
 
@@ -293,9 +364,9 @@ def export(conn: sqlite3.Connection) -> dict[str, Any]:
     comes from, and whether it is cached, plus custom line-up entries not in the index."""
     shows = rows_to_dicts(conn.execute(
         "SELECT sh.id, sh.title, sh.year, sh.genres, sh.category, sh.certificate, c.number AS channel,"
-        " (SELECT COUNT(*) FROM media m WHERE m.show_id = sh.id AND m.missing = 0) AS episodes,"
-        " (SELECT COUNT(*) FROM media m WHERE m.show_id = sh.id AND m.missing = 0 AND m.cache_path IS NOT NULL) AS cached"
-        " FROM shows sh LEFT JOIN channels c ON c.id = sh.home_channel_id WHERE sh.missing = 0 ORDER BY sh.title"))
+        " COUNT(m.id) AS episodes, COUNT(m.cache_path) AS cached"
+        " FROM shows sh LEFT JOIN media m ON m.show_id = sh.id AND m.missing = 0"
+        " LEFT JOIN channels c ON c.id = sh.home_channel_id WHERE sh.missing = 0 GROUP BY sh.id ORDER BY sh.title"))
     films = rows_to_dicts(conn.execute(
         "SELECT m.id, m.title, m.year, m.genres, m.certificate, m.origin, m.duration, c.number AS channel,"
         " m.cache_path IS NOT NULL AS cached FROM media m LEFT JOIN channels c ON c.id = m.home_channel_id"
@@ -307,22 +378,9 @@ def export(conn: sqlite3.Connection) -> dict[str, Any]:
 
 
 def write_mirror(conn: sqlite3.Connection) -> None:
-    """catalogue.json beside the database, rewritten atomically."""
-    path = None
-    for row in conn.execute("PRAGMA database_list"):
-        if row["name"] == "main" and row["file"]:
-            path = Path(row["file"]).parent / "catalogue.json"
-    if path is None:
-        return
-    try:
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(export(conn), indent=2))
-        os.replace(tmp, path)
-    except OSError as exc:
-        log.warning("could not write catalogue mirror: %s", exc)
+    """catalogue.json beside the database."""
+    write_data_file(conn, MIRROR, lambda: export(conn))
 
 
 def last_import(conn: sqlite3.Connection) -> dict[str, Any] | None:
-    row = conn.execute("SELECT * FROM run_log WHERE kind = 'catalogue' ORDER BY id DESC LIMIT 1").fetchone()
-    return row_to_dict(row) if row else None
-
+    return row_to_dict(conn.execute("SELECT * FROM run_log WHERE kind = 'catalogue' ORDER BY id DESC LIMIT 1").fetchone())

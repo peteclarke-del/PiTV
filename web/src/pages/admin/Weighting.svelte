@@ -4,7 +4,7 @@
   import { buildSchedule } from '../../lib/actions.js';
   import { toast } from '../../lib/stores.svelte.js';
   import { CERTIFICATES } from '../../lib/format.js';
-  import { num } from '../../lib/util.js';
+  import { num, moveItem } from '../../lib/util.js';
   import { guard } from '../../lib/guard.svelte.js';
   import WeightRows from './WeightRows.svelte';
   import DaypartTable from './DaypartTable.svelte';
@@ -14,18 +14,28 @@
 
   let s = $state(null);
   let savedOnce = $state(false);
+  // The document as last loaded or saved. Save sends only the keys that differ from it, so it
+  // cannot put back a stale copy of something edited elsewhere meanwhile (the keymap on the
+  // Player page, another admin's change).
+  let loaded = {};
+  // The keymap has its own editor and reset on the Player page.
+  const NOT_HERE = ['keymap'];
 
   let facets = $state(null);
   function addBlock() {
     const last = s.music_blocks.at(-1);
     s.music_blocks.push({ start: last ? last.start : '08:00', name: '', genres: [], decades: [1980], concert: false });
   }
-  function moveBlock(i, d) { const j = i + d; if (j < 0 || j >= s.music_blocks.length) return; const [x] = s.music_blocks.splice(i, 1); s.music_blocks.splice(j, 0, x); }
-  function toggleMusicDecade(d) { s.music_decades = (s.music_decades ?? []).includes(d) ? s.music_decades.filter((x) => x !== d) : [...(s.music_decades ?? []), d].sort(); }
-  function toggleDecade(b, d) { b.decades = (b.decades ?? []).includes(d) ? b.decades.filter((x) => x !== d) : [...(b.decades ?? []), d].sort(); }
+  /** `list` with decade `d` added or removed, in order. */
+  const toggled = (list, d) => ((list ?? []).includes(d) ? list.filter((x) => x !== d) : [...(list ?? []), d].sort((a, b) => a - b));
+  function adopt(doc) {
+    for (const k of ['dayparts', 'dayparts_saturday', 'dayparts_sunday', 'music_blocks', 'cartoon_genres', 'music_decades', 'adult_advert_keywords', 'readiness_hours']) doc[k] ??= [];
+    loaded = JSON.parse(JSON.stringify(doc));
+    s = doc;
+  }
   async function load() {
-    s = await tryApi(get('/api/settings'));
-    if (s) for (const k of ['dayparts_saturday', 'dayparts_sunday', 'music_blocks', 'cartoon_genres', 'music_decades', 'adult_advert_keywords', 'readiness_hours']) s[k] ??= [];
+    const doc = await tryApi(get('/api/settings'));
+    if (doc) adopt(doc);
     tryApi(get('/api/music/facets')).then((f) => (facets = f ?? null));
   }
   onMount(load);
@@ -60,15 +70,16 @@
     });
     body.music_decades = (s.music_decades ?? []).map(Number).sort();
     body.adult_advert_keywords = (s.adult_advert_keywords ?? []).map((k) => String(k).toLowerCase());
-    // Keys the backend has retired: PUT /api/settings rejects unknown keys, so never echo them back.
-    for (const k of ['music_genres', 'scan_hour']) delete body[k];
+    for (const k of Object.keys(body)) if (NOT_HERE.includes(k) || JSON.stringify(body[k]) === JSON.stringify(loaded[k])) delete body[k];
+    if (!Object.keys(body).length) { toast.info('Nothing has changed'); return; }
     const r = await tryApi(put('/api/settings', body), { success: 'Settings saved' });
-    if (r) { s = r; savedOnce = true; }
+    if (r) { adopt(r); savedOnce = true; }
   });
   const reset = guard(async () => {
-    const r = await confirmApi('Reset every weighting setting to its default?', { title: 'Reset to defaults', okLabel: 'Reset', danger: true },
-      () => post('/api/settings/reset', {}), { success: 'Settings reset' });
-    if (r) { s = r; savedOnce = true; }
+    const keys = Object.keys(loaded).filter((k) => !NOT_HERE.includes(k));
+    const r = await confirmApi('Reset every setting on this page to its default? The remote keymap is kept.', { title: 'Reset to defaults', okLabel: 'Reset', danger: true },
+      () => post('/api/settings/reset', { keys }), { success: 'Settings reset' });
+    if (r) { adopt(r); savedOnce = true; }
   });
   const build = guard(() => buildSchedule().then((r) => { if (r) toast.info('Changes apply to newly built days; use Rebuild week on the dashboard to redo existing days.'); }));
 </script>
@@ -100,8 +111,7 @@
 
       <div class="card">
         <div class="card-title"><h3>Era weights</h3><AppBadge app="pitv" /></div>
-        <p class="scope">How strongly PiTV favours programmes by year when it fills slots.</p>
-        <p class="help small muted">Relative preference for programme years. Channels can override this.</p>
+        <p class="scope">How strongly PiTV favours programmes by year when it fills slots. Channels can override this.</p>
         <WeightRows value={s.era_weights} onchange={(v) => (s.era_weights = v)} keyLabel="Years" keyPlaceholder="1980-1989" addLabel="Add era" />
         <label class="field">Unknown year weight<input type="number" min="0" max="2" step="0.05" bind:value={s.unknown_year_weight} /><span class="help">Programmes with no year found still air at this weight; 0 excludes them.</span></label>
         <label class="field">Era pool normalisation <span class="mono">{Number(s.era_pool_normalise ?? 0).toFixed(2)}</span><input type="range" min="0" max="1" step="0.05" bind:value={s.era_pool_normalise} /><span class="help">0 weights every title equally; 1 makes each era's share of airtime follow the era weights regardless of how many titles it has.</span></label>
@@ -113,7 +123,6 @@
         <hr />
         <div class="card-title"><h3>TV / movie balance</h3><AppBadge app="pitv" /></div>
         <p class="scope">PiTV's overall mix of episodes and films; dayparts and channels adjust it.</p>
-        <p class="help small muted">Global balance between episodes and films; dayparts and channels modify it.</p>
         <label class="field">TV <span class="mono">{Number(s.kind_weights.tv).toFixed(2)}</span><input type="range" min="0" max="1" step="0.05" bind:value={s.kind_weights.tv} /></label>
         <label class="field">Movie <span class="mono">{Number(s.kind_weights.movie).toFixed(2)}</span><input type="range" min="0" max="1" step="0.05" bind:value={s.kind_weights.movie} /></label>
       </div>
@@ -239,9 +248,9 @@
                   <td><input type="time" bind:value={b.start} aria-label="Block start" /></td>
                   <td><input bind:value={b.name} placeholder="Block name" aria-label="Block name" /></td>
                   <td style="min-width:200px"><ChipList value={b.genres ?? []} onchange={(v) => (b.genres = v)} placeholder="genre…" label="Block genres" lower /></td>
-                  <td class="decades">{#each DECADES as d (d)}<label class="dec" class:on={(b.decades ?? []).includes(d)}><input type="checkbox" checked={(b.decades ?? []).includes(d)} onchange={() => toggleDecade(b, d)} />{d}s</label>{/each}</td>
+                  <td class="decades">{#each DECADES as d (d)}<label class="dec" class:on={(b.decades ?? []).includes(d)}><input type="checkbox" checked={(b.decades ?? []).includes(d)} onchange={() => (b.decades = toggled(b.decades, d))} />{d}s</label>{/each}</td>
                   <td class="center"><input type="checkbox" checked={!!b.concert} onchange={(e) => (b.concert = e.currentTarget.checked)} aria-label="Concert block" /></td>
-                  <td class="nowrap"><button class="small ghost" disabled={i === 0} onclick={() => moveBlock(i, -1)} aria-label="Move up">↑</button><button class="small ghost" disabled={i === s.music_blocks.length - 1} onclick={() => moveBlock(i, 1)} aria-label="Move down">↓</button><button class="small ghost" onclick={() => s.music_blocks.splice(i, 1)} aria-label="Remove">✕</button></td>
+                  <td class="nowrap"><button class="small ghost" disabled={i === 0} onclick={() => moveItem(s.music_blocks, i, -1)} aria-label="Move up">↑</button><button class="small ghost" disabled={i === s.music_blocks.length - 1} onclick={() => moveItem(s.music_blocks, i, 1)} aria-label="Move down">↓</button><button class="small ghost" onclick={() => s.music_blocks.splice(i, 1)} aria-label="Remove">✕</button></td>
                 </tr>
               {:else}
                 <tr><td colspan="6" class="muted small">No blocks: the music channel would be empty.</td></tr>
@@ -262,7 +271,7 @@
         </aside>
       </div>
       <div class="field mt"><span>Decades played</span>
-        <div class="decades">{#each DECADES as d (d)}<label class="dec" class:on={(s.music_decades ?? []).includes(d)}><input type="checkbox" checked={(s.music_decades ?? []).includes(d)} onchange={() => toggleMusicDecade(d)} />{d}s</label>{/each}</div>
+        <div class="decades">{#each DECADES as d (d)}<label class="dec" class:on={(s.music_decades ?? []).includes(d)}><input type="checkbox" checked={(s.music_decades ?? []).includes(d)} onchange={() => (s.music_decades = toggled(s.music_decades, d))} />{d}s</label>{/each}</div>
         <span class="help">The music channel only plays these decades.</span>
       </div>
       <div class="form-grid mt">

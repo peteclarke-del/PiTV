@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 from ...db import DEFAULT_SETTINGS
 from ...player.input import ACTIONS
 
-_HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 # What an ALSA device name, a DRM connector, an mpv hwdec list or an aspect ratio may contain.
 _DEVICE_TOKEN = re.compile(r"^[A-Za-z0-9_.:,/=+-]{0,200}$")
 _TZ_NAME = re.compile(r"^[A-Za-z0-9_+/-]{1,64}$")
@@ -26,6 +26,26 @@ _PATH_KEYS = ("cache_dir", "acquire_dir")
 _DEVICE_KEYS = ("audio_device", "drm_connector", "pi_hwdec", "display_aspect")
 _HHMM_KEYS = ("day_start", "day_end", "kids_cutoff")
 _PORTS = range(1, 65536)
+# Stored with the settings but never read or written through the settings API.
+SECRET_SETTINGS = frozenset({"admin_password_hash", "session_secret"})
+# RFC 6598 shared address space: carrier-grade NAT, and the addresses Tailscale hands out,
+# which is how the two apps would most likely reach each other on separate machines.
+_SHARED_NET = ipaddress.ip_network("100.64.0.0/10")
+
+
+# Ranges for numbers whose extremes break something: the overlay geometry, the player's own
+# memory guard (systemd's MemoryMax sits above it), or the build horizon. Other numbers need
+# only be finite and non-negative.
+_BOUNDS: dict[str, tuple[float, float]] = {
+    "horizon_days": (1, 31),
+    "catalogue_hour": (0, 23),
+    "osd_safe_margin": (0, 0.2),
+    "osd_scale": (0.5, 2.5),
+    "badge_seconds": (1, 60),
+    "memory_limit_mb": (200, 3000),
+    "clock_wait_seconds": (0, 900),
+    "cache_max_gb": (1, 100_000),
+}
 
 
 class SettingError(ValueError):
@@ -47,7 +67,9 @@ def _lan_host(host: str) -> bool:
     except ValueError:
         # A bare LAN name ("pitv", "nas.local"); anything with a public-looking domain is out.
         return bool(re.match(r"^[A-Za-z0-9-]+(\.(local|lan|home|internal))?$", host))
-    return ip.is_loopback or ip.is_private or ip.is_link_local
+    if ip.is_unspecified or ip.is_multicast:
+        return False
+    return ip.is_loopback or ip.is_private or ip.is_link_local or (ip.version == 4 and ip in _SHARED_NET)
 
 
 def _check_tool_url(value: Any) -> None:
@@ -58,7 +80,11 @@ def _check_tool_url(value: Any) -> None:
         raise SettingError("content_tool_url must be http(s)://host[:port] with no credentials")
     if u.path not in ("", "/") or u.query or u.fragment:
         raise SettingError("content_tool_url must be the base URL only")
-    if u.port is not None and u.port not in _PORTS:
+    try:
+        port = u.port    # raises for a non-numeric or out-of-range port
+    except ValueError as exc:
+        raise SettingError("content_tool_url port out of range") from exc
+    if port is not None and port not in _PORTS:
         raise SettingError("content_tool_url port out of range")
     if not _lan_host(u.hostname):
         raise SettingError("content_tool_url must point at this machine or the local network")
@@ -75,7 +101,7 @@ def _check_number(key: str, value: Any, default: Any) -> None:
 
 def check_setting(key: str, value: Any) -> Any:
     """Validate one setting; returns the value to store. Raises SettingError with a reason."""
-    if key not in DEFAULT_SETTINGS:
+    if key not in DEFAULT_SETTINGS or key in SECRET_SETTINGS:
         raise SettingError(f"unknown setting {key}")
     default = DEFAULT_SETTINGS[key]
     if key in _PATH_KEYS:
@@ -93,7 +119,7 @@ def check_setting(key: str, value: Any) -> Any:
         except (KeyError, ValueError, OSError) as exc:
             raise SettingError(f"unknown timezone {value}") from exc
     elif key in _HHMM_KEYS:
-        if not isinstance(value, str) or not _HHMM.match(value):
+        if not isinstance(value, str) or not HHMM.match(value):
             raise SettingError(f"{key} must be HH:MM")
     elif key == "keymap":
         if not isinstance(value, dict):
@@ -116,17 +142,15 @@ def check_setting(key: str, value: Any) -> Any:
             raise SettingError(f"{key} must be true or false")
     elif isinstance(default, (int, float)):
         _check_number(key, value, default)
-        if key == "horizon_days" and not 1 <= value <= 31:
-            raise SettingError("horizon_days must be between 1 and 31")
-        if key == "catalogue_hour" and not 0 <= value <= 23:
-            raise SettingError("catalogue_hour must be an hour 0-23")
+        low, high = _BOUNDS.get(key, (0, math.inf))
+        if not low <= value <= high:
+            raise SettingError(f"{key} must be between {low} and {high}")
     elif isinstance(default, str):
         if not isinstance(value, str) or len(value) > 500:
             raise SettingError(f"{key} must be a short string")
     elif isinstance(default, list):
         if not isinstance(value, list):
             raise SettingError(f"{key} must be a list")
-    elif isinstance(default, dict):
-        if not isinstance(value, dict):
-            raise SettingError(f"{key} must be an object")
+    elif isinstance(default, dict) and not isinstance(value, dict):
+        raise SettingError(f"{key} must be an object")
     return value

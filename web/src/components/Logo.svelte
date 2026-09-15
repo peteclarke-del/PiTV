@@ -22,5 +22,4 @@
   .bars i:nth-child(3) { background: #2a9d8f; }
   .bars i:nth-child(4) { background: #457b9d; }
   .lg .word { font-size: 2.4rem; }
-  .sm .word { font-size: 1.05rem; }
 </style>

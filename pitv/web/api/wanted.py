@@ -9,9 +9,10 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 
 from ...db import now_ts, row_to_dict, rows_to_dicts, tx
 from ...wanted import queue_gaps
-from .deps import admin_conn
+from .deps import admin_conn, optional_int, optional_text
 
 router = APIRouter(prefix="/api", dependencies=[Depends(admin_conn)])
+WANTED_KINDS = ("episode", "movie", "advert", "music")
 
 
 @router.get("/wanted")
@@ -25,19 +26,20 @@ def list_wanted(conn: sqlite3.Connection = Depends(admin_conn)):
 @router.post("/wanted")
 def add_wanted(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
     kind = body.get("kind")
-    if kind not in ("episode", "movie", "advert", "music"):
+    if kind not in WANTED_KINDS:
         raise HTTPException(400, "kind must be episode, movie, advert or music")
-    title = str(body.get("title", "")).strip()
+    title = optional_text(body.get("title"), "title")
     if not title:
         raise HTTPException(400, "title required")
-    ref = (body.get("ref") or "").strip() or None
+    ref = optional_text(body.get("ref"), "ref", limit=2000)
     if ref and not ref.startswith(("http://", "https://")):
         raise HTTPException(400, "ref must be a URL (a specific page or file for pitv_content to use)")
+    row = (kind, title, *(optional_int(body.get(k), k) for k in ("year", "season", "episode", "show_id")),
+           "url" if ref else "auto", ref, optional_text(body.get("genre"), "genre"),
+           optional_text(body.get("artist"), "artist"), now_ts())
     with tx(conn):
         cur = conn.execute("INSERT INTO wanted(kind, title, year, season, episode, show_id, provider, ref, genre, artist, created_at)"
-                           " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                           (kind, title, body.get("year"), body.get("season"), body.get("episode"), body.get("show_id"),
-                            "url" if ref else "auto", ref, (body.get("genre") or None), (body.get("artist") or None), now_ts()))
+                           " VALUES (?,?,?,?,?,?,?,?,?,?,?)", row)
     return row_to_dict(conn.execute("SELECT * FROM wanted WHERE id = ?", (cur.lastrowid,)).fetchone())
 
 

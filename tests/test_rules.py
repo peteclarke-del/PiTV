@@ -2,10 +2,23 @@ from datetime import date
 from zoneinfo import ZoneInfo
 
 from pitv.db import DEFAULT_SETTINGS
-from pitv.scheduler.rules import (allowed_at, broadcast_day_for, day_bounds, daypart_for,
-                                  era_weight, local_ts, parse_pattern)
+from pitv.scheduler.rules import (
+    allowed_at,
+    broadcast_day_for,
+    day_bounds,
+    daypart_end_minutes,
+    daypart_for,
+    era_spans,
+    era_weight_spans,
+    local_ts,
+    parse_pattern,
+)
 
 TZ = ZoneInfo("Europe/London")
+
+
+def era_weight(year, era_weights, **kw):
+    return era_weight_spans(year, era_spans(era_weights), **kw)
 
 
 def test_era_weight_span():
@@ -42,6 +55,14 @@ def test_unknown_movie_is_post_watershed():
     assert allowed_at({"kind": "movie"}, 21 * 60, DEFAULT_SETTINGS)
 
 
+def test_watershed_after_midnight_counts_as_late_night():
+    s = {**DEFAULT_SETTINGS, "watershed": {**DEFAULT_SETTINGS["watershed"], "18": "00:30"}}
+    movie18 = {"kind": "movie", "certificate": "18"}
+    assert not allowed_at(movie18, 8 * 60, s)
+    assert not allowed_at(movie18, 23 * 60 + 30, s)
+    assert allowed_at(movie18, 45, s)
+
+
 def test_kids_cutoff():
     kids = {"kind": "episode", "certificate": "U", "kids": True}
     assert allowed_at(kids, 16 * 60, DEFAULT_SETTINGS)
@@ -61,6 +82,12 @@ def test_daypart_lookup():
     assert daypart_for(8 * 60, dps)["name"] == "Breakfast"
     assert daypart_for(16 * 60, dps)["name"] == "Children's"
     assert daypart_for(23 * 60 + 30, dps)["name"] == "Late"
+    assert daypart_end_minutes(8 * 60, dps) == 9 * 60 + 30
+    assert daypart_end_minutes(23 * 60, dps) == 1440
+
+
+def test_malformed_era_spans_are_ignored():
+    assert era_spans({"1980-1989": 1, "eighties": 2, "1990-x": 3}) == ((1980, 1989, 1.0),)
 
 
 def test_parse_pattern():

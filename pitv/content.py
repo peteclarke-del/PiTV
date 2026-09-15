@@ -3,27 +3,49 @@
 The request manifest lists every file the schedule needs through the end of the next broadcast
 day: copy or transcode it from the NAS, or fetch it online. Delivery reports record where each
 file landed; material fetched online becomes a catalogue entry here and takes the placeholder
-slots that asked for it.
+slots that asked for it. Reports come from another process and are read defensively: an entry
+that cannot be used is counted as failed, never allowed to abort the rest of the report.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import shutil
+import re
 import sqlite3
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from .db import all_settings, now_ts, row_to_dict, rows_to_dicts, tx
+from .catalogue import KINDS, family_safe, keyword_pattern, write_mirror
+from .db import (
+    all_settings,
+    as_bool,
+    as_float,
+    as_int,
+    as_text,
+    genre_list,
+    get_setting,
+    insert_row,
+    now_ts,
+    row_to_dict,
+    rows_to_dicts,
+    tx,
+    update_row,
+)
+from .lineup import attach_delivery
 from .player.cache import MediaCache
 from .player.hwdec import PI_HW_CODECS, is_raspberry_pi
+from .scheduler.build import rebuild_from
 from .scheduler.rules import broadcast_day_for, day_bounds, tz_of
 
 MANIFEST_SCHEMA = 2
 RESIZE_THRESHOLD = 30   # seconds; smaller differences between scheduled and delivered length are absorbed
 MAX_WANTED_ATTEMPTS = 3
+APPLIED_REPORT_DAYS = 7      # report files, once applied, are kept this long for reference
+UNAPPLIED_REPORT_DAYS = 30   # a report file that never applies is given up after this long
+DEADLINE_LEAD = 15 * 60  # a file is due this long before it first airs
 # Typical running times per kind, so pitv_content can reject obviously wrong search hits.
 WANTED_MINUTES = {"music": [2, 8], "advert": [0.1, 2], "episode": [20, 60], "movie": [70, 180]}
 log = logging.getLogger("pitv.content")
@@ -42,10 +64,13 @@ def manifest_window(settings: dict[str, Any], tz, now: int, days: int) -> int:
     return day_bounds(day + timedelta(days=max(1, days)), settings, tz)[2]
 
 
-def _identity(m: dict[str, Any]) -> dict[str, Any]:
-    return {"kind": m["kind"], "show_title": m.get("show_title"), "season": m.get("season"),
-            "episode": m.get("episode"), "title": m["title"], "year": m.get("year"), "artist": m.get("artist"),
-            "duration": m.get("duration")}
+# --- request manifest ---------------------------------------------------------------------------
+
+def _identity(row: dict[str, Any], show_title: str | None) -> dict[str, Any]:
+    """What pitv_content matches a request on, for a media or a wanted row."""
+    return {"kind": row["kind"], "show_title": show_title, "season": row.get("season"),
+            "episode": row.get("episode"), "title": row["title"], "year": row.get("year"),
+            "artist": row.get("artist")}
 
 
 def _fetch_fields(w: dict[str, Any], show_title: str | None, acquire: str) -> dict[str, Any]:
@@ -57,7 +82,38 @@ def _fetch_fields(w: dict[str, Any], show_title: str | None, acquire: str) -> di
             "dest_dir": _wanted_dest({**w, "title": show_title or w["title"]}, acquire)}
 
 
+def _media_request(m: dict[str, Any], cache: MediaCache, acquire: str, max_height: int) -> dict[str, Any]:
+    """The request for a catalogue file: copy or transcode a NAS original into the cache, or
+    fetch again material that only ever lived in the cache and has been evicted."""
+    copy = cache.cache_copy(m)
+    base = {"media_id": m["id"], "wanted_id": None, "uid": m.get("uid"), **_identity(m, m.get("show_title")),
+            "duration": m.get("duration"), "already_cached": copy is not None, "transient": bool(m.get("transient"))}
+    if m.get("origin", "nas") == "nas":
+        original = Path(m["path"])
+        # Anything the Pi cannot decode in hardware, or well above the CRT's 576 lines, is
+        # re-encoded to the profile; the rest is copied as it is.
+        transcode = (m.get("vcodec") or "") not in PI_HW_CODECS or (m.get("height") or 0) > max_height * 1.5
+        name = f"{m['id']}_{original.stem}{'.mp4' if transcode else original.suffix}"
+        return {**base, "action": "transcode" if transcode else "copy",
+                "source": {"path": m["path"], "vcodec": m.get("vcodec"), "height": m.get("height"),
+                           "interlaced": bool(m.get("interlaced")), "size": m.get("size")},
+                "target": str(copy or (cache.dir / name if cache.dir else name))}
+    if copy is not None:
+        return {**base, "action": "copy", "source": None, "target": str(copy)}
+    return {**base, "action": "fetch", "source": None, **_fetch_fields(m, m.get("show_title"), acquire)}
+
+
+def _wanted_request(w: dict[str, Any], show_title: str | None, acquire: str) -> dict[str, Any]:
+    """The request for a wanted row: find it online and file it under `dest_dir`."""
+    return {"media_id": None, "wanted_id": w["id"], "uid": None, **_identity(w, show_title),
+            "genre": w.get("genre"), "ref": w.get("ref"), "action": "fetch", "source": None,
+            "already_cached": False, "transient": bool(w.get("transient")), "attempts": w.get("attempts", 0),
+            **_fetch_fields(w, show_title, acquire)}
+
+
 def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) -> dict[str, Any]:
+    """The request manifest (contract section 2): everything scheduled between `now` and the end
+    of the manifest window, plus the wanted rows not tied to a slot."""
     settings = all_settings(conn)
     tz = tz_of(conn)
     now = now or now_ts()
@@ -65,19 +121,19 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
     acquire = acquire_dir(settings)
     horizon = manifest_window(settings, tz, now, days)
     profile = settings.get("content_profile") or {}
-    max_h = int(profile.get("height", 576))
+    max_height = as_int(profile.get("height")) or 576
     items: dict[str, dict[str, Any]] = {}
 
-    def add(request_id: str, first_air: int, channel: int, build) -> None:
+    def add(request_id: str, slot: dict[str, Any], build: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
+        """One request per file however many slots and channels use it, timed by its first airing."""
         it = items.get(request_id)
         if it is None:
-            it = build()
-            hours_ahead = max(0.0, (first_air - now) / 3600)
-            it.update({"request_id": request_id, "channels": [], "first_air_ts": first_air,
-                       "deadline_ts": first_air - 15 * 60, "priority": int(hours_ahead // 4)})
-            items[request_id] = it
-        if channel not in it["channels"]:
-            it["channels"].append(channel)
+            first_air = slot["start_ts"]
+            it = items[request_id] = {**build(slot), "request_id": request_id, "channels": [],
+                                      "first_air_ts": first_air, "deadline_ts": first_air - DEADLINE_LEAD,
+                                      "priority": int(max(0.0, (first_air - now) / 3600) // 4)}
+        if slot["channel"] not in it["channels"]:
+            it["channels"].append(slot["channel"])
 
     for r in rows_to_dicts(conn.execute(
             "SELECT s.start_ts, c.number AS channel, m.*, sh.title AS show_title FROM schedule s"
@@ -85,30 +141,7 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
             " LEFT JOIN shows sh ON sh.id = m.show_id"
             " WHERE s.end_ts > ? AND s.start_ts < ? AND m.missing = 0 AND s.kind != 'filler'"
             " ORDER BY s.start_ts", (now, horizon))):
-        def build(m=r):
-            copy = cache.cache_copy(m)
-            base = {"media_id": m["id"], "wanted_id": None, "uid": m.get("uid"), **_identity(m),
-                    "already_cached": copy is not None, "transient": bool(m.get("transient"))}
-            if m.get("origin", "nas") == "nas":
-                stem, ext = Path(m["path"]).stem, Path(m["path"]).suffix
-                hw = (m.get("vcodec") or "") in PI_HW_CODECS
-                # Anything the Pi cannot decode in hardware, or well above the CRT's 576 lines,
-                # is re-encoded to the profile; the rest is copied as it is.
-                transcode = (not hw) or ((m.get("height") or 0) > max_h * 1.5)
-                name = f"{m['id']}_{stem}.mp4" if transcode else f"{m['id']}_{stem}{ext}"
-                return {**base, "action": "transcode" if transcode else "copy",
-                        "source": {"path": m["path"], "vcodec": m.get("vcodec"), "height": m.get("height"),
-                                   "interlaced": bool(m.get("interlaced")), "size": m.get("size")},
-                        "target": str(copy or (cache.dir / name if cache.dir else name))}
-            # Material that only ever lived in the cache: nothing to do while it is there; if it
-            # has been evicted it has to be fetched again.
-            if copy is not None:
-                return {**base, "action": "copy", "source": None, "target": str(copy)}
-            return {**base, "action": "fetch", "source": None,
-                    **_fetch_fields({"kind": m["kind"], "title": m["title"], "year": m.get("year"),
-                                     "season": m.get("season"), "episode": m.get("episode"),
-                                     "artist": m.get("artist")}, m.get("show_title"), acquire)}
-        add(f"m:{r['id']}", r["start_ts"], r["channel"], build)
+        add(f"m:{r['id']}", r, lambda m: _media_request(m, cache, acquire, max_height))
 
     # Placeholders: line-up material not on disk, requested by wanted row.
     for r in rows_to_dicts(conn.execute(
@@ -117,36 +150,20 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
             " LEFT JOIN lineup l ON l.id = w.lineup_id"
             " WHERE s.media_id IS NULL AND s.end_ts > ? AND s.start_ts < ? AND w.status != 'done'"
             " ORDER BY s.start_ts", (now, horizon))):
-        def build_w(w=r):
-            show_title = w["lineup_title"] if w["kind"] == "episode" else None
-            return {"media_id": None, "wanted_id": w["id"], "uid": None, "kind": w["kind"], "show_title": show_title,
-                    "season": w.get("season"), "episode": w.get("episode"), "title": w["title"], "year": w.get("year"),
-                    "artist": w.get("artist"), "duration": w["end_ts"] - w["start_ts"], "action": "fetch",
-                    "source": None, "already_cached": False, "transient": bool(w.get("transient")),
-                    "attempts": w.get("attempts", 0), **_fetch_fields(w, show_title, acquire)}
-        add(f"w:{r['id']}", r["start_ts"], r["channel"], build_w)
+        add(f"w:{r['id']}", r, lambda w: {
+            **_wanted_request(w, w["lineup_title"] if w["kind"] == "episode" else None, acquire),
+            "duration": w["end_ts"] - w["start_ts"]})
 
     # Requests not tied to a slot: adverts and music videos added by hand, series gaps.
     scheduled = {it["wanted_id"] for it in items.values() if it.get("wanted_id")}
-    wanted = []
-    for w in rows_to_dicts(conn.execute(
-            "SELECT w.*, sh.title AS show_title FROM wanted w LEFT JOIN shows sh ON sh.id = w.show_id"
-            " WHERE w.status IN ('queued', 'failed') AND w.attempts < ? ORDER BY w.id", (MAX_WANTED_ATTEMPTS,))):
-        if w["id"] in scheduled:
-            continue
-        wanted.append({"request_id": f"w:{w['id']}", "media_id": None, "wanted_id": w["id"], "uid": None,
-                       "kind": w["kind"], "show_title": w.get("show_title"), "season": w.get("season"),
-                       "episode": w.get("episode"), "title": w["title"], "year": w.get("year"), "artist": w.get("artist"),
-                       "genre": w.get("genre"), "ref": w.get("ref"), "action": "fetch", "source": None,
-                       "transient": bool(w.get("transient")), "attempts": w.get("attempts", 0),
-                       **_fetch_fields(w, w.get("show_title"), acquire)})
-    try:
-        free_bytes = shutil.disk_usage(cache.dir).free if cache.dir and cache.dir.exists() else None
-    except OSError:
-        free_bytes = None
+    wanted = [{"request_id": f"w:{w['id']}", **_wanted_request(w, w.get("show_title"), acquire)}
+              for w in rows_to_dicts(conn.execute(
+                  "SELECT w.*, sh.title AS show_title FROM wanted w LEFT JOIN shows sh ON sh.id = w.show_id"
+                  " WHERE w.status IN ('queued', 'failed') AND w.attempts < ? ORDER BY w.id", (MAX_WANTED_ATTEMPTS,)))
+              if w["id"] not in scheduled]
     return {"schema": MANIFEST_SCHEMA, "generated_ts": now, "horizon_ts": horizon, "days": days,
             "cache_dir": str(cache.dir) if cache.dir else "", "acquire_dir": acquire, "pi": is_raspberry_pi(),
-            "free_bytes": free_bytes, "cache_max_bytes": cache.max_bytes,
+            "free_bytes": cache.usage().get("free"), "cache_max_bytes": cache.max_bytes,
             "running_marker": str(cache.running_marker) if cache.dir else None,
             "reports_dir": str(cache.reports_dir) if cache.dir else None,
             "profile": profile, "items": sorted(items.values(), key=lambda i: (i["priority"], i["deadline_ts"])),
@@ -174,92 +191,107 @@ def _search_hints(w: dict[str, Any], show_title: str | None) -> list[str]:
     return [f"{w['title']}{yr} full film"]
 
 
+def _folder(name: str) -> str:
+    """A title as a single folder name. Titles are typed by hand; a separator would nest folders
+    and ".." would climb out of acquire_dir."""
+    name = re.sub(r"[/\\\x00]", "-", name).strip()
+    return name if name.strip(".") else "Unknown"
+
+
 def _wanted_dest(w: dict[str, Any], acquire: str) -> str:
     base = Path(acquire) if acquire else Path("acquired")
-    title = w["title"]
     year = f" ({w['year']})" if w.get("year") else ""
+    title = _folder(f"{w['title']}{year}")
     if w["kind"] == "episode":
-        return str(base / "tvshows" / f"{title}{year}" / f"Season {int(w.get('season') or 1):02d}")
+        return str(base / "tvshows" / title / f"Season {int(w.get('season') or 1):02d}")
     if w["kind"] == "movie":
-        return str(base / "movies" / f"{title}{year}")
+        return str(base / "movies" / title)
     if w["kind"] == "music":
-        return str(base / "music videos" / (w.get("genre") or "Unsorted").title())
+        return str(base / "music videos" / _folder((w.get("genre") or "Unsorted").title()))
     return str(base / "ads" / str(w.get("year") or "unknown"))
 
 
-def _number(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+# --- delivery reports ------------------------------------------------------------------------
+
+def _earliest(changes: dict[int, int], channel_id: int, at: int) -> None:
+    changes[channel_id] = min(changes.get(channel_id, at), at)
 
 
 def _resize_slots(conn: sqlite3.Connection, media_id: int, real: float) -> dict[int, int]:
     """Give future slots of `media_id` its delivered length. Returns {channel_id: earliest change}
     for the caller to rebuild; differences under RESIZE_THRESHOLD are absorbed."""
     changed: dict[int, int] = {}
-    now = now_ts()
     for sl in conn.execute("SELECT id, channel_id, start_ts, end_ts FROM schedule WHERE media_id = ? AND replay = 0"
-                           " AND start_ts > ?", (media_id, now)).fetchall():
-        end = sl["start_ts"] + int(round(real))
+                           " AND start_ts > ?", (media_id, now_ts())).fetchall():
+        end = sl["start_ts"] + round(real)
         if abs(end - sl["end_ts"]) < RESIZE_THRESHOLD:
             continue
         conn.execute("UPDATE schedule SET end_ts = ? WHERE id = ?", (end, sl["id"]))
-        at = min(end, sl["end_ts"])
-        changed[sl["channel_id"]] = min(changed.get(sl["channel_id"], at), at)
+        _earliest(changed, sl["channel_id"], min(end, sl["end_ts"]))
     return changed
+
+
+def _fetched_show(conn: sqlite3.Connection, w: dict[str, Any], meta: dict[str, Any], year: int | None) -> int:
+    """The series a fetched episode belongs to: the one its line-up entry or its wanted row
+    already names, else a series created (once) for material fetched online."""
+    entry = conn.execute("SELECT title, show_id FROM lineup WHERE id = ?", (w["lineup_id"],)).fetchone() \
+        if w.get("lineup_id") else None
+    known = (entry["show_id"] if entry else None) or w.get("show_id")
+    if known:
+        return int(known)
+    title = as_text(meta.get("show_title")) or (entry["title"] if entry else None) or w["title"]
+    key = f"fetched:show:{title.lower()}:{year or ''}"
+    row = conn.execute("SELECT id FROM shows WHERE path = ?", (key,)).fetchone()
+    if row is not None:
+        return int(row["id"])
+    return insert_row(conn, "shows", {
+        "source_id": None, "path": key, "title": title, "year": year, "certificate": as_text(meta.get("certificate")),
+        "genres": json.dumps(genre_list(meta.get("genres"))), "plot": as_text(meta.get("plot")),
+        "category": "general", "updated_at": now_ts()})
 
 
 def _deliver_fetched(conn: sqlite3.Connection, wid: int, file: dict[str, Any], meta: dict[str, Any]) -> dict[int, int]:
     """Material fetched online: create its catalogue entry from the report, then hand it to the
-    line-up and the placeholder slots that asked for it."""
-    from .lineup import attach_delivery
+    line-up and the placeholder slots that asked for it. For an episode the request's season and
+    episode win over the report's, so it is filed against what was asked for. An advert's family
+    safety follows the same rule as on import."""
     w = row_to_dict(conn.execute("SELECT * FROM wanted WHERE id = ?", (wid,)).fetchone())
     if w is None:
         return {}
-    kind = meta.get("kind") or w["kind"]
-    show_id = None
-    if kind == "episode":
-        entry = conn.execute("SELECT * FROM lineup WHERE id = ?", (w.get("lineup_id"),)).fetchone() if w.get("lineup_id") else None
-        show_title = meta.get("show_title") or (entry["title"] if entry else None) or w["title"]
-        year = meta.get("year") or w.get("year")
-        show_id = entry["show_id"] if entry and entry["show_id"] else None
-        if show_id is None:
-            key = f"fetched:show:{show_title.lower()}:{year or ''}"
-            row = conn.execute("SELECT id FROM shows WHERE path = ?", (key,)).fetchone()
-            if row is None:
-                cur = conn.execute("INSERT INTO shows(source_id, path, title, year, certificate, genres, plot, category, updated_at)"
-                                   " VALUES (NULL, ?, ?, ?, ?, ?, ?, 'general', ?)",
-                                   (key, show_title, year, meta.get("certificate"), json.dumps(meta.get("genres") or []),
-                                    meta.get("plot"), now_ts()))
-                show_id = int(cur.lastrowid)
-            else:
-                show_id = int(row["id"])
-    season = w.get("season") if w.get("season") is not None else meta.get("season")
-    episode = w.get("episode") if w.get("episode") is not None else meta.get("episode")
-    title = w["title"] if kind == "episode" else (meta.get("title") or w["title"])
+    kind = meta["kind"] if meta.get("kind") in KINDS else w["kind"]
+    year = as_int(meta.get("year")) or w.get("year")
+    path = file["path"]
+    title = w["title"] if kind == "episode" else (as_text(meta.get("title")) or w["title"])
+    vcodec = as_text(file.get("vcodec"))
     fields = {
-        "uid": str(meta.get("uid") or f"fetched:{wid}"), "source_id": None, "kind": kind, "show_id": show_id,
-        "season": season, "episode": episode, "title": title, "year": meta.get("year") or w.get("year"),
-        "origin": "online", "path": file["path"], "cache_path": file["path"], "size": file.get("size"),
-        "duration": _number(file.get("duration")), "vcodec": file.get("vcodec"), "acodec": file.get("acodec"),
-        "width": file.get("width"), "height": file.get("height"), "interlaced": int(bool(file.get("interlaced"))),
-        "hwdec": int((file.get("vcodec") or "") in PI_HW_CODECS), "certificate": meta.get("certificate"),
-        "genres": json.dumps(meta.get("genres") or []), "plot": meta.get("plot"), "artist": meta.get("artist") or w.get("artist"),
-        "concert": int(bool(meta.get("concert"))), "family_safe": int(meta.get("family_safe", True) is not False),
+        "uid": as_text(meta.get("uid")) or f"fetched:{wid}", "source_id": None, "kind": kind,
+        "show_id": _fetched_show(conn, w, meta, year) if kind == "episode" else None,
+        "season": w["season"] if w.get("season") is not None else as_int(meta.get("season")),
+        "episode": w["episode"] if w.get("episode") is not None else as_int(meta.get("episode")),
+        "title": title, "year": year, "origin": "online", "path": path, "cache_path": path, "size": as_int(file.get("size")),
+        "duration": as_float(file.get("duration")), "vcodec": vcodec, "acodec": as_text(file.get("acodec")),
+        "width": as_int(file.get("width")), "height": as_int(file.get("height")),
+        "interlaced": int(as_bool(file.get("interlaced"))), "hwdec": int((vcodec or "") in PI_HW_CODECS),
+        "certificate": as_text(meta.get("certificate")), "genres": json.dumps(genre_list(meta.get("genres"))),
+        "plot": as_text(meta.get("plot")), "artist": as_text(meta.get("artist")) or w.get("artist"),
+        "concert": int(as_bool(meta.get("concert"))),
+        "family_safe": family_safe({**meta, "title": title, "path": path},
+                                   keyword_pattern(get_setting(conn, "adult_advert_keywords"))) if kind == "advert" else 1,
         "transient": int(bool(w.get("transient"))), "missing": 0, "updated_at": now_ts(),
     }
-    existing = conn.execute("SELECT id FROM media WHERE uid = ? OR path = ?", (fields["uid"], fields["path"])).fetchone()
+    existing = conn.execute("SELECT id FROM media WHERE uid = ? OR path = ?", (fields["uid"], path)).fetchone()
     if existing:
-        conn.execute("UPDATE media SET %s WHERE id = ?" % ", ".join(f"{k} = ?" for k in fields), (*fields.values(), existing["id"]))
         media_id = int(existing["id"])
+        update_row(conn, "media", media_id, fields)
     else:
-        cur = conn.execute("INSERT INTO media(%s) VALUES (%s)" % (", ".join(fields), ", ".join("?" * len(fields))),
-                           tuple(fields.values()))
-        media_id = int(cur.lastrowid)
-    conn.execute("UPDATE wanted SET status = 'done', progress = 1, dest_path = ?, message = ?, updated_at = ? WHERE id = ?",
-                 (file["path"], "delivered by pitv_content", now_ts(), wid))
+        media_id = insert_row(conn, "media", fields)
+    _wanted_done(conn, wid, "delivered by pitv_content", path)
     return attach_delivery(conn, wid, media_id)
+
+
+def _wanted_done(conn: sqlite3.Connection, wid: int, message: str, dest_path: str | None = None) -> None:
+    conn.execute("UPDATE wanted SET status = 'done', progress = 1, dest_path = COALESCE(?, dest_path), message = ?,"
+                 " updated_at = ? WHERE id = ?", (dest_path, message, now_ts(), wid))
 
 
 def _fail_wanted(conn: sqlite3.Connection, wid: int, message: str) -> None:
@@ -273,90 +305,164 @@ def _fail_wanted(conn: sqlite3.Connection, wid: int, message: str) -> None:
                      (MAX_WANTED_ATTEMPTS, msg, now_ts(), wid))
 
 
-def apply_report(conn: sqlite3.Connection, report: dict[str, Any]) -> dict[str, Any]:
-    """Record a delivery report (schema 2; schema 1 is still read during the transition)."""
-    from .scheduler.build import rebuild_from
-    counts = {"items_done": 0, "items_failed": 0, "wanted_done": 0, "wanted_failed": 0, "created": 0}
-    entries: list[dict[str, Any]] = [e for e in (report.get("items") or []) if isinstance(e, dict)]
-    # Schema 1 carried fetched material in a separate list with only a path.
-    for w in report.get("wanted") or []:
-        if isinstance(w, dict):
-            entries.append({**w, "file": {"path": w.get("path")} if w.get("path") else None})
-    refill: dict[int, int] = {}
-    with tx(conn):
-        for e in entries:
-            status = e.get("status")
-            wid = int(_number(e.get("wanted_id")) or 0)
-            mid = int(_number(e.get("media_id")) or 0)
-            file = e.get("file") if isinstance(e.get("file"), dict) else ({"path": e["path"]} if isinstance(e.get("path"), str) else None)
-            usable = bool(file and isinstance(file.get("path"), str) and Path(file["path"]).is_file())
-            if status == "skipped" and not usable:
-                continue   # still being written by another process: it arrives measured in a later report
-            if status in ("done", "skipped") and usable:
-                if wid:
-                    changes = _deliver_fetched(conn, wid, file, e.get("meta") if isinstance(e.get("meta"), dict) else {})
-                    counts["wanted_done"] += 1
-                    counts["created"] += 1
-                elif mid:
-                    conn.execute("UPDATE media SET cache_path = ?, cache_vcodec = ?, cache_interlaced = ?, updated_at = ? WHERE id = ?",
-                                 (file["path"], file.get("vcodec"),
-                                  None if file.get("interlaced") is None else int(bool(file["interlaced"])), now_ts(), mid))
-                    real = _number(file.get("duration"))
-                    changes = _resize_slots(conn, mid, real) if real else {}
-                    counts["items_done"] += 1
-                else:
-                    continue
-                for ch, at in changes.items():
-                    refill[ch] = min(refill.get(ch, at), at)
-            elif status == "failed" or (status == "done" and not usable):
-                message = e.get("message") or ("reported file does not exist" if status == "done" else "")
-                if wid:
-                    _fail_wanted(conn, wid, message)
-                    counts["wanted_failed"] += 1
-                else:
-                    counts["items_failed"] += 1
-                    log.error("pitv_content could not deliver media %s: %s", mid or "?", message)
-        run = report.get("run") if isinstance(report.get("run"), dict) else {}
+def _entries(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """The report's entries. Schema 1 carried fetched material in a separate `wanted` list with
+    a bare `path` instead of a `file` block; both shapes are read the same way below."""
+    return [e for key in ("items", "wanted") if isinstance(report.get(key), list)
+            for e in report[key] if isinstance(e, dict)]
 
-        def ts(key: str) -> int:
-            return int(_number(run.get(key)) or now_ts())
+
+def _file_block(e: dict[str, Any]) -> dict[str, Any] | None:
+    """The delivered file's properties, or None without a path to it."""
+    file = e.get("file") if isinstance(e.get("file"), dict) else {"path": e.get("path")}
+    return file if isinstance(file.get("path"), str) and file["path"] else None
+
+
+def _run_of(report: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    run = report.get("run") if isinstance(report.get("run"), dict) else {}
+    return run, as_text(run.get("tool")) or "pitv_content"
+
+
+# What each outcome of _apply_entry adds to the report's counts.
+_TALLY = {"fetched": ("wanted_done", "created"), "linked": ("wanted_done",), "cached": ("items_done",),
+          "wanted_failed": ("wanted_failed",), "items_failed": ("items_failed",)}
+
+
+def _apply_entry(conn: sqlite3.Connection, e: dict[str, Any]) -> tuple[str | None, dict[int, int]]:
+    """Apply one report entry. Returns its outcome (a key of _TALLY, or None for an entry that
+    changes nothing yet) and {channel_id: earliest slot change} for the caller to rebuild from."""
+    status = e.get("status")
+    wid, mid = as_int(e.get("wanted_id")) or 0, as_int(e.get("media_id")) or 0
+    file = _file_block(e)
+    message = as_text(e.get("message")) or ""
+    existing_uid = as_text(e.get("existing_uid"))
+    if status == "failed" and wid and existing_uid:
+        # pitv_content found the request is already in the library (on the NAS): the request is
+        # met by that file, not failed.
+        existing = conn.execute("SELECT id FROM media WHERE uid = ? AND missing = 0", (existing_uid,)).fetchone()
+        if existing is not None:
+            _wanted_done(conn, wid, f"already in the library as {existing_uid}")
+            return "linked", attach_delivery(conn, wid, int(existing["id"]))
+    if status in ("done", "skipped") and file is not None and Path(file["path"]).is_file():
+        if wid:
+            meta = e.get("meta") if isinstance(e.get("meta"), dict) else {}
+            # All or nothing per delivery, so a clash (its uid and its path already belong to
+            # two different rows) leaves no half-filed entry behind.
+            conn.execute("SAVEPOINT delivery")
+            try:
+                changes = _deliver_fetched(conn, wid, file, meta)
+            except sqlite3.IntegrityError as exc:
+                conn.execute("ROLLBACK TO delivery")
+                message = f"delivery could not be recorded: {exc}"
+            else:
+                return "fetched", changes
+            finally:
+                conn.execute("RELEASE delivery")
+        elif mid:
+            interlaced = file.get("interlaced")
+            update_row(conn, "media", mid, {
+                "cache_path": file["path"], "cache_vcodec": as_text(file.get("vcodec")),
+                "cache_interlaced": None if interlaced is None else int(as_bool(interlaced)),
+                "updated_at": now_ts()})
+            real = as_float(file.get("duration"))
+            return "cached", _resize_slots(conn, mid, real) if real else {}
+        else:
+            return None, {}
+    elif status == "done":
+        message = message or "reported file does not exist"
+    elif status != "failed":
+        return None, {}   # a skip without a file is still being written: it arrives measured in a later report
+    if wid:
+        _fail_wanted(conn, wid, message)
+        return "wanted_failed", {}
+    log.error("pitv_content could not deliver media %s: %s", mid or "?", message)
+    return "items_failed", {}
+
+
+def apply_report(conn: sqlite3.Connection, report: dict[str, Any]) -> dict[str, Any]:
+    """Record a delivery report (schema 2; schema 1 is still read during the transition) in one
+    transaction, then rebuild the channel-days whose slots changed length."""
+    if not isinstance(report, dict):
+        raise TypeError("a delivery report is a JSON object")
+    counts = {"items_done": 0, "items_failed": 0, "wanted_done": 0, "wanted_failed": 0, "created": 0}
+    refill: dict[int, int] = {}
+    run, tool = _run_of(report)
+    with tx(conn):
+        for e in _entries(report):
+            outcome, changes = _apply_entry(conn, e)
+            for key in _TALLY.get(outcome or "", ()):
+                counts[key] += 1
+            for ch, at in changes.items():
+                _earliest(refill, ch, at)
+        started, finished = (as_int(run.get(k)) or now_ts() for k in ("started_ts", "finished_ts"))
+        # The summary starts "<tool>:" because _already_applied recognises a run by it.
+        summary = (f"{tool}: {counts['items_done']} cached, {counts['items_failed']} failed;"
+                   f" fetched {counts['wanted_done']}, {counts['wanted_failed']} failed")
         conn.execute("INSERT INTO run_log(kind, started_at, finished_at, status, summary, details) VALUES (?,?,?,?,?,?)",
-                     ("content", ts("started_ts"), ts("finished_ts"),
-                      "ok" if not (counts["items_failed"] or counts["wanted_failed"]) else "warning",
-                      f"{run.get('tool', 'pitv_content')}: {counts['items_done']} cached, {counts['items_failed']} failed;"
-                      f" fetched {counts['wanted_done']}, {counts['wanted_failed']} failed",
-                      json.dumps([str(run.get("log_tail") or "")[-4000:]])))
+                     ("content", started, finished, "warning" if counts["items_failed"] or counts["wanted_failed"] else "ok",
+                      summary, json.dumps([(as_text(run.get("log_tail")) or "")[-4000:]])))
     for channel_id, from_ts in refill.items():
         if from_ts > now_ts():
             rebuild_from(conn, channel_id, from_ts)
     if counts["created"]:
-        from .catalogue import write_mirror
-        write_mirror(conn)
+        write_mirror(conn)   # new catalogue entries
     return counts
 
 
 def _already_applied(conn: sqlite3.Connection, report: dict[str, Any]) -> bool:
     """pitv_content posts each report and also drops it as a file; a run already recorded (same
     tool and start time) is not applied twice."""
-    run = report.get("run") if isinstance(report.get("run"), dict) else {}
-    started = _number(run.get("started_ts"))
+    if not isinstance(report, dict):
+        return False
+    run, tool = _run_of(report)
+    started = as_int(run.get("started_ts"))
     if not started:
         return False
-    return conn.execute("SELECT 1 FROM run_log WHERE kind = 'content' AND started_at = ? AND summary LIKE ?",
-                        (int(started), f"{run.get('tool', 'pitv_content')}:%")).fetchone() is not None
+    prefix = f"{tool}:"
+    return conn.execute("SELECT 1 FROM run_log WHERE kind = 'content' AND started_at = ? AND substr(summary, 1, ?) = ?",
+                        (started, len(prefix), prefix)).fetchone() is not None
+
+
+def _age_days(path: Path, now: int) -> float:
+    try:
+        return (now - path.stat().st_mtime) / 86400
+    except OSError:
+        return 0.0
+
+
+def _remove_report(*paths: Path) -> None:
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("could not remove report file %s: %s", path.name, exc)
 
 
 def apply_report_files(conn: sqlite3.Connection, cache: MediaCache) -> int:
     """Apply report JSON files pitv_content dropped in `<cache>/reports` that PiTV has not seen
     (the web service may already have taken the same report over HTTP); each file handled gets a
-    `.applied` marker next to it."""
+    `.applied` marker next to it. A file that cannot be applied is left for the next pass.
+
+    The folder is kept short, since it is read on every maintenance pass: an applied report goes
+    with its marker after APPLIED_REPORT_DAYS, one that never applied after UNAPPLIED_REPORT_DAYS.
+    Only files listed in that folder are ever removed."""
     d = cache.reports_dir
     if d is None or not d.is_dir():
         return 0
+    now = now_ts()
+    for marker in d.glob("*.json.applied"):
+        if not marker.with_suffix("").exists():   # its report is gone
+            _remove_report(marker)
     applied = 0
     for f in sorted(d.glob("*.json")):
         done = f.with_suffix(".json.applied")
         if done.exists():
+            if _age_days(done, now) > APPLIED_REPORT_DAYS:
+                _remove_report(f, done)
+            continue
+        if _age_days(f, now) > UNAPPLIED_REPORT_DAYS:
+            log.warning("report file %s never applied in %d days; removed", f.name, UNAPPLIED_REPORT_DAYS)
+            _remove_report(f)
             continue
         try:
             report = json.loads(f.read_text())
@@ -364,6 +470,6 @@ def apply_report_files(conn: sqlite3.Connection, cache: MediaCache) -> int:
                 apply_report(conn, report)
                 applied += 1
             done.write_text(str(now_ts()))
-        except (OSError, ValueError) as exc:
+        except (OSError, TypeError, ValueError, sqlite3.Error) as exc:
             log.warning("report file %s not applied (will retry): %s", f.name, exc)
     return applied

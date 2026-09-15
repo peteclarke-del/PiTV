@@ -3,8 +3,10 @@
   let box = $state(null);
   $effect(() => { if (open) box?.focus(); });
 
+  // Escape closes the layer that has focus (a confirm dialog over a drawer closes on its own), or
+  // this one when nothing is focused, as after the layer above it has closed.
   function onkey(e) {
-    if (e.key === 'Escape' && open) onclose?.();
+    if (e.key === 'Escape' && open && (box?.contains(e.target) || e.target === document.body)) onclose?.();
   }
 </script>
 

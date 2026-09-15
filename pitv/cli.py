@@ -41,16 +41,14 @@ def cmd_fake_library(cfg: Config, args: Args) -> int:
 
 def cmd_catalogue(cfg: Config, args: Args) -> int:
     """Import pitv_content's library index: from a file, or from its API (index file fallback)."""
-    import json as _json
-
-    from .catalogue import IndexFormatError, import_and_place, refresh
+    from .catalogue import import_and_place, refresh
     from .logsetup import setup_logging
     setup_logging(cfg, "catalogue")
     conn = _open(cfg)
     if args.file:
         try:
-            result = import_and_place(conn, _json.loads(Path(args.file).read_text()), args.file)
-        except (OSError, ValueError, IndexFormatError) as exc:
+            result = import_and_place(conn, json.loads(Path(args.file).read_text()), args.file)
+        except (OSError, ValueError) as exc:   # unreadable, not JSON, or not a library index
             print(f"Import failed: {exc}")
             return 1
         print(f"Catalogue: {result['summary']}")
@@ -61,8 +59,8 @@ def cmd_catalogue(cfg: Config, args: Args) -> int:
 
 
 def cmd_schedule(cfg: Config, args: Args) -> int:
-    from .scheduler.build import build_horizon, parse_day
     from .logsetup import setup_logging
+    from .scheduler.build import build_horizon, parse_day
     setup_logging(cfg, "schedule")
     conn = _open(cfg)
     start = parse_day(args.start) if args.start else None
@@ -83,6 +81,7 @@ def cmd_listing(cfg: Config, args: Args) -> int:
 
 def cmd_web(cfg: Config, args: Args) -> int:
     import uvicorn
+
     from .web.app import create_app
     app = create_app(cfg)
     uvicorn.run(app, host=args.host or cfg.web_host, port=args.port or cfg.web_port,
@@ -121,8 +120,11 @@ def cmd_content_manifest(cfg: Config, args: Args) -> int:
 def cmd_content_report(cfg: Config, args: Args) -> int:
     from .content import apply_report
     conn = _open(cfg)
-    data = json.loads(Path(args.file).read_text())
-    print(apply_report(conn, data))
+    try:
+        print(apply_report(conn, json.loads(Path(args.file).read_text())))
+    except (OSError, TypeError, ValueError) as exc:
+        print(f"Report not applied: {exc}")
+        return 1
     return 0
 
 

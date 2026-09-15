@@ -8,9 +8,12 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
+
+const adminHint = "run it from an administrator prompt (right-click, Run as administrator)"
 
 type psDisk struct {
 	Number       int    `json:"Number"`
@@ -21,48 +24,51 @@ type psDisk struct {
 	IsBoot       bool   `json:"IsBoot"`
 }
 
-// ListDisks uses PowerShell's Get-Disk; only USB/SD disks that are not the system or boot
-// disk are offered.
-func ListDisks() ([]Disk, error) {
-	cmd := exec.Command("powershell", "-NoProfile", "-Command",
-		"Get-Disk | Select-Object Number,FriendlyName,Size,BusType,IsSystem,IsBoot | ConvertTo-Json -Compress")
-	out, err := cmd.Output()
+// listDisks uses PowerShell's Get-Disk: the USB and SD disks that are neither the system nor
+// the boot disk.
+func listDisks() ([]Disk, error) {
+	out, err := exec.Command("powershell", "-NoProfile", "-Command",
+		"Get-Disk | Select-Object Number,FriendlyName,Size,BusType,IsSystem,IsBoot | ConvertTo-Json -Compress").Output()
 	if err != nil {
 		return nil, fmt.Errorf("Get-Disk failed: %w", err)
 	}
 	text := strings.TrimSpace(string(out))
-	if !strings.HasPrefix(text, "[") {
+	if text == "" {
+		return nil, nil
+	}
+	if !strings.HasPrefix(text, "[") { // ConvertTo-Json emits a bare object for a single disk
 		text = "[" + text + "]"
 	}
 	var disks []psDisk
 	if err := json.Unmarshal([]byte(text), &disks); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("Get-Disk output: %w", err)
 	}
 	var res []Disk
 	for _, d := range disks {
-		if d.IsSystem || d.IsBoot {
-			continue
-		}
 		bus := strings.ToUpper(d.BusType)
-		if bus != "USB" && bus != "SD" && bus != "MMC" {
+		if d.IsSystem || d.IsBoot || (bus != "USB" && bus != "SD" && bus != "MMC") {
 			continue
 		}
-		disk := Disk{Path: fmt.Sprintf(`\\.\PhysicalDrive%d`, d.Number), Model: d.FriendlyName, SizeBytes: d.Size, Removable: true}
-		disk.Mounts = volumeLetters(d.Number)
-		res = append(res, disk)
+		letters, err := volumeLetters(d.Number)
+		if err != nil {
+			return nil, err
+		}
+		res = append(res, Disk{Path: fmt.Sprintf(`\\.\PhysicalDrive%d`, d.Number), Model: d.FriendlyName, SizeBytes: d.Size, Mounts: letters})
 	}
 	return res, nil
 }
 
-func volumeLetters(number int) []string {
-	cmd := exec.Command("powershell", "-NoProfile", "-Command",
-		fmt.Sprintf("Get-Partition -DiskNumber %d | Where-Object DriveLetter | ForEach-Object { $_.DriveLetter }", number))
-	out, _ := cmd.Output()
+func volumeLetters(number int) ([]string, error) {
+	out, err := exec.Command("powershell", "-NoProfile", "-Command",
+		fmt.Sprintf("Get-Partition -DiskNumber %d | Where-Object DriveLetter | ForEach-Object { $_.DriveLetter }", number)).Output()
+	if err != nil {
+		return nil, fmt.Errorf("Get-Partition for disk %d failed: %w", number, err)
+	}
 	var letters []string
 	for _, l := range strings.Fields(string(out)) {
-		letters = append(letters, strings.TrimSpace(l)+":")
+		letters = append(letters, l+":")
 	}
-	return letters
+	return letters, nil
 }
 
 type winDevice struct {
@@ -90,6 +96,7 @@ func (d *winDevice) Read(p []byte) (int, error) {
 	return int(n), err
 }
 
+// Sync flushes; the handle is opened without buffering, so reads already come from the card.
 func (d *winDevice) Sync() error { return windows.FlushFileBuffers(d.h) }
 
 func (d *winDevice) SeekStart() error {
@@ -97,35 +104,66 @@ func (d *winDevice) SeekStart() error {
 	return err
 }
 
+// Close releases the disk and then the volume locks, which lets Windows mount the new
+// partitions.
 func (d *winDevice) Close() error {
+	var err error
+	if d.h != 0 {
+		err = windows.CloseHandle(d.h)
+	}
 	for _, v := range d.volumes {
 		windows.CloseHandle(v)
 	}
-	return windows.CloseHandle(d.h)
+	return err
 }
 
-// OpenDisk locks and dismounts every volume on the disk (so Windows does not write to it
-// or re-mount it half way through), then opens the physical drive for raw access.
-func OpenDisk(d Disk) (RawDevice, error) {
-	if !IsAdmin() {
-		return nil, fmt.Errorf("writing to %s needs an administrator prompt: right-click, Run as administrator", d.Path)
+func openHandle(path string, flags uint32) (windows.Handle, error) {
+	p, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return 0, err
 	}
+	return windows.CreateFile(p, windows.GENERIC_READ|windows.GENERIC_WRITE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, flags, 0)
+}
+
+// lockVolume takes the exclusive lock Windows requires before raw writes to a mounted volume's
+// sectors. Explorer and indexers hold short-lived handles, so a busy volume is retried for a
+// few seconds before giving up.
+func lockVolume(h windows.Handle) error {
+	var ret uint32
+	var err error
+	for range 20 {
+		if err = windows.DeviceIoControl(h, fsctlLockVolume, nil, 0, nil, 0, &ret, nil); err == nil {
+			return nil
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return err
+}
+
+// OpenDisk locks and dismounts every volume on the disk (so Windows neither writes to it nor
+// re-mounts it half way through), then opens the physical drive for unbuffered raw access.
+// The volume handles stay open until Close, because closing them releases the locks.
+func OpenDisk(d Disk) (RawDevice, error) {
 	dev := &winDevice{}
 	for _, letter := range d.Mounts {
-		path, _ := windows.UTF16PtrFromString(`\\.\` + letter)
-		h, err := windows.CreateFile(path, windows.GENERIC_READ|windows.GENERIC_WRITE,
-			windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, 0, 0)
+		h, err := openHandle(`\\.\`+letter, 0)
 		if err != nil {
-			continue
+			dev.Close()
+			return nil, fmt.Errorf("open volume %s: %w", letter, err)
+		}
+		dev.volumes = append(dev.volumes, h)
+		if err := lockVolume(h); err != nil {
+			dev.Close()
+			return nil, fmt.Errorf("volume %s is in use; close any window or program using it (%w)", letter, err)
 		}
 		var ret uint32
-		_ = windows.DeviceIoControl(h, fsctlLockVolume, nil, 0, nil, 0, &ret, nil)
-		_ = windows.DeviceIoControl(h, fsctlDismountVolume, nil, 0, nil, 0, &ret, nil)
-		dev.volumes = append(dev.volumes, h)
+		if err := windows.DeviceIoControl(h, fsctlDismountVolume, nil, 0, nil, 0, &ret, nil); err != nil {
+			dev.Close()
+			return nil, fmt.Errorf("dismount %s: %w", letter, err)
+		}
 	}
-	path, _ := windows.UTF16PtrFromString(d.Path)
-	h, err := windows.CreateFile(path, windows.GENERIC_READ|windows.GENERIC_WRITE,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, windows.OPEN_EXISTING, windows.FILE_FLAG_NO_BUFFERING|windows.FILE_FLAG_WRITE_THROUGH, 0)
+	h, err := openHandle(d.Path, windows.FILE_FLAG_NO_BUFFERING|windows.FILE_FLAG_WRITE_THROUGH)
 	if err != nil {
 		dev.Close()
 		return nil, fmt.Errorf("open %s: %w", d.Path, err)
@@ -134,7 +172,8 @@ func OpenDisk(d Disk) (RawDevice, error) {
 	return dev, nil
 }
 
-func Rescan(d Disk) {}
+// Rescan is a no-op: Windows picks up the new partition table when the volume locks are released.
+func Rescan(Disk) {}
 
 func IsAdmin() bool {
 	var sid *windows.SID
@@ -144,7 +183,6 @@ func IsAdmin() bool {
 		return false
 	}
 	defer windows.FreeSid(sid)
-	token := windows.Token(0)
-	member, err := token.IsMember(sid)
+	member, err := windows.Token(0).IsMember(sid)
 	return err == nil && member
 }

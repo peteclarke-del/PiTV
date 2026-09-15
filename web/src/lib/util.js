@@ -28,5 +28,15 @@ export function num(v, { min = -Infinity, max = Infinity, int = false, fallback 
   return Math.min(max, Math.max(min, n));
 }
 
+/** "Comedy, Drama," -> ['Comedy', 'Drama'] */
+export const splitList = (s) => String(s ?? '').split(',').map((t) => t.trim()).filter(Boolean);
+
+/** Move arr[i] by `d` places in place (works on $state proxies); moves past either end are ignored. */
+export function moveItem(arr, i, d) {
+  const j = i + d;
+  if (j < 0 || j >= arr.length) return;
+  arr.splice(j, 0, ...arr.splice(i, 1));
+}
+
 /** Keyboard twin of an onclick handler for focusable non-button elements (table rows). */
 export const onEnter = (fn) => (e) => { if (e.key === 'Enter') fn(e); };

@@ -1,23 +1,34 @@
 """The local cache on the Pi's attached drive, filled by pitv_content.
 
-PiTV only reads from it and evicts least-recently-used files under the size cap. `locate`
-decides what plays: the cache copy, else the NAS original when `nas_fallback` is on, else
-nothing (the player shows the technical difficulties card). Copies are named
-``<media_id>_<name>`` so finding one is a directory listing.
+PiTV reads from it, marks each copy it puts on air (`touch_used`), and evicts the least
+recently used files under the size cap. `locate` decides what plays: the cache copy, else
+the NAS original when `nas_fallback` is on, else nothing (the player shows the technical
+difficulties card). Copies are named ``<media_id>_<name>`` so finding one is a directory
+listing.
 
-Shared-drive rules (docs/CONTENT_CONTRACT.md section 5): pitv_content writes ``.part`` files and renames them
-atomically when complete, never deletes, and touches RUNNING_MARKER while it works. PiTV
+Shared-drive rules (docs/CONTENT_CONTRACT.md section 5): pitv_content writes ``.part`` files
+and renames them atomically when complete, never deletes, and touches RUNNING_MARKER while
+it works. PiTV
 ignores ``.part`` files, never evicts files under MIN_AGE_SECONDS old or in the current
 manifest (see `protect`), and does not evict at all while the marker is fresh.
+
+One instance is shared by the player's main thread, its maintenance thread and the control
+socket threads, so the cached listing is guarded by a lock.
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import re
 import shutil
+import stat
+import threading
 import time
 from pathlib import Path
 from typing import Any
+
+from ..db import DEFAULT_SETTINGS
 
 log = logging.getLogger("pitv.cache")
 
@@ -26,6 +37,10 @@ RUNNING_MARKER = ".pitv_content.running"
 STATUS_FILE = "pitv_content.status.json"
 LOG_FILE = "logs/pitv-content.log"
 REPORTS_DIR = "reports"
+# A cache copy is `<media_id>_<name>`. Only such files are counted or evicted, so a cache_dir
+# pointed at the wrong folder cannot lose anything else, and pitv_content's own files
+# (status, marker) and subfolders (reports, logs, acquired material) are never touched.
+_COPY_NAME = re.compile(r"\d+_")
 
 MARKER_FRESH_SECONDS = 6 * 3600   # a marker older than this is a crashed run, not a busy one
 MIN_AGE_SECONDS = 2 * 3600        # freshly written files are never evicted
@@ -33,28 +48,33 @@ HEADROOM_BYTES = 512 * 1024 * 1024  # free space to leave on the drive beyond wh
 LISTING_TTL = 5.0                 # the player asks for usage every second; a USB disk need not be listed that often
 
 
+def _is_part(name: str) -> bool:
+    return name.endswith(".part") or ".part." in name
+
+
+def _is_copy(name: str) -> bool:
+    """A cache copy, finished or still being written."""
+    return _COPY_NAME.match(name) is not None
+
+
 def _settled(p: Path) -> bool:
     """A finished, non-empty file that pitv_content is not still writing (`.part`). An empty
     file is a failed write, never something to play."""
-    if p.name.endswith(".part") or ".part." in p.name:
+    if _is_part(p.name):
         return False
     try:
-        return p.is_file() and p.stat().st_size > 0
+        st = p.stat()
     except OSError:
         return False
-
-
-def _stat(p: Path, attr: str) -> float:
-    """st_size / st_mtime, or 0 when the file vanished under us (pitv_content renaming a
-    finished .part)."""
-    try:
-        return getattr(p.stat(), attr)
-    except OSError:
-        return 0
+    return stat.S_ISREG(st.st_mode) and st.st_size > 0
 
 
 def _size(p: Path) -> int:
-    return int(_stat(p, "st_size"))
+    """0 when the file vanished under us (pitv_content renaming a finished .part)."""
+    try:
+        return p.stat().st_size
+    except OSError:
+        return 0
 
 
 class MediaCache:
@@ -62,7 +82,8 @@ class MediaCache:
         self.dir = cache_dir
         self.max_bytes = max_bytes
         self.enabled = bool(cache_dir)
-        self._protected: set[str] = set()
+        self._protected: frozenset[str] = frozenset()
+        self._lock = threading.Lock()
         self._listing: list[Path] = []
         self._listed_at = 0.0
         self._usage: dict[str, Any] | None = None
@@ -79,8 +100,8 @@ class MediaCache:
     def from_settings(cls, settings: dict[str, Any]) -> MediaCache:
         """The cache described by the `cache_dir` / `cache_max_gb` settings (disabled when unset)."""
         cache_dir = settings.get("cache_dir") or ""
-        return cls(Path(cache_dir) if cache_dir else None,
-                   int(float(settings.get("cache_max_gb", 0)) * 1024 ** 3))
+        max_gb = settings.get("cache_max_gb", DEFAULT_SETTINGS["cache_max_gb"])
+        return cls(Path(cache_dir) if cache_dir else None, int(float(max_gb) * 1024 ** 3))
 
     def _sub(self, name: str) -> Path | None:
         return self.dir / name if self.dir else None
@@ -103,24 +124,26 @@ class MediaCache:
 
     # --- reading --------------------------------------------------------------------------
 
-    def _files(self, fresh: bool = False) -> list[Path]:
-        """Settled files in the cache, listed at most every LISTING_TTL seconds."""
+    def _files(self) -> list[Path]:
+        """Settled media files in the cache, listed at most every LISTING_TTL seconds."""
         if not self.dir:
             return []
-        now = time.monotonic()
-        if fresh or now - self._listed_at > LISTING_TTL:
-            try:
-                self._listing = [p for p in self.dir.iterdir() if _settled(p)]
-            except OSError as exc:
-                log.warning("cannot list cache dir %s: %s", self.dir, exc)
-                self._listing = []
-            self._listed_at = now
-            self._usage = None
-        return self._listing
+        with self._lock:
+            now = time.monotonic()
+            if now - self._listed_at > LISTING_TTL or not self._listed_at:
+                try:
+                    self._listing = [p for p in self.dir.iterdir() if _is_copy(p.name) and _settled(p)]
+                except OSError as exc:
+                    log.warning("cannot list cache dir %s: %s", self.dir, exc)
+                    self._listing = []
+                self._listed_at = now
+                self._usage = None
+            return self._listing
 
     def invalidate(self) -> None:
-        self._listed_at = 0.0
-        self._usage = None
+        with self._lock:
+            self._listed_at = 0.0
+            self._usage = None
 
     def cached_path(self, media_id: int, source: str) -> Path | None:
         """`<media_id>_<original name>` (a plain copy) or `<media_id>_<stem>.mp4` (a transcode
@@ -163,17 +186,23 @@ class MediaCache:
         return None, "not in the cache (fetched material has no other copy)"
 
     def usage(self) -> dict[str, Any]:
+        """Size and state of the cache, recomputed at most every LISTING_TTL seconds."""
         if not self.enabled or not self.dir:
             return {"enabled": False}
         files = self._files()
-        if self._usage is None:
+        with self._lock:
+            usage = self._usage
+        if usage is None:
             try:
                 free = shutil.disk_usage(self.dir).free
             except OSError:
                 free = None
-            self._usage = {"enabled": True, "dir": str(self.dir), "files": len(files),
-                           "used": sum(_size(p) for p in files), "max": self.max_bytes, "free": free}
-        return {**self._usage, "tool_running": self.content_tool_running()}
+            usage = {"enabled": True, "dir": str(self.dir), "files": len(files),
+                     "used": sum(_size(p) for p in files), "max": self.max_bytes, "free": free,
+                     "tool_running": self.content_tool_running()}
+            with self._lock:
+                self._usage = usage
+        return dict(usage)
 
     def content_tool_running(self) -> bool:
         """True while pitv_content's marker is fresh (it touches the marker as it works)."""
@@ -181,7 +210,7 @@ class MediaCache:
         if marker is None:
             return False
         try:
-            return marker.exists() and time.time() - marker.stat().st_mtime < MARKER_FRESH_SECONDS
+            return time.time() - marker.stat().st_mtime < MARKER_FRESH_SECONDS
         except OSError:
             return False
 
@@ -189,36 +218,48 @@ class MediaCache:
 
     def protect(self, names: set[str]) -> None:
         """File names (targets in the current manifest) that eviction must leave alone."""
-        self._protected = names
+        self._protected = frozenset(names)
 
     def make_room(self, needed: int = 0) -> int:
-        """Evict least-recently-used files until the cache is under its cap and the drive has
-        `needed` bytes (plus headroom) free. Returns the free space afterwards."""
+        """Evict least-recently-used cache copies until the copies are under the cap and the
+        drive has `needed` bytes (plus headroom) free. Returns the free space afterwards. Copies
+        still being written count towards the cap but are never evicted.
+
+        A file was last used at the later of its access time (set by `touch_used` when it goes
+        on air) and its modification time (when pitv_content delivered it)."""
         if not self.enabled or not self.dir:
             return 0
+        entries: list[tuple[float, float, int, Path]] = []   # (last used, written, size, path)
         try:
-            files = [p for p in self.dir.iterdir() if p.is_file()]
             free = shutil.disk_usage(self.dir).free
+            for p in self.dir.iterdir():
+                if not _is_copy(p.name):
+                    continue
+                try:
+                    st = p.lstat()   # a symlink is not a copy: neither counted nor followed
+                except OSError:
+                    continue   # renamed or removed by pitv_content since the listing
+                if stat.S_ISREG(st.st_mode):
+                    entries.append((max(st.st_atime, st.st_mtime), st.st_mtime, st.st_size, p))
         except OSError as exc:
             log.warning("cannot inspect cache dir %s: %s", self.dir, exc)
             return 0
-        used = sum(_size(p) for p in files)
+        used = sum(e[2] for e in entries)
         now = time.time()
-        files.sort(key=lambda p: _stat(p, "st_mtime"))
+        protected = self._protected
         evicted = 0
-        for p in files:
+        for _, written, size, p in sorted(entries, key=lambda e: e[0]):
             if used + needed <= self.max_bytes and free > needed + HEADROOM_BYTES:
                 break
-            if p.name in self._protected or not _settled(p) or now - _stat(p, "st_mtime") < MIN_AGE_SECONDS:
+            if p.name in protected or _is_part(p.name) or size == 0 or now - written < MIN_AGE_SECONDS:
                 continue
-            sz = _size(p)
             try:
                 p.unlink()
             except OSError as exc:
                 log.warning("could not evict %s: %s", p.name, exc)
                 continue
-            used -= sz
-            free += sz
+            used -= size
+            free += size
             evicted += 1
             log.info("evicted %s from cache", p.name)
         if evicted:
@@ -227,3 +268,15 @@ class MediaCache:
             return shutil.disk_usage(self.dir).free
         except OSError:
             return 0
+
+
+def touch_used(path: str) -> None:
+    """Record that a cache copy went on air, for eviction order. Only the access time moves:
+    the modification time stays pitv_content's delivery time. Setting an explicit time needs
+    file ownership; where pitv_content owns the file the kernel's relatime update is the
+    fallback, so a refusal is not worth more than a debug line."""
+    try:
+        st = os.stat(path)
+        os.utime(path, ns=(time.time_ns(), st.st_mtime_ns))
+    except OSError as exc:
+        log.debug("could not mark %s as used: %s", path, exc)

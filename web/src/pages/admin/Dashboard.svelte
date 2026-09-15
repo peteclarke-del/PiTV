@@ -4,7 +4,7 @@
   import { importCatalogue, buildSchedule, checkReadiness } from '../../lib/actions.js';
   import { changes, clock } from '../../lib/stores.svelte.js';
   import { guard } from '../../lib/guard.svelte.js';
-  import { fmtDay, fmtDateTime, fmtAgo } from '../../lib/format.js';
+  import { fmtDay, fmtDateTime, fmtAgo, hasLineup } from '../../lib/format.js';
   import StatusBadge from '../../components/StatusBadge.svelte';
   import AppBadge from '../../components/AppBadge.svelte';
   import ReadinessNotes from '../../components/ReadinessNotes.svelte';
@@ -17,18 +17,20 @@
   let readiness = $state(null);
 
   async function load() {
-    const r = await tryApi(Promise.all([
-      get('/api/library/summary'), get('/api/schedule/days'), get('/api/jobs'), get('/api/runs', { limit: 5 }),
-    ]));
-    if (!r) return;
-    [summary, days] = r;
-    runs = r[3];
-    r[2].forEach(upsertJob); // jobs that finished before this page connected to the event stream
-    const l = await tryApi(Promise.all([get('/api/lineup'), get('/api/library/attention'), get('/api/channels')]));
+    // Two batches in parallel so a failing line-up summary does not blank the rest of the page.
+    const [r, l] = await Promise.all([
+      tryApi(Promise.all([get('/api/library/summary'), get('/api/schedule/days'), get('/api/jobs'), get('/api/runs', { limit: 5 })])),
+      tryApi(Promise.all([get('/api/lineup'), get('/api/library/attention'), get('/api/channels')])),
+    ]);
+    if (r) {
+      let jobList;
+      [summary, days, jobList, runs] = r;
+      jobList.forEach(upsertJob); // jobs that finished before this page connected to the event stream
+    }
     if (!l) return;
     const [entries, attention, channels] = l;
     const per = new Map();
-    for (const c of channels) if (c.enabled && ['general', 'cartoons'].includes(c.content ?? 'general')) per.set(c.id, { label: `${c.number} ${c.short_name}`, n: 0 });
+    for (const c of channels) if (c.enabled && hasLineup(c)) per.set(c.id, { label: `${c.number} ${c.short_name}`, n: 0 });
     let placeholders = 0;
     for (const e of entries) { if (per.has(e.channel_id)) per.get(e.channel_id).n++; placeholders += e.placeholders ?? 0; }
     const noChannel = [...new Set(attention.filter((a) => String(a.attention ?? '').startsWith('No channel accepts')).map((a) => a.show_title || a.title))];

@@ -8,17 +8,24 @@ import socket
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 log = logging.getLogger("pitv.mpv")
-
 
 MAX_LINE = 4 << 20   # a property reply is small; only a broken peer sends more without a newline
 
 
 class MpvError(RuntimeError):
     pass
+
+
+def _option_value(value: Any) -> str:
+    """mpv's per-file options are strings; its flags are spelled yes/no."""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    return str(value)
 
 
 class Mpv:
@@ -32,54 +39,45 @@ class Mpv:
         self.sock: socket.socket | None = None
         self._lock = threading.Lock()
         self._req_id = 0
-        self._pending: dict[int, tuple[threading.Event, list]] = {}
-        self._reader: threading.Thread | None = None
+        # request_id -> (event, reply holder); the reader thread fills the holder and sets the event.
+        self._pending: dict[int, tuple[threading.Event, list[dict[str, Any]]]] = {}
         self.alive = False
 
     # --- lifecycle ---------------------------------------------------------------------
 
     def start(self, timeout: float = 15) -> None:
-        if self.socket_path.exists():
-            self.socket_path.unlink()
+        self.socket_path.unlink(missing_ok=True)
         cmd = [self.binary, f"--input-ipc-server={self.socket_path}", *self.args]
         log.info("starting mpv: %s", " ".join(cmd))
         self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                      stderr=subprocess.DEVNULL)
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        deadline = time.monotonic() + timeout
+        while self.sock is None and time.monotonic() < deadline:
             if self.proc.poll() is not None:
                 raise MpvError(f"mpv exited immediately with code {self.proc.returncode}")
             if self.socket_path.exists():
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                 try:
-                    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                     s.connect(str(self.socket_path))
                     self.sock = s
                     break
                 except OSError:
-                    time.sleep(0.1)
-            else:
-                time.sleep(0.1)
+                    s.close()
+            time.sleep(0.1)
         if self.sock is None:
-            self.proc.kill()  # do not leave a headless mpv behind
-            self.proc.wait(timeout=5)
+            self._reap(kill=True)  # do not leave a headless mpv behind
             raise MpvError("mpv IPC socket did not appear")
         self.alive = True
-        self._reader = threading.Thread(target=self._read_loop, name="mpv-reader", daemon=True)
-        self._reader.start()
+        threading.Thread(target=self._read_loop, name="mpv-reader", daemon=True).start()
 
     def stop(self) -> None:
-        self.alive = False
         try:
             if self.sock:
                 self.command("quit", timeout=1.0)
         except MpvError:
-            pass  # already gone, or it quit without answering; the wait/kill below tidies up
-        if self.proc:
-            try:
-                self.proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait(timeout=5)
+            pass  # already gone, or it quit without answering; _reap tidies up
+        self.alive = False
+        self._reap(kill=False)
         if self.sock:
             try:
                 self.sock.close()
@@ -87,87 +85,124 @@ class Mpv:
                 pass
         self.sock = None
 
+    def _reap(self, kill: bool) -> None:
+        """Wait for mpv to exit (killing it if asked or if it will not go). An mpv stuck in
+        uninterruptible I/O on a dead NAS mount cannot be reaped; systemd's stop timeout
+        deals with that, so it is logged rather than raised."""
+        if self.proc is None:
+            return
+        try:
+            if not kill:
+                try:
+                    self.proc.wait(timeout=3)
+                    return
+                except subprocess.TimeoutExpired:
+                    pass
+            self.proc.kill()
+            self.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            log.error("mpv (pid %s) did not exit after SIGKILL", self.proc.pid)
+
     def running(self) -> bool:
         return self.alive and self.proc is not None and self.proc.poll() is None
 
     # --- protocol ------------------------------------------------------------------------
 
     def _read_loop(self) -> None:
+        sock = self.sock
         buf = b""
-        while self.alive and self.sock:
+        while self.alive and sock is not None:
             try:
-                chunk = self.sock.recv(65536)
+                chunk = sock.recv(65536)
             except OSError:
                 break
             if not chunk:
                 break
-            buf += chunk
+            *lines, buf = (buf + chunk).split(b"\n")
             if len(buf) > MAX_LINE:
-                log.error("mpv sent %d bytes without a newline; dropping the buffer", len(buf))
+                log.error("mpv sent %d bytes without a newline; dropping them", len(buf))
                 buf = b""
-            while b"\n" in buf:
-                line, buf = buf.split(b"\n", 1)
-                if not line.strip():
-                    continue
-                try:
-                    msg = json.loads(line)
-                except ValueError:
-                    continue
-                if "request_id" in msg:
-                    pending = self._pending.pop(msg["request_id"], None)
-                    if pending:
-                        pending[1].append(msg)
-                        pending[0].set()
-                elif "event" in msg and self.on_event:
-                    try:
-                        self.on_event(msg)
-                    except Exception:  # noqa: BLE001
-                        log.exception("mpv event handler failed")
-        self.alive = False
+            for line in lines:
+                self._dispatch(line)
+        # Under the lock so no request can register after the wake-up: `_request` checks
+        # `alive` and registers under the same lock.
+        with self._lock:
+            self.alive = False
+            waiting = list(self._pending.values())
+        for ev, _ in waiting:
+            ev.set()   # no reply is coming; the caller raises instead of sitting out its timeout
         if self.on_event:
             self.on_event({"event": "pitv-ipc-closed"})
 
-    def command(self, *args: Any, timeout: float = 5.0) -> Any:
-        if not self.sock:
-            raise MpvError("mpv not connected")
-        msgs: list = []
+    def _dispatch(self, line: bytes) -> None:
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            return
+        if not isinstance(msg, dict):
+            return
+        if "request_id" in msg:
+            pending = self._pending.pop(msg["request_id"], None)
+            if pending:
+                pending[1].append(msg)
+                pending[0].set()
+        elif "event" in msg and self.on_event:
+            try:
+                self.on_event(msg)
+            except Exception:  # a handler bug must not end the reader thread
+                log.exception("mpv event handler failed")
+
+    def _request(self, command: list[Any] | dict[str, Any], timeout: float) -> Any:
+        """Send one command (positional list or named-argument map) and wait for its reply."""
+        name = command["name"] if isinstance(command, dict) else command[0]
+        reply: list[dict[str, Any]] = []
+        ev = threading.Event()
         with self._lock:
+            sock = self.sock
+            if sock is None or not self.alive:
+                raise MpvError("mpv not connected")
             self._req_id += 1
             rid = self._req_id
-            ev = threading.Event()
-            self._pending[rid] = (ev, msgs)  # the reader thread pops this entry and fills msgs
-            payload = json.dumps({"command": list(args), "request_id": rid}) + "\n"
+            self._pending[rid] = (ev, reply)
             try:
-                self.sock.sendall(payload.encode())
+                sock.sendall((json.dumps({"command": command, "request_id": rid}) + "\n").encode())
             except OSError as exc:
                 self._pending.pop(rid, None)
                 raise MpvError(f"send failed: {exc}") from exc
         if not ev.wait(timeout):
             self._pending.pop(rid, None)
-            raise MpvError(f"mpv did not answer {args[0]!r}")
-        msg = msgs[0] if msgs else {}
+            raise MpvError(f"mpv did not answer {name!r}")
+        if not reply:
+            raise MpvError(f"mpv connection closed before answering {name!r}")
+        msg = reply[0]
         if msg.get("error") not in (None, "success"):
-            raise MpvError(f"{args[0]}: {msg.get('error')}")
+            raise MpvError(f"{name}: {msg.get('error')}")
         return msg.get("data")
 
-    def get(self, prop: str, default: Any = None) -> Any:
+    def command(self, *args: Any, timeout: float = 5.0) -> Any:
+        return self._request(list(args), timeout)
+
+    def get(self, prop: str, default: Any = None, timeout: float = 5.0) -> Any:
         try:
-            return self.command("get_property", prop)
+            return self._request(["get_property", prop], timeout)
         except MpvError:
             return default
 
     def set(self, prop: str, value: Any) -> None:
         self.command("set_property", prop, value)
 
-    def loadfile(self, path: str, start: float = 0.0, extra: dict[str, Any] | None = None) -> None:
+    def loadfile(self, path: str, start: float = 0.0, options: dict[str, Any] | None = None) -> int | None:
+        """Replace the current file; returns mpv's playlist entry id for it (None on builds
+        that do not report one), which its end-file event will carry. `options` are per-file:
+        mpv drops them when the file ends, so decode settings for one programme do not leak
+        onto the test card.
+
+        Named arguments, because mpv 0.38 inserted an `index` argument before `options` and a
+        positional call cannot be right for both older and newer builds."""
         opts = {"start": f"{max(0.0, start):.3f}"}
-        if extra:
-            opts.update(extra)
-        # mpv >= 0.38 takes an options dict in argument 4; older builds want "key=value,key=value".
-        try:
-            self.command("loadfile", path, "replace", opts)
-        except MpvError:
-            self.command("loadfile", path, "replace", ",".join(f"{k}={v}" for k, v in opts.items()))
+        opts.update({k: _option_value(v) for k, v in (options or {}).items()})
+        data = self._request({"name": "loadfile", "url": path, "flags": "replace", "options": opts}, 5.0)
+        return data.get("playlist_entry_id") if isinstance(data, dict) else None
 
     def keybind(self, key: str, message: str) -> None:
         try:
@@ -187,7 +222,7 @@ class Mpv:
             pass  # removing an overlay that is not shown is an mpv error and a no-op for us
 
 
-def default_args(windowed: bool, osd_socket_dir: Path) -> list[str]:
+def default_args(windowed: bool) -> list[str]:
     common = [
         "--idle=yes", "--force-window=yes", "--keep-open=no", "--no-osc", "--osd-level=0",
         "--input-default-bindings=no", "--input-vo-keyboard=yes", "--cursor-autohide=always",

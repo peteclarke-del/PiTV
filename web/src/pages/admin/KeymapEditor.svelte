@@ -1,8 +1,9 @@
 <script>
-  import { untrack } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { get, put, tryApi, confirmApi } from '../../lib/api.js';
   import { player, toast } from '../../lib/stores.svelte.js';
   import { ACTIONS, ACTION_LABELS, DEFAULT_KEYMAP, mergedKeymap } from '../../lib/keymap.js';
+  import { onEnter } from '../../lib/util.js';
 
   let map = $state(null);          // {action: [keys]}
   let custom = $state(false);      // settings.keymap non-empty
@@ -20,7 +21,10 @@
     custom = !!s.keymap && Object.keys(s.keymap).length > 0;
     dirty = false;
   }
-  $effect(() => { untrack(load); });
+  onMount(() => {
+    load();
+    return () => clearTimeout(learnTimer);
+  });
 
   function assign(action, key) {
     key = String(key).toUpperCase().trim();
@@ -29,6 +33,7 @@
     map[action].push(key);
     dirty = true;
   }
+  function addTyped(action) { assign(action, manual[action] ?? ''); manual[action] = ''; }
   function remove(action, key) { map[action] = map[action].filter((k) => k !== key); dirty = true; }
   function learn(action) {
     if (learning === action) { stopLearning(); return; }
@@ -38,16 +43,15 @@
     learnTimer = setTimeout(() => { if (learning) { toast.info('No key received in 15 s. Press a button on the remote, or cancel.'); } }, 15000);
   }
   function stopLearning() { learning = null; clearTimeout(learnTimer); }
-  $effect(() => () => clearTimeout(learnTimer));
+  // Only the key report is tracked; assigning it reads and writes the map, which must not re-run this.
   $effect(() => {
     const lk = player.state.last_key;
-    const action = untrack(() => learning);
-    if (!action || !lk || !lk.key) return;
-    if ((lk.ts ?? 0) > untrack(() => baselineTs)) {
-      assign(action, lk.key);
-      toast.success(`${lk.key} assigned to ${ACTION_LABELS[action]}`);
+    untrack(() => {
+      if (!learning || !lk?.key || (lk.ts ?? 0) <= baselineTs) return;
+      assign(learning, lk.key);
+      toast.success(`${lk.key} assigned to ${ACTION_LABELS[learning]}`);
       stopLearning();
-    }
+    });
   });
   async function save() {
     saving = true;
@@ -79,8 +83,8 @@
                 <div class="row" style="gap:.3rem">
                   {#each map[a] as k (k)}<span class="chip mono">{k}<button onclick={() => remove(a, k)} aria-label="Remove {k}">✕</button></span>{/each}
                   <span class="inline-form">
-                    <input class="narrow mono" placeholder="KEY_…" bind:value={manual[a]} onkeydown={(e) => { if (e.key === 'Enter') { assign(a, manual[a]); manual[a] = ''; } }} aria-label="Add key name" />
-                    <button class="small ghost" onclick={() => { assign(a, manual[a]); manual[a] = ''; }} disabled={!manual[a]}>Add</button>
+                    <input class="narrow mono" placeholder="KEY_…" bind:value={manual[a]} onkeydown={onEnter(() => addTyped(a))} aria-label="Add key name" />
+                    <button class="small ghost" onclick={() => addTyped(a)} disabled={!manual[a]}>Add</button>
                   </span>
                 </div>
               </td>

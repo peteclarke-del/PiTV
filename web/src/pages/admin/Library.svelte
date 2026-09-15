@@ -3,7 +3,7 @@
   import { get, put, tryApi } from '../../lib/api.js';
   import { changes, clock, route } from '../../lib/stores.svelte.js';
   import { navigate } from '../../lib/router.js';
-  import { fmtDuration, fmtAgo, fmtEpisode, CERTIFICATES } from '../../lib/format.js';
+  import { fmtDuration, fmtAgo, fmtEpisode, CERTIFICATES, WEEKDAYS } from '../../lib/format.js';
   import { debounce, onEnter, num } from '../../lib/util.js';
   import { guard } from '../../lib/guard.svelte.js';
   import ChannelBadge from '../../components/ChannelBadge.svelte';
@@ -11,6 +11,7 @@
   import MediaEditor from './MediaEditor.svelte';
   import CatalogueCard from './CatalogueCard.svelte';
   import Availability from '../../components/Availability.svelte';
+  import Codec from '../../components/Codec.svelte';
 
   const TABS = [['shows', 'Shows'], ['movies', 'Movies'], ['music', 'Music'], ['adverts', 'Adverts'], ['idents', 'Idents'], ['attention', 'Needs attention']];
   const KIND = { movies: 'movie', adverts: 'advert', idents: 'ident', music: 'music' };
@@ -29,15 +30,22 @@
 
   let chById = $derived(new Map(channels.map((c) => [c.id, c])));
 
+  // Only the newest request may write: switching tabs or typing quickly leaves older ones in flight.
+  let seq = 0;
   async function load() {
-    const t = tab; // read before any await: the tab may change, or the page unmount, while a request is in flight
+    const t = tab, n = ++seq;
     if (!channels.length) channels = (await tryApi(get('/api/channels'))) ?? [];
-    if (t === 'shows') shows = (await tryApi(get('/api/shows', { q }))) ?? shows ?? [];
-    else if (t === 'attention') attention = (await tryApi(get('/api/library/attention'))) ?? attention ?? [];
-    else media = (await tryApi(get('/api/media', { kind: KIND[t], q, limit: PAGE, offset }))) ?? media;
+    const r = await tryApi(t === 'shows' ? get('/api/shows', { q })
+      : t === 'attention' ? get('/api/library/attention')
+      : get('/api/media', { kind: KIND[t], q, limit: PAGE, offset }));
+    if (n !== seq) return;
+    if (t === 'shows') shows = r ?? shows ?? [];
+    else if (t === 'attention') attention = r ?? attention ?? [];
+    else media = r ?? media;
   }
   $effect(() => { tab; changes.library; offset; untrack(load); });
-  const reload = debounce(() => { offset = 0; load(); }, 250);
+  // Resetting a non-zero offset refetches through the effect above.
+  const reload = debounce(() => { if (offset) offset = 0; else load(); }, 250);
   function search(v) { q = v; reload(); }
   function switchTab(id) {
     q = ''; offset = 0;
@@ -45,7 +53,7 @@
   }
   function modeLabel(s) {
     if (s.mode === 'auto') return 'auto';
-    const days = (s.anchor_days ?? []).map((d) => ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'][d]).join('');
+    const days = (s.anchor_days ?? []).map((d) => WEEKDAYS[d]?.slice(0, 2)).join('');
     return `${s.mode} ${s.anchor_time ?? ''} ${days}`.trim();
   }
   async function setFamilySafe(m, v) {
@@ -144,7 +152,7 @@
               <td>{m.year ?? '–'}</td>
               <td class="small">{(m.genres ?? []).join(', ') || '–'}</td>
               <td class="small">{fmtDuration(m.duration)}</td>
-              <td class="small"><span class="mono">{m.vcodec ?? '?'}</span> {#if m.hwdec}<span class="badge ok">HW</span>{:else}<span class="badge warn">SW</span>{/if}</td>
+              <td class="small"><Codec item={m} /></td>
               <td><Availability item={m} /></td>
               <td>{#if m.excluded}<span class="badge">excluded</span>{/if}{#if m.attention}<span class="badge warn" title={m.attention}>!</span>{/if}</td>
             </tr>
@@ -165,9 +173,9 @@
               <td>{m.year ?? '–'}</td>
               <td>{m.certificate ?? '–'}</td>
               <td class="small">{fmtDuration(m.duration)}</td>
-              <td class="small"><span class="mono">{m.vcodec ?? '?'}</span> {#if m.hwdec}<span class="badge ok">HW</span>{:else}<span class="badge warn">SW</span>{/if}</td>
+              <td class="small"><Codec item={m} /></td>
               <td><Availability item={m} /></td>
-              {#if tab === 'idents'}<td>{m.channel_hint ?? '–'}</td>{/if}
+              {#if tab === 'idents'}<td>{#if chById.get(m.home_channel_id)}<ChannelBadge channel={chById.get(m.home_channel_id)} size="sm" />{:else}<span class="muted">any</span>{/if}</td>{/if}
               {#if tab === 'adverts'}<td onclick={(e) => e.stopPropagation()}><label class="check small" title={m.family_safe ? 'Family-safe: may air on family-safe channels' : 'Not family-safe: never airs on family-safe channels'}><input type="checkbox" checked={!!m.family_safe} onchange={(e) => setFamilySafe(m, e.currentTarget.checked)} />{m.family_safe ? 'yes' : 'no'}</label></td>{/if}
               <td>{#if m.excluded}<span class="badge">excluded</span>{/if}{#if m.attention}<span class="badge warn" title={m.attention}>!</span>{/if}</td>
             </tr>
@@ -184,5 +192,5 @@
   <ShowEditor id={showId} {channels} onclose={() => (showId = null)} onsaved={load} />
 {/if}
 {#if mediaId}
-  <MediaEditor id={mediaId} onclose={() => (mediaId = null)} onsaved={load} />
+  <MediaEditor id={mediaId} {channels} onclose={() => (mediaId = null)} onsaved={load} />
 {/if}

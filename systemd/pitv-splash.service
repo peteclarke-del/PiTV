@@ -3,12 +3,19 @@ Description=PiTV boot splash (test card on the framebuffer)
 DefaultDependencies=no
 After=systemd-udev-settle.service dev-fb0.device
 Before=pitv-player.service
+# The test card is in the data directory, a bind mount from /work on an installer-made card.
+RequiresMountsFor=/var/lib/pitv
 
 [Service]
 Type=oneshot
-ExecStart=/opt/pitv/.venv/bin/python -m pitv.splash /var/lib/pitv/testcard.png
 RemainAfterExit=yes
-StandardOutput=journal
+# Unprivileged: the test card is a file the service user can replace, and decoding it as root
+# would turn a bug in the image decoder into root access. /dev/fb0 belongs to group video.
+User=pitv
+Group=pitv
+SupplementaryGroups=video
+NoNewPrivileges=yes
+ExecStart=/opt/pitv/.venv/bin/python -m pitv.splash /var/lib/pitv/testcard.png
 
 [Install]
 WantedBy=sysinit.target

@@ -12,7 +12,7 @@ import socket
 from pathlib import Path
 from typing import Any
 
-from .player.hwdec import is_raspberry_pi
+from .player.hwdec import board_model, is_raspberry_pi
 
 
 def _read(path: str) -> str | None:
@@ -24,8 +24,7 @@ def _read(path: str) -> str | None:
 
 def _model() -> str:
     """The board name on a Pi (from the device tree), else the OS and architecture."""
-    model = (_read("/proc/device-tree/model") or "").rstrip("\x00")
-    return model or f"{platform.system()} {platform.machine()}"
+    return board_model() or f"{platform.system()} {platform.machine()}"
 
 
 def _uptime() -> int | None:

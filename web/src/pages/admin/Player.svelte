@@ -12,19 +12,16 @@
   import KeymapEditor from './KeymapEditor.svelte';
 
   let channels = $state([]);
-  let history = $state([]);
+  let history = $state(null);
   let s = $derived(player.state);
-  async function load() {
-    const r = await tryApi(Promise.all([get('/api/channels'), get('/api/history', { limit: 50 })]));
-    if (r) [channels, history] = r;
-  }
-  $effect(() => { changes.library; untrack(load); });
-  // The airing history grows whenever the player moves to a new slot.
-  let lastSlot = null;
-  $effect(() => {
-    const id = s.slot?.id ?? null;
-    if (id !== lastSlot) { lastSlot = id; untrack(load); }
-  });
+  async function loadChannels() { channels = (await tryApi(get('/api/channels'))) ?? channels; }
+  async function loadHistory() { history = (await tryApi(get('/api/history', { limit: 50 }))) ?? history ?? []; }
+  $effect(() => { changes.library; untrack(loadChannels); });
+  // The airing history grows whenever the player moves to a new slot (and once on mount). Every
+  // player event replaces player.state, so the effect watches the derived id, which only changes
+  // with the slot.
+  let slotId = $derived(s.slot?.id ?? null);
+  $effect(() => { slotId; untrack(loadHistory); });
 
   const restart = () => confirmApi('Restart the player service? The picture will drop for a few seconds.', { title: 'Restart player', okLabel: 'Restart' },
     () => post('/api/system/service/pitv-player.service/restart'), { success: 'Restart requested' });
@@ -115,9 +112,9 @@
         {#if !s.online}<p class="muted small">Unknown while the player is offline.</p>
         {:else}
           <dl class="kv small">
-            <dt>Last build</dt><dd>{#if maint.last_build}<span class="badge {maint.last_build.status === 'ok' ? 'ok' : 'warn'}">{maint.last_build.status}</span> {maint.last_build.summary} <span class="muted">({fmtAgo(maint.last_build.at, clock.ts)})</span>{:else}<span class="muted">not yet</span>{/if}</dd>
-            <dt>Last import</dt><dd>{#if maint.last_import}<span class="badge {maint.last_import.status === 'ok' ? 'ok' : 'warn'}">{maint.last_import.status}</span> {maint.last_import.summary} <span class="muted">({fmtAgo(maint.last_import.at, clock.ts)})</span>{:else}<span class="muted">not yet</span>{/if}</dd>
-            <dt>Readiness</dt><dd>{#if maint.last_readiness}<span class="badge {maint.last_readiness.status === 'ok' ? 'ok' : 'warn'}">{maint.last_readiness.status}</span> {maint.last_readiness.summary} <span class="muted">({fmtAgo(maint.last_readiness.at, clock.ts)})</span>{:else}<span class="muted">not checked yet</span>{/if}</dd>
+            {#each [['Last build', maint.last_build, 'not yet'], ['Last import', maint.last_import, 'not yet'], ['Readiness', maint.last_readiness, 'not checked yet']] as [label, r, none] (label)}
+              <dt>{label}</dt><dd>{#if r}<span class="badge {r.status === 'ok' ? 'ok' : 'warn'}">{r.status}</span> {r.summary} <span class="muted">({fmtAgo(r.at, clock.ts)})</span>{:else}<span class="muted">{none}</span>{/if}</dd>
+            {/each}
             {#if maint.error}<dt>Error</dt><dd><span class="badge danger">{maint.error}</span></dd>{/if}
             <dt>Wanted</dt><dd><a class="small" href="#/admin/wanted">Open the wanted list</a> · fetched by pitv_content</dd>
           </dl>
@@ -127,18 +124,21 @@
 
     <div class="stack">
       <div class="card"><div class="card-title"><h3>Remote</h3><AppBadge app="pitv" /></div><Remote {channels} /></div>
-      <div class="card pad-0 table-wrap">
-        <table>
-          <thead><tr><th>Started</th><th>Ch</th><th>Title</th><th>Length</th></tr></thead>
-          <tbody>
-            {#each history as h (h.id)}
-              <tr><td class="nowrap small">{fmtDateTime(h.started_at)}</td><td>{h.channel_number ?? h.channel_id}</td><td>{h.title}</td>
-                <td class="small muted">{h.ended_at ? fmtDuration(h.ended_at - h.started_at) : 'playing'}</td></tr>
-            {:else}
-              <tr><td colspan="4" class="empty">Nothing has aired yet.</td></tr>
-            {/each}
-          </tbody>
-        </table>
+      <div class="card pad-0">
+        <div class="card-title" style="padding:.8rem 1rem 0"><h3>Airing history</h3><AppBadge app="pitv" /></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Started</th><th>Ch</th><th>Title</th><th>Length</th></tr></thead>
+            <tbody>
+              {#each history ?? [] as h (h.id)}
+                <tr><td class="nowrap small">{fmtDateTime(h.started_at)}</td><td>{h.channel_number ?? h.channel_id}</td><td>{h.title}</td>
+                  <td class="small muted">{h.ended_at ? fmtDuration(h.ended_at - h.started_at) : 'playing'}</td></tr>
+              {:else}
+                <tr><td colspan="4" class="empty">{history ? 'Nothing has aired yet.' : 'Loading…'}</td></tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>

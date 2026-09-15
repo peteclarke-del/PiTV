@@ -17,6 +17,28 @@ export function isOffline(err) {
   return false;
 }
 
+// Background refreshes (Content status every 5 s, System host details every 10 s) would each log a
+// 503 on the browser console while the API is down, so once a probe finds it offline the next one
+// waits PROBE_MS. The wait is shared by every page: there is only one pitv_content.
+const PROBE_MS = 30000;
+let offlineAt = 0;
+
+/** toolGet for background refreshes. Resolves undefined while the API is known to be offline and the
+ *  wait is not over. A document failing `looksRight` (another service answering on the port) counts
+ *  as offline. */
+export async function toolProbe(path, looksRight = () => true) {
+  if (offlineAt && Date.now() - offlineAt < PROBE_MS) return undefined;
+  try {
+    const doc = await toolGet(path);
+    if (!doc || typeof doc !== 'object' || !looksRight(doc)) throw new ApiError(0, 'not pitv_content');
+    offlineAt = 0;
+    return doc;
+  } catch (e) {
+    if (isOffline(e)) offlineAt = Date.now();
+    throw e;
+  }
+}
+
 /** Field errors from a 400 {"errors": {key: message}} response, else null. */
 export function fieldErrors(err) {
   if (!(err instanceof ApiError) || err.status !== 400) return null;

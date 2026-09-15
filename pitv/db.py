@@ -9,11 +9,18 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import os
+import re
 import sqlite3
 import time
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any
+
+log = logging.getLogger("pitv.db")
 
 SCHEMA_VERSION = 1
 
@@ -117,11 +124,11 @@ CREATE TABLE IF NOT EXISTS media (
     certificate TEXT,
     genres TEXT,                   -- JSON list
     plot TEXT,
-    channel_hint INTEGER,          -- idents: channel number the ident belongs to
+    channel_hint INTEGER,          -- idents: channel number the file was made for, as indexed
     artist TEXT,                   -- music videos
     concert INTEGER NOT NULL DEFAULT 0,   -- music: full concert / live show
     family_safe INTEGER NOT NULL DEFAULT 1,   -- adverts: 0 = alcohol/tobacco/adult; never on a family channel
-    home_channel_id INTEGER REFERENCES channels(id) ON DELETE SET NULL,   -- movies: derived from lineup
+    home_channel_id INTEGER REFERENCES channels(id) ON DELETE SET NULL,   -- movies: from lineup; idents: see assign_ident_channels
     transient INTEGER NOT NULL DEFAULT 0,      -- fetched for a line-up entry; lives only in the cache
     excluded INTEGER NOT NULL DEFAULT 0,
     missing INTEGER NOT NULL DEFAULT 0,
@@ -369,6 +376,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "catalogue_hour": 4,            # daily import of pitv_content's library index
     "history_keep_days": 180,
 }
+# Stored settings that are not user configuration and so have no default.
+_EXTRA_SETTING_KEYS = {"session_secret"}
 
 DEFAULT_CHANNELS = [
     {"number": 1, "name": "PiTV One", "short_name": "One", "colour": "#e63946", "ads_enabled": 0,
@@ -414,29 +423,29 @@ def connect(path: Path | str) -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """Create tables and seed defaults. Safe to call on every start."""
-    conn.executescript(SCHEMA)  # executescript commits on its own; seed inside a tx after
+    """Create tables, migrate and seed defaults. Safe to call on every start."""
+    conn.executescript(SCHEMA)  # executescript commits on its own, so it runs before any tx
     _migrate(conn)
-    _migrate_settings(conn)
     with tx(conn):
+        _migrate_settings(conn)
         _seed_channel_genres(conn)
-    with tx(conn):
+        assign_ident_channels(conn)
         conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
                      (str(SCHEMA_VERSION),))
-        for key, value in DEFAULT_SETTINGS.items():
-            conn.execute("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
-                         (key, json.dumps(value)))
+        conn.executemany("INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
+                         [(key, json.dumps(value)) for key, value in DEFAULT_SETTINGS.items()])
         if conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0] == 0:
             for ch in DEFAULT_CHANNELS:
-                conn.execute(
-                    "INSERT INTO channels(number, name, short_name, colour, ads_enabled, pattern,"
-                    " description, kind_weights, content, family_safe_ads, allowed_genres) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    (ch["number"], ch["name"], ch["short_name"], ch["colour"], ch["ads_enabled"],
-                     ch["pattern"], ch["description"], json.dumps(ch["kind_weights"]), ch.get("content", "general"),
-                     ch.get("family_safe_ads", 0), json.dumps(ch.get("allowed_genres") or [])))
+                insert_row(conn, "channels", {
+                    "number": ch["number"], "name": ch["name"], "short_name": ch["short_name"],
+                    "colour": ch["colour"], "ads_enabled": ch["ads_enabled"], "pattern": ch["pattern"],
+                    "description": ch["description"], "kind_weights": json.dumps(ch["kind_weights"]),
+                    "content": ch.get("content", "general"), "family_safe_ads": ch.get("family_safe_ads", 0),
+                    "allowed_genres": json.dumps(ch.get("allowed_genres") or [])})
 
 
-# Columns added after the first release: (table, column, DDL). Applied when missing.
+# Columns added after the first release: (table, column, DDL). Applied when missing. Every name
+# here is composed into ALTER TABLE, so the list is code, never data.
 MIGRATIONS: list[tuple[str, str, str]] = [
     ("schedule", "subtitle", "TEXT NOT NULL DEFAULT ''"),
     ("schedule", "block", "TEXT"),
@@ -472,6 +481,10 @@ def _table_sql(conn: sqlite3.Connection, table: str) -> str:
     return row["sql"] if row else ""
 
 
+def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
+    return [r["name"] for r in conn.execute(f"PRAGMA table_info({_ident(table)})")]
+
+
 def _create_statement(table: str) -> str:
     """The CREATE TABLE statement for `table` from SCHEMA, found by matching parentheses while
     skipping `--` comments (a comment may itself contain ");")."""
@@ -503,12 +516,13 @@ def _index_statements() -> list[str]:
 def _rebuild_table(conn: sqlite3.Connection, table: str) -> None:
     """Recreate a table from SCHEMA, keeping every column the two definitions share. Runs inside
     the caller's transaction; foreign keys must already be off (SQLite ignores that switch inside
-    a transaction)."""
+    a transaction). `table` is always one of the literals in `_migrate_steps`."""
+    table = _ident(table)
     create_new = _create_statement(table).replace(f"CREATE TABLE IF NOT EXISTS {table} (", f"CREATE TABLE {table}__new (", 1)
-    old_cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})")]
+    old_cols = _columns(conn, table)
     conn.execute(f"DROP TABLE IF EXISTS {table}__new")
     conn.execute(create_new)
-    new_cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table}__new)")]
+    new_cols = set(_columns(conn, f"{table}__new"))
     common = ", ".join(c for c in old_cols if c in new_cols)
     conn.execute(f"INSERT INTO {table}__new ({common}) SELECT {common} FROM {table}")
     conn.execute(f"DROP TABLE {table}")
@@ -525,8 +539,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
             fk_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
             if fk_errors:
                 # Logged, not fatal: a television that will not start is worse than a stale row.
-                logging.getLogger("pitv.db").warning("%d rows reference missing parents after migration: %s",
-                                                     len(fk_errors), [tuple(r) for r in fk_errors[:5]])
+                log.warning("%d rows reference missing parents after migration: %s",
+                            len(fk_errors), [tuple(r) for r in fk_errors[:5]])
     finally:
         conn.execute("PRAGMA foreign_keys=ON")
 
@@ -534,30 +548,35 @@ def _migrate(conn: sqlite3.Connection) -> None:
 def _migrate_steps(conn: sqlite3.Connection) -> None:
     # Carry pitv_content's old transcode pointer into cache_path before the media table is
     # rebuilt without it.
-    media_cols = {r["name"] for r in conn.execute("PRAGMA table_info(media)")}
+    media_cols = set(_columns(conn, "media"))
     if "transcoded_path" in media_cols:
         if "cache_path" not in media_cols:
             conn.execute("ALTER TABLE media ADD COLUMN cache_path TEXT")
         conn.execute("UPDATE media SET cache_path = transcoded_path WHERE cache_path IS NULL")
     # Rebuilds: widened CHECK constraints (music), source_id made nullable for material fetched
     # online (SQLite cannot relax NOT NULL in place), and renamed scan-era columns.
-    if "'music'" not in _table_sql(conn, "sources") or "last_scan_summary" in _table_sql(conn, "sources"):
+    sources_sql, media_sql = _table_sql(conn, "sources"), _table_sql(conn, "media")
+    if "'music'" not in sources_sql or "last_scan_summary" in sources_sql:
         _rebuild_table(conn, "sources")
-    if "'music'" not in _table_sql(conn, "media") or "transcoded_path" in media_cols \
-            or "source_id INTEGER NOT NULL" in _table_sql(conn, "media"):
+    if "'music'" not in media_sql or "transcoded_path" in media_cols or "source_id INTEGER NOT NULL" in media_sql:
         _rebuild_table(conn, "media")
     if "source_id INTEGER NOT NULL" in _table_sql(conn, "shows"):
         _rebuild_table(conn, "shows")
-    if _table_sql(conn, "wanted") and "'music'" not in _table_sql(conn, "wanted"):
+    wanted_sql = _table_sql(conn, "wanted")
+    if wanted_sql and "'music'" not in wanted_sql:
         _rebuild_table(conn, "wanted")
     for table, column, ddl in MIGRATIONS:
-        cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
-        if column not in cols:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        if column not in _columns(conn, table):
+            conn.execute(f"ALTER TABLE {_ident(table)} ADD COLUMN {_ident(column)} {ddl}")
     for stmt in _index_statements():      # rebuilt tables lose their indexes
         conn.execute(stmt)
+    # Indexes on columns MIGRATIONS may have just added: created here, once the columns exist,
+    # rather than in SCHEMA, which runs before any migration.
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS media_uid ON media(uid)")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS sources_uid ON sources(uid)")
+    # Placeholder slots are found by their request: binding a delivery, line-up progress and
+    # withdrawing requests. Few slots have one, so the index holds only those.
+    conn.execute("CREATE INDEX IF NOT EXISTS schedule_wanted ON schedule(wanted_id) WHERE wanted_id IS NOT NULL")
     conn.execute("DROP TABLE IF EXISTS probe_cache")   # PiTV no longer probes files; pitv_content does
 
 
@@ -565,26 +584,21 @@ def _seed_channel_genres(conn: sqlite3.Connection) -> None:
     """Channels created before line-ups had no genre lists. Give the shipped default channels
     (matched on number and unchanged name) their default lists once; anything renamed or added
     by the user is left alone."""
-    for ch in DEFAULT_CHANNELS:
-        if ch.get("allowed_genres"):
-            conn.execute("UPDATE channels SET allowed_genres = ? WHERE number = ? AND name = ? AND allowed_genres IS NULL",
-                         (json.dumps(ch["allowed_genres"]), ch["number"], ch["name"]))
+    conn.executemany("UPDATE channels SET allowed_genres = ? WHERE number = ? AND name = ? AND allowed_genres IS NULL",
+                     [(json.dumps(ch["allowed_genres"]), ch["number"], ch["name"])
+                      for ch in DEFAULT_CHANNELS if ch.get("allowed_genres")])
 
 
 def _migrate_settings(conn: sqlite3.Connection) -> None:
     """Drop settings that no longer exist and fill in keys added to stored daypart rows."""
-    stale = [r["key"] for r in conn.execute("SELECT key FROM settings")
-             if r["key"] not in DEFAULT_SETTINGS and r["key"] not in _EXTRA_SETTING_KEYS]
-    if stale:
-        with tx(conn):
-            conn.executemany("DELETE FROM settings WHERE key = ?", [(k,) for k in stale])
+    conn.executemany("DELETE FROM settings WHERE key = ?",
+                     [(r["key"],) for r in conn.execute("SELECT key FROM settings").fetchall()
+                      if r["key"] not in DEFAULT_SETTINGS and r["key"] not in _EXTRA_SETTING_KEYS])
     for key, defaults in (("dayparts", DEFAULT_DAYPARTS), ("dayparts_saturday", DEFAULT_DAYPARTS_SATURDAY),
                           ("dayparts_sunday", DEFAULT_DAYPARTS_SUNDAY)):
         row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
-        if not row:
-            continue
         try:
-            stored = json.loads(row["value"])
+            stored = json.loads(row["value"]) if row else None
         except ValueError:
             continue
         if not isinstance(stored, list):
@@ -596,13 +610,13 @@ def _migrate_settings(conn: sqlite3.Connection) -> None:
                 dp["sport"] = by_name.get(dp.get("name"), {}).get("sport", 0.2)
                 changed = True
         if changed:
-            with tx(conn):
-                conn.execute("UPDATE settings SET value = ? WHERE key = ?", (json.dumps(stored), key))
+            conn.execute("UPDATE settings SET value = ? WHERE key = ?", (json.dumps(stored), key))
 
 
 @contextmanager
 def tx(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
-    """Explicit transaction (the connection runs in autocommit mode otherwise)."""
+    """Explicit transaction (the connection runs in autocommit mode otherwise). Nested use joins
+    the outer transaction."""
     if conn.in_transaction:
         yield conn
         return
@@ -631,9 +645,6 @@ def set_setting(conn: sqlite3.Connection, key: str, value: Any) -> None:
                  (key, json.dumps(value)))
 
 
-_EXTRA_SETTING_KEYS = {"session_secret"}
-
-
 def all_settings(conn: sqlite3.Connection) -> dict[str, Any]:
     """Defaults overlaid with stored values; keys that no longer exist are ignored."""
     out = dict(DEFAULT_SETTINGS)
@@ -643,15 +654,19 @@ def all_settings(conn: sqlite3.Connection) -> dict[str, Any]:
     return out
 
 
-# --- row helpers ------------------------------------------------------------------------
+# --- rows ----------------------------------------------------------------------------------
+
+_JSON_COLUMNS = ("genres", "overrides", "anchor_days", "era_weights", "genre_weights",
+                 "kind_weights", "daypart_profile", "details", "allowed_genres", "excluded_genres")
+
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    """A row as a dict with its JSON columns decoded."""
     if row is None:
         return None
     d = dict(row)
-    for key in ("genres", "overrides", "anchor_days", "era_weights", "genre_weights",
-                "kind_weights", "daypart_profile", "details", "allowed_genres", "excluded_genres"):
-        if key in d and isinstance(d[key], str):
+    for key in _JSON_COLUMNS:
+        if isinstance(d.get(key), str):
             try:
                 d[key] = json.loads(d[key])
             except ValueError:
@@ -663,20 +678,157 @@ def rows_to_dicts(rows: Iterable[sqlite3.Row]) -> list[dict[str, Any]]:
     return [row_to_dict(r) for r in rows]  # type: ignore[misc]
 
 
+_IDENTIFIER = re.compile(r"[a-z_][a-z0-9_]*")
+
+
+def _ident(name: str) -> str:
+    """A table or column name about to be composed into SQL. Callers only pass names written in
+    this package, never keys from an input document; the check turns a slip into an error
+    instead of SQL."""
+    if not _IDENTIFIER.fullmatch(name):
+        raise ValueError(f"not an SQL identifier: {name!r}")
+    return name
+
+
+@lru_cache(maxsize=64)
+def _insert_sql(table: str, columns: tuple[str, ...]) -> str:
+    return (f"INSERT INTO {_ident(table)} ({', '.join(_ident(c) for c in columns)})"
+            f" VALUES ({', '.join('?' * len(columns))})")
+
+
+@lru_cache(maxsize=64)
+def _update_sql(table: str, columns: tuple[str, ...]) -> str:
+    return f"UPDATE {_ident(table)} SET {', '.join(f'{_ident(c)} = ?' for c in columns)} WHERE id = ?"
+
+
+def insert_row(conn: sqlite3.Connection, table: str, fields: dict[str, Any]) -> int:
+    """INSERT one row from {column: value}; values are always bound. Returns the new id."""
+    cur = conn.execute(_insert_sql(table, tuple(fields)), tuple(fields.values()))
+    return int(cur.lastrowid)
+
+
+def update_row(conn: sqlite3.Connection, table: str, row_id: int, fields: dict[str, Any]) -> None:
+    """UPDATE the row `row_id` from {column: value}; values are always bound."""
+    if fields:
+        conn.execute(_update_sql(table, tuple(fields)), (*fields.values(), row_id))
+
+
+def find_id(conn: sqlite3.Connection, table: str, column: str, value: Any) -> int | None:
+    """The id of the row whose `column` equals `value`, or None."""
+    row = conn.execute(f"SELECT id FROM {_ident(table)} WHERE {_ident(column)} = ?", (value,)).fetchone()
+    return int(row["id"]) if row else None
+
+
+def assign_ident_channels(conn: sqlite3.Connection) -> None:
+    """Give each ident without a channel the one whose number its file was made for. This runs
+    once per ident: afterwards the channel is the admin's to change and follows the channel's
+    id, so renumbering channels never strands an ident on the wrong one."""
+    conn.execute("UPDATE media SET home_channel_id = (SELECT c.id FROM channels c WHERE c.number = media.channel_hint)"
+                 " WHERE kind = 'ident' AND home_channel_id IS NULL AND channel_hint IS NOT NULL")
+
+
 def enabled_channels(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return rows_to_dicts(conn.execute("SELECT * FROM channels WHERE enabled = 1 ORDER BY number"))
 
 
 def effective(row: dict[str, Any]) -> dict[str, Any]:
     """Apply the JSON overrides column (admin edits) on top of indexed values."""
-    out = dict(row)
     overrides = row.get("overrides") or {}
     if isinstance(overrides, str):
         overrides = json.loads(overrides)
-    for k, v in overrides.items():
-        out[k] = v
-    return out
+    return {**row, **overrides}
 
+
+# --- values from documents another process wrote --------------------------------------------
+# pitv_content's index and reports, and uploaded line-up files, are JSON from outside this
+# process. These read one field each: a wrong type becomes None (or the default), so one bad
+# value costs that value, not the whole import.
+
+_SQLITE_INT_MAX = 2 ** 63 - 1
+
+
+def as_float(value: Any) -> float | None:
+    """A finite number (numeric text included); booleans, NaN and infinity are None."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def as_int(value: Any) -> int | None:
+    """As `as_float`, truncated, and only when SQLite can store it."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value if abs(value) <= _SQLITE_INT_MAX else None
+    number = as_float(value)
+    return int(number) if number is not None and abs(number) <= _SQLITE_INT_MAX else None
+
+
+def as_text(value: Any) -> str | None:
+    """Text as it is, and numbers in their usual form (a certificate sent as 12 is "12")."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    return None
+
+
+def as_bool(value: Any, default: bool = False) -> bool:
+    """A yes/no: booleans and numbers as usual, text "1", "true", "yes" or "on"; else `default`."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return default
+
+
+def genre_list(value: Any) -> list[str]:
+    """Genres as a list of non-empty names, from a list, a JSON column or a single name."""
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except ValueError:
+            decoded = value
+        value = decoded if isinstance(decoded, list) else [decoded if isinstance(decoded, str) else value]
+    if not isinstance(value, list):
+        return []
+    return [name for g in value if (name := as_text(g)) and name.strip()]
+
+
+# --- files beside the database -------------------------------------------------------------
+
+def data_path(conn: sqlite3.Connection, name: str) -> Path | None:
+    """`name` in the database's directory, so every database has its own; None in memory."""
+    for row in conn.execute("PRAGMA database_list"):
+        if row["name"] == "main" and row["file"]:
+            return Path(row["file"]).parent / name
+    return None
+
+
+def write_data_file(conn: sqlite3.Connection, name: str, build: Callable[[], Any]) -> None:
+    """Rewrite the JSON file `name` beside the database. The document is written to a temporary
+    file, synced and renamed over the old one, so a power cut leaves one version or the other,
+    never a torn file. `build` runs only when there is somewhere to write. Failures are logged:
+    the database stays the source of truth."""
+    path = data_path(conn, name)
+    if path is None:
+        return
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(build(), f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except OSError as exc:
+        log.warning("could not write %s: %s", path, exc)
+
+
+# --- run log ---------------------------------------------------------------------------------
 
 def now_ts() -> int:
     return int(time.time())

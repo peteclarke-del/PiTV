@@ -1,47 +1,97 @@
 #!/usr/bin/env bash
-# PiTV installer for Raspberry Pi OS Lite (64-bit, Bookworm). Run as root on the Pi:
+# PiTV installer for Raspberry Pi OS Lite (64-bit, Bookworm) and DietPi. Run as root on the Pi:
 #   sudo ./setup/install.sh
 # Idempotent: safe to re-run after `git pull`. The first run records its choices in
 # /etc/pitv/install.env; later runs (upgrades) reuse them unless overridden in the environment.
+#
+# Environment: NAS_HOST, SHARES (space separated; a space inside a share name is written %20),
+# CACHE_DIR and DISPLAY_MODE. NAS_USER and NAS_PASS (re)write the NAS credentials; without
+# them the first run asks for them.
 set -euo pipefail
 
+die() { echo "install.sh: $*" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || die "run as root (sudo)"
+
 ENV_FILE=/etc/pitv/install.env
-# shellcheck disable=SC1090
-[ -f "$ENV_FILE" ] && . "$ENV_FILE"
-NAS_HOST="${NAS_HOST:-${SAVED_NAS_HOST:-synologynas}}"
-# Share names as on the NAS; a space is written as %20 (mounted at /mnt/<name without spaces>).
-SHARES="${SHARES:-${SAVED_SHARES:-tvshows movies ads tvsports music%20videos}}"
-mount_name() { echo "$1" | sed 's/%20//g; s/ //g'; }
-share_name() { echo "$1" | sed 's/%20/ /g'; }
+CRED_FILE=/etc/pitv/smb-credentials
 INSTALL_DIR=/opt/pitv
 DATA_DIR=/var/lib/pitv
-CACHE_DIR="${CACHE_DIR:-${SAVED_CACHE_DIR:-/mnt/cache/pitv}}"
-DISPLAY_MODE="${DISPLAY_MODE:-${SAVED_DISPLAY_MODE:-hdmi576}}"
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-log() { printf '\n\033[1;32m==> %s\033[0m\n' "$*"; }
+log() {
+  if [ -t 1 ]; then printf '\n\033[1;32m==> %s\033[0m\n' "$*"; else printf '==> %s\n' "$*"; fi
+}
 
-[ "$(id -u)" -eq 0 ] || { echo "run as root (sudo)"; exit 1; }
+# put MODE FILE: stdin becomes FILE through a temporary file (created 0600) and a rename, so a
+# power cut leaves the old file or the new one and a secret is never readable on the way.
+put() {
+  local tmp
+  tmp="$(mktemp "$2.XXXXXX")"
+  cat > "$tmp"
+  chmod "$1" "$tmp"
+  mv -f "$tmp" "$2"
+}
+
+mkdir -p /etc/pitv
+# The NAS password leaves the environment before anything else runs, so no child process
+# (apt, pip, Python) inherits it.
+if [ -n "${NAS_USER:-}" ]; then
+  printf 'username=%s\npassword=%s\n' "$NAS_USER" "${NAS_PASS:-}" | put 600 "$CRED_FILE"
+fi
+unset NAS_PASS
+
+if [ -f "$ENV_FILE" ]; then
+  # shellcheck source=/dev/null
+  . "$ENV_FILE"
+fi
+NAS_HOST="${NAS_HOST:-${SAVED_NAS_HOST:-synologynas}}"
+SHARES="${SHARES:-${SAVED_SHARES:-tvshows movies ads tvsports music%20videos}}"
+CACHE_DIR="${CACHE_DIR:-${SAVED_CACHE_DIR:-/mnt/cache/pitv}}"
+DISPLAY_MODE="${DISPLAY_MODE:-${SAVED_DISPLAY_MODE:-hdmi576}}"
+
+# The SD-card installer's rules: these values end up in unit files and paths.
+[[ $NAS_HOST =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,252}[A-Za-z0-9])?$ ]] || die "NAS_HOST must be a host name or IP address"
+read -ra SHARE_LIST <<< "$SHARES"
+[ "${#SHARE_LIST[@]}" -gt 0 ] || die "SHARES is empty"
+for share in "${SHARE_LIST[@]}"; do
+  [[ $share =~ ^([A-Za-z0-9._-]|%20)+$ ]] || die "share '$share': only letters, digits, '.', '_', '-' and %20"
+done
+[[ $CACHE_DIR =~ ^/[A-Za-z0-9._/-]+$ ]] || die "CACHE_DIR must be an absolute path"
+case "$DISPLAY_MODE" in hdmi576|composite|hdmi43|hdmi) ;; *) die "DISPLAY_MODE must be hdmi576, composite, hdmi43 or hdmi" ;; esac
+
+log "NAS credentials"
+if [ ! -f "$CRED_FILE" ]; then
+  [ -t 0 ] || die "no $CRED_FILE: run from a terminal once, or pass NAS_USER and NAS_PASS"
+  read -rp "NAS username for $NAS_HOST: " smb_user
+  read -rsp "NAS password: " smb_pass
+  echo
+  printf 'username=%s\npassword=%s\n' "$smb_user" "$smb_pass" | put 600 "$CRED_FILE"
+  unset smb_pass
+fi
+chown root:root "$CRED_FILE"
+chmod 600 "$CRED_FILE"
 
 log "Packages"
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-  mpv ffmpeg python3 python3-venv python3-pip python3-pil python3-evdev \
+  mpv ffmpeg python3 python3-venv python3-pil python3-evdev \
   cifs-utils fonts-dejavu-core git rsync alsa-utils
 
 log "User and directories"
 id pitv >/dev/null 2>&1 || useradd --system --home "$DATA_DIR" --shell /usr/sbin/nologin pitv
 usermod -aG video,render,audio,input,tty pitv
-mkdir -p "$DATA_DIR" /etc/pitv "$INSTALL_DIR"
-chown -R pitv:pitv "$DATA_DIR"
+mkdir -p "$DATA_DIR" "$INSTALL_DIR"
+# The trailing slash follows a data directory that an older installer made a symlink.
+chown -R pitv:pitv "$DATA_DIR/"
 
 log "Code -> $INSTALL_DIR"
-rsync -a --delete --exclude .git --exclude .venv --exclude .dev --exclude node_modules --exclude web/node_modules \
+rsync -a --delete --exclude .git --exclude .venv --exclude .dev --exclude node_modules --exclude dist \
+  --exclude __pycache__ --exclude .pytest_cache --exclude .ruff_cache --exclude '*.egg-info' \
+  --exclude pitv-install.json --exclude '*.img' --exclude '*.img.xz' \
   "$SRC_DIR/" "$INSTALL_DIR/"
 if [ ! -x "$INSTALL_DIR/.venv/bin/python" ]; then
   python3 -m venv --system-site-packages "$INSTALL_DIR/.venv"
 fi
-"$INSTALL_DIR/.venv/bin/pip" install -q --upgrade pip
 "$INSTALL_DIR/.venv/bin/pip" install -q -e "$INSTALL_DIR"
 # The code is root-owned and read-only to the service user: a compromised web session must
 # not be able to rewrite the program it runs under. Bytecode is compiled now, as root.
@@ -49,47 +99,55 @@ fi
 chown -R root:root "$INSTALL_DIR"
 chmod -R u+rwX,go+rX,go-w "$INSTALL_DIR"
 
-log "SMB credentials"
-if [ ! -f /etc/pitv/smb-credentials ]; then
-  read -rp "NAS username for $NAS_HOST: " smb_user
-  read -rsp "NAS password: " smb_pass; echo
-  (umask 077; printf 'username=%s\npassword=%s\n' "$smb_user" "$smb_pass" > /etc/pitv/smb-credentials)
-fi
-chown root:root /etc/pitv/smb-credentials; chmod 600 /etc/pitv/smb-credentials
-
 log "CIFS automounts for: $SHARES"
-for share in $SHARES; do
-  m="$(mount_name "$share")"; n="$(share_name "$share")"
-  mkdir -p "/mnt/$m"
-  sed -e "s|@NAS@|$NAS_HOST|g" -e "s|@SHARE@|$n|g" -e "s|@MOUNT@|$m|g" "$SRC_DIR/systemd/mnt-share.mount.template" > "/etc/systemd/system/mnt-$m.mount"
-  sed -e "s|@MOUNT@|$m|g" "$SRC_DIR/systemd/mnt-share.automount.template" > "/etc/systemd/system/mnt-$m.automount"
+mount_template="$(< "$SRC_DIR/systemd/mnt-share.mount.template")"
+automount_template="$(< "$SRC_DIR/systemd/mnt-share.automount.template")"
+automounts=()
+for share in "${SHARE_LIST[@]}"; do
+  name="${share//%20/ }"                    # the share as the NAS names it
+  where="/mnt/${share//%20/}"               # its mount point, without spaces
+  unit="$(systemd-escape --path "$where")"  # systemd derives unit names from the path
+  mkdir -p "$where"
+  # Quoted replacements: bash 5.2 would otherwise read & in them as the matched text.
+  t="${mount_template//@NAS@/"$NAS_HOST"}"
+  t="${t//@SHARE@/"$name"}"
+  printf '%s\n' "${t//@WHERE@/"$where"}" | put 644 "/etc/systemd/system/$unit.mount"
+  t="${automount_template//@SHARE@/"$name"}"
+  printf '%s\n' "${t//@WHERE@/"$where"}" | put 644 "/etc/systemd/system/$unit.automount"
+  automounts+=("$unit.automount")
 done
 
-log "Local cache directory ($CACHE_DIR)"
+log "Cache directory ($CACHE_DIR)"
 # Only on a mounted drive: created on the SD card it would fill the card and hide the missing mount.
 if mountpoint -q "$CACHE_DIR" || mountpoint -q "$(dirname "$CACHE_DIR")"; then
-  mkdir -p "$CACHE_DIR"/acquired/{tvshows,tvsports,movies,ads,"music videos"} "$CACHE_DIR"/logs "$CACHE_DIR"/reports
-  chown -R pitv:pitv "$CACHE_DIR"
+  mkdir -p "$CACHE_DIR"/acquired/{tvshows,tvsports,movies,ads,"music videos"} "$CACHE_DIR"/{logs,reports}
+  # The folders only, not the media in them: that belongs to whichever tool wrote it, and a
+  # recursive chown of a large drive would add minutes to every upgrade.
+  chown pitv:pitv "$CACHE_DIR" "$CACHE_DIR"/{acquired,logs,reports} "$CACHE_DIR"/acquired/*/
 else
   echo "WARNING: $(dirname "$CACHE_DIR") is not a mounted drive; skipping the cache directory (mount the work drive and re-run)"
 fi
 
 log "systemd services"
-cp "$SRC_DIR/systemd/pitv-player.service" "$SRC_DIR/systemd/pitv-web.service" "$SRC_DIR/systemd/pitv-splash.service" /etc/systemd/system/
-# Exactly the commands pitv/web/api/admin.py SERVICE_ACTIONS and content.py tool_run issue.
-cat > /etc/sudoers.d/pitv <<'SUDO'
+install -m 644 "$SRC_DIR"/systemd/pitv-{player,web,splash}.service /etc/systemd/system/
+# Exactly the systemctl actions the admin offers: SERVICE_ACTIONS in pitv/web/api/services.py,
+# which tests/test_api.py checks against the line below. The rule is checked with visudo before
+# it is installed, because a broken file in /etc/sudoers.d disables sudo for everyone,
+# the maintenance user included. sudo ignores the temporary file: its name contains a dot.
+sudoers="$(mktemp /etc/sudoers.d/pitv.XXXXXX)"
+cat > "$sudoers" <<'SUDO'
 pitv ALL=(root) NOPASSWD: /usr/bin/systemctl restart pitv-web.service, /usr/bin/systemctl restart pitv-player.service, /usr/bin/systemctl stop pitv-player.service, /usr/bin/systemctl start pitv-player.service, /usr/bin/systemctl restart pitv-content-api.service, /usr/bin/systemctl start pitv-content.service
 SUDO
-chmod 440 /etc/sudoers.d/pitv
+chmod 440 "$sudoers"
+visudo -cqf "$sudoers" || { rm -f "$sudoers"; die "the sudoers rule does not parse"; }
+mv -f "$sudoers" /etc/sudoers.d/pitv
 systemctl daemon-reload
-for share in $SHARES; do systemctl enable --now "mnt-$(mount_name "$share").automount"; done
-systemctl enable pitv-splash pitv-player pitv-web
+systemctl enable --now "${automounts[@]}"
+systemctl enable pitv-splash.service pitv-player.service pitv-web.service
 
 log "Database and cache settings"
 # Values reach Python through the environment, never by splicing them into the source.
-# PiTV does not keep sources: the NAS shares are pitv_content's (docs/CONTENT_CONTRACT.md). They
-# are written once to /etc/pitv/nas-sources.json, which seeds pitv_content's installer.
-sudo -u pitv PITV_DATA="$DATA_DIR" PITV_CACHE_DIR="$CACHE_DIR" "$INSTALL_DIR/.venv/bin/python" - <<'PY'
+runuser -u pitv -- env PITV_DATA="$DATA_DIR" PITV_CACHE_DIR="$CACHE_DIR" "$INSTALL_DIR/.venv/bin/python" - <<'PY'
 import os
 from pitv import db as dbm
 from pitv.config import load_config
@@ -103,7 +161,9 @@ with dbm.tx(conn):
         dbm.set_setting(conn, "acquire_dir", f"{cache_dir}/acquired")
 print("cache:", dbm.get_setting(conn, "cache_dir"))
 PY
-PITV_SHARES="$SHARES" PITV_NAS_HOST="$NAS_HOST" python3 - > /etc/pitv/nas-sources.json <<'PY'
+# PiTV keeps no sources: the NAS shares are pitv_content's (docs/CONTENT_CONTRACT.md). They are
+# written to /etc/pitv/nas-sources.json, which seeds pitv_content's installer on its first run.
+sources="$(PITV_SHARES="$SHARES" PITV_NAS_HOST="$NAS_HOST" python3 - <<'PY'
 import json, os
 # share name on the NAS -> (source id, display name, type, category) for pitv_content
 known = {"tvshows": ("tvshows", "TV Shows", "tv", "general"), "movies": ("movies", "Movies", "movie", "general"),
@@ -117,20 +177,20 @@ for share in os.environ["PITV_SHARES"].split():
                 "remote": f"smb://{host}/{share}/", "enabled": True})
 print(json.dumps(out))
 PY
-chmod 644 /etc/pitv/nas-sources.json
+)"
+printf '%s\n' "$sources" | put 644 /etc/pitv/nas-sources.json
 
-log "Boot tuning (DISPLAY_MODE=$DISPLAY_MODE: hdmi576 | composite | hdmi43 | hdmi)"
-DISPLAY_MODE="$DISPLAY_MODE" "$SRC_DIR/setup/boot-trim.sh" || true
+log "Boot tuning (DISPLAY_MODE=$DISPLAY_MODE)"
+DISPLAY_MODE="$DISPLAY_MODE" bash "$SRC_DIR/setup/boot-trim.sh" \
+  || echo "WARNING: boot-trim.sh failed; PiTV runs, but boot time and the display mode are not set"
 
 # Remember this install's choices for upgrades (values are quoted; nothing secret is stored here).
-mkdir -p /etc/pitv
 {
   printf 'SAVED_NAS_HOST=%q\n' "$NAS_HOST"
   printf 'SAVED_SHARES=%q\n' "$SHARES"
   printf 'SAVED_CACHE_DIR=%q\n' "$CACHE_DIR"
   printf 'SAVED_DISPLAY_MODE=%q\n' "$DISPLAY_MODE"
-} > "$ENV_FILE"
-chmod 644 "$ENV_FILE"
+} | put 644 "$ENV_FILE"
 
 log "Done. Start with: systemctl start pitv-player pitv-web   (web UI on http://$(hostname -I | awk '{print $1}')/ )"
 echo "First run: open the web UI and set the admin password. pitv_content indexes the NAS on its first run; PiTV imports the catalogue and builds the schedule from it."

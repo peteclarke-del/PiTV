@@ -1,22 +1,23 @@
 <script>
-  // pitv_content sources: enable, order, kinds and options are edited in place; PUT providers sends one change at a time.
-  import { toolPut } from '../../lib/toolapi.js';
-  import { fieldErrors } from '../../lib/toolapi.js';
+  // pitv_content's online providers: enable, order, kinds and options are edited in place; each PUT
+  // providers carries one change.
+  import { toolPut, fieldErrors } from '../../lib/toolapi.js';
   import { toast } from '../../lib/stores.svelte.js';
+  import AppBadge from '../../components/AppBadge.svelte';
 
   let { providers = [], onchange } = $props();
   let errors = $state({});
   let busy = $state('');
-  let adding = $state(null);   // {type, options: [{k, v}]}
+  let adding = $state(null);   // {id, type, options: [{k, v}]}
   let optionRows = $state({}); // id -> [{k, v}]
-  let seeded = $state(null);
+  // Re-seed the editable option rows only when a new provider list arrives, not on every keystroke.
+  let seeded = null;
   $effect(() => {
-    if (providers !== seeded) {
-      seeded = providers;
-      const m = {};
-      for (const p of providers) m[p.id] = Object.entries(p.options ?? {}).map(([k, v]) => ({ k, v: String(v) }));
-      optionRows = m;
-    }
+    if (providers === seeded) return;
+    seeded = providers;
+    const m = {};
+    for (const p of providers) m[p.id] = Object.entries(p.options ?? {}).map(([k, v]) => ({ k, v: String(v) }));
+    optionRows = m;
   });
   let types = $derived(providers[0]?.types ?? []);
   let kindsAvailable = $derived(providers[0]?.kinds_available ?? []);
@@ -30,17 +31,21 @@
     }
     return [out, errs];
   }
-  async function send(body, label) {
-    busy = body.id ?? 'new'; errors = {};
+  /** PUT one change; true when pitv_content accepted it. */
+  async function send(body, label, busyKey = body.id) {
+    busy = busyKey; errors = {};
+    let ok = false;
     try {
       const r = await toolPut('providers', body);
       toast.success(label);
       onchange?.(r?.providers);
+      ok = true;
     } catch (e) {
       const fe = fieldErrors(e);
       if (fe) { errors = fe; toast.error('pitv_content rejected the change'); } else toast.error(e.detail || e.message);
     }
     busy = '';
+    return ok;
   }
   function saveOptions(p) {
     const [opts, errs] = validOptions(optionRows[p.id] ?? []);
@@ -51,18 +56,19 @@
     const kinds = new Set(p.kinds ?? []); if (on) kinds.add(kind); else kinds.delete(kind);
     send({ id: p.id, kinds: [...kinds] }, `${p.name ?? p.id} kinds updated`);
   }
-  function addSource() {
+  async function addProvider() {
     const [opts, errs] = validOptions(adding.options);
     if (Object.keys(errs).length) { errors = errs; toast.error(Object.values(errs)[0]); return; }
-    send({ id: adding.id.trim(), type: adding.type, options: opts }, `Source ${adding.id} added`).then(() => { if (!Object.keys(errors).length) adding = null; });
+    const id = adding.id.trim();
+    if (await send({ id, type: adding.type, options: opts }, `Provider ${id} added`, 'new')) adding = null;
   }
 </script>
 
 <div class="stack">
-  <div class="row"><span class="small muted">Sources are tried in order; kinds limit what each may fetch. Options are passed to the provider as given.</span><span class="spacer"></span><button class="small primary" onclick={() => (adding = { id: '', type: types[0] ?? '', options: [{ k: '', v: '' }] })} disabled={!types.length}>Add source</button></div>
+  <div class="row"><span class="small muted">Providers are tried in order; kinds limit what each may fetch. Options are passed to the provider as given.</span><span class="spacer"></span><button class="small primary" onclick={() => (adding = { id: '', type: types[0] ?? '', options: [{ k: '', v: '' }] })} disabled={!types.length}>Add provider</button></div>
   {#if adding}
     <div class="card">
-      <div class="card-title"><h3>New source</h3><button class="small ghost" onclick={() => (adding = null)}>✕</button></div>
+      <div class="card-title"><h3>New provider</h3><AppBadge app="content" /><button class="small ghost" onclick={() => (adding = null)} aria-label="Cancel">✕</button></div>
       <div class="inline-form">
         <label class="field">Id<input class="mono" bind:value={adding.id} placeholder="e.g. archive2" /></label>
         <label class="field">Type<select bind:value={adding.type}>{#each types as t (t)}<option value={t}>{t}</option>{/each}</select></label>
@@ -74,12 +80,12 @@
         <div><button class="small ghost" onclick={() => adding.options.push({ k: '', v: '' })}>+ option</button></div>
       </div>
       {#if errors.id}<div class="help err">{errors.id}</div>{/if}{#if errors.type}<div class="help err">{errors.type}</div>{/if}
-      <div class="row mt"><button class="primary" onclick={addSource} disabled={busy === 'new' || !adding.id.trim() || !adding.type}>Add</button></div>
+      <div class="row mt"><button class="primary" onclick={addProvider} disabled={busy === 'new' || !adding.id.trim() || !adding.type}>Add</button></div>
     </div>
   {/if}
   <div class="card pad-0 table-wrap">
     <table>
-      <thead><tr><th>Source</th><th>On</th><th>Order</th><th>Kinds</th><th>Health</th><th>Options</th></tr></thead>
+      <thead><tr><th>Provider</th><th>On</th><th>Order</th><th>Kinds</th><th>Health</th><th>Options</th></tr></thead>
       <tbody>
         {#each providers as p (p.id)}
           <tr class:off={!p.enabled}>
@@ -100,7 +106,7 @@
             </td>
           </tr>
         {:else}
-          <tr><td colspan="6" class="empty">No sources reported.</td></tr>
+          <tr><td colspan="6" class="empty">No providers reported.</td></tr>
         {/each}
       </tbody>
     </table>
@@ -108,7 +114,6 @@
 </div>
 
 <style>
-  tr.off td { opacity: .6; }
   tr.off td:nth-child(2) { opacity: 1; }
   .kinds { display: flex; flex-wrap: wrap; gap: .2rem .6rem; }
   .opts { display: flex; flex-direction: column; gap: .25rem; min-width: 260px; }
@@ -116,5 +121,4 @@
   .opts input { min-height: 28px; padding: .15rem .4rem; min-width: 0; }
   .opts input.mono { width: 40%; }
   .bad { border-color: var(--danger); }
-  .help.err { color: var(--danger); font-size: .78rem; }
 </style>

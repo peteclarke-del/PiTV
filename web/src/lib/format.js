@@ -1,4 +1,5 @@
-// Formatting helpers. Times are shown in the browser's local zone, 24h clock.
+// Formatting helpers and the small domain constants the admin forms share.
+// Times are shown in the browser's local zone, 24h clock.
 
 const timeFmt = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
 const dayFmt = new Intl.DateTimeFormat(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
@@ -105,6 +106,9 @@ export function safeColour(hex) {
 export const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 export const CERTIFICATES = ['U', 'PG', '12', '12A', '15', '18'];
 export const PATTERN_TOKENS = ['show', 'tv', 'movie', 'ad', 'ident', 'break'];
+
+/** Whether a channel is filled from a line-up; music channels are built from blocks instead. */
+export const hasLineup = (channel) => ['general', 'cartoons'].includes(channel?.content ?? 'general');
 
 export function plural(n, word) {
   return `${n} ${word}${n === 1 ? '' : 's'}`;

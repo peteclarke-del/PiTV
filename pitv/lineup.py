@@ -16,27 +16,33 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .db import all_settings, now_ts, row_to_dict, rows_to_dicts, tx
-from .player.cache import MediaCache
+from .db import (
+    as_bool,
+    as_int,
+    as_text,
+    data_path,
+    genre_list,
+    get_setting,
+    now_ts,
+    rows_to_dicts,
+    tx,
+    update_row,
+    write_data_file,
+)
 
 log = logging.getLogger("pitv.lineup")
 
 PROGRAMME_CONTENT = ("general", "cartoons")   # channel content types that carry a line-up
+MIRROR = "lineups.json"
+EXTERNAL_SOURCES = ("catalogue", "manual")  # entries not generated from the catalogue (source 'library')
 
 
-def _genres_of(row: dict[str, Any]) -> set[str]:
-    g = row.get("genres")
-    if isinstance(g, str):
-        try:
-            g = json.loads(g)
-        except ValueError:
-            g = []
-    return {str(x).lower() for x in (g or [])}
+def _genre_set(value: Any) -> set[str]:
+    return {g.lower() for g in genre_list(value)}
 
 
 def channel_fit(channel: dict[str, Any], genres: set[str]) -> float | None:
@@ -60,14 +66,9 @@ def channel_fit(channel: dict[str, Any], genres: set[str]) -> float | None:
     return matched / len(allowed) if matched else None
 
 
-def channel_accepts(channel: dict[str, Any], genres: set[str]) -> bool:
-    return channel_fit(channel, genres) is not None
-
-
 def programme_channels(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    return [row_to_dict(r) for r in conn.execute(
-        "SELECT * FROM channels WHERE enabled = 1 AND content IN (%s) ORDER BY number"
-        % ",".join("?" * len(PROGRAMME_CONTENT)), PROGRAMME_CONTENT)]
+    return [c for c in rows_to_dicts(conn.execute("SELECT * FROM channels WHERE enabled = 1 ORDER BY number"))
+            if c["content"] in PROGRAMME_CONTENT]
 
 
 def nas_only_for(channel: dict[str, Any], settings: dict[str, Any]) -> bool:
@@ -104,15 +105,14 @@ def _insert(conn: sqlite3.Connection, channel_id: int, kind: str, key: str, titl
             show_id: int | None = None, media_id: int | None = None, genres: list[str] | None = None,
             source: str = "library", transient: int = 0, episode_minutes: int | None = None,
             pinned: int = 0) -> int:
-    cur = conn.execute(
+    conn.execute(
         "INSERT INTO lineup(channel_id, kind, show_id, media_id, key, title, year, genres, source, transient,"
         " episode_minutes, pinned, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
         " ON CONFLICT(key) DO UPDATE SET channel_id = excluded.channel_id, pinned = excluded.pinned,"
         " updated_at = excluded.created_at",
         (channel_id, kind, show_id, media_id, key, title, year, json.dumps(genres or []), source, transient,
          episode_minutes, pinned, now_ts()))
-    row = conn.execute("SELECT id FROM lineup WHERE key = ?", (key,)).fetchone()
-    return int(row["id"]) if row else int(cur.lastrowid)
+    return int(conn.execute("SELECT id FROM lineup WHERE key = ?", (key,)).fetchone()["id"])   # inserted or updated
 
 
 def generate(conn: sqlite3.Connection, rebalance: bool = False) -> dict[str, int]:
@@ -129,20 +129,20 @@ def generate(conn: sqlite3.Connection, rebalance: bool = False) -> dict[str, int
         taken_films = {r[0] for r in conn.execute("SELECT media_id FROM lineup WHERE media_id IS NOT NULL")}
         load = _load_hours(conn, [c["id"] for c in channels])
         items: list[dict[str, Any]] = []
-        for r in rows_to_dicts(conn.execute(
+        for r in conn.execute(
                 "SELECT s.id, s.title, s.year, s.genres, s.certificate, s.kids, s.category,"
                 " (SELECT COALESCE(SUM(duration), 0) FROM media m WHERE m.show_id = s.id AND m.missing = 0) AS secs"
-                " FROM shows s WHERE s.excluded = 0 AND s.missing = 0")):
+                " FROM shows s WHERE s.excluded = 0 AND s.missing = 0"):
             if r["id"] not in taken_shows and r["secs"]:
                 items.append({"kind": "show", "id": r["id"], "title": r["title"], "year": r["year"],
-                              "genres": _genres_of(r), "secs": r["secs"], "cert": r["certificate"], "kids": r["kids"],
+                              "genres": _genre_set(r["genres"]), "secs": r["secs"], "cert": r["certificate"], "kids": r["kids"],
                               "bucket": _bucket(r["category"])})
-        for r in rows_to_dicts(conn.execute(
+        for r in conn.execute(
                 "SELECT id, title, year, genres, certificate, duration FROM media"
-                " WHERE kind = 'movie' AND excluded = 0 AND missing = 0 AND duration IS NOT NULL")):
+                " WHERE kind = 'movie' AND excluded = 0 AND missing = 0 AND duration IS NOT NULL"):
             if r["id"] not in taken_films:
                 items.append({"kind": "movie", "id": r["id"], "title": r["title"], "year": r["year"],
-                              "genres": _genres_of(r), "secs": r["duration"], "cert": r["certificate"], "kids": 0,
+                              "genres": _genre_set(r["genres"]), "secs": r["duration"], "cert": r["certificate"], "kids": 0,
                               "bucket": "general"})
         # Big items first so the hours balance out; kids and certificates alternate as a tie-break.
         order = {"U": 0, "PG": 1, "12": 2, "12A": 2, "15": 3, "18": 4}
@@ -151,7 +151,7 @@ def generate(conn: sqlite3.Connection, rebalance: bool = False) -> dict[str, int
             fits = [(c, f) for c in channels if (f := channel_fit(c, it["genres"])) is not None]
             if not fits:
                 result["unmatched"] += 1
-                _flag(conn, it, "No channel accepts its genres (%s)" % ", ".join(sorted(it["genres"])) or "none")
+                _flag(conn, it, f"No channel accepts its genres ({', '.join(sorted(it['genres'])) or 'none'})")
                 continue
             # Cheapest channel wins: its load after taking the item, scaled by how poorly it fits.
             hours = it["secs"] / 3600
@@ -196,13 +196,13 @@ def add(conn: sqlite3.Connection, channel_id: int, *, show_id: int | None = None
             if not row:
                 raise ValueError("show not found")
             lid = _insert(conn, channel_id, "show", f"show:{show_id}", row["title"], row["year"], show_id=show_id,
-                          genres=sorted(_genres_of(dict(row))), pinned=1)
+                          genres=sorted(_genre_set(row["genres"])), pinned=1)
         elif media_id is not None:
             row = conn.execute("SELECT id, title, year, genres FROM media WHERE id = ? AND kind = 'movie'", (media_id,)).fetchone()
             if not row:
                 raise ValueError("film not found")
             lid = _insert(conn, channel_id, "movie", f"movie:{media_id}", row["title"], row["year"], media_id=media_id,
-                          genres=sorted(_genres_of(dict(row))), pinned=1)
+                          genres=sorted(_genre_set(row["genres"])), pinned=1)
         else:
             if not title or kind not in ("show", "movie"):
                 raise ValueError("title and kind are required for an external entry")
@@ -214,18 +214,27 @@ def add(conn: sqlite3.Connection, channel_id: int, *, show_id: int | None = None
     return entry(conn, lid)
 
 
+_EDITABLE = {"channel_id", "enabled", "transient", "remove_after_airing", "episode_minutes", "next_episode", "notes",
+             "pinned", "year", "genres"}
+_FLAGS = {"enabled", "transient", "remove_after_airing", "pinned"}
+_NUMBERS = {"channel_id", "episode_minutes", "next_episode", "year"}
+
+
 def update(conn: sqlite3.Connection, lineup_id: int, fields: dict[str, Any]) -> dict[str, Any]:
-    allowed = {"channel_id", "enabled", "transient", "remove_after_airing", "episode_minutes", "next_episode", "notes",
-               "pinned", "year", "genres"}
-    sets = {}
+    """Edit an entry from the admin. Only the columns in _EDITABLE are written, whatever else
+    the request carries; moving an entry to another channel pins it there. A value that is not
+    a number where one is needed raises ValueError."""
+    sets: dict[str, Any] = {}
     for k, v in fields.items():
-        if k not in allowed:
+        if k not in _EDITABLE:
             continue
-        if k in ("enabled", "transient", "remove_after_airing", "pinned"):
+        if k in _FLAGS:
             v = int(bool(v))
         elif k == "genres":
-            v = json.dumps([str(g) for g in (v or [])])
-        elif k in ("channel_id", "episode_minutes", "next_episode", "year") and v is not None:
+            v = json.dumps(genre_list(v))
+        elif k == "notes":
+            v = "" if v is None else str(v)
+        elif v is not None:
             v = int(v)
         sets[k] = v
     if "channel_id" in sets:
@@ -233,7 +242,7 @@ def update(conn: sqlite3.Connection, lineup_id: int, fields: dict[str, Any]) -> 
     if sets:
         sets["updated_at"] = now_ts()
         with tx(conn):
-            conn.execute("UPDATE lineup SET %s WHERE id = ?" % ", ".join(f"{k} = ?" for k in sets), (*sets.values(), lineup_id))
+            update_row(conn, "lineup", lineup_id, sets)
             sync_home_channels(conn)
         write_mirror(conn)
     return entry(conn, lineup_id)
@@ -256,27 +265,33 @@ def entry(conn: sqlite3.Connection, lineup_id: int) -> dict[str, Any]:
 
 
 def entries(conn: sqlite3.Connection, channel_id: int | None = None, lineup_id: int | None = None) -> list[dict[str, Any]]:
+    """Line-up entries with their channel and progress: episodes on disk, requests open and
+    delivered, and placeholder slots still waiting for a file. The request and placeholder
+    counts are aggregated once per call, in one pass over each table, rather than per entry."""
     sql = ("SELECT l.*, c.number AS channel_number, c.name AS channel_name,"
            " (SELECT COUNT(*) FROM media m WHERE m.show_id = l.show_id AND m.missing = 0) AS episodes_on_disk,"
-           " (SELECT COUNT(*) FROM wanted w WHERE w.lineup_id = l.id AND w.status IN ('queued','searching','downloading','transcoding')) AS wanted_open,"
-           " (SELECT COUNT(*) FROM wanted w WHERE w.lineup_id = l.id AND w.status = 'done') AS wanted_done,"
-           " (SELECT COUNT(*) FROM schedule s WHERE s.wanted_id IN (SELECT id FROM wanted WHERE lineup_id = l.id) AND s.media_id IS NULL) AS placeholders"
-           " FROM lineup l JOIN channels c ON c.id = l.channel_id WHERE 1 = 1")
-    params: list[Any] = []
+           " COALESCE(w.n_open, 0) AS wanted_open, COALESCE(w.n_done, 0) AS wanted_done,"
+           " COALESCE(p.n, 0) AS placeholders"
+           " FROM lineup l JOIN channels c ON c.id = l.channel_id"
+           " LEFT JOIN (SELECT lineup_id, SUM(status = 'queued') AS n_open, SUM(status = 'done') AS n_done"
+           "            FROM wanted WHERE lineup_id IS NOT NULL GROUP BY lineup_id) w ON w.lineup_id = l.id"
+           " LEFT JOIN (SELECT wq.lineup_id, COUNT(*) AS n FROM schedule s JOIN wanted wq ON wq.id = s.wanted_id"
+           "            WHERE s.media_id IS NULL GROUP BY wq.lineup_id) p ON p.lineup_id = l.id")
+    where, params = [], []
     if channel_id is not None:
-        sql += " AND l.channel_id = ?"
+        where.append("l.channel_id = ?")
         params.append(channel_id)
     if lineup_id is not None:
-        sql += " AND l.id = ?"
+        where.append("l.id = ?")
         params.append(lineup_id)
-    sql += " ORDER BY c.number, l.kind, l.title"
-    out = []
-    for r in rows_to_dicts(conn.execute(sql, params)):
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    out = rows_to_dicts(conn.execute(sql + " ORDER BY c.number, l.kind, l.title", params))
+    for r in out:
         r["on_disk"] = bool(r["show_id"] and r["episodes_on_disk"]) or bool(r["media_id"])
         # External entries were added by hand or from pitv_content's catalogue; a series keeps
         # asking for its next episode even once some have arrived.
         r["external"] = r["source"] != "library"
-        out.append(r)
     return out
 
 
@@ -307,89 +322,86 @@ def genre_facets(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
     for kind, sql in (("shows", "SELECT genres FROM shows WHERE missing = 0 AND excluded = 0"),
                       ("movies", "SELECT genres FROM media WHERE kind = 'movie' AND missing = 0 AND excluded = 0")):
         for r in conn.execute(sql):
-            for g in json.loads(r["genres"] or "[]"):
-                facets.setdefault(str(g), {"shows": 0, "movies": 0})[kind] += 1
+            for g in genre_list(r["genres"]):
+                facets.setdefault(g, {"shows": 0, "movies": 0})[kind] += 1
     return dict(sorted(facets.items()))
 
 
 # --- JSON mirror --------------------------------------------------------------------------------
 
-def mirror_path(conn: sqlite3.Connection) -> Path | None:
-    """lineups.json beside the database file, so every database has its own mirror."""
-    for row in conn.execute("PRAGMA database_list"):
-        if row["name"] == "main" and row["file"]:
-            return Path(row["file"]).parent / "lineups.json"
-    return None  # in-memory database: no mirror
+_EXPORTED = ("kind", "title", "year", "source", "transient", "remove_after_airing", "episode_minutes", "next_episode",
+             "enabled", "pinned", "notes", "genres")
 
 
 def export(conn: sqlite3.Connection) -> dict[str, Any]:
-    channels = {c["id"]: c for c in rows_to_dicts(conn.execute("SELECT id, number, name, content, allowed_genres, excluded_genres, nas_only FROM channels ORDER BY number"))}
-    doc: dict[str, Any] = {"schema": 1, "exported_ts": now_ts(), "nas_only": all_settings(conn).get("nas_only", True), "channels": []}
-    for cid, c in channels.items():
-        doc["channels"].append({
-            "number": c["number"], "name": c["name"], "content": c["content"],
-            "allowed_genres": c["allowed_genres"] or [], "excluded_genres": c["excluded_genres"] or [], "nas_only": c["nas_only"],
-            "lineup": [{k: e[k] for k in ("kind", "title", "year", "source", "transient", "remove_after_airing",
-                                          "episode_minutes", "next_episode", "enabled", "pinned", "notes", "genres")}
-                       for e in entries(conn, channel_id=cid)],
-        })
-    return doc
+    by_channel: dict[int, list[dict[str, Any]]] = {}
+    for e in entries(conn):
+        by_channel.setdefault(e["channel_id"], []).append({k: e[k] for k in _EXPORTED})
+    channels = rows_to_dicts(conn.execute(
+        "SELECT id, number, name, content, allowed_genres, excluded_genres, nas_only FROM channels ORDER BY number"))
+    return {"schema": 1, "exported_ts": now_ts(), "nas_only": get_setting(conn, "nas_only", True), "channels": [
+        {"number": c["number"], "name": c["name"], "content": c["content"], "allowed_genres": c["allowed_genres"] or [],
+         "excluded_genres": c["excluded_genres"] or [], "nas_only": c["nas_only"], "lineup": by_channel.get(c["id"], [])}
+        for c in channels]}
 
 
 def write_mirror(conn: sqlite3.Connection) -> None:
-    path = mirror_path(conn)
-    if path is None:
-        return
-    try:
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(export(conn), indent=2))
-        os.replace(tmp, path)
-    except OSError as exc:
-        log.warning("could not write line-up mirror: %s", exc)
+    """lineups.json beside the database, so the line-up survives a database rebuild."""
+    write_data_file(conn, MIRROR, lambda: export(conn))
+
+
+def _import_entry(conn: sqlite3.Connection, channel_id: int, e: Any) -> bool:
+    """One entry of a line-up document; False when it cannot be read."""
+    title = (as_text(e.get("title")) or "").strip() if isinstance(e, dict) else ""
+    kind = e.get("kind", "show") if title else None
+    if kind not in ("show", "movie"):
+        return False
+    year = as_int(e.get("year"))
+    pinned = int(as_bool(e.get("pinned"), True))
+    if kind == "show":
+        row = conn.execute("SELECT id FROM shows WHERE lower(title) = lower(?) AND (year = ? OR ? IS NULL) AND missing = 0",
+                           (title, year, year)).fetchone()
+        lid = _insert(conn, channel_id, kind, f"show:{row['id']}", title, year, show_id=row["id"], pinned=pinned) \
+            if row else None
+    else:
+        row = conn.execute("SELECT id FROM media WHERE kind = 'movie' AND lower(title) = lower(?) AND (year = ? OR ? IS NULL)"
+                           " AND missing = 0", (title, year, year)).fetchone()
+        lid = _insert(conn, channel_id, kind, f"movie:{row['id']}", title, year, media_id=row["id"], pinned=pinned) \
+            if row else None
+    if lid is None:
+        # Not in the catalogue: an external entry, even if the document calls it a library one.
+        source = e.get("source") if e.get("source") in EXTERNAL_SOURCES else "manual"
+        lid = _insert(conn, channel_id, kind, f"ext:{kind}:{title.lower()}:{year or ''}", title, year,
+                      genres=genre_list(e.get("genres")), source=source,
+                      transient=int(as_bool(e.get("transient"), True)), episode_minutes=as_int(e.get("episode_minutes")),
+                      pinned=1)
+    update_row(conn, "lineup", lid, {
+        "enabled": int(as_bool(e.get("enabled"), True)), "remove_after_airing": int(as_bool(e.get("remove_after_airing"))),
+        "next_episode": as_int(e.get("next_episode")) or 1, "notes": as_text(e.get("notes")) or ""})
+    return True
 
 
 def import_doc(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, int]:
-    """Apply a line-up document: channels matched by number; library entries matched by title
-    and year against the catalogue, everything else becomes an external entry."""
-    result = {"entries": 0, "unknown_channels": 0}
+    """Apply a line-up document (the mirror, or a file uploaded in the admin): channels matched
+    by number; library entries matched by title and year against the catalogue, everything else
+    becomes an external entry. Entries that cannot be read are skipped and counted."""
+    listed = doc.get("channels") if isinstance(doc, dict) else None
+    if not isinstance(listed, list):
+        raise TypeError("expected a line-up document with a channels list")
+    result = {"entries": 0, "skipped": 0, "unknown_channels": 0}
     channels = {r["number"]: r["id"] for r in conn.execute("SELECT id, number FROM channels")}
     with tx(conn):
-        for ch in doc.get("channels") or []:
-            cid = channels.get(int(ch.get("number", 0)))
+        for ch in listed:
+            cid = channels.get(as_int(ch.get("number"))) if isinstance(ch, dict) else None
             if cid is None:
                 result["unknown_channels"] += 1
                 continue
-            fields = {}
-            for k in ("allowed_genres", "excluded_genres"):
-                if k in ch:
-                    fields[k] = json.dumps(list(ch[k] or []))
+            fields = {k: json.dumps(genre_list(ch[k])) for k in ("allowed_genres", "excluded_genres") if k in ch}
             if ch.get("nas_only") in ("inherit", "yes", "no"):
                 fields["nas_only"] = ch["nas_only"]
-            if fields:
-                conn.execute("UPDATE channels SET %s WHERE id = ?" % ", ".join(f"{k} = ?" for k in fields), (*fields.values(), cid))
-            for e in ch.get("lineup") or []:
-                title, year, kind = str(e.get("title", "")).strip(), e.get("year"), e.get("kind", "show")
-                if not title:
-                    continue
-                show = media = None
-                if kind == "show":
-                    show = conn.execute("SELECT id FROM shows WHERE lower(title) = lower(?) AND (year = ? OR ? IS NULL) AND missing = 0",
-                                        (title, year, year)).fetchone()
-                else:
-                    media = conn.execute("SELECT id FROM media WHERE kind = 'movie' AND lower(title) = lower(?) AND (year = ? OR ? IS NULL) AND missing = 0",
-                                         (title, year, year)).fetchone()
-                if show:
-                    lid = _insert(conn, cid, "show", f"show:{show['id']}", title, year, show_id=show["id"], pinned=int(bool(e.get("pinned", 1))))
-                elif media:
-                    lid = _insert(conn, cid, "movie", f"movie:{media['id']}", title, year, media_id=media["id"], pinned=int(bool(e.get("pinned", 1))))
-                else:
-                    lid = _insert(conn, cid, kind, f"ext:{kind}:{title.lower()}:{year or ''}", title, year,
-                                  genres=list(e.get("genres") or []), source=e.get("source") or "manual",
-                                  transient=int(bool(e.get("transient", True))), episode_minutes=e.get("episode_minutes"), pinned=1)
-                conn.execute("UPDATE lineup SET enabled = ?, remove_after_airing = ?, next_episode = ?, notes = ? WHERE id = ?",
-                             (int(bool(e.get("enabled", True))), int(bool(e.get("remove_after_airing", False))),
-                              int(e.get("next_episode") or 1), str(e.get("notes") or ""), lid))
-                result["entries"] += 1
+            update_row(conn, "channels", cid, fields)
+            for e in ch.get("lineup") if isinstance(ch.get("lineup"), list) else []:
+                result["entries" if _import_entry(conn, cid, e) else "skipped"] += 1
         sync_home_channels(conn)
     write_mirror(conn)
     return result
@@ -399,16 +411,16 @@ def restore_if_empty(conn: sqlite3.Connection) -> bool:
     """After a database rebuild, bring the line-up back from the JSON mirror."""
     if conn.execute("SELECT 1 FROM lineup LIMIT 1").fetchone():
         return False
-    path = mirror_path(conn)
+    path = data_path(conn, MIRROR)
     if path is None or not path.exists():
         return False
     try:
         import_doc(conn, json.loads(path.read_text()))
-        log.info("line-up restored from %s", path)
-        return True
-    except (OSError, ValueError) as exc:
+    except (OSError, TypeError, ValueError) as exc:
         log.warning("could not restore line-up from %s: %s", path, exc)
         return False
+    log.info("line-up restored from %s", path)
+    return True
 
 
 # --- material arriving from pitv_content -------------------------------------------------------
@@ -422,6 +434,7 @@ def attach_delivery(conn: sqlite3.Connection, wanted_id: int, media_id: int) -> 
     the entry's channel and never generated onto another one. Each bound slot takes the file's
     real length (a film is never cut off). Returns {channel_id: earliest change} for the caller
     to rebuild from."""
+    # Imported here: the scheduler imports this module.
     from .scheduler.build import slot_titles
     w = conn.execute("SELECT lineup_id FROM wanted WHERE id = ?", (wanted_id,)).fetchone()
     media = dict(conn.execute("SELECT m.*, s.title AS show_title FROM media m LEFT JOIN shows s ON s.id = m.show_id"
@@ -437,7 +450,7 @@ def attach_delivery(conn: sqlite3.Connection, wanted_id: int, media_id: int) -> 
                          (media_id, f"movie:{media_id}", now_ts(), entry["id"]))
         sync_home_channels(conn)
     title, subtitle = slot_titles(media, media.get("show_title"))
-    real = int(round(float(media.get("duration") or 0)))
+    real = round(float(media.get("duration") or 0))
     changed: dict[int, int] = {}
     for sl in conn.execute("SELECT id, channel_id, start_ts, end_ts, replay FROM schedule WHERE wanted_id = ? AND media_id IS NULL",
                            (wanted_id,)).fetchall():
@@ -451,37 +464,55 @@ def attach_delivery(conn: sqlite3.Connection, wanted_id: int, media_id: int) -> 
     return changed
 
 
+def _remove_cache_file(path: str, cache_root: Path | None) -> bool:
+    """Delete `path` when, and only when, it is a file inside the cache. The parent folder is
+    resolved (following symlinked folders) but the file name is not, so a symlink in the cache is
+    removed as a link and never takes its target with it. Anything outside the cache, the NAS
+    above all, is never PiTV's to delete. Returns whether the file is gone."""
+    if cache_root is None:
+        log.warning("transient file %s not removed: no cache_dir is set", path)
+        return False
+    p = Path(path)
+    try:
+        target = p.parent.resolve(strict=True) / p.name
+    except FileNotFoundError:
+        return True    # its folder has gone, so has the file
+    except (OSError, RuntimeError) as exc:   # unreadable, or a symlink loop
+        log.warning("transient file %s not removed: %s", path, exc)
+        return False
+    if p.name in ("", ".", "..") or not target.is_relative_to(cache_root):
+        log.warning("transient file %s not removed: it is outside the cache %s", path, cache_root)
+        return False
+    try:
+        target.unlink(missing_ok=True)
+    except OSError as exc:
+        log.warning("could not remove transient file %s: %s", path, exc)
+        return False
+    return True
+
+
 def remove_aired_transients(conn: sqlite3.Connection, now: int | None = None) -> int:
     """Delete fetched transient files once they have aired and nothing still schedules them:
     straight away when the entry says remove-after-airing, otherwise after transient_keep_days.
-    Acquired files live outside the cache's size-capped LRU area, so this is what bounds them."""
+    Acquired files live outside the cache's size-capped LRU area, so this is what bounds them.
+    The catalogue entry is retired either way; a file that could not be deleted is logged."""
     now = now or now_ts()
-    settings = all_settings(conn)
-    keep_days = int(settings.get("transient_keep_days", 7))
-    rows = rows_to_dicts(conn.execute(
-        "SELECT m.id, m.path, m.cache_path, COALESCE(l.remove_after_airing, 0) AS immediate,"
+    keep = int(get_setting(conn, "transient_keep_days", 7)) * 86400
+    cache_dir = get_setting(conn, "cache_dir", "")
+    cache_root = Path(cache_dir).resolve() if cache_dir else None
+    expired = [r for r in conn.execute(
+        "SELECT m.id, m.path, m.cache_path,"
+        " EXISTS (SELECT 1 FROM wanted w JOIN lineup l ON l.id = w.lineup_id"
+        "         WHERE w.dest_path = m.path AND l.remove_after_airing = 1) AS immediate,"
         " (SELECT MAX(h.ended_at) FROM history h WHERE h.media_id = m.id) AS last_aired"
-        " FROM media m LEFT JOIN wanted w ON w.dest_path = m.path LEFT JOIN lineup l ON l.id = w.lineup_id"
-        " WHERE m.transient = 1 AND m.missing = 0"
-        " AND NOT EXISTS (SELECT 1 FROM schedule s WHERE s.media_id = m.id AND s.end_ts > ?)", (now,)))
-    removed = 0
-    for r in rows:
-        if not r["last_aired"]:
-            continue  # never removed before it has been shown
-        if not r["immediate"] and now - r["last_aired"] < keep_days * 86400:
-            continue
-        # Only ever delete inside the cache: a NAS original is never PiTV's to remove.
-        cache_root = MediaCache.from_settings(settings).dir
-        for path in {r["path"], r.get("cache_path")} - {None}:
-            if cache_root is None or not Path(path).resolve().is_relative_to(cache_root.resolve()):
-                continue
-            if path:
-                try:
-                    Path(path).unlink(missing_ok=True)
-                except OSError as exc:
-                    log.warning("could not remove transient file %s: %s", path, exc)
-        with tx(conn):
-            conn.execute("UPDATE media SET missing = 1 WHERE id = ?", (r["id"],))
-        removed += 1
-        log.info("removed transient file after airing: %s", r["path"])
-    return removed
+        " FROM media m WHERE m.transient = 1 AND m.missing = 0"
+        " AND NOT EXISTS (SELECT 1 FROM schedule s WHERE s.media_id = m.id AND s.end_ts > ?)", (now,)).fetchall()
+        # never before it has been shown
+        if r["last_aired"] and (r["immediate"] or now - r["last_aired"] >= keep)]
+    for r in expired:
+        removed = [_remove_cache_file(p, cache_root) for p in {r["path"], r["cache_path"]} - {None, ""}]
+        if all(removed):
+            log.info("removed transient file after airing: %s", r["path"])
+    with tx(conn):
+        conn.executemany("UPDATE media SET missing = 1 WHERE id = ?", [(r["id"],) for r in expired])
+    return len(expired)

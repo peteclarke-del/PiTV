@@ -13,6 +13,10 @@ from .config import Config
 FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 _LINE = re.compile(r"^(?P<ts>\S+ \S+) (?P<level>[A-Z]+)\s+(?P<logger>\S+): (?P<msg>.*)$")
 LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
+# Catalogue imports and schedule builds run in the player, the web service and the CLI, so
+# every process also writes those loggers to a shared per-topic file the admin can show.
+TOPIC_LOGS = {"catalogue": ("pitv.catalogue",), "schedule": ("pitv.scheduler", "pitv.readiness")}
+TAIL_BYTES = 1_000_000   # how much of a log `tail` reads: a few thousand lines
 
 
 def log_dir(cfg: Config) -> Path:
@@ -21,47 +25,50 @@ def log_dir(cfg: Config) -> Path:
     return d
 
 
-TOPIC_LOGS = {"catalogue": ("pitv.catalogue",), "schedule": ("pitv.scheduler", "pitv.readiness")}
+
+def _replace_handlers(logger: logging.Logger, *handlers: logging.Handler) -> None:
+    for h in list(logger.handlers):
+        logger.removeHandler(h)
+        h.close()
+    for h in handlers:
+        logger.addHandler(h)
 
 
 def setup_logging(cfg: Config, name: str, level: int = logging.INFO, console: bool = True) -> Path:
-    path = log_dir(cfg) / f"{name}.log"
+    """Send this process's logging to <data>/logs/<name>.log (and the console), plus the topic
+    files for the loggers in TOPIC_LOGS. Returns the process's own log file."""
+    folder = log_dir(cfg)
+    fmt = logging.Formatter(FORMAT)
+    path = folder / f"{name}.log"
+    fh = logging.handlers.RotatingFileHandler(path, maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+    handlers: list[logging.Handler] = [fh]
+    if console:
+        handlers.append(logging.StreamHandler())
+    for h in handlers:
+        h.setFormatter(fmt)
     root = logging.getLogger()
     root.setLevel(level)
-    for h in list(root.handlers):
-        root.removeHandler(h)
-    fh = logging.handlers.RotatingFileHandler(path, maxBytes=2_000_000, backupCount=3, encoding="utf-8")
-    fh.setFormatter(logging.Formatter(FORMAT))
-    root.addHandler(fh)
-    if console:
-        ch = logging.StreamHandler()
-        ch.setFormatter(logging.Formatter(FORMAT))
-        root.addHandler(ch)
+    _replace_handlers(root, *handlers)
     logging.getLogger("uvicorn.access").disabled = True
-    # Topic logs: catalogue imports and schedule builds run in the player, the web service and
-    # the CLI, so each process also writes those loggers to a shared file the admin can show.
     for topic, loggers in TOPIC_LOGS.items():
         if topic == name:
-            continue
-        th = logging.handlers.RotatingFileHandler(log_dir(cfg) / f"{topic}.log", maxBytes=1_000_000, backupCount=2,
+            continue   # already this process's own file
+        th = logging.handlers.RotatingFileHandler(folder / f"{topic}.log", maxBytes=1_000_000, backupCount=2,
                                                   encoding="utf-8")
-        th.setFormatter(logging.Formatter(FORMAT))
+        th.setFormatter(fmt)
         for lg in loggers:
-            logger = logging.getLogger(lg)
-            for h in list(logger.handlers):
-                logger.removeHandler(h)
-            logger.addHandler(th)
+            _replace_handlers(logging.getLogger(lg), th)
     return path
 
 
 def tail(path: Path, lines: int, q: str = "", min_level: str = "") -> list[dict]:
+    """The last `lines` entries of a log file (a traceback stays with its entry), keeping only
+    those at `min_level` or above whose message or logger contains `q`."""
     if not path.exists():
         return []
-    # Read the last ~1 MB at most; plenty for a few thousand lines.
     with open(path, "rb") as f:
         f.seek(0, 2)
-        size = f.tell()
-        f.seek(max(0, size - 1_000_000))
+        f.seek(max(0, f.tell() - TAIL_BYTES))
         raw = f.read().decode("utf-8", errors="replace")
     out: list[dict] = []
     min_num = LEVELS.get(min_level, 0)
@@ -78,4 +85,4 @@ def tail(path: Path, lines: int, q: str = "", min_level: str = "") -> list[dict]
     if q:
         ql = q.lower()
         out = [e for e in out if ql in e["msg"].lower() or ql in e["logger"].lower()]
-    return out[-lines:]
+    return out[-lines:] if lines > 0 else []

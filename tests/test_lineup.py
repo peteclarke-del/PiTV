@@ -1,8 +1,11 @@
 """Channel line-ups: exclusive membership, genre-driven generation, external entries."""
 
-import pytest
+import json
+from itertools import pairwise
 
+import pytest
 from conftest import make_library
+
 from pitv import db as dbm
 from pitv import lineup
 from pitv.scheduler.build import build_horizon, parse_day
@@ -42,7 +45,7 @@ def test_generation_respects_channel_genres(conn):
         ch = channels[e["channel_id"]]
         assert ch["content"] in ("general", "cartoons")
         genres = {g.lower() for g in (e["genres"] or [])}
-        assert lineup.channel_accepts(ch, genres), (e["title"], genres, ch["allowed_genres"])
+        assert lineup.channel_fit(ch, genres) is not None, (e["title"], genres, ch["allowed_genres"])
     toons = conn.execute("SELECT id FROM channels WHERE content = 'cartoons'").fetchone()["id"]
     titles = {e["title"] for e in lineup.entries(conn, channel_id=toons)}
     assert {"Danger Mouse", "Thundercats"} <= titles
@@ -77,7 +80,7 @@ def test_move_and_remove_entries(conn, data_dir):
     doc = lineup.export(conn)
     assert doc["schema"] == 1 and any(c["lineup"] for c in doc["channels"])
     lineup.write_mirror(conn)
-    assert lineup.mirror_path(conn) == data_dir / "lineups.json" and (data_dir / "lineups.json").exists()
+    assert dbm.data_path(conn, lineup.MIRROR) == data_dir / "lineups.json" and (data_dir / "lineups.json").exists()
 
 
 def test_external_entry_scheduled_ahead_and_requested(conn):
@@ -129,7 +132,7 @@ def test_readiness_substitutes_unfetched_placeholders(conn):
                         " AND start_ts >= ? AND start_ts < ?", (placeholder["channel_id"], now, now + 86400)).fetchone()[0] == 0
     rows = conn.execute("SELECT start_ts, end_ts FROM schedule WHERE channel_id = ? AND day = ? ORDER BY start_ts",
                         (placeholder["channel_id"], placeholder["day"])).fetchall()
-    for a, b in zip(rows, rows[1:]):
+    for a, b in pairwise(rows):
         assert a["end_ts"] == b["start_ts"]
 
 
@@ -188,7 +191,149 @@ def test_report_file_already_posted_is_not_applied_twice(conn, tmp_path):
     cache.reports_dir.mkdir(parents=True)
     report = {"schema": 2, "items": [], "run": {"tool": "pitv-content test", "started_ts": 1234, "finished_ts": 1240}}
     apply_report(conn, report)                                   # posted over HTTP
-    (cache.reports_dir / "r.json").write_text(__import__("json").dumps(report))
+    (cache.reports_dir / "r.json").write_text(json.dumps(report))
     assert apply_report_files(conn, cache) == 0                  # the dropped copy is recognised
     assert (cache.reports_dir / "r.json.applied").exists()
     assert conn.execute("SELECT COUNT(*) FROM run_log WHERE kind = 'content' AND started_at = 1234").fetchone()[0] == 1
+
+
+def test_gap_episode_is_filed_under_its_series(conn, tmp_path):
+    """A wanted row raised for a gap in a library series already names the series; the delivered
+    episode belongs to it rather than to a new series created for online material."""
+    from pitv.content import apply_report
+    show = conn.execute("SELECT id, title, year FROM shows WHERE title = 'Minder'").fetchone()
+    with dbm.tx(conn):
+        wid = conn.execute("INSERT INTO wanted(kind, title, year, season, episode, show_id, provider, auto, created_at)"
+                           " VALUES ('episode', ?, ?, 9, 3, ?, 'auto', 1, 0)", (show["title"], show["year"], show["id"])).lastrowid
+    f = tmp_path / "Minder - S09E03.mp4"
+    f.write_bytes(b"x" * 10)
+    counts = apply_report(conn, {"schema": 2, "items": [{
+        "wanted_id": wid, "status": "done", "file": {"path": str(f), "duration": 3000.0, "vcodec": "h264"},
+        "meta": {"kind": "episode", "show_title": "Minder (fetched)", "season": 9, "episode": 3, "uid": "yt:gap"}}]})
+    assert counts["wanted_done"] == 1
+    media = conn.execute("SELECT show_id, season, episode FROM media WHERE uid = 'yt:gap'").fetchone()
+    assert tuple(media) == (show["id"], 9, 3)
+    assert not conn.execute("SELECT 1 FROM shows WHERE path LIKE 'fetched:show:minder%'").fetchone()
+    with dbm.tx(conn):
+        conn.execute("DELETE FROM media WHERE uid = 'yt:gap'")
+        conn.execute("DELETE FROM wanted WHERE id = ?", (wid,))
+
+
+def test_malformed_report_entries_are_not_fatal(conn, tmp_path):
+    from pitv.content import apply_report, apply_report_files
+    from pitv.player.cache import MediaCache
+    with dbm.tx(conn):
+        wid = conn.execute("INSERT INTO wanted(kind, title, provider, created_at) VALUES ('music', 'Odd', 'auto', 0)").lastrowid
+    counts = apply_report(conn, {"items": [
+        {"wanted_id": "inf", "media_id": "nan", "status": "done", "file": {"path": 5}},
+        {"wanted_id": wid, "status": "done", "file": {"path": str(tmp_path / "absent.mp4")}},
+        "junk"], "wanted": {"not": "a list"}, "run": {"started_ts": "soon", "tool": ["x"]}})
+    assert counts["wanted_failed"] == 1 and counts["items_failed"] == 1
+    row = conn.execute("SELECT status, attempts, message FROM wanted WHERE id = ?", (wid,)).fetchone()
+    assert (row["status"], row["attempts"], row["message"]) == ("queued", 1, "reported file does not exist")
+    with pytest.raises(TypeError):
+        apply_report(conn, [])
+    cache = MediaCache(tmp_path / "cache", 10 ** 9)
+    cache.reports_dir.mkdir(parents=True)
+    (cache.reports_dir / "list.json").write_text("[]")
+    assert apply_report_files(conn, cache) == 0 and not (cache.reports_dir / "list.json.applied").exists()
+    with dbm.tx(conn):
+        conn.execute("DELETE FROM wanted WHERE id = ?", (wid,))
+
+
+def test_transient_removal_never_leaves_the_cache(tmp_path):
+    """Only files inside the cache are deleted; a symlink in the cache goes as a link and its
+    target (standing in for the read-only NAS) is untouched."""
+    cache, nas = tmp_path / "cache", tmp_path / "nas"
+    cache.mkdir()
+    nas.mkdir()
+    inside, outside, target = cache / "fetched.mp4", nas / "original.mkv", nas / "linked.mkv"
+    for f in (inside, outside, target):
+        f.write_bytes(b"x")
+    link = cache / "link.mkv"
+    link.symlink_to(target)
+    sneaky = cache / ".." / "nas" / "original.mkv"
+    conn = dbm.connect(":memory:")
+    dbm.init_db(conn)
+    now = 10 ** 9
+    with dbm.tx(conn):
+        dbm.set_setting(conn, "cache_dir", str(cache))
+        for path in (inside, outside, link, sneaky):
+            mid = conn.execute("INSERT INTO media(kind, title, path, origin, transient) VALUES ('movie', 'x', ?, 'online', 1)",
+                               (str(path),)).lastrowid
+            conn.execute("INSERT INTO history(channel_id, media_id, started_at, ended_at) VALUES (1, ?, ?, ?)",
+                         (mid, now - 30 * 86400, now - 30 * 86400))
+    assert lineup.remove_aired_transients(conn, now=now) == 4
+    assert not inside.exists() and not link.is_symlink()
+    assert outside.exists() and target.exists()
+    assert conn.execute("SELECT COUNT(*) FROM media WHERE missing = 0").fetchone()[0] == 0
+
+
+def test_fetched_advert_without_a_verdict_follows_the_keyword_rule(conn, tmp_path):
+    """"family_safe": null is no verdict: tags and PiTV's keyword list decide, as on import."""
+    from pitv.content import apply_report
+    rows = []
+    for title, meta in (("Hofmeister", {"family_safe": None}), ("Milk Tray", {"family_safe": None}),
+                        ("Cadbury's Flake", {"tags": ["alcohol"]}), ("Carling", {"family_safe": True})):
+        with dbm.tx(conn):
+            wid = conn.execute("INSERT INTO wanted(kind, title, year, provider, created_at) VALUES ('advert', ?, 1985, 'auto', 0)",
+                               (title,)).lastrowid
+        f = tmp_path / f"{title}.mp4"
+        f.write_bytes(b"x" * 10)
+        apply_report(conn, {"schema": 2, "items": [{"wanted_id": wid, "status": "done", "file": {"path": str(f)},
+                                                    "meta": {"kind": "advert", "title": title, "uid": f"yt:{title}", **meta}}]})
+        rows.append(wid)
+    safe = {r["title"]: r["family_safe"] for r in conn.execute("SELECT title, family_safe FROM media WHERE uid LIKE 'yt:%'"
+                                                                 " AND kind = 'advert'")}
+    assert safe == {"Hofmeister": 0, "Milk Tray": 1, "Cadbury's Flake": 0, "Carling": 1}
+    with dbm.tx(conn):
+        conn.execute("DELETE FROM media WHERE uid LIKE 'yt:%' AND kind = 'advert'")
+        conn.executemany("DELETE FROM wanted WHERE id = ?", [(w,) for w in rows])
+
+
+def test_request_already_in_the_library_is_met_by_that_file(conn):
+    """pitv_content reports a fetch as a duplicate of a NAS file with `existing_uid`: the request
+    is bound to that file and done, with no attempt used; an unknown uid is a plain failure."""
+    from pitv.content import apply_report
+    film = conn.execute("SELECT id, uid, title FROM media WHERE kind = 'movie' AND missing = 0 AND origin = 'nas'"
+                        " ORDER BY id LIMIT 1").fetchone()
+    ch = conn.execute("SELECT id FROM channels ORDER BY number LIMIT 1").fetchone()["id"]
+    start = 4102444800
+    with dbm.tx(conn):
+        known = conn.execute("INSERT INTO wanted(kind, title, provider, created_at) VALUES ('movie', ?, 'auto', 0)",
+                             (film["title"],)).lastrowid
+        unknown = conn.execute("INSERT INTO wanted(kind, title, provider, created_at) VALUES ('movie', 'Nowhere', 'auto', 0)").lastrowid
+        conn.execute("INSERT INTO schedule(channel_id, day, start_ts, end_ts, media_id, kind, title, wanted_id)"
+                     " VALUES (?, '2099-12-31', ?, ?, NULL, 'programme', ?, ?)", (ch, start, start + 5400, film["title"], known))
+    counts = apply_report(conn, {"schema": 2, "items": [
+        {"wanted_id": known, "status": "failed", "message": f"already in the library as {film['uid']}",
+         "existing_uid": film["uid"], "file": None},
+        {"wanted_id": unknown, "status": "failed", "message": "already in the library as nas:x:y",
+         "existing_uid": "nas:x:y", "file": None}]})
+    assert (counts["wanted_done"], counts["created"], counts["wanted_failed"]) == (1, 0, 1)
+    row = conn.execute("SELECT status, attempts FROM wanted WHERE id = ?", (known,)).fetchone()
+    assert (row["status"], row["attempts"]) == ("done", 0)
+    assert conn.execute("SELECT attempts FROM wanted WHERE id = ?", (unknown,)).fetchone()[0] == 1
+    assert conn.execute("SELECT media_id FROM schedule WHERE wanted_id = ?", (known,)).fetchone()[0] == film["id"]
+    with dbm.tx(conn):
+        conn.execute("DELETE FROM schedule WHERE day >= '2099-12-31'")
+        conn.executemany("DELETE FROM wanted WHERE id = ?", [(known,), (unknown,)])
+
+
+def test_old_report_files_are_pruned(conn, tmp_path):
+    import os
+
+    from pitv.content import apply_report_files
+    from pitv.player.cache import MediaCache
+    cache = MediaCache(tmp_path / "cache", 10 ** 9)
+    d = cache.reports_dir
+    d.mkdir(parents=True)
+    old = dbm.now_ts() - 40 * 86400
+    applied, marker, broken, orphan, recent = (d / "applied.json", d / "applied.json.applied", d / "broken.json",
+                                               d / "gone.json.applied", d / "recent.json")
+    for f, text in ((applied, "{}"), (marker, "1"), (broken, "not json"), (orphan, "1"), (recent, "not json")):
+        f.write_text(text)
+    for f in (applied, marker, broken):
+        os.utime(f, (old, old))
+    assert apply_report_files(conn, cache) == 0
+    assert sorted(p.name for p in d.iterdir()) == ["recent.json"]   # unapplied and recent: retried next pass

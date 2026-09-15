@@ -33,7 +33,8 @@ def watchdog() -> bool:
 
 
 def status(text: str) -> bool:
-    return notify(f"STATUS={text[:200]}")
+    # One line: a newline would start another assignment in the notify datagram.
+    return notify("STATUS=" + " ".join(text.split())[:200])
 
 
 def watchdog_interval() -> float | None:
@@ -46,6 +47,7 @@ def watchdog_interval() -> float | None:
 
 
 def rss_mb(pid: int | None = None) -> float | None:
+    """Resident memory of a process (this one by default) in MB, from /proc."""
     try:
         with open(f"/proc/{pid or 'self'}/status") as f:
             for line in f:

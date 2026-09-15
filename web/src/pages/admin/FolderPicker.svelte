@@ -1,4 +1,5 @@
 <script>
+  import { untrack } from 'svelte';
   import { get } from '../../lib/api.js';
   import Modal from '../../components/Modal.svelte';
 
@@ -18,7 +19,7 @@
       if (p !== '/') browse('/');
     }
   }
-  $effect(() => { if (open) browse(start || '/'); });
+  $effect(() => { if (open) untrack(() => browse(start || '/')); });
 </script>
 
 <Modal {open} title="Choose a folder" {onclose}>

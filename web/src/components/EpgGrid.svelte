@@ -18,13 +18,15 @@
     return m;
   });
   let step = $derived(ppm * 30 >= 72 ? 1800 : 3600);
+  let firstTick = $derived(Math.ceil(start / step) * step);
   let ticks = $derived.by(() => {
     const out = [];
-    const first = Math.ceil(start / step) * step;
-    for (let t = first; t < end; t += step) out.push(t);
+    for (let t = firstTick; t < end; t += step) out.push(t);
     return out;
   });
   const x = (ts) => ((ts - start) / 60) * ppm;
+  // Each track's background is one tile per tick step, ending in a 1px line and shifted to the first tick.
+  let gridStyle = $derived(`--gridstep:${(step / 60) * ppm}px;--grid0:${x(firstTick)}px`);
   // The now-line moves every second through one CSS variable on the root; the past/current classes on
   // every slot only need re-evaluating when the clock crosses a 30 s boundary.
   let nowX = $derived(now >= start && now <= end ? x(now) : null);
@@ -58,7 +60,7 @@
   const slotSub = (s) => s.block && s.items ? ` · ${plural(s.items, 'video')}` : s.block ? ` · ${s.block}` : s.subtitle ? ` · ${s.subtitle}` : '';
 </script>
 
-<div class="epg" bind:this={el} class:loading class:hasnow={nowX !== null} style="--chw:{CH_W}px;--nowx:{nowX ?? 0}px">
+<div class="epg" bind:this={el} class:loading class:hasnow={nowX !== null} style="--chw:{CH_W}px;--nowx:{nowX ?? 0}px;{gridStyle}">
   <div class="head">
     <div class="corner"></div>
     <div class="axis" style="width:{width}px">
@@ -113,7 +115,7 @@
   .nowline { left: calc(var(--chw) + var(--nowx)); z-index: 1; }
   .chrow { display: flex; flex-wrap: nowrap; border-bottom: 1px solid var(--border); }
   .chcell { position: sticky; left: 0; z-index: 2; width: var(--chw); flex: none; background: var(--bg-elev); border-right: 1px solid var(--border); padding: .35rem .4rem; display: flex; align-items: center; overflow: hidden; }
-  .track { position: relative; height: 54px; flex: none; overflow: hidden; background: repeating-linear-gradient(90deg, transparent 0, transparent calc(var(--gridstep, 60px) - 1px), var(--border) calc(var(--gridstep, 60px) - 1px), var(--border) var(--gridstep, 60px)); }
+  .track { position: relative; height: 54px; flex: none; overflow: hidden; background: linear-gradient(90deg, transparent calc(100% - 1px), var(--border) 0) var(--grid0) 0 / var(--gridstep) 100%; }
   .slot {
     position: absolute; top: 4px; bottom: 4px; border-radius: 5px; padding: 0; overflow: hidden;
     display: block; text-align: left; font-weight: 500; min-height: 0; border: 1px solid var(--border-strong);

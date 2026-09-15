@@ -89,7 +89,7 @@ The installer's default shares, and the layouts pitv_content expects on them:
 | `smb://synologynas/tvsports/` | tv, category sport | As tvshows; episodes dated, e.g. `World of Sport Wrestling - 1985-03-16.mp4` |
 | `smb://synologynas/music videos/` | music | `<Genre>/<Artist> - <Title> (<Year>).mp4`; concerts under `Concerts/<Genre>/` |
 | `<cache>/acquired/{tvshows,tvsports,movies,ads,music videos}` | as above | Where pitv_content files what it fetches (section 7). Indexed with `location: cache`, so PiTV treats these items as already cached |
-| any folder | ident | `ch1/*.mp4`; the folder name gives the channel the ident belongs to |
+| any folder | ident | `ch1/*.mp4`; the folder name gives the channel the ident was made for (assigned once, section 3.2) |
 
 The NAS shares require authentication and are mounted read-only with CIFS from a root-only
 credentials file (`/etc/pitv/smb-credentials`) through systemd automount units, so boot
@@ -108,7 +108,14 @@ neither web service runs as root.
   --file index.json` imports a given file, and `--reindex` asks pitv_content to re-index its
   sources first (`POST /api/index`).
 - Schema 2 only. Any other document is rejected, the attempt is logged as a failed
-  `catalogue` run and the catalogue is left as it was.
+  `catalogue` run and the catalogue is left as it was. So is a document whose `sources`,
+  `shows` or `items` is not a list: a complete index with a broken item list would otherwise
+  mark the whole library missing.
+- Bad records. The index comes from another process, so each record is checked on its own.
+  One without a usable uid, kind, source, series or path, or whose path clashes with another
+  item, is rejected and counted, and the first 50 rejections are written to the run log. An
+  optional field of the wrong type is stored as empty. Nothing in a record can abort the
+  import.
 - Rows. A media row carries `uid`, `origin` (`nas`, `cache` or `online`: where the original
   lives), `path` (the original) and `cache_path` (the copy pitv_content delivered, which is
   what plays). A show row is keyed on the index's series uid.
@@ -125,6 +132,10 @@ neither web service runs as root.
   cache copy: `cache_path` is set on import and it counts as cached at once.
 - Derived on import: `hwdec` from the video codec (H.264 or HEVC), `kids`, the `cartoon`
   category, advert family safety, music concerts and the "needs attention" note (section 3.3).
+  An ident with no channel gets the channel whose number its file was made for
+  (`channel_hint`). That happens once: from then on the ident follows the channel's id, so
+  renumbering channels does not move it, and the admin can reassign it. A channel airs its own
+  idents, else unassigned ones, never another channel's.
 - Afterwards the line-ups are restored from `lineups.json` if the table is empty, new series
   and films are placed into line-ups (section 4.2), and `catalogue.json` is rewritten.
 - When. Daily at `catalogue_hour` (04:00) from the player's maintenance thread; whenever
@@ -175,8 +186,10 @@ with custom programming: a line-up entry that names a series or film not in the 
 by title or from pitv_content's catalogue of titles it can fetch. With NAS-only off the
 scheduler places such an entry ahead of time and requests it (section 4.2). When pitv_content
 delivers it, the delivery report's `meta` becomes a catalogue row with origin `online` and its
-cache path set; a series also gets a show row of its own. Transient material is removed after
-airing (section 4.2).
+cache path set. A fetched episode joins the series its request names, so an episode fetched
+to fill a gap in a library series stays in that series; a series that is new to PiTV gets a
+show row of its own. Transient material is removed after airing (section 4.2), and removal
+only ever deletes inside the cache: a symlink goes as a link, never its target.
 
 `catalogue.json` beside the database lists every series and film PiTV can schedule, where
 each comes from and whether it is cached, plus the custom line-up entries. It is rewritten
@@ -428,8 +441,11 @@ controller (main thread, half-second loop)
   --ao=alsa --hwdec=drm-prime,v4l2m2m-copy --profile=fast --monitoraspect=4:3`, plus
   `--drm-connector` and `--audio-device` when set. `--sub=no`, `--no-config`, a 64 MiB
   demuxer cache with 20 s read-ahead.
-- Channel change: `loadfile <path> replace start=<offset>` with a 0.35 s burst of static
-  (`channel_switch_static`) to cover the seek.
+- Channel change: `loadfile` with named arguments (`url`, `flags=replace`, and per-file
+  `options` carrying `start` and the decode settings) and a 0.35 s burst of static
+  (`channel_switch_static`) to cover the seek. Named, because mpv 0.38 added an `index`
+  argument that breaks the positional form; per-file, so one programme's decode settings do
+  not carry onto the test card. End-of-file events are matched on `playlist_entry_id`.
 - Slot boundaries: on each tick, if the current slot has ended, load what is now due. If mpv
   reaches end-of-file before the slot ends (the file is shorter than scheduled), the
   continuity card ("Programmes will continue shortly") holds until the next slot rather than
@@ -545,7 +561,17 @@ re-renders on every key press and every 30 s so the clock and the "now" marker s
   auto-refreshing logs) poll every five seconds.
 - Auth: the public pages are open on the LAN; the admin area is behind a single password.
   Until a password is set the admin is open (the UI prompts for one). PBKDF2 hash, signed
-  cookie valid 30 days, login limited to 8 attempts per five minutes per address.
+  cookie valid 30 days, login limited to 8 attempts per five minutes per address. Changing
+  the password rotates the session key, signing every other session out. pitv_content calls
+  its three endpoints with a shared token instead of a session (contract, Authentication).
+- Request hygiene: browser requests that change state from another site are refused
+  (`Sec-Fetch-Site`, else `Origin` against `Host`), so a page elsewhere cannot drive the admin
+  while no password is set. Bodies are capped at 1 MB, 32 MB for index, line-up and report
+  documents, and those are read only after the caller is authorised. Responses carry
+  `nosniff`, `X-Frame-Options: DENY` and a same-origin referrer policy. Event streams are
+  capped at 32 clients. One risk remains while no password is set: a DNS-rebinding page could
+  reach the open admin. A Host allowlist would close it but breaks custom hostnames and
+  reverse proxies, so setting a password is the remedy.
 - Look: clean and minimal with the PiTV logo and a teletext-style clock; works on a phone,
   which is the second remote.
 
@@ -571,7 +597,7 @@ PiTV:
 | Page | What you can do |
 |---|---|
 | Dashboard | Catalogue counts (cached, NAS only, fetched online), line-up summary per channel with unfetched placeholders and unplaced items, schedule horizon, readiness result, recent runs and jobs; import the catalogue (optionally re-indexing first), build or force-rebuild the week, check readiness |
-| Catalogue | The last import (when, from where, counts) with import, re-index and import, and upload an index file; browse shows, episodes, films, adverts, idents and music with where each comes from and whether it is cached; per-show editor (overrides, channel, strip or weekly anchor, rest weeks, category, next-episode cursor, upcoming airings); per-item editor (overrides, channel for films, exclude, family-safe, concert, cache status, recent and upcoming airings); "needs attention" list with inline year and certificate fixes, including items no channel accepts |
+| Catalogue | The last import (when, from where, counts) with import, re-index and import, and upload an index file; browse shows, episodes, films, adverts, idents and music with where each comes from and whether it is cached; per-show editor (overrides, channel, strip or weekly anchor, rest weeks, category, next-episode cursor, upcoming airings); per-item editor (overrides, channel for films and idents, exclude, family-safe, concert, cache status, recent and upcoming airings); "needs attention" list with inline year and certificate fixes, including items no channel accepts |
 | Channels | Add, edit, delete channels; number, name, colour, enabled, description; adverts on/off and per break; pattern editor (add, remove, reorder tokens); allowed and excluded genres as compact multi-select lists with catalogue counts; NAS-only override; era, genre and TV/movie weights; weekday, Saturday and Sunday daypart tables; overnight replay start; content type and family-safe adverts. Each channel's line-up in a drawer: add from a searchable list or by title, remove, move, enable, transient and remove-after-airing toggles, state per entry (on disk, not on disk, fetching, scheduled). Generate, rebalance, export and import line-ups |
 | Weighting | PiTV's global defaults: broadcast day, horizon, era and advert era weights, TV/movie balance, watershed times and unknown certificates, kids cutoff, variety and repeat settings, timing, advert rules and the fallback advert keywords, player settings (navigation keys, badge time, static, hardware decoders, audio device, overscan margin, text scale, DRM connector), cache (directory, size cap, NAS fallback) and the pitv_content API address, NAS-only and external scheduling (lead days, episode length, weight, transient retention), maintenance hours (catalogue import, readiness), music blocks and decades; reset to defaults |
 | Schedule | The EPG grid, editable: lock, remove, replace, insert at a time or before a slot, rebuild from here; build jobs and notes from the last edit |
@@ -585,7 +611,7 @@ pitv_content:
 | Page | What you can do |
 |---|---|
 | Sources | pitv_content's sources through its API: add, edit, enable, disable and remove (id, name, type, category, root, SMB URL), with health (mounted, readable, item count, last indexed) and a folder picker confined to `browse_roots`. Read-only, from the last imported index, when pitv_content is down. A change takes effect at pitv_content's next index; the catalogue import can ask for one straight away |
-| Content | Overview (status file, service and timer, last reports, manifest summary), run now, and through its own API its settings (schema-driven form), providers (enable, order, kinds, options, add), catalogue of fetchable titles, jobs and log |
+| Content | Overview (status file, service and timer, last reports, manifest summary, the token pitv_content presents: show, copy, issue a new one), run now, and through its own API its settings (schema-driven form), providers (enable, order, kinds, options, add), catalogue of fetchable titles, jobs and log |
 
 ### 6.4 API
 
@@ -701,24 +727,33 @@ titles and jobs.
 
 `setup/boot-trim.sh` (run by `install.sh`) does the following:
 
-- `config.txt`: `boot_delay=0`, `disable_splash=1`, `hdmi_drive=2`, `disable_overscan=1`,
-  `max_framebuffers=2`, `dtoverlay=disable-bt`, `dtparam=watchdog=on`, and the display block
-  for `DISPLAY_MODE`: `hdmi576` (default: `hdmi_group=1`, `hdmi_mode=17`, 720x576p 50 Hz 4:3
-  for the HDMI-to-SCART converter), `composite` (`enable_tvout=1`, PAL, 4:3,
-  `vc4-kms-v3d,composite=1`), `hdmi43` (1024x768 for a 4:3 monitor) or `hdmi`.
+- `config.txt`: one marked block under `[all]`, rewritten on each run: `boot_delay=0`,
+  `disable_splash=1`, `disable_overscan=1`, `hdmi_drive=2`, `max_framebuffers=2`,
+  `dtoverlay=disable-bt`, `dtparam=audio=on` (DietPi ships the analogue jack off, and
+  composite needs it), `dtparam=watchdog=on`, and the display lines for `DISPLAY_MODE`:
+  `hdmi576` (default: `hdmi_group=1`, `hdmi_mode=17`, 720x576p 50 Hz 4:3 for the
+  HDMI-to-SCART converter), `composite` (`enable_tvout=1`, PAL, 4:3,
+  `vc4-kms-v3d,composite=1`), `hdmi43` (1024x768 for a 4:3 monitor) or `hdmi`. The FAT
+  partition is `/boot/firmware` on current DietPi and Raspberry Pi OS, `/boot` on older ones.
 - `cmdline.txt`: `quiet loglevel=3 vt.global_cursor_default=0 consoleblank=0`, no splash.
-- Disabled: bluetooth, hciuart, avahi-daemon, triggerhappy, ModemManager, apt timers,
-  man-db timer, rpi-eeprom-update, dphys-swapfile, cups, wpa_supplicant,
-  systemd-networkd-wait-online. NetworkManager-wait-online capped at 10 s. journald capped at
-  50 MB. `systemd-timesyncd` and `fake-hwclock` enabled. Hardware watchdog with
-  `RuntimeWatchdogSec=15`.
-- Services: `pitv-splash` (sysinit, draws the test card straight onto `/dev/fb0`),
-  `pitv-player` (after network-online, time sync and the CIFS automounts, which it does not
-  require), `pitv-web` (after the player; does not delay the picture). The nightly catalogue
-  import, schedule top-up, readiness checks, report pick-up and cache eviction run from the
-  maintenance thread inside the player, so PiTV needs no timers.
-- Data in `/var/lib/pitv/pitv.db` (on the installer image `/var/lib/pitv` is a symlink into
-  the work partition); rotating log files under `/var/lib/pitv/logs/` and the journal.
+- Disabled where present: bluetooth, hciuart, avahi-daemon, triggerhappy, ModemManager, apt
+  timers, man-db timer, rpi-eeprom-update, dphys-swapfile, cups,
+  systemd-networkd-wait-online. `wpa_supplicant` stays, as Wi-Fi may be how the Pi reaches
+  the NAS. NetworkManager-wait-online capped at 10 s. `systemd-timesyncd` and `fake-hwclock`
+  enabled. Hardware watchdog with `RuntimeWatchdogSec=15`. journald: 50 MB on the system
+  partition (`50-pitv.conf`); first boot adds persistent storage on `/work` capped at 200 MB
+  (`60-pitv-work.conf`).
+- Services: `pitv-splash` (sysinit, runs as `pitv` in group `video` and draws the test card
+  straight onto `/dev/fb0`), `pitv-player` (after network-online, time sync and the CIFS
+  automounts, which it does not require; Type=notify with a watchdog, reports ready before
+  its clock wait, `TimeoutStartSec=180`), `pitv-web` (after the player; does not delay the
+  picture). All three need `/var/lib/pitv` mounted. `pitv-web` cannot carry NoNewPrivileges
+  or anything that implies it, because the admin's service actions go through `sudo -n`. The
+  nightly catalogue import, schedule top-up, readiness checks, report pick-up and cache
+  eviction run from the maintenance thread inside the player, so PiTV needs no timers.
+- Data in `/var/lib/pitv/pitv.db`. On the installer image `/var/lib/pitv` and
+  `/var/log/journal` are bind mounts from the work partition. Rotating log files under
+  `/var/lib/pitv/logs/` and the journal.
 
 ## 9. Installing: the SD-card installer
 
@@ -726,9 +761,14 @@ The image is DietPi with both apps' source trees baked in; `installer/` holds th
 build, the first-boot provisioning script and a Go installer for Linux and Windows. The card
 is split into a fixed-size system partition and a work partition (logs, databases, journal)
 so nothing that grows can fill the system. Modes: `clean` (card and USB drive wiped),
-`normal` (card only), `upgrade` (new code over SSH, everything else kept). First boot sizes
-the partitions, prepares the USB drive, creates the maintenance SSH user, installs both apps
-and writes `/work/install/install.log`, which the admin shows under Logs.
+`normal` (card only), `upgrade` (new code over SSH, everything else kept). The installer
+adds the work partition (MBR partition 3) after `system_partition_gb`, so DietPi's own
+first-boot resize grows the system partition only up to it. First boot formats it as
+`/work`, prepares the USB drive, creates the maintenance SSH user (and limits SSH to it),
+installs both apps and writes `/work/install/install.log`, which the admin shows under Logs.
+DietPi runs its custom script once; a first boot that fails is finished by logging in as the
+maintenance user and running `sudo bash /boot/Automation_Custom_Script.sh`, every step of
+which is safe to repeat.
 
 The installer's share list becomes pitv_content's sources. PiTV's `setup/install.sh` mounts
 the shares and writes them to `/etc/pitv/nas-sources.json` (id, name, type, category, root,

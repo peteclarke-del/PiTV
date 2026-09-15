@@ -1,20 +1,17 @@
 <script>
+  // What PiTV asks pitv_content for. pitv_content's reports back are listed under Last run on the same tab.
   import { onMount } from 'svelte';
   import { get, tryApi } from '../../lib/api.js';
-  import { clock } from '../../lib/stores.svelte.js';
-  import { fmtAgo, fmtDateTime } from '../../lib/format.js';
+  import { fmtDateTime } from '../../lib/format.js';
   import AppBadge from '../../components/AppBadge.svelte';
   import { downloadJson } from '../../lib/util.js';
-  import StatusBadge from '../../components/StatusBadge.svelte';
 
   let manifest = $state(null);
   let manifestDays = $state(1);
   let manifestBusy = $state(false);
-  let contentRuns = $state([]);
   async function loadManifest() {
     manifestBusy = true;
     manifest = (await tryApi(get('/api/content/manifest', { days: manifestDays }))) ?? manifest;
-    contentRuns = ((await tryApi(get('/api/runs', { limit: 30 }))) ?? []).filter((r) => r.kind === 'content').slice(0, 5);
     manifestBusy = false;
   }
   const downloadManifest = () => downloadJson(manifest, `pitv-manifest-${new Date(manifest.generated_ts * 1000).toISOString().slice(0, 10)}.json`);
@@ -69,8 +66,4 @@
   {:else}
     <div class="skeleton" style="height:80px"></div>
   {/if}
-  <h4 class="mt">pitv_content reports</h4>
-  {#if contentRuns.length}
-    <ul class="runs">{#each contentRuns as r (r.id)}<li><StatusBadge status={r.status} /><span class="small">{r.summary || '–'}</span><span class="tiny muted nowrap">{fmtAgo(r.started_at, clock.ts)}</span></li>{/each}</ul>
-  {:else}<p class="muted small">No reports yet; the pitv_content tool posts one after each overnight run.</p>{/if}
 </div>

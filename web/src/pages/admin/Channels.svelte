@@ -4,6 +4,7 @@
   import { get, post, put, del, tryApi, confirmApi } from '../../lib/api.js';
   import { changes, noteChange, toast } from '../../lib/stores.svelte.js';
   import { guard } from '../../lib/guard.svelte.js';
+  import { hasLineup } from '../../lib/format.js';
   import { onEnter, downloadJson } from '../../lib/util.js';
   import ChannelBadge from '../../components/ChannelBadge.svelte';
   import ChannelEditor from './ChannelEditor.svelte';
@@ -20,15 +21,17 @@
     for (const e of all) m[e.channel_id] = (m[e.channel_id] ?? 0) + 1;
     counts = m;
   }
+  // Line-ups decide home channels, which the catalogue shows too: bumping `library` refetches
+  // this page (through the effect below) and anything else that lists them.
   const summarise = (r) => Object.entries(r ?? {}).map(([k, v]) => `${v} ${k.replace(/_/g, ' ')}`).join(', ');
   const generate = guard(async () => {
     const r = await tryApi(post('/api/lineup/generate', { rebalance: false }), { success: 'Line-ups generated' });
-    if (r) { toast.info(summarise(r) || 'Nothing was unassigned'); load(); loadCounts(); noteChange('library'); }
+    if (r) { toast.info(summarise(r) || 'Nothing was unassigned'); noteChange('library'); }
   });
   const rebalanceLineups = guard(async () => {
     const r = await confirmApi('Redistribute every unpinned series and film across the channels? Pinned entries stay where they are.',
       { title: 'Rebalance line-ups', okLabel: 'Rebalance', danger: true }, () => post('/api/lineup/generate', { rebalance: true }), { success: 'Line-ups rebalanced' });
-    if (r) { toast.info(summarise(r)); load(); loadCounts(); noteChange('library'); }
+    if (r) { toast.info(summarise(r)); noteChange('library'); }
   });
   const exportLineup = guard(async () => {
     const doc = await tryApi(get('/api/lineup/export'));
@@ -41,7 +44,7 @@
     try { doc = JSON.parse(await file.text()); } catch { toast.error('That file is not JSON'); return; }
     const r = await confirmApi(`Apply the line-up from "${file.name}"? Channels are matched by number; titles not in the library become external entries.`,
       { title: 'Import line-up', okLabel: 'Import' }, () => post('/api/lineup/import', doc));
-    if (r) { toast.success(`Imported ${r.entries ?? 0} entries${r.unknown_channels ? `; ${r.unknown_channels} unknown channel(s) skipped` : ''}`); load(); loadCounts(); noteChange('library'); }
+    if (r) { toast.success(`Imported ${r.entries ?? 0} entries${r.unknown_channels ? `; ${r.unknown_channels} unknown channel(s) skipped` : ''}`); noteChange('library'); }
   }
 
   async function load() {
@@ -85,7 +88,7 @@
             <td>{c.short_name}</td>
             <td class="mono small">{c.pattern}</td>
             <td class="small nowrap">{c.ads_enabled ? `${c.ads_per_break} per break` : 'off'}{#if c.family_safe_ads}<span class="badge ok" title="Family-safe adverts only">🛡 family</span>{/if}</td>
-            <td class="num" onclick={(e) => e.stopPropagation()}>{#if ['general', 'cartoons'].includes(c.content ?? 'general')}<button class="small" onclick={() => (lineupFor = c)}>{counts[c.id] ?? 0} · Line-up</button>{:else}<span class="muted">–</span>{/if}</td>
+            <td class="num" onclick={(e) => e.stopPropagation()}>{#if hasLineup(c)}<button class="small" onclick={() => (lineupFor = c)}>{counts[c.id] ?? 0} · Line-up</button>{:else}<span class="muted">–</span>{/if}</td>
             <td class="small muted" style="max-width:280px"><div class="truncate">{c.description}</div></td>
             <td class="right nowrap"><button class="small danger" onclick={(e) => { e.stopPropagation(); remove(c); }}>Delete</button></td>
           </tr>
@@ -99,7 +102,6 @@
 </div>
 
 <style>
-  tr.off td { opacity: .6; }
   tr.off td:first-child { opacity: 1; }
   .switch { position: relative; display: inline-block; width: 38px; height: 22px; cursor: pointer; }
   .switch input { opacity: 0; width: 0; height: 0; position: absolute; }

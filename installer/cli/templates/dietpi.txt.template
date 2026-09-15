@@ -1,5 +1,7 @@
 # DietPi first-boot automation for PiTV. Filled in by the installer from pitv-install.json;
 # only the keys PiTV cares about are listed, everything else stays at DietPi's defaults.
+# No SSH key is given here: DietPi would install it for root and the dietpi user, and the
+# first-boot script grants SSH to the maintenance user only.
 AUTO_SETUP_ACCEPT_LICENSE=1
 AUTO_SETUP_LOCALE=@LOCALE@
 AUTO_SETUP_KEYBOARD_LAYOUT=@KEYBOARD@
@@ -16,7 +18,6 @@ AUTO_SETUP_HEADLESS=1
 AUTO_SETUP_AUTOMATED=1
 AUTO_SETUP_GLOBAL_PASSWORD=@GLOBAL_PASSWORD@
 AUTO_SETUP_SSH_SERVER_INDEX=-2
-AUTO_SETUP_SSH_PUBKEY=@SSH_PUBKEY@
 AUTO_SETUP_LOGGING_INDEX=0
 AUTO_SETUP_RAMLOG_MAXSIZE=50
 AUTO_SETUP_CUSTOM_SCRIPT_EXEC=1

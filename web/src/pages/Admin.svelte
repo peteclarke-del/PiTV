@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { auth, route, toast } from '../lib/stores.svelte.js';
   import { post, tryApi, refreshAuth } from '../lib/api.js';
+  import AppBadge from '../components/AppBadge.svelte';
   import Login from './admin/Login.svelte';
   import Dashboard from './admin/Dashboard.svelte';
   import Sources from './admin/Sources.svelte';
@@ -19,14 +20,20 @@
   // Two applications share this admin: PiTV (catalogue, line-ups, schedule, playback) and pitv_content
   // (sources, providers, fetching, encoding). The navigation keeps them apart so it is clear which app a page changes.
   const groups = [
-    ['pitv', 'PiTV', 'Schedules and plays: what is on each channel and when',
+    ['pitv', 'Schedules and plays: what is on each channel and when',
       [['dashboard', 'Dashboard'], ['channels', 'Channels'], ['library', 'Catalogue'], ['schedule', 'Schedule'],
        ['weighting', 'Weighting'], ['player', 'Player'], ['logs', 'Logs'], ['system', 'System']]],
-    ['content', 'pitv_content', 'Indexes the NAS, fetches and encodes: what can be played',
+    ['content', 'Indexes the NAS, fetches and encodes: what can be played',
       [['sources', 'Sources'], ['providers', 'Providers'], ['wanted', 'Wanted'], ['content', 'Content']]],
   ];
   let tab = $derived(route.parts[1] ?? 'dashboard');
-  let skipSetup = $state(sessionStorage.getItem('pitv-skip-setup') === '1');
+  // "Skip for now" lasts for this browser session. Storage can be unavailable (private windows,
+  // blocked site data); the choice then lasts until the page is reloaded.
+  const SKIP_KEY = 'pitv-skip-setup';
+  let skipSetup = $state(readSkip());
+  function readSkip() {
+    try { return sessionStorage.getItem(SKIP_KEY) === '1'; } catch { return false; }
+  }
   let gate = $derived(!auth.checked ? 'loading' : auth.password_set && !auth.admin ? 'login' : !auth.password_set && !skipSetup ? 'setup' : 'ok');
 
   onMount(refreshAuth);
@@ -35,7 +42,7 @@
     if (await tryApi(post('/api/auth/logout'))) { toast.info('Logged out'); await refreshAuth(); }
   }
   function skip() {
-    sessionStorage.setItem('pitv-skip-setup', '1');
+    try { sessionStorage.setItem(SKIP_KEY, '1'); } catch { /* see SKIP_KEY */ }
     skipSetup = true;
   }
 </script>
@@ -57,9 +64,9 @@
       {/if}
     </div>
     <nav class="admin-nav" aria-label="Admin sections">
-      {#each groups as [app, label, blurb, items] (app)}
+      {#each groups as [app, blurb, items] (app)}
         <div class="navgroup {app}">
-          <span class="app {app}" title={blurb}>{label}</span>
+          <AppBadge {app} title={blurb} />
           <div class="tabs">
             {#each items as [id, name] (id)}
               <a href="#/admin/{id}" class:active={tab === id}>{name}</a>

@@ -146,6 +146,7 @@ textarea { min-height: 4rem; resize: vertical; }
 .check { display: inline-grid; grid-template-columns: auto 1fr; column-gap: .45rem; row-gap: .1rem; align-items: center; font-weight: 500; font-size: .92rem; cursor: pointer; }
 .check > input { grid-column: 1; }
 .check .help { grid-column: 2; font-weight: 400; color: var(--fg-muted); font-size: .8rem; }
+.help.err, label.field .help.err, .check .help.err { color: var(--danger); font-weight: 550; font-size: .8rem; }
 .form-grid { display: grid; gap: .8rem 1rem; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
 .form-grid .wide { grid-column: 1 / -1; }
 .inline-form { display: flex; flex-wrap: wrap; gap: .5rem; align-items: flex-end; }
@@ -157,6 +158,7 @@ th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--
 th { font-weight: 600; color: var(--fg-muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover td { background: var(--bg-sunken); }
+tr.off td { opacity: .6; }   /* disabled or missing rows; pages keep their toggles at full opacity */
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* badges & chips */

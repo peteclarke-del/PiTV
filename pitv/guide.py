@@ -10,12 +10,12 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-# Slot columns plus the media columns either guide needs. Media columns that would shadow a
-# slot column (path is fine; missing and kind are not) carry a `media_` prefix.
+# Slot columns plus the media columns either guide or the player needs. `media_kind` keeps the
+# slot's own `kind` visible, and `media_path` names the original as distinct from `cache_path`.
 SLOT_QUERY = ("SELECT s.*, m.path AS media_path, m.cache_path, m.cache_vcodec, m.cache_interlaced, m.origin,"
               " m.vcodec, m.interlaced, m.plot,"
               " m.year, m.certificate, m.duration, m.show_id, m.season, m.episode, m.hwdec, m.genres,"
-              " m.missing AS media_missing, m.kind AS media_kind"
+              " m.kind AS media_kind"
               " FROM schedule s LEFT JOIN media m ON m.id = s.media_id")
 
 # A music block can hold this many short videos, and `next_programmes` must read every

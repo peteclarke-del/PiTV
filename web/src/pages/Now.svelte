@@ -1,6 +1,7 @@
 <script>
   import { untrack } from 'svelte';
-  import { get, post, tryApi, normalisePlayer } from '../lib/api.js';
+  import { get, normalisePlayer } from '../lib/api.js';
+  import { tuneChannel } from '../lib/actions.js';
   import { changes, clock, player, toast } from '../lib/stores.svelte.js';
   import { fmtRange, fmtTime, fmtDuration, plural, safeColour } from '../lib/format.js';
   import ChannelBadge from '../components/ChannelBadge.svelte';
@@ -49,9 +50,6 @@
     return len > 0 ? (clock.ts - slot.start_ts) / len : 0;
   }
 
-  async function watch(number) {
-    await tryApi(post('/api/player/channel', { number }), { success: `Tuned to channel ${number}` });
-  }
 </script>
 
 <div class="page">
@@ -73,7 +71,7 @@
         <article class="card ch" style="--c:{safeColour(c.channel.colour)}">
           <div class="chhead">
             <ChannelBadge channel={c.channel} size="lg" />
-            <button class="primary small" onclick={() => watch(c.channel.number)}
+            <button class="primary small" onclick={() => tuneChannel(c.channel.number)}
                     disabled={!player.state.online} title={player.state.online ? 'Tune the TV to this channel' : 'Player offline'}>Watch</button>
           </div>
           {#if s}

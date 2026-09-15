@@ -1,15 +1,10 @@
-<script module>
-  // Shared across mounts of this tab so switching tabs does not re-probe an offline tool within the window.
-  let probedAt = 0;
-</script>
-
 <script>
   // Admin tab for pitv_content, the support app on the Pi that fetches, encodes and fills the cache. Two sources of truth: PiTV's
   // file-based view (GET /api/content/tool: status file, systemd state) and, when it answers, the
   // app's own API proxied at /api/content/tool/api/*; the live document wins where both exist.
   import { onMount, untrack } from 'svelte';
   import { get, post, tryApi } from '../../lib/api.js';
-  import { toolGet, toolPut, isOffline, fieldErrors } from '../../lib/toolapi.js';
+  import { toolGet, toolPut, toolProbe, isOffline, fieldErrors } from '../../lib/toolapi.js';
   import { checkReadiness } from '../../lib/actions.js';
   import { clock, toast, route } from '../../lib/stores.svelte.js';
   import { navigate } from '../../lib/router.js';
@@ -22,12 +17,13 @@
   import AppBadge from '../../components/AppBadge.svelte';
   import ReadinessNotes from '../../components/ReadinessNotes.svelte';
   import ManifestCard from './ManifestCard.svelte';
+  import ContentTokenCard from './ContentTokenCard.svelte';
   import Logs from './Logs.svelte';
   import ToolRun from './ToolRun.svelte';
   import ToolCatalogue from './ToolCatalogue.svelte';
   import ToolJobs from './ToolJobs.svelte';
 
-  // Providers moved to their own admin tab; an old #/admin/content/providers link lands on the status view.
+  // Unknown sub-paths (including #/admin/content/providers, now its own admin tab) show the status view.
   const SUBTABS = [['overview', 'Status'], ['run', 'Run'], ['settings', 'Settings'], ['catalogue', 'Online catalogue'], ['jobs', 'Jobs'], ['log', 'Log']];
   const NEEDS_API = ['settings', 'catalogue', 'jobs'];
   let sub = $derived(SUBTABS.some(([id]) => id === route.parts[2]) ? route.parts[2] : 'overview');
@@ -44,18 +40,10 @@
   let jobs = $state(null);
   let loadedSub = $state({});
 
-  // While the tool API is offline it is probed every 30 s rather than on every 5 s status refresh:
-  // each probe is a 503 from the proxy, which the browser logs as an error on the console.
-  const PROBE_MS = 30000;
   async function loadStatus() {
-    const wasOnline = online; // read before the await: the tab may have unmounted by the time it resolves
     try { tool = await get('/api/content/tool'); error = ''; } catch (e) { error = e.detail || e.message; }
-    if (!wasOnline && Date.now() - probedAt < PROBE_MS) return;
-    probedAt = Date.now();
     try {
-      const s = await toolGet('status');
-      // A foreign service on the port answers too; only accept a document that looks like pitv_content's.
-      live = s && typeof s === 'object' && ('state' in s || 'tool' in s || 'api_version' in s) ? s : null;
+      live = (await toolProbe('status', (s) => 'state' in s || 'tool' in s || 'api_version' in s)) ?? null;
     } catch (e) {
       live = null;
       if (!isOffline(e)) toast.error(`pitv_content status: ${e.detail || e.message}`);
@@ -185,17 +173,18 @@
       {:else}<p class="muted small">Runs automatically at the readiness hours set under Weighting, Maintenance.</p>{/if}
     </div>
     <ManifestCard />
+    <ContentTokenCard />
   {:else if sub === 'run'}
     {#if online}<ToolRun running={isRunning} onchange={loadStatus} />{:else}<div class="empty">Starting runs with options needs the pitv_content API. Run now above still starts the service.</div>{/if}
   {:else if sub === 'settings'}
     {#if !online}<div class="empty">Settings need the pitv_content API.</div>
     {:else if !loadedSub.settings}<div class="skeleton" style="height:200px"></div>
-    {:else}<p class="scope" style="margin:0">pitv_content's own configuration, stored by pitv_content. PiTV relays the edits through its API; nothing here changes PiTV.</p><SchemaForm {schema} errors={schemaErrors} saving={savingSchema} onsave={saveSchema} app="content" />{/if}
+    {:else}<p class="scope" style="margin:0"><AppBadge app="content" /> pitv_content's own configuration, stored by pitv_content. PiTV relays the edits through its API; nothing here changes PiTV.</p><SchemaForm {schema} errors={schemaErrors} saving={savingSchema} onsave={saveSchema} app="content" />{/if}
   {:else if sub === 'catalogue'}
-    <p class="scope" style="margin:0">Online titles pitv_content knows about. Enabling one lets pitv_content fetch from it; anything fetched reaches PiTV's catalogue through the library index.</p>
+    <p class="scope" style="margin:0"><AppBadge app="content" /> Online titles pitv_content knows about. Enabling one lets pitv_content fetch from it; anything fetched reaches PiTV's catalogue through the library index.</p>
     {#if !online}<div class="empty">The catalogue needs the pitv_content API.</div>{:else if !catalogue}<div class="skeleton" style="height:120px"></div>{:else}<ToolCatalogue {catalogue} onchange={() => loadSub('catalogue', true)} />{/if}
   {:else if sub === 'jobs'}
-    <p class="scope" style="margin:0">pitv_content's own run history: index, copy, transcode and fetch jobs.</p>
+    <p class="scope" style="margin:0"><AppBadge app="content" /> pitv_content's own run history: index, copy, transcode and fetch jobs.</p>
     {#if !online}<div class="empty">Job history needs the pitv_content API.</div>{:else if !jobs}<div class="skeleton" style="height:120px"></div>{:else}<div class="row"><span class="spacer"></span><button class="small" onclick={() => loadSub('jobs', true)}>Refresh</button></div><ToolJobs {jobs} />{/if}
   {:else if sub === 'log'}
     <div class="card"><div class="card-title"><h3>pitv_content log</h3>{#if online}<span class="badge ok">live</span>{:else}<span class="badge">file</span>{/if}<AppBadge app="content" /></div><Logs fixed="pitv-content" height="480px" liveTool={online} /></div>

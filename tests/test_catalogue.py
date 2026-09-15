@@ -1,10 +1,11 @@
 """The library index import and where playback finds files."""
 
 import copy
+import random
 
 import pytest
-
 from conftest import make_library
+
 from pitv import db as dbm
 from pitv.catalogue import IndexFormatError, import_index
 from pitv.player.cache import MediaCache
@@ -59,12 +60,16 @@ def test_advert_family_safety_precedence(ctx):
 
 
 def test_advert_keywords_match_whole_words():
-    from pitv.catalogue import _family_safe
-    kw = ["ale", "gin", "lager"]
-    assert _family_safe({"title": "MFI furniture sale"}, kw) == 1
-    assert _family_safe({"title": "Castrol GTX (Liquid engineering)"}, kw) == 1
-    assert _family_safe({"title": "Hemeling Lager"}, kw) == 0
-    assert _family_safe({"title": "Real Ale"}, kw) == 0
+    from pitv.catalogue import family_safe, keyword_pattern
+    kw = keyword_pattern(["ale", "gin", "lager", "18+"])
+    assert family_safe({"title": "MFI furniture sale"}, kw) == 1
+    assert family_safe({"title": "Castrol GTX (Liquid engineering)"}, kw) == 1
+    assert family_safe({"title": "Hemeling Lager"}, kw) == 0
+    assert family_safe({"title": "Real Ale"}, kw) == 0
+    # A keyword ending in punctuation still matches before a space (\b needed a word character).
+    assert family_safe({"title": "Club 18+ holidays"}, kw) == 0
+    assert family_safe({"title": "Tags as text", "tags": "alcohol"}, kw) == 0
+    assert family_safe({"title": "Milk Tray"}, None) == 1
 
 
 def test_cache_located_items_count_as_cached(ctx, tmp_path):
@@ -150,3 +155,128 @@ def test_reindex_waits_for_its_job(monkeypatch):
     doc, _ = catalogue.fetch_index({"content_tool_url": "http://x"}, reindex=True)
     assert doc == {"schema": 2, "items": []}
     assert calls == [("POST", "index"), ("GET", "jobs"), ("GET", "jobs"), ("GET", "library")]
+
+
+def test_malformed_records_are_rejected_and_counted(ctx):
+    """A bad record from pitv_content costs that record, never the import; a field of the wrong
+    type is dropped rather than stored."""
+    conn, doc = ctx["conn"], ctx["lib"]["index"]
+    first, second = doc["items"][0], doc["items"][1]
+    before = conn.execute("SELECT id, path FROM media WHERE uid = ?", (first["uid"],)).fetchone()
+    bad = copy.deepcopy(doc)
+    bad["complete"] = False
+    bad["sources"] += ["junk", {"id": ["x"], "type": "tv"}, {"id": "radio", "type": "radio"}]
+    bad["shows"] += [5, {"uid": "show:x", "source": ["tvshows"]}]
+    bad["items"] += [
+        None, {"uid": {"a": 1}}, {"uid": "nas:movies:nopath", "source": "movies", "kind": "movie", "path": ["/x"]},
+        {**first, "path": second["path"]},     # its path already belongs to another uid
+        {"uid": "nas:movies:odd.mp4", "source": "movies", "kind": "movie", "path": "/lib/odd.mp4",
+         "title": {"x": 1}, "year": "nineteen", "duration": "nan", "height": [720], "size": 10 ** 30,
+         "genres": 5, "interlaced": "false", "certificate": 12},
+    ]
+    counts = import_index(conn, bad)
+    assert counts["rejected"] == 3 + 2 + 4 and len(counts["rejects"]) == counts["rejected"]
+    assert tuple(conn.execute("SELECT id, path FROM media WHERE uid = ?", (first["uid"],)).fetchone()) == tuple(before)
+    odd = conn.execute("SELECT * FROM media WHERE uid = 'nas:movies:odd.mp4'").fetchone()
+    assert (odd["title"], odd["year"], odd["duration"], odd["height"], odd["size"], odd["genres"],
+            odd["interlaced"], odd["certificate"]) == ("nas:movies:odd.mp4", None, None, None, None, "[]", 0, "12")
+    with pytest.raises(IndexFormatError):
+        import_index(conn, {"schema": 2, "items": {"not": "a list"}})
+    import_index(conn, doc)
+    assert conn.execute("SELECT missing FROM media WHERE uid = 'nas:movies:odd.mp4'").fetchone()[0] == 1
+
+
+def test_refresh_reports_a_malformed_index_instead_of_raising(ctx, monkeypatch):
+    from pitv import catalogue, tool_client
+    monkeypatch.setattr(tool_client, "request", lambda *a, **k: (200, {"schema": 1}))
+    result = catalogue.refresh(ctx["conn"])
+    assert result["status"] == "error" and "schema 2" in result["summary"]
+    assert catalogue.last_import(ctx["conn"])["status"] == "error"
+
+
+def test_document_values_are_read_defensively():
+    assert [dbm.as_int(v) for v in (3, "4", 5.9, True, "x", None, 2 ** 70, "inf")] == [3, 4, 5, None, None, None, None, None]
+    assert [dbm.as_float(v) for v in ("2.5", float("nan"), [1])] == [2.5, None, None]
+    assert [dbm.as_text(v) for v in ("a", 12, None, {"a": 1})] == ["a", "12", None, None]
+    assert [dbm.as_bool(v) for v in (True, "false", "yes", 0, None)] == [True, False, True, False, False]
+    assert dbm.as_bool(None, True) is True
+    assert dbm.genre_list('["Drama", "", 5, {"x": 1}]') == ["Drama", "5"]
+    assert dbm.genre_list("Comedy") == ["Comedy"] and dbm.genre_list(7) == [] and dbm.genre_list("1984") == ["1984"]
+
+
+def test_sql_identifiers_are_checked():
+    conn = dbm.connect(":memory:")
+    dbm.init_db(conn)
+    with pytest.raises(ValueError):
+        dbm.update_row(conn, "channels", 1, {"name = 'x' --": "y"})
+    with pytest.raises(ValueError):
+        dbm.find_id(conn, "channels; DROP TABLE media", "id", 1)
+
+
+def test_tool_client_refuses_other_schemes_redirects_and_oversized_answers(monkeypatch):
+    import http.server
+    import threading
+
+    from pitv import tool_client
+    status, payload = tool_client.request("file:///etc", "GET", "library")
+    assert status == 503 and payload["offline"] is True
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path.endswith("/moved"):
+                self.send_response(302)
+                self.send_header("Location", "http://192.0.2.1/api/library")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            body = b'{"x": "' + b"y" * 200 + b'"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        base = f"http://127.0.0.1:{srv.server_port}"
+        assert tool_client.request(base, "GET", "library")[0] == 200
+        status, payload = tool_client.request(base, "GET", "moved")   # never followed to 192.0.2.1
+        assert status == 502 and "redirect" in payload["error"]
+        monkeypatch.setattr(tool_client, "MAX_RESPONSE_BYTES", 100)
+        status, payload = tool_client.request(base, "GET", "library")
+        assert status == 502 and "more than 100 bytes" in payload["error"]
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_fetched_titles_cannot_leave_the_acquire_folder():
+    from pitv.content import _wanted_dest
+    assert _wanted_dest({"kind": "movie", "title": "../../etc"}, "/acq") == "/acq/movies/..-..-etc"
+    assert _wanted_dest({"kind": "movie", "title": ".."}, "/acq") == "/acq/movies/Unknown"
+    assert _wanted_dest({"kind": "music", "title": "x", "genre": "rock/../../x"}, "/acq") == "/acq/music videos/Rock-..-..-X"
+
+
+def test_idents_follow_their_channel_not_its_number(tmp_path):
+    """An ident is tied to a channel by id once, from the number its file was made for, so
+    renumbering channels does not move it; the builder never borrows another channel's."""
+    from pitv.scheduler.build import Builder
+    ctx = make_library(tmp_path, max_episodes=1)
+    conn, doc = ctx["conn"], ctx["lib"]["index"]
+    ident = dict(conn.execute("SELECT id, channel_hint, home_channel_id FROM media WHERE kind = 'ident'"
+                              " AND channel_hint IS NOT NULL LIMIT 1").fetchone())
+    home = conn.execute("SELECT id FROM channels WHERE number = ?", (ident["channel_hint"],)).fetchone()["id"]
+    assert ident["home_channel_id"] == home
+    with dbm.tx(conn):
+        conn.execute("UPDATE channels SET number = number + 100")
+    import_index(conn, doc)
+    assert conn.execute("SELECT home_channel_id FROM media WHERE id = ?", (ident["id"],)).fetchone()[0] == home
+    b = Builder(conn)
+    others = [c for c in b.channels if c["id"] != home]
+    for c in others:
+        picked = b._choose_ident(c, random.Random(1), 3600)
+        assert picked is None or picked.get("home_channel_id") in (None, c["id"])

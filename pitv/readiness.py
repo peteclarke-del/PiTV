@@ -29,7 +29,9 @@ def playable_media(conn: sqlite3.Connection, cache: MediaCache, nas_fallback: bo
     """Every catalogue file that could play right now: a cache copy exists, or NAS fallback is on
     and the file's share is mounted (checked once per share, not per file, so this stays cheap
     over CIFS)."""
-    mounted = {r["id"]: Path(r["path"]).is_dir() for r in conn.execute("SELECT id, path FROM sources WHERE location = 'nas'")}
+    mounted: dict[int, bool] = {}
+    if nas_fallback:
+        mounted = {r["id"]: Path(r["path"]).is_dir() for r in conn.execute("SELECT id, path FROM sources WHERE location = 'nas'")}
     ids: set[int] = set()
     for m in rows_to_dicts(conn.execute("SELECT id, path, cache_path, origin, source_id FROM media WHERE missing = 0 AND excluded = 0")):
         if cache.cache_copy(m) is not None or (nas_fallback and m["origin"] == "nas" and mounted.get(m["source_id"])):
@@ -38,11 +40,9 @@ def playable_media(conn: sqlite3.Connection, cache: MediaCache, nas_fallback: bo
 
 
 def check(conn: sqlite3.Connection, *, now: int | None = None, days: int = 1, substitute: bool = True) -> dict[str, Any]:
-    """Is everything scheduled from now through the end of the next broadcast day playable?
-    A programme counts when its cache copy exists, or when NAS fallback is on and the NAS
-    original is there (logged as a warning: pitv_content has not delivered it). Anything else is
-    an error and, with `substitute`, its channel-day is rebuilt from the first failure using
-    only programmes that are playable now."""
+    """Check every slot from `now` to the end of the broadcast day `days` after the current one
+    (1: tomorrow), as the module describes. With `substitute`, each channel with a failure is
+    rebuilt from its first one."""
     settings = all_settings(conn)
     tz = tz_of(conn)
     now = now or now_ts()
@@ -59,20 +59,21 @@ def check(conn: sqlite3.Connection, *, now: int | None = None, days: int = 1, su
     missing: dict[int, list[dict[str, Any]]] = {}   # channel_id -> slots
     notes: list[str] = []
     nas_only = 0
-    seen: dict[int, tuple[str | None, str]] = {}    # a file can air on several channels; locate it once
+    seen: dict[int, str] = {}    # where each file plays from; a file can air on several channels, so locate it once
     for r in rows:
-        when = f"{r['channel_name']} {_hhmm(r['start_ts'], tz)} '{r['title']}'"
         if r["id"] is None:
             if r["wanted_id"] is not None:
+                when = _slot_label(r, tz)
                 missing.setdefault(r["channel_id"], []).append(r)
                 notes.append(f"NOT FETCHED {when} (wanted #{r['wanted_id']})")
                 log.error("not fetched in time: %s (wanted %s)", when, r["wanted_id"])
             continue
         if r["id"] not in seen:
-            seen[r["id"]] = cache.locate(r, nas_fallback)
-        path, where = seen[r["id"]]
+            seen[r["id"]] = cache.locate(r, nas_fallback)[1]
+        where = seen[r["id"]]
         if where == "cache":
             continue
+        when = _slot_label(r, tz)
         if where == "nas":
             nas_only += 1
             notes.append(f"NOT CACHED {when}: will play from the NAS")   # detail in the run notes, one log line below
@@ -109,3 +110,7 @@ def check(conn: sqlite3.Connection, *, now: int | None = None, days: int = 1, su
 
 def _hhmm(ts: int, tz: ZoneInfo) -> str:
     return datetime.fromtimestamp(ts, tz).strftime("%a %H:%M")
+
+
+def _slot_label(slot: dict[str, Any], tz: ZoneInfo) -> str:
+    return f"{slot['channel_name']} {_hhmm(slot['start_ts'], tz)} '{slot['title']}'"

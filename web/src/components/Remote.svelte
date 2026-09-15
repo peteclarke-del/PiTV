@@ -1,23 +1,25 @@
 <script>
   import { player } from '../lib/stores.svelte.js';
   import { post, tryApi } from '../lib/api.js';
+  import { tuneChannel } from '../lib/actions.js';
   import { safeColour } from '../lib/format.js';
 
   let { channels = [] } = $props();
   let online = $derived(player.state.online);
+  let enabled = $derived(channels.filter((c) => c.enabled));
   let busy = $state(null); // channel number while a tune request is in flight
 
   const key = (k) => tryApi(post('/api/player/key', { key: k }));
   async function tune(n) {
     busy = n;
-    await tryApi(post('/api/player/channel', { number: n }));
+    await tuneChannel(n, { quiet: true });
     busy = null;
   }
 </script>
 
 <div class="remote" class:offline={!online}>
   <div class="channels">
-    {#each channels.filter((c) => c.enabled) as ch (ch.id)}
+    {#each enabled as ch (ch.id)}
       <button class="ch" disabled={!online} onclick={() => tune(ch.number)} title={ch.name}
               style="--c:{safeColour(ch.colour)}" class:busy={busy === ch.number}>
         <b>{ch.number}</b><span class="truncate">{ch.short_name}</span>

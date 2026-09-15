@@ -34,6 +34,23 @@ contract, and anything it files reaches PiTV through the index like any other NA
    and, when `nas_fallback` is on, plays the NAS original. If neither is playable it shows the
    technical difficulties card and logs the failure.
 
+## Authentication
+
+pitv_content has no admin login, so the three PiTV endpoints it calls
+(`GET /api/content/manifest`, `POST /api/content/report`, `POST /api/content/make-room`) accept
+a shared token as `Authorization: Bearer <token>`. PiTV generates it on first start and keeps it
+in `<PiTV data dir>/content-token` (`/var/lib/pitv/content-token` on the Pi), mode 0600, owned
+by the `pitv` user both services run as. pitv_content reads the file on each call, so a token
+rotated from PiTV's admin (Content, Status) takes effect without a restart; on another machine
+the admin copies the value across. The token opens only those three endpoints; an admin session
+also works on them. Without either, once an admin password is set, PiTV answers 401. PiTV also
+refuses cross-site browser requests that change state, which a script that sends neither
+`Origin` nor `Sec-Fetch-Site` never trips.
+
+pitv_content's own API is not authenticated: it listens on loopback, and PiTV's admin reaches it
+through PiTV's proxy. If the two apps are ever split across machines, pitv_content's API needs a
+token of its own before it is exposed on the LAN.
+
 ## 1. Library index (pitv_content to PiTV)
 
 `GET {content_tool_url}/api/library`, and the same document written atomically to
@@ -79,7 +96,8 @@ and PiTV logs it and imports the index it already had.
   daypart weights) or `kids` (children's series).
 - `kind` is `episode`, `movie`, `advert`, `ident` or `music`. Episodes carry `show_uid`,
   `season`, `episode`; adverts carry `family_safe` (bool) and `tags`; music carries `artist`
-  and `concert`; idents carry `channel_hint`.
+  and `concert`; idents carry `channel_hint`, the channel number the file was made for, which
+  PiTV uses once to assign the ident to that channel.
 - `uid` is stable for as long as the file keeps its path: `nas:<source id>:<relpath>` for
   items and `show:<source id>:<folder>` for series. `path` is the absolute path on the Pi's
   read-only mount, used only for fallback playback.
@@ -177,6 +195,13 @@ applies a report once: a dropped copy of one it already took over HTTP is recogn
   `"file": null`, and PiTV ignores it (no attempt used, no failure logged) until a later report
   delivers it measured.
 - Every `file` block carries `vcodec` and `interlaced`: they decide how PiTV decodes the copy.
+- A fetch that turns out to duplicate something already filed: if the existing copy is on the
+  cache drive it is reported `done` with that file's block and meta. If it is only on the NAS
+  the item is `failed` with `"existing_uid": "nas:<source id>:<relpath>"`; PiTV binds the
+  request to that catalogue entry and counts neither an attempt nor a failure.
+- Fetched advert `meta.family_safe` is `true`, `false` or `null`; `null` means no verdict and
+  PiTV decides from tags and its keyword list, as it does for the index.
+- A fetch request with `season: 0` is a special.
 - Schema 1 reports (no `file` block) are still accepted during the transition: the path is
   recorded and the requested length is kept.
 

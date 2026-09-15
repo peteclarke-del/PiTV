@@ -1,6 +1,10 @@
-// Admin actions used from more than one page, each with its own toast.
+// Actions used from more than one page, each with its own toast.
 import { post, tryApi } from './api.js';
 import { toast } from './stores.svelte.js';
+
+/** Tune the TV to channel `number`. The remote passes quiet: its buttons are their own feedback. */
+export const tuneChannel = (number, { quiet = false } = {}) =>
+  tryApi(post('/api/player/channel', { number }), { success: quiet ? undefined : `Tuned to channel ${number}` });
 
 /** Import pitv_content's library index into PiTV's catalogue; with reindex, ask pitv_content to re-scan its sources first. */
 export const importCatalogue = (reindex = false) =>

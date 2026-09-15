@@ -56,9 +56,10 @@
     } catch (e) { toast.error(explain(e)); }
   });
   async function remove(s) {
+    // Rethrow with the explained message so tryApi toasts it instead of the success line.
     const r = await confirmApi(`Remove source "${s.name}" from pitv_content? Its items leave PiTV's catalogue at the next complete import; line-up entries for them stay, as external material.`,
       { title: 'Remove source', okLabel: 'Remove', danger: true }, async () => {
-        try { return await put('/api/sources', { id: s.id, delete: true }); } catch (e) { toast.error(explain(e)); return undefined; }
+        try { return await put('/api/sources', { id: s.id, delete: true }); } catch (e) { throw new Error(explain(e)); }
       }, { success: `Source ${s.name} removed` });
     if (r) load();
   }
@@ -115,9 +116,10 @@
   {/each}
 </div>
 
-<Drawer open={!!editing} title={editing?.isNew ? 'Add source' : `Edit source ${editing?.id ?? ''}`} subtitle="Saved by pitv_content" onclose={() => (editing = null)}>
+<Drawer open={!!editing} title={editing?.isNew ? 'Add source' : `Edit source ${editing?.id ?? ''}`} onclose={() => (editing = null)}>
   {#if editing}
     <div class="stack">
+      <p class="scope" style="margin:0"><AppBadge app="content" /> Stored by pitv_content; PiTV relays the change. Re-index afterwards to pick up the files.</p>
       <label class="field">Id<input class="mono" bind:value={editing.id} disabled={!editing.isNew} placeholder="e.g. tvshows" /><span class="help">Stable key used in item uids; it cannot change once created.</span>{#if errors.id}<span class="help err">{errors.id}</span>{/if}</label>
       <label class="field">Name<input bind:value={editing.name} placeholder="e.g. TV Shows" />{#if errors.name}<span class="help err">{errors.name}</span>{/if}</label>
       <label class="field">Type
@@ -152,6 +154,4 @@
 <style>
   .head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem 1rem; padding: .8rem 1rem .4rem; }
   .head h3 { margin: 0; }
-  tr.off td { opacity: .6; }
-  .help.err { color: var(--danger); font-weight: 550; }
 </style>

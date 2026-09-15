@@ -1,10 +1,9 @@
 <script>
   import AppBadge from '../../components/AppBadge.svelte';
-  import { untrack } from 'svelte';
-  import { get, post, del, tryApi, confirmApi } from '../../lib/api.js';
-  import { changes, clock, toast, noteChange } from '../../lib/stores.svelte.js';
+  import { post, del, tryApi, confirmApi } from '../../lib/api.js';
+  import { clock, toast, noteChange } from '../../lib/stores.svelte.js';
   import { fmtDay, fmtRange, fmtDuration, fmtDateTime, fmtTime, tsToLocalDay, tsToLocalTime, localToTs, plural } from '../../lib/format.js';
-  import { dayBounds, pickDay, builtToday, defaultPpm } from '../../lib/schedule.js';
+  import { ScheduleDay } from '../../lib/schedule.svelte.js';
   import EpgGrid from '../../components/EpgGrid.svelte';
   import DayNav from '../../components/DayNav.svelte';
   import Drawer from '../../components/Drawer.svelte';
@@ -13,53 +12,16 @@
   import MediaPicker from './MediaPicker.svelte';
   import JobList from './JobList.svelte';
 
-  let days = $state(null);
-  let failed = $state(false);
-  let day = $state('');
   let ads = $state(false);
-  let data = $state(null);
-  let loading = $state(false);
   let selected = $state(null);
-  let grid = $state(null);
-  const ppm = defaultPpm();
   let picker = $state(null);          // 'replace' | 'insert' | null
   let insert = $state(null);          // { channel_id, day, time, media_id, label }
   let notes = $state([]);             // notes from the last synchronous edit
   let busy = $state(false);
+  // A refetch replaces the slot objects, so the open drawer follows its slot into the new list.
+  const view = new ScheduleDay({ ads: () => ads, onload: (data) => { if (selected) selected = data?.slots.find((s) => s.id === selected.id) ?? null; } });
 
-  let dayInfo = $derived(dayBounds(days, day));
-  let channelById = $derived(new Map((data?.channels ?? []).map((c) => [c.id, c])));
   let editable = $derived(selected && selected.start_ts > clock.ts && !selected.replay);
-
-  async function loadDays() {
-    const d = await tryApi(get('/api/schedule/days'));
-    failed = !d;
-    if (!d) return;
-    days = d;
-    day = pickDay(days, day);
-  }
-  async function loadSlots() {
-    if (!dayInfo) { data = null; return; }
-    loading = true;
-    data = (await tryApi(get('/api/schedule', { start: dayInfo.start, end: dayInfo.end, ads: ads ? 1 : 0 }))) ?? data;
-    loading = false;
-  }
-  // Every schedule change refetches the day list; a new dayInfo (new day or new bounds) or the ads toggle refetches the slots.
-  $effect(() => { changes.schedule; untrack(loadDays); });
-  let first = true;
-  $effect(() => {
-    if (!dayInfo) return;
-    ads;
-    untrack(() => loadSlots().then(() => {
-      if (first) { first = false; if (day === days?.today) setTimeout(() => grid?.scrollTo(clock.ts, 80), 30); }
-      if (selected) selected = data?.slots.find((s) => s.id === selected.id) ?? null;
-    }));
-  });
-  function goNow() {
-    const today = builtToday(days);
-    if (today && day !== today) { day = today; setTimeout(() => grid?.scrollTo(clock.ts, 80), 300); }
-    else grid?.scrollTo(clock.ts, 80);
-  }
 
   function applyResult(r, msg) {
     if (!r) return;
@@ -94,7 +56,7 @@
   }
   function openInsert(slot) {
     const ts = slot ? slot.start_ts : Math.ceil((clock.ts + 600) / 300) * 300;
-    insert = { channel_id: slot?.channel_id ?? data?.channels[0]?.id, day: tsToLocalDay(ts), time: tsToLocalTime(ts), media_id: null, label: '' };
+    insert = { channel_id: slot?.channel_id ?? view.data?.channels[0]?.id, day: tsToLocalDay(ts), time: tsToLocalTime(ts), media_id: null, label: '' };
     selected = null;
   }
   async function doInsert() {
@@ -109,20 +71,20 @@
 <div class="stack">
   <div class="row" style="gap:.5rem"><h2 style="margin:0">Schedule</h2><AppBadge app="pitv" /><span class="small muted">PiTV's editable schedule; pitv_content is asked for anything it needs to play.</span></div>
   <div class="row">
-    <DayNav {days} {day} onpick={(d) => (day = d)} />
-    <button class="small" onclick={goNow}>Now</button>
+    <DayNav days={view.days} day={view.day} onpick={view.pick} />
+    <button class="small" onclick={view.goNow}>Now</button>
     <label class="check small"><input type="checkbox" bind:checked={ads} /> Show ads &amp; idents</label>
     <span class="spacer"></span>
-    <button class="small primary" onclick={() => openInsert(null)} disabled={!data}>Insert programme…</button>
+    <button class="small primary" onclick={() => openInsert(null)} disabled={!view.data}>Insert programme…</button>
   </div>
 
-  {#if failed && !days}
-    <div class="empty">The schedule could not be loaded. <button class="small" onclick={loadDays}>Retry</button></div>
-  {:else if days && !days.days.length}
+  {#if view.failed && !view.days}
+    <div class="empty">The schedule could not be loaded. <button class="small" onclick={view.loadDays}>Retry</button></div>
+  {:else if view.days && !view.days.days.length}
     <div class="empty">No schedule built yet. Use Build schedule on the dashboard.</div>
-  {:else if dayInfo}
-    <EpgGrid bind:this={grid} channels={data?.channels ?? []} slots={data?.slots ?? []} start={dayInfo.start} end={dayInfo.end}
-             now={clock.ts} {ppm} {loading} editable selectedId={selected?.id ?? null} onselect={(s) => (selected = s)} />
+  {:else if view.bounds}
+    <EpgGrid bind:this={view.grid} channels={view.data?.channels ?? []} slots={view.data?.slots ?? []} start={view.bounds.start} end={view.bounds.end}
+             now={clock.ts} ppm={view.ppm} loading={view.loading} editable selectedId={selected?.id ?? null} onselect={(s) => (selected = s)} />
     <p class="tiny muted">Click a future slot to lock, replace, remove or rebuild from it. Past and current slots and overnight replays are read-only.</p>
   {:else}
     <div class="skeleton" style="height:300px"></div>
@@ -137,8 +99,9 @@
 <Drawer open={!!selected} title={selected?.title ?? ''} subtitle={selected?.subtitle ?? ''} onclose={() => (selected = null)}>
   {#if selected}
     <div class="stack">
+      <p class="scope" style="margin:0"><AppBadge app="pitv" /> Changes PiTV's schedule for this channel.</p>
       <div class="row">
-        <ChannelBadge channel={channelById.get(selected.channel_id)} size="sm" />
+        <ChannelBadge channel={view.channelById.get(selected.channel_id)} size="sm" />
         <span class="muted">{fmtRange(selected.start_ts, selected.end_ts)}</span>
         <span class="badge">{selected.kind}</span>
         {#if selected.locked}<span class="badge info">locked</span>{/if}
@@ -177,8 +140,9 @@
 <Modal open={!!insert && picker !== 'insert'} title="Insert programme" onclose={() => (insert = null)}>
   {#if insert}
     <div class="stack">
+      <p class="scope" style="margin:0"><AppBadge app="pitv" /> Adds a programme to PiTV's schedule.</p>
       <label class="field">Channel
-        <select bind:value={insert.channel_id}>{#each data?.channels ?? [] as c (c.id)}<option value={c.id}>{c.number} {c.name}</option>{/each}</select>
+        <select bind:value={insert.channel_id}>{#each view.data?.channels ?? [] as c (c.id)}<option value={c.id}>{c.number} {c.name}</option>{/each}</select>
       </label>
       <div class="row">
         <label class="field">Date<input type="date" bind:value={insert.day} /></label>

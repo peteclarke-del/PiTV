@@ -10,40 +10,56 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from ... import __version__
+from ... import __version__, catalogue, tool_client
 from ... import db as dbm
-from ...db import (DEFAULT_SETTINGS, all_settings, get_setting, now_ts, row_to_dict, rows_to_dicts,
-                   set_setting, tx)
+from ... import lineup as lineup_mod
+from ...db import (
+    DEFAULT_SETTINGS,
+    all_settings,
+    genre_list,
+    get_setting,
+    now_ts,
+    row_to_dict,
+    rows_to_dicts,
+    set_setting,
+    tx,
+)
 from ...guide import SLOT_QUERY
 from ...hostinfo import host_info
-from ... import catalogue, tool_client
-from ... import lineup as lineup_mod
-from ...logsetup import log_dir, tail
+from ...logsetup import log_dir
 from ...scheduler.build import build_horizon, parse_day, rebuild_from, slot_titles
 from ...scheduler.rules import broadcast_day_for, parse_pattern, tz_of
-from .deps import admin_conn, media_public, run_cmd, show_public, slot_public
+from .content import tool_catalogue
+from .deps import (
+    admin_conn,
+    admin_json,
+    log_tail,
+    media_public,
+    optional_int,
+    optional_text,
+    run_cmd,
+    show_public,
+    slot_public,
+    tool_url,
+)
 from .services import CONTENT_RUN, CONTENT_TIMER, SERVICE_ACTIONS, services
-from .settings_rules import SettingError, check_setting
+from .settings_rules import HHMM, SECRET_SETTINGS, SettingError, check_setting
 
 router = APIRouter(prefix="/api", dependencies=[Depends(admin_conn)])
 
-SECRET_SETTINGS = {"admin_password_hash", "session_secret"}
 SHOW_OVERRIDE_FIELDS = {"title", "year", "certificate", "genres", "plot", "kids"}
 SHOW_DIRECT_FIELDS = {"home_channel_id", "mode", "anchor_time", "anchor_days", "rest_weeks", "excluded", "category"}
 SHOW_CATEGORIES = ("general", "sport", "kids", "cartoon")
 MEDIA_OVERRIDE_FIELDS = {"title", "year", "certificate", "genres", "plot", "season", "episode", "artist"}
-MEDIA_DIRECT_FIELDS = {"excluded", "channel_hint", "concert", "family_safe", "home_channel_id"}
+MEDIA_DIRECT_FIELDS = {"excluded", "concert", "family_safe", "home_channel_id"}
 CHANNEL_FIELDS = {"number", "name", "short_name", "colour", "enabled", "ads_enabled", "ads_per_break",
                   "pattern", "era_weights", "genre_weights", "kind_weights", "daypart_profile",
                   "overnight_replay_from", "idents_enabled", "description", "content", "family_safe_ads",
                   "allowed_genres", "excluded_genres", "nas_only"}
 JSON_CHANNEL_FIELDS = {"era_weights", "genre_weights", "kind_weights", "daypart_profile", "allowed_genres", "excluded_genres"}
-# What the web service may ask systemd to do; must stay in step with the sudoers rule in
-# setup/install.sh. Stopping the web service from the web is deliberately not offered.
-_HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _COLOUR = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
@@ -76,26 +92,24 @@ def allowed_dir(path: str, roots: list[Path]) -> Path:
 
 # --- sources (owned by pitv_content) -------------------------------------------------------------
 
-SOURCE_TYPES = ("tv", "movie", "advert", "ident", "music")
 SOURCE_CATEGORIES = ("general", "sport", "kids")
 
 
 def _mirror_sources(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """The sources as last seen in pitv_content's index, for when its API is down."""
-    out = []
-    for r in rows_to_dicts(conn.execute("SELECT * FROM sources ORDER BY location, name")):
-        n = conn.execute("SELECT COUNT(*) FROM media WHERE source_id = ? AND missing = 0", (r["id"],)).fetchone()[0]
-        out.append({"id": r["uid"], "name": r["name"], "type": r["type"], "category": r["category"], "root": r["path"],
-                    "remote": r["remote"], "location": r["location"], "enabled": bool(r["enabled"]),
-                    "health": {"mounted": Path(r["path"]).is_dir(), "items": n, "last_indexed_ts": r["last_indexed_at"]}})
-    return out
+    rows = conn.execute("SELECT s.*, (SELECT COUNT(*) FROM media m WHERE m.source_id = s.id AND m.missing = 0) AS items"
+                        " FROM sources s ORDER BY s.location, s.name")
+    return [{"id": r["uid"], "name": r["name"], "type": r["type"], "category": r["category"], "root": r["path"],
+             "remote": r["remote"], "location": r["location"], "enabled": bool(r["enabled"]),
+             "health": {"mounted": Path(r["path"]).is_dir(), "items": r["items"], "last_indexed_ts": r["last_indexed_at"]}}
+            for r in rows]
 
 
 @router.get("/sources")
 def list_sources(conn: sqlite3.Connection = Depends(admin_conn)):
     """pitv_content's sources. PiTV does not read them; they are shown and edited here because
     pitv_content has no interface of its own."""
-    status, payload = tool_client.request(tool_client.base_url(all_settings(conn)), "GET", "sources", timeout=10)
+    status, payload = tool_client.request(tool_url(conn), "GET", "sources", timeout=10)
     if status == 200 and isinstance(payload, (list, dict)):
         items = payload if isinstance(payload, list) else payload.get("sources", [])
         return {"owner": "pitv_content", "offline": False, "sources": items}
@@ -109,13 +123,13 @@ def put_source(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depe
     if not isinstance(body.get("id"), str) or not body["id"].strip():
         raise HTTPException(400, "id required")
     if not body.get("delete"):
-        if "type" in body and body["type"] not in SOURCE_TYPES:
+        if "type" in body and body["type"] not in catalogue.SOURCE_TYPES:
             raise HTTPException(400, "type must be tv, movie, advert, ident or music")
         if "category" in body and (body["category"] or "general") not in SOURCE_CATEGORIES:
             raise HTTPException(400, "category must be general, sport or kids")
         if body.get("root"):
             body["root"] = str(allowed_dir(str(body["root"]), browse_roots(all_settings(conn))))
-    status, payload = tool_client.request(tool_client.base_url(all_settings(conn)), "PUT", "sources", body=body, timeout=15)
+    status, payload = tool_client.request(tool_url(conn), "PUT", "sources", body=body, timeout=15)
     if isinstance(payload, dict) and payload.get("offline"):
         raise HTTPException(503, "pitv_content is not running; sources can only be changed through it")
     if status >= 400:
@@ -128,22 +142,21 @@ def put_source(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depe
 
 def catalogue_job(request: Request, reindex: bool, label: str, doc: dict[str, Any] | None = None) -> dict[str, Any]:
     """Import the index as a background job (its own connection; progress over SSE)."""
-    cfg = request.app.state.cfg
-    jobs = request.app.state.jobs
+    state = request.app.state
 
     def run(job):
-        conn = dbm.connect(cfg.db_path)
+        conn = dbm.connect(state.cfg.db_path)
         try:
-            jobs.progress(job, "asking pitv_content to re-index" if reindex else "importing the library index")
+            state.jobs.progress(job, "asking pitv_content to re-index" if reindex else "importing the library index")
             result = catalogue.import_and_place(conn, doc, "uploaded file") if doc is not None \
                 else catalogue.refresh(conn, reindex=reindex)
             if result.get("status") == "error":
                 raise RuntimeError(result["summary"])   # the job reads "failed", with the reason
-            request.app.state.bus.publish_threadsafe("library", {"changed": True})
+            state.bus.publish_threadsafe("library", {"changed": True})
             return {"status": result.get("status", "ok"), "summary": result["summary"]}
         finally:
             conn.close()
-    return jobs.submit("catalogue", label, run).public()
+    return state.jobs.submit("catalogue", label, run).public()
 
 
 @router.get("/catalogue")
@@ -162,7 +175,7 @@ def catalogue_refresh(request: Request, body: dict[str, Any] = Body(default={}))
 
 
 @router.post("/catalogue/import")
-def catalogue_import(request: Request, body: dict[str, Any] = Body(...)):
+def catalogue_import(request: Request, body: dict[str, Any] = Depends(admin_json)):
     """Import an index document supplied directly (development, or a saved index)."""
     if body.get("schema") != catalogue.SCHEMA:
         raise HTTPException(400, f"expected a schema {catalogue.SCHEMA} library index")
@@ -185,9 +198,9 @@ def browse(path: str = "/", conn: sqlite3.Connection = Depends(admin_conn)):
     if not p.is_dir():
         raise HTTPException(404, "not a directory")
     try:
-        dirs = sorted(d.name for d in p.iterdir() if d.is_dir() and not d.name.startswith("."))
-    except PermissionError:
-        dirs = []
+        dirs = sorted(d.name for d in p.iterdir() if not d.name.startswith(".") and d.is_dir())
+    except OSError:
+        dirs = []   # unreadable, or a share that dropped while listing: show it empty
     parent = p.parent
     up = str(parent) if any(parent == r or parent.is_relative_to(r) for r in roots) else "/"
     return {"path": str(p), "parent": up, "dirs": dirs}
@@ -198,17 +211,18 @@ def browse(path: str = "/", conn: sqlite3.Connection = Depends(admin_conn)):
 @router.get("/library/summary")
 def library_summary(conn: sqlite3.Connection = Depends(admin_conn)):
     kinds = {r["kind"]: r["n"] for r in conn.execute("SELECT kind, COUNT(*) AS n FROM media WHERE missing = 0 GROUP BY kind")}
-    hw = conn.execute("SELECT SUM(hwdec) AS hw, COUNT(*) AS n FROM media WHERE missing = 0 AND kind IN ('episode','movie')").fetchone()
-    attention = conn.execute("SELECT COUNT(*) FROM media WHERE missing = 0 AND attention IS NOT NULL").fetchone()[0]
     shows = conn.execute("SELECT COUNT(*) FROM shows WHERE missing = 0").fetchone()[0]
-    hours = conn.execute("SELECT SUM(duration)/3600.0 FROM media WHERE missing = 0 AND kind IN ('episode','movie')").fetchone()[0]
-    concerts = conn.execute("SELECT COUNT(*) FROM media WHERE missing = 0 AND kind = 'music' AND concert = 1").fetchone()[0]
-    avail = conn.execute(
-        "SELECT SUM(cache_path IS NOT NULL OR origin != 'nas') AS cached, SUM(origin = 'nas' AND cache_path IS NULL) AS nas_only,"
+    # One pass over media rather than a query per figure.
+    m = conn.execute(
+        "SELECT SUM(kind IN ('episode','movie')) AS programmes,"
+        " SUM(CASE WHEN kind IN ('episode','movie') THEN hwdec END) AS hwdec,"
+        " SUM(CASE WHEN kind IN ('episode','movie') THEN duration END) / 3600.0 AS hours,"
+        " SUM(attention IS NOT NULL) AS attention, SUM(kind = 'music' AND concert = 1) AS concerts,"
+        " SUM(cache_path IS NOT NULL OR origin != 'nas') AS cached, SUM(origin = 'nas' AND cache_path IS NULL) AS nas_only,"
         " SUM(origin = 'online') AS online FROM media WHERE missing = 0").fetchone()
-    return {"kinds": kinds, "shows": shows, "hwdec": hw["hw"] or 0, "programmes": hw["n"] or 0,
-            "attention": attention, "hours": round(hours or 0, 1), "concerts": concerts,
-            "cached": avail["cached"] or 0, "nas_only": avail["nas_only"] or 0, "online": avail["online"] or 0,
+    return {"kinds": kinds, "shows": shows, "hwdec": m["hwdec"] or 0, "programmes": m["programmes"] or 0,
+            "attention": m["attention"] or 0, "hours": round(m["hours"] or 0, 1), "concerts": m["concerts"] or 0,
+            "cached": m["cached"] or 0, "nas_only": m["nas_only"] or 0, "online": m["online"] or 0,
             "last_import": catalogue.last_import(conn)}
 
 
@@ -263,46 +277,68 @@ def get_show(sid: int, conn: sqlite3.Connection = Depends(admin_conn)):
     return d
 
 
+def _override_value(key: str, value: Any) -> Any:
+    """An admin override in the type of the indexed column it stands in for; 400 otherwise."""
+    if key in ("year", "season", "episode"):
+        return optional_int(value, key)
+    if key == "genres":
+        if not isinstance(value, list) or not all(isinstance(g, str) for g in value):
+            raise HTTPException(400, "genres must be a list of names")
+        return [g.strip() for g in value if g.strip()]
+    if key == "kids":
+        return int(bool(value))
+    return optional_text(value, key, limit=4000)
+
+
+def _merge_overrides(row: sqlite3.Row, body: dict[str, Any], fields: set[str]) -> dict[str, Any]:
+    """The row's overrides with the body's edits applied. An empty value, or one equal to the
+    indexed value, drops the override so later index imports show through again."""
+    overrides = json.loads(row["overrides"] or "{}")
+    indexed = row_to_dict(row) or {}
+    for k in fields & body.keys():
+        v = None if body[k] in (None, "") else _override_value(k, body[k])
+        if v in (None, "", []) or v == indexed.get(k):
+            overrides.pop(k, None)
+        else:
+            overrides[k] = v
+    return overrides
+
+
+def _update_row(conn: sqlite3.Connection, table: str, row_id: int, fields: dict[str, Any]) -> None:
+    """UPDATE one row by id in its own transaction. Column names come from this module's
+    allowlists; dbm.update_row checks them as identifiers and binds every value."""
+    if fields:
+        with tx(conn):
+            dbm.update_row(conn, table, row_id, fields)
+
+
 @router.put("/shows/{sid}")
 def update_show(sid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
     row = conn.execute("SELECT * FROM shows WHERE id = ?", (sid,)).fetchone()
     if not row:
         raise HTTPException(404, "show not found")
-    overrides = json.loads(row["overrides"] or "{}")
-    direct: dict[str, Any] = {}
-    for k, v in body.items():
-        if k in SHOW_OVERRIDE_FIELDS:
-            if v is None or v == "" or v == row[k] or (k == "genres" and v == json.loads(row["genres"] or "[]")):
-                overrides.pop(k, None)
-            else:
-                overrides[k] = v
-        elif k in SHOW_DIRECT_FIELDS:
-            direct[k] = v
-    if "home_channel_id" in direct:
-        target = direct.pop("home_channel_id")
-        if target:
-            lineup_mod.add(conn, int(target), show_id=sid)
+    direct = {k: body[k] for k in SHOW_DIRECT_FIELDS & body.keys()}
+    # The home channel is a line-up entry; shows.home_channel_id is derived from the line-up.
+    home = optional_int(direct.pop("home_channel_id", None), "home_channel_id")
     if "mode" in direct and direct["mode"] not in ("auto", "strip", "weekly"):
         raise HTTPException(400, "mode must be auto, strip or weekly")
     if "category" in direct and direct["category"] not in SHOW_CATEGORIES:
         raise HTTPException(400, "category must be general, sport, kids or cartoon")
-    try:
-        if "anchor_days" in direct and direct["anchor_days"] is not None:
-            direct["anchor_days"] = json.dumps(sorted({int(d) % 7 for d in direct["anchor_days"]}))
-        if "rest_weeks" in direct:
-            direct["rest_weeks"] = max(0, int(direct["rest_weeks"]))
-        if "home_channel_id" in direct and direct["home_channel_id"] is not None:
-            direct["home_channel_id"] = int(direct["home_channel_id"])
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(400, "anchor_days, rest_weeks and home_channel_id must be numbers") from exc
-    if direct.get("anchor_time") is not None and not _HHMM.match(str(direct.get("anchor_time"))):
+    if direct.get("anchor_time") is not None and not HHMM.match(str(direct["anchor_time"])):
         raise HTTPException(400, "anchor_time must be HH:MM")
+    if direct.get("anchor_days") is not None:
+        try:
+            direct["anchor_days"] = json.dumps(sorted({int(d) % 7 for d in direct["anchor_days"]}))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, "anchor_days must be a list of weekday numbers") from exc
+    if "rest_weeks" in direct:
+        direct["rest_weeks"] = max(0, optional_int(direct["rest_weeks"], "rest_weeks") or 0)
     if "excluded" in direct:
         direct["excluded"] = int(bool(direct["excluded"]))
-    direct["overrides"] = json.dumps(overrides)
-    sets = ", ".join(f"{k} = ?" for k in direct)
-    with tx(conn):
-        conn.execute(f"UPDATE shows SET {sets} WHERE id = ?", (*direct.values(), sid))
+    direct["overrides"] = json.dumps(_merge_overrides(row, body, SHOW_OVERRIDE_FIELDS))
+    _update_row(conn, "shows", sid, direct)
+    if home:
+        lineup_mod.add(conn, home, show_id=sid)
     return get_show(sid, conn)
 
 
@@ -359,7 +395,7 @@ def music_facets(conn: sqlite3.Connection = Depends(admin_conn)):
     decades: dict[str, int] = {}
     concerts = 0
     for r in conn.execute("SELECT genres, year, concert FROM media WHERE kind = 'music' AND missing = 0 AND excluded = 0"):
-        for g in json.loads(r["genres"] or "[]"):
+        for g in genre_list(r["genres"]):
             genres[g] = genres.get(g, 0) + 1
         if r["year"]:
             d = f"{(r['year'] // 10) * 10}s"
@@ -386,20 +422,16 @@ def update_media(mid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Conne
     row = conn.execute("SELECT * FROM media WHERE id = ?", (mid,)).fetchone()
     if not row:
         raise HTTPException(404, "media not found")
-    overrides = json.loads(row["overrides"] or "{}")
-    direct: dict[str, Any] = {}
-    for k, v in body.items():
-        if k in MEDIA_OVERRIDE_FIELDS:
-            if v is None or v == "" or v == row[k]:
-                overrides.pop(k, None)
-            else:
-                overrides[k] = v
-        elif k in MEDIA_DIRECT_FIELDS:
-            direct[k] = int(bool(v)) if k in ("excluded", "concert", "family_safe") else v
-    if "home_channel_id" in direct:
-        target = direct.pop("home_channel_id")
-        if target and row["kind"] == "movie":
-            lineup_mod.add(conn, int(target), media_id=mid)
+    direct = {k: body[k] for k in MEDIA_DIRECT_FIELDS & body.keys()}
+    home = optional_int(direct.pop("home_channel_id", None), "home_channel_id")
+    for k in ("excluded", "concert", "family_safe"):
+        if k in direct:
+            direct[k] = int(bool(direct[k]))
+    if row["kind"] == "ident" and "home_channel_id" in body:
+        if home is not None:
+            _require_channel(conn, home)
+        direct["home_channel_id"] = home          # an ident's channel is set here, not by a line-up
+    overrides = _merge_overrides(row, body, MEDIA_OVERRIDE_FIELDS)
     direct["overrides"] = json.dumps(overrides)
     if "year" in overrides or "certificate" in overrides:
         # Clear attention flags the override resolves.
@@ -407,9 +439,9 @@ def update_media(mid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Conne
             ("year" in overrides and a.startswith("No year")) or
             ("certificate" in overrides and a.startswith("No certificate")))]
         direct["attention"] = "; ".join(att) or None
-    sets = ", ".join(f"{k} = ?" for k in direct)
-    with tx(conn):
-        conn.execute(f"UPDATE media SET {sets} WHERE id = ?", (*direct.values(), mid))
+    _update_row(conn, "media", mid, direct)
+    if home and row["kind"] == "movie":
+        lineup_mod.add(conn, home, media_id=mid)
     return get_media(mid, conn)
 
 
@@ -503,7 +535,7 @@ def _clean_channel_fields(body: dict[str, Any]) -> dict[str, Any]:
                 raise HTTPException(400, "colour must be #rrggbb")
             fields[k] = v.lower()
         elif k == "overnight_replay_from":
-            if not isinstance(v, str) or not _HHMM.match(v):
+            if not isinstance(v, str) or not HHMM.match(v):
                 raise HTTPException(400, "overnight_replay_from must be HH:MM")
             fields[k] = v
         else:
@@ -521,27 +553,22 @@ def create_channel(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = 
         fields["number"] = nxt
     fields.setdefault("name", f"PiTV {fields['number']}")
     fields.setdefault("short_name", str(fields["number"]))
-    cols = ", ".join(fields)
-    vals = ", ".join("?" for _ in fields)
     try:
         with tx(conn):
-            cur = conn.execute(f"INSERT INTO channels({cols}) VALUES ({vals})", tuple(fields.values()))
+            cid = dbm.insert_row(conn, "channels", fields)
     except sqlite3.IntegrityError as exc:
-        raise HTTPException(409, f"channel number already used ({exc})") from exc
-    return _channel(conn, int(cur.lastrowid))
+        raise HTTPException(409, f"channel number {fields['number']} is already used") from exc
+    return _channel(conn, cid)
 
 
 @router.put("/channels/{cid}")
 def update_channel(cid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
     _channel(conn, cid)
     fields = _clean_channel_fields(body)
-    if fields:
-        sets = ", ".join(f"{k} = ?" for k in fields)
-        try:
-            with tx(conn):
-                conn.execute(f"UPDATE channels SET {sets} WHERE id = ?", (*fields.values(), cid))
-        except sqlite3.IntegrityError as exc:
-            raise HTTPException(409, f"channel number already used ({exc})") from exc
+    try:
+        _update_row(conn, "channels", cid, fields)
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(409, f"channel number {fields.get('number')} is already used") from exc
     return _channel(conn, cid)
 
 
@@ -554,56 +581,49 @@ def delete_channel(cid: int, conn: sqlite3.Connection = Depends(admin_conn)):
     return {"ok": True}
 
 
-@router.post("/channels/rebalance")
-def rebalance_channels(conn: sqlite3.Connection = Depends(admin_conn)):
-    """Redistribute unpinned line-up entries across channels by their genre lists."""
-    lineup_mod.generate(conn, rebalance=True)
-    return list_channels(conn)
-
-
 # --- settings -------------------------------------------------------------------------------------
+
+def _public_settings(conn: sqlite3.Connection) -> dict[str, Any]:
+    return {k: v for k, v in all_settings(conn).items() if k not in SECRET_SETTINGS}
+
 
 @router.get("/settings")
 def get_settings(conn: sqlite3.Connection = Depends(admin_conn)):
-    s = all_settings(conn)
-    return {k: v for k, v in s.items() if k not in SECRET_SETTINGS}
+    return _public_settings(conn)
 
 
 @router.put("/settings")
 def put_settings(request: Request, body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
-    unknown = [k for k in body if k not in DEFAULT_SETTINGS or k in SECRET_SETTINGS]
-    if unknown:
-        raise HTTPException(400, f"unknown settings: {', '.join(unknown)}")
-    clean = {}
-    for k, v in body.items():
-        try:
-            clean[k] = check_setting(k, v)
-        except SettingError as exc:
-            raise HTTPException(400, str(exc)) from exc
+    try:
+        clean = {k: check_setting(k, v) for k, v in body.items()}
+    except SettingError as exc:
+        raise HTTPException(400, str(exc)) from exc
     with tx(conn):
         for k, v in clean.items():
             set_setting(conn, k, v)
     request.app.state.player.call("settings-changed")
-    return get_settings(conn)
+    return _public_settings(conn)
 
 
 @router.post("/settings/reset")
 def reset_settings(request: Request, body: dict[str, Any] = Body(default={}), conn: sqlite3.Connection = Depends(admin_conn)):
-    keys = body.get("keys") or [k for k in DEFAULT_SETTINGS if k not in SECRET_SETTINGS]
+    """Restore defaults: the named `keys`, or every setting when none are named."""
+    keys = body.get("keys") or list(DEFAULT_SETTINGS)
+    if not isinstance(keys, list):
+        raise HTTPException(400, "keys must be a list of setting names")
     with tx(conn):
         for k in keys:
-            if k in DEFAULT_SETTINGS and k not in SECRET_SETTINGS:
+            if isinstance(k, str) and k in DEFAULT_SETTINGS and k not in SECRET_SETTINGS:
                 set_setting(conn, k, DEFAULT_SETTINGS[k])
     request.app.state.player.call("settings-changed")
-    return get_settings(conn)
+    return _public_settings(conn)
 
 
 # --- schedule editing -------------------------------------------------------------------------------
 
 @router.post("/schedule/build")
 def schedule_build(request: Request, body: dict[str, Any] = Body(default={})):
-    cfg = request.app.state.cfg
-    jobs = request.app.state.jobs
+    app = request.app
     try:
         start = parse_day(str(body["start_day"])) if body.get("start_day") else None
         days = max(1, min(int(body["days"]), 31)) if body.get("days") else None
@@ -613,16 +633,16 @@ def schedule_build(request: Request, body: dict[str, Any] = Body(default={})):
     force = bool(body.get("force", False))
 
     def run(job):
-        conn = dbm.connect(cfg.db_path)
+        conn = dbm.connect(app.state.cfg.db_path)
         try:
             result = build_horizon(conn, start_day=start, days=days, force=force, channel_numbers=channels,
-                                   progress=lambda m: jobs.progress(job, m))
+                                   progress=lambda m: app.state.jobs.progress(job, m))
             job.notes.extend(result.get("notes", []))
-            _schedule_changed(request)
+            _schedule_changed(app)
             return result
         finally:
             conn.close()
-    return jobs.submit("schedule", "Build schedule" + (" (force)" if force else ""), run).public()
+    return app.state.jobs.submit("schedule", "Build schedule" + (" (force)" if force else ""), run).public()
 
 
 def _slot(conn: sqlite3.Connection, slot_id: int) -> sqlite3.Row:
@@ -648,15 +668,20 @@ def _media_with_show(conn: sqlite3.Connection, media_id: int) -> sqlite3.Row:
     return media
 
 
-def _schedule_changed(request: Request) -> None:
+def _schedule_changed(app: FastAPI) -> None:
     """Tell the browser tabs and the player (which caches the slot on air) to re-read."""
-    request.app.state.bus.publish_threadsafe("schedule", {"changed": True})
-    request.app.state.player.call("schedule-changed")
+    app.state.bus.publish_threadsafe("schedule", {"changed": True})
+    app.state.player.call("schedule-changed")
+
+
+def _require_channel(conn: sqlite3.Connection, channel_id: int) -> None:
+    if not conn.execute("SELECT 1 FROM channels WHERE id = ?", (channel_id,)).fetchone():
+        raise HTTPException(404, "channel not found")
 
 
 def _rebuild(request: Request, conn: sqlite3.Connection, channel_id: int, from_ts: int) -> dict[str, Any]:
     result = rebuild_from(conn, channel_id, from_ts)
-    _schedule_changed(request)
+    _schedule_changed(request.app)
     return result
 
 
@@ -683,9 +708,9 @@ def replace_slot(slot_id: int, request: Request, body: dict[str, Any] = Body(...
                  conn: sqlite3.Connection = Depends(admin_conn)):
     row = _slot(conn, slot_id)
     _editable(row)
-    media = _media_with_show(conn, int(body.get("media_id", 0)))
+    media = _media_with_show(conn, optional_int(body.get("media_id"), "media_id") or 0)
     title, subtitle = slot_titles(dict(media), media["show_title"])
-    end = row["start_ts"] + int(round(media["duration"]))
+    end = row["start_ts"] + round(media["duration"])
     with tx(conn):
         conn.execute("UPDATE schedule SET media_id = ?, end_ts = ?, title = ?, subtitle = ?, kind = 'programme', locked = 1, offset = 0 WHERE id = ?",
                      (media["id"], end, title, subtitle, slot_id))
@@ -700,10 +725,11 @@ def insert_slot(request: Request, body: dict[str, Any] = Body(...), conn: sqlite
         raise HTTPException(400, "channel_id, start_ts and media_id required") from exc
     if start_ts <= now_ts():
         raise HTTPException(409, "start must be in the future")
+    _require_channel(conn, channel_id)
     media = _media_with_show(conn, media_id)
     day = broadcast_day_for(start_ts, all_settings(conn), tz_of(conn)).isoformat()
     title, subtitle = slot_titles(dict(media), media["show_title"])
-    end = start_ts + int(round(media["duration"]))
+    end = start_ts + round(media["duration"])
     overlapping = conn.execute("SELECT * FROM schedule WHERE channel_id = ? AND replay = 0 AND start_ts < ? AND end_ts > ? ORDER BY start_ts",
                                (channel_id, end, start_ts)).fetchall()
     cut = start_ts
@@ -728,6 +754,7 @@ def rebuild(request: Request, body: dict[str, Any] = Body(...), conn: sqlite3.Co
         channel_id, from_ts = int(body["channel_id"]), int(body["from_ts"])
     except (KeyError, ValueError, TypeError) as exc:
         raise HTTPException(400, "channel_id and from_ts required") from exc
+    _require_channel(conn, channel_id)
     return _rebuild(request, conn, channel_id, from_ts)
 
 
@@ -741,7 +768,7 @@ def _cmd(args: list[str], timeout: float = 3) -> str:
 def _live_checks(request: Request, conn: sqlite3.Connection) -> dict[str, bool | None]:
     """Whether each application's processes answer, whatever systemd says."""
     player = request.app.state.player.call("state", timeout=1)
-    status, tool = tool_client.request(tool_client.base_url(all_settings(conn)), "GET", "status", timeout=3)
+    status, tool = tool_client.request(tool_url(conn), "GET", "status", timeout=3)
     tool_up = status == 200 and isinstance(tool, dict) and ("api_version" in tool or "tool" in tool)
     return {
         "pitv-web.service": True,
@@ -750,6 +777,18 @@ def _live_checks(request: Request, conn: sqlite3.Connection) -> dict[str, bool |
         CONTENT_RUN: bool(tool.get("active_job")) if tool_up else None,
         CONTENT_TIMER: tool_up or None,   # without the timer, runs are started through the API
     }
+
+
+def _disk_usage(path: Path) -> dict[str, int] | None:
+    """Size and free space of the filesystem holding `path`; None when it is not there (an
+    unmounted share reads as missing, not as an error on the page)."""
+    try:
+        if not path.is_dir():
+            return None
+        u = shutil.disk_usage(path)
+    except OSError:
+        return None
+    return {"total": u.total, "free": u.free}
 
 
 @router.get("/system")
@@ -761,27 +800,20 @@ def system_info(request: Request, conn: sqlite3.Connection = Depends(admin_conn)
             k, v = line.split("=", 1)
             time_info[k] = v
     mounts = []
-    for r in conn.execute("SELECT * FROM sources WHERE location = 'nas' ORDER BY id"):
-        p = Path(r["path"])
-        usage = None
-        if p.is_dir():
-            try:
-                u = shutil.disk_usage(p)
-                usage = {"total": u.total, "free": u.free}
-            except OSError:
-                usage = None
-        mounts.append({"name": r["name"], "path": r["path"], "available": p.is_dir(), "usage": usage})
-    data_usage = shutil.disk_usage(cfg.data_dir) if cfg.data_dir.exists() else None
+    for r in conn.execute("SELECT name, path FROM sources WHERE location = 'nas' ORDER BY id"):
+        usage = _disk_usage(Path(r["path"]))
+        mounts.append({"name": r["name"], "path": r["path"], "available": usage is not None, "usage": usage})
+    data_usage = _disk_usage(cfg.data_dir) or {}
     mpv = re.match(r"mpv (\S+)", _cmd([cfg.mpv_binary, "--version"]))
     host = host_info(__version__, {"mpv": mpv.group(1) if mpv else None})
     return {
         "host": host,
-        "time": {"now": now_ts(), "local": datetime.now().isoformat(timespec="seconds"),
+        "time": {"now": now_ts(), "local": datetime.now().astimezone().isoformat(timespec="seconds"),
                  "ntp": time_info.get("NTPSynchronized"), "timezone": time_info.get("Timezone")},
         "services": services(_live_checks(request, conn), on_pi=host["pi"]), "mounts": mounts,
         "data": {"path": str(cfg.data_dir), "db": str(cfg.db_path),
                  "db_size": cfg.db_path.stat().st_size if cfg.db_path.exists() else 0,
-                 "free": data_usage.free if data_usage else None, "total": data_usage.total if data_usage else None},
+                 "free": data_usage.get("free"), "total": data_usage.get("total")},
         "jobs": request.app.state.jobs.recent(10),
         "cache_dir": get_setting(conn, "cache_dir") or "",
     }
@@ -812,7 +844,7 @@ def history(conn: sqlite3.Connection = Depends(admin_conn), limit: int = 100):
 
 
 @router.get("/jobs")
-def jobs(request: Request):
+def list_jobs(request: Request):
     return request.app.state.jobs.recent(20)
 
 
@@ -824,7 +856,7 @@ def export_overrides(conn: sqlite3.Connection = Depends(admin_conn)):
              for r in conn.execute("SELECT * FROM shows WHERE overrides != '{}' OR excluded = 1 OR mode != 'auto'")]
     media = [{"uid": r["uid"], "title": r["title"], "overrides": json.loads(r["overrides"]), "excluded": r["excluded"]}
              for r in conn.execute("SELECT * FROM media WHERE overrides != '{}' OR excluded = 1")]
-    return {"exported_at": now_ts(), "settings": {k: v for k, v in all_settings(conn).items() if k not in SECRET_SETTINGS},
+    return {"exported_at": now_ts(), "settings": _public_settings(conn),
             "channels": rows_to_dicts(conn.execute("SELECT * FROM channels")), "sources": rows_to_dicts(conn.execute("SELECT * FROM sources")),
             "shows": shows, "media": media}
 
@@ -836,6 +868,7 @@ INSTALL_LOG = Path("/work/install/install.log")   # written by the SD-card insta
 
 
 def _log_path(cfg, name: str) -> Path:
+    """Only the fixed names in LOG_NAMES reach here, so no request text becomes a path."""
     if name == "install":
         return INSTALL_LOG if INSTALL_LOG.exists() else log_dir(cfg) / "install.log"
     return log_dir(cfg) / f"{name}.log"
@@ -846,8 +879,12 @@ def list_logs(request: Request):
     out = []
     for name in LOG_NAMES:
         p = _log_path(request.app.state.cfg, name)
-        out.append({"name": name, "path": str(p), "size": p.stat().st_size if p.exists() else 0,
-                    "modified": int(p.stat().st_mtime) if p.exists() else None})
+        try:
+            st = p.stat()
+        except OSError:
+            st = None
+        out.append({"name": name, "path": str(p), "size": st.st_size if st else 0,
+                    "modified": int(st.st_mtime) if st else None})
     return out
 
 
@@ -857,16 +894,19 @@ def read_log(name: str, request: Request, lines: int = 300, q: str = "", level: 
     if name not in LOG_NAMES:
         raise HTTPException(404, "unknown log")
     p = _log_path(request.app.state.cfg, name)
-    entries = tail(p, max(10, min(lines, 5000)), q, level.upper())
-    return {"name": name, "lines": entries, "exists": p.exists()}
+    return {"name": name, "lines": log_tail(p, lines, q, level), "exists": p.exists()}
+
+
+JOURNAL_UNITS = ("pitv-player", "pitv-web")
 
 
 @router.get("/logs/journal/{unit}")
 def read_journal(unit: str, lines: int = 300):
     """systemd journal for a PiTV unit (Pi only; empty elsewhere)."""
-    if unit not in ("pitv-player", "pitv-web"):
+    if unit not in JOURNAL_UNITS:
         raise HTTPException(404, "unknown unit")
-    rc, out, err = run_cmd(["journalctl", "-u", unit, "-n", str(min(lines, 2000)), "--no-pager", "-o", "short-iso"], timeout=15)
+    rc, out, err = run_cmd(["journalctl", "-u", unit, "-n", str(max(10, min(lines, 2000))), "--no-pager",
+                            "-o", "short-iso"], timeout=15)
     return {"unit": unit, "text": out if rc == 0 else "", "error": err[:300]}
 
 
@@ -885,14 +925,12 @@ def lineup_list(conn: sqlite3.Connection = Depends(admin_conn), channel_id: int 
 @router.get("/lineup/options")
 def lineup_options(conn: sqlite3.Connection = Depends(admin_conn), q: str = "", limit: int = 50):
     """Dropdown choices: library series and films plus pitv_content's catalogue when it is up."""
-    from .content import tool_catalogue
     out = lineup_mod.options(conn, q, limit)
     for c in tool_catalogue(conn):
-        if q and q.lower() not in str(c.get("name", "")).lower():
+        name = c.get("name")
+        if not isinstance(name, str) or (q and q.lower() not in name.lower()) or c.get("kind") in ("music", "adverts"):
             continue
-        if c.get("kind") in ("music", "adverts"):
-            continue
-        out.append({"type": "show", "title": c["name"], "year": c.get("first_year"), "on_disk": bool(c.get("count_on_disk")),
+        out.append({"type": "show", "title": name, "year": c.get("first_year"), "on_disk": bool(c.get("count_on_disk")),
                     "catalogue": True, "episodes_known": c.get("episodes_known"), "years": c.get("years")})
     return out
 
@@ -910,10 +948,12 @@ def lineup_add(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depe
 
 @router.put("/lineup/{lid}")
 def lineup_update(lid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
+    if dbm.find_id(conn, "lineup", "id", lid) is None:
+        raise HTTPException(404, "line-up entry not found")
     try:
         return lineup_mod.update(conn, lid, body)
-    except ValueError as exc:
-        raise HTTPException(404, str(exc)) from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.delete("/lineup/{lid}")
@@ -933,7 +973,8 @@ def lineup_export(conn: sqlite3.Connection = Depends(admin_conn)):
 
 
 @router.post("/lineup/import")
-def lineup_import(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
-    if not isinstance(body, dict) or "channels" not in body:
-        raise HTTPException(400, "expected a line-up document with a channels list")
-    return lineup_mod.import_doc(conn, body)
+def lineup_import(body: dict[str, Any] = Depends(admin_json), conn: sqlite3.Connection = Depends(admin_conn)):
+    try:
+        return lineup_mod.import_doc(conn, body)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc

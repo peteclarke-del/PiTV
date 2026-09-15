@@ -1,12 +1,23 @@
 [Unit]
 Description=PiTV player (mpv on DRM, schedule follower)
-# Do not Require the mounts: playback starts with the test card and retries until the NAS is up.
+# The NAS mounts are not required: playback starts with the test card and retries until the NAS is up.
 After=network-online.target remote-fs.target systemd-timesyncd.service time-sync.target
 Wants=network-online.target systemd-timesyncd.service
+# The database. On an installer-made card it is a bind mount from /work; elsewhere this is a no-op.
+RequiresMountsFor=/var/lib/pitv
+# No start limit: a television that stops retrying stays dark until someone reboots it.
+# RestartSec paces the retries instead.
+StartLimitIntervalSec=0
 
 [Service]
 Type=notify
 NotifyAccess=main
+# READY=1 comes once mpv is up and the test card shows, before the bounded wait for NTP
+# (clock_wait_seconds, 120 s by default), so the wait does not count here. 180 s covers a slow
+# first start (a cold SD card, mpv probing DRM) and still restarts a player that hangs before it.
+TimeoutStartSec=180
+# The player pings every loop pass (about twice a second) and every 2 s during the clock wait;
+# 90 s only trips on a real hang.
 WatchdogSec=90
 User=pitv
 Group=pitv
@@ -18,26 +29,30 @@ RuntimeDirectoryPreserve=yes
 ExecStart=/opt/pitv/.venv/bin/pitv play
 Restart=always
 RestartSec=2
-StartLimitIntervalSec=0
 TimeoutStopSec=10
 # Memory: a leak gets killed and restarted rather than taking the Pi down.
 MemoryHigh=900M
 MemoryMax=1200M
 OOMPolicy=kill
-# Give mpv real-time-ish priority so audio never stutters under a scan or copy.
+# A higher CPU and I/O priority, so playback does not stutter under a scan or a copy.
 Nice=-5
 IOSchedulingClass=best-effort
 IOSchedulingPriority=2
-# The player needs the DRM, input and ALSA devices, the data dir, /run/pitv and the cache drive;
-# nothing under /usr, /etc or /boot is ever written.
+# Sandbox. The player needs the DRM, input and sound devices, so nothing that narrows /dev
+# (PrivateDevices=, DeviceAllow=, ProtectClock=). ProtectSystem=full rather than strict:
+# the cache directory is an admin setting that can change at runtime, so it cannot be listed in
+# ReadWritePaths=. Nothing under /usr, /boot or /etc is written.
 NoNewPrivileges=yes
 ProtectSystem=full
 ProtectHome=read-only
 PrivateTmp=yes
 ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
-StandardOutput=journal
-StandardError=journal
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
 SyslogIdentifier=pitv-player
 
 [Install]

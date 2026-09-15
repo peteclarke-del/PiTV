@@ -1,12 +1,25 @@
 """Whole-week scheduler properties on the fake library."""
+import json
+import math
 import os
+from collections import Counter
+from dataclasses import replace
+from datetime import date, datetime, timedelta
+from itertools import pairwise
 
 import pytest
-
 from conftest import make_library
+
 from pitv import db as dbm
-from pitv.scheduler.build import build_horizon, parse_day, rebuild_from
-from pitv.scheduler.rules import (allowed_at, day_bounds, effective_cert, local_ts, minutes_of_day, tz_of)
+from pitv.scheduler.build import Builder, Slot, build_horizon, parse_day, rebuild_from, slot_titles
+from pitv.scheduler.rules import (
+    allowed_at,
+    day_bounds,
+    effective_cert,
+    local_ts,
+    minutes_of_day,
+    tz_of,
+)
 
 
 @pytest.fixture(scope="module")
@@ -29,14 +42,14 @@ def test_every_channel_day_is_covered(conn):
     tz = tz_of(conn)
     for ch in conn.execute("SELECT id FROM channels"):
         for i in range(7):
-            day = parse_day("2026-09-14").replace(day=14 + i)
-            ds, de, nds = day_bounds(day, settings, tz)
+            day = parse_day("2026-09-14") + timedelta(days=i)
+            ds, _, nds = day_bounds(day, settings, tz)
             rows = conn.execute("SELECT start_ts, end_ts, replay FROM schedule WHERE channel_id = ? AND day = ? ORDER BY start_ts",
                                 (ch["id"], day.isoformat())).fetchall()
             assert rows, f"no slots for channel {ch['id']} {day}"
             assert rows[0]["start_ts"] == ds
             # contiguous, no overlaps
-            for a, b in zip(rows, rows[1:]):
+            for a, b in pairwise(rows):
                 assert a["end_ts"] == b["start_ts"], (a, b)
             assert rows[-1]["end_ts"] == nds, "overnight replay should run up to the next day start"
 
@@ -67,7 +80,7 @@ def test_episodes_in_order_per_show(conn):
         eps.sort(key=lambda r: r["start_ts"])
         keys = [(r["season"], r["episode"]) for r in eps]
         # strictly increasing until a wrap back to the first episode
-        for a, b in zip(keys, keys[1:]):
+        for a, b in pairwise(keys):
             assert b > a or b == (1, 1), f"show {sid}: {a} then {b}"
             checked += 1
     assert checked > 50
@@ -81,7 +94,6 @@ def test_show_stays_on_home_channel(conn):
 
 
 def test_movies_spread_evenly(conn):
-    import math
     rows = conn.execute("SELECT media_id, COUNT(*) AS n FROM schedule s JOIN media m ON m.id = s.media_id"
                         " WHERE s.replay = 0 AND m.kind = 'movie' GROUP BY media_id").fetchall()
     slots = sum(r["n"] for r in rows)
@@ -125,11 +137,10 @@ def test_rebuild_from_keeps_past_and_locked(conn):
 def test_no_same_show_back_to_back(conn):
     """Consecutive programmes on a channel (ads in between are fine, overnight replays count)
     are never episodes of the same series."""
-    from datetime import datetime
     tz = tz_of(conn)
     rows = conn.execute("SELECT s.channel_id, s.start_ts, s.replay, m.show_id, sh.category FROM schedule s JOIN media m ON m.id = s.media_id"
                         " LEFT JOIN shows sh ON sh.id = m.show_id WHERE s.kind = 'programme' ORDER BY s.channel_id, s.start_ts").fetchall()
-    for a, b in zip(rows, rows[1:]):
+    for a, b in pairwise(rows):
         if a["channel_id"] == b["channel_id"] and a["show_id"] is not None and not (a["replay"] and b["replay"]):
             if a["category"] == "sport" and datetime.fromtimestamp(b["start_ts"], tz).weekday() >= 5:
                 continue  # sport may run back to back at weekends
@@ -156,7 +167,6 @@ def test_healthy_mix_of_eras_and_adverts_only_80s_90s(conn):
 def test_weekend_afternoons_carry_sport(conn):
     """On the channels whose line-ups carry sport, Saturday and Sunday afternoons should be
     largely sport and weekday daytime should not."""
-    from datetime import datetime
     tz = tz_of(conn)
     sport_channels = [r[0] for r in conn.execute(
         "SELECT DISTINCT l.channel_id FROM lineup l JOIN shows sh ON sh.id = l.show_id WHERE sh.category = 'sport'")]
@@ -191,9 +201,10 @@ def test_cartoons_routed_to_cartoon_channel(conn):
                          " WHERE c.content = 'general' AND s.category = 'cartoon'").fetchall()
     assert not stray
     # cartoons run all evening on their own channel (kids cutoff does not apply there)
-    evening = conn.execute("SELECT COUNT(*) FROM schedule s WHERE s.channel_id = ? AND s.kind = 'programme' AND s.replay = 0"
-                           " AND CAST(strftime('%H', s.start_ts, 'unixepoch', 'localtime') AS INT) >= 21", (toons["id"],)).fetchone()[0]
-    assert evening > 0
+    tz = tz_of(conn)
+    starts = conn.execute("SELECT start_ts FROM schedule WHERE channel_id = ? AND kind = 'programme' AND replay = 0",
+                          (toons["id"],)).fetchall()
+    assert any(datetime.fromtimestamp(r["start_ts"], tz).hour >= 21 for r in starts)
 
 
 def test_music_channel_day(conn):
@@ -206,23 +217,18 @@ def test_music_channel_day(conn):
     concerts = [r for r in rows if r["concert"]]
     assert len(concerts) == 2, [r["title"] for r in concerts]
     # contiguous from 08:00 to closedown
-    for a, b in zip(rows, rows[1:]):
+    for a, b in pairwise(rows):
         assert a["end_ts"] == b["start_ts"]
     # every eligible video is used before any repeats, and repeats are spread evenly
-    import math
     ids = [r["media_id"] for r in rows]
     eligible = conn.execute("SELECT COUNT(*) FROM media WHERE kind = 'music' AND concert = 0 AND year BETWEEN 1970 AND 2009").fetchone()[0]
     assert len(set(ids)) >= min(eligible, len(ids)) - 2
-    counts = {}
-    for i in ids:
-        counts[i] = counts.get(i, 0) + 1
-    assert max(counts.values()) <= math.ceil(len(ids) / eligible) + 2
-    # a block's videos honour its genre filter when the library allows
+    assert max(Counter(ids).values()) <= math.ceil(len(ids) / eligible) + 2
     # A block prefers its genres: they are over-represented in it compared with the whole day.
     # (Counts depend on what aired in the last 36 hours, so the test asserts the preference.)
     def soulful(r):
         genres = conn.execute("SELECT genres FROM media WHERE id = ?", (r["media_id"],)).fetchone()["genres"]
-        return any(g.lower() in ("disco", "funk", "soul", "motown") for g in __import__("json").loads(genres))
+        return any(g.lower() in ("disco", "funk", "soul", "motown") for g in json.loads(genres))
     disco = [r for r in rows if r["block"] == "Disco & Soul"]
     assert disco
     assert sum(map(soulful, disco)) / len(disco) > sum(map(soulful, rows)) / len(rows)
@@ -247,7 +253,6 @@ def test_guide_collapses_music_blocks(conn):
 
 
 def test_slot_titles():
-    from pitv.scheduler.build import slot_titles
     assert slot_titles({"kind": "episode", "title": "The Beach", "episode": 5}, "Minder") == ("Minder", "The Beach")
     assert slot_titles({"kind": "episode", "title": "", "episode": 5}, "Minder") == ("Minder", "Episode 5")
     assert slot_titles({"kind": "movie", "title": "Brazil", "year": 1985, "certificate": "15"}) == ("Brazil", "(1985) 15")
@@ -277,9 +282,6 @@ def test_music_channel_decades(conn):
     years = [r["year"] for r in conn.execute("SELECT m.year FROM schedule s JOIN media m ON m.id = s.media_id"
                                              " WHERE s.channel_id = ? AND m.kind = 'music' AND m.year IS NOT NULL", (music["id"],))]
     assert years and all(1970 <= y <= 2009 for y in years)
-    # each replayed short day still reaches 08:00
-    rows = conn.execute("SELECT MAX(end_ts) AS e, day FROM schedule WHERE channel_id = ? GROUP BY day ORDER BY day", (music["id"],)).fetchall()
-    assert rows
 
 
 def test_readiness_substitutes_missing_file(conn, tmp_path):
@@ -297,7 +299,7 @@ def test_readiness_substitutes_missing_file(conn, tmp_path):
         assert not conn.execute("SELECT 1 FROM schedule WHERE media_id = ? AND start_ts >= ? AND replay = 0", (row["media_id"], now)).fetchone()
         # the day is still contiguous after rebalancing
         rows = conn.execute("SELECT start_ts, end_ts FROM schedule WHERE channel_id = ? AND day = '2026-09-16' ORDER BY start_ts", (row["channel_id"],)).fetchall()
-        for a, b in zip(rows, rows[1:]):
+        for a, b in pairwise(rows):
             assert a["end_ts"] == b["start_ts"]
         log_row = conn.execute("SELECT status FROM run_log WHERE kind = 'readiness' ORDER BY id DESC LIMIT 1").fetchone()
         assert log_row["status"] == "error"
@@ -311,7 +313,8 @@ def _assert_channel_day_sound(conn, channel_id, day):
     rows = conn.execute("SELECT start_ts, end_ts, kind, locked FROM schedule WHERE channel_id = ? AND day = ? ORDER BY start_ts",
                         (channel_id, day)).fetchall()
     assert rows
-    for a, b in zip(rows, rows[1:]):
+    assert rows[0]["start_ts"] == day_bounds(parse_day(day), dbm.all_settings(conn), tz_of(conn))[0]
+    for a, b in pairwise(rows):
         assert a["end_ts"] == b["start_ts"], (dict(a), dict(b))
     return rows
 
@@ -397,3 +400,106 @@ def test_rebuild_continues_episode_order_from_the_cut(conn):
             " ORDER BY COALESCE(season, 999), COALESCE(episode, 999), path", (sid,))]
         expected = eps[(eps.index((before["season"], before["episode"])) + 1) % len(eps)] if before else eps[0]
         assert (first["season"], first["episode"]) == expected, (sid, dict(first), dict(before) if before else None)
+
+
+def test_music_rebuild_fills_around_a_locked_slot(conn):
+    """A locked video later in the day is built around: the gap before it is filled, not skipped."""
+    tz = tz_of(conn)
+    music = _channel(conn, 5)
+    now = local_ts(parse_day("2026-09-18"), "09:00", tz)
+    fixed = conn.execute("SELECT id FROM schedule WHERE channel_id = ? AND day = '2026-09-18' AND replay = 0"
+                         " AND start_ts > ? ORDER BY start_ts LIMIT 1 OFFSET 40", (music["id"], now)).fetchone()
+    with dbm.tx(conn):
+        conn.execute("UPDATE schedule SET locked = 1 WHERE id = ?", (fixed["id"],))
+    try:
+        r = rebuild_from(conn, music["id"], now, now=now, seed=2)
+        assert r["status"] in ("ok", "warning"), r
+        rows = _assert_channel_day_sound(conn, music["id"], "2026-09-18")
+        assert any(r["locked"] for r in rows), "locked slot must survive"
+    finally:
+        with dbm.tx(conn):
+            conn.execute("UPDATE schedule SET locked = 0 WHERE id = ?", (fixed["id"],))
+
+
+def test_kept_slots_inform_the_rebuild(conn):
+    """Adverts before the cut count for the advert repeat rules, and the kept programmes feed
+    the next day's same-slot bonus alongside the new ones."""
+    tz = tz_of(conn)
+    ch = _channel(conn, 3)
+    assert ch["ads_enabled"]
+    day = parse_day("2026-09-17")
+    cut = local_ts(day, "15:00", tz)
+    kept_ads = conn.execute("SELECT media_id, start_ts FROM schedule WHERE channel_id = ? AND day = ? AND replay = 0"
+                            " AND kind = 'advert' AND start_ts < ?", (ch["id"], day.isoformat(), cut)).fetchall()
+    kept_shows = {r[0] for r in conn.execute(
+        "SELECT m.show_id FROM schedule s JOIN media m ON m.id = s.media_id WHERE s.channel_id = ? AND s.day = ?"
+        " AND s.replay = 0 AND s.start_ts < ? AND m.show_id IS NOT NULL", (ch["id"], day.isoformat(), cut))}
+    assert kept_ads and kept_shows
+    builder = Builder(conn, now=cut, seed=3, rebuild={ch["id"]: (cut, None)})
+    builder.build_channel_day(dict(ch), day, force=True, from_ts=cut)   # not saved
+    assert all(builder.ad_last.get((ch["id"], a["media_id"]), 0) >= a["start_ts"] for a in kept_ads)
+    assert kept_shows <= set(builder._day_minutes[(ch["id"], day.isoformat())])
+
+
+def test_replayed_placeholder_shares_its_request(conn):
+    """The overnight replay of a placeholder is bound to the same wanted row, so the file that
+    pitv_content delivers plays in both slots."""
+    tz = tz_of(conn)
+    builder = Builder(conn, now=local_ts(parse_day("2026-09-20"), "07:00", tz), seed=1)
+    ch = builder.channels[0]
+    day = parse_day("2026-09-20")
+    _, day_end, next_day_start = day_bounds(day, builder.settings, tz)
+    spec = {"kind": "episode", "lineup_id": 999, "title": "Episode 3", "season": 1, "episode": 3,
+            "year": 1984, "reuse": 424242}
+    placeholder = Slot(channel_id=ch["id"], day=day.isoformat(), start_ts=day_end - 1800, end_ts=day_end,
+                       media_id=None, offset=0, kind="programme", title="The Tripods", subtitle="Episode 3",
+                       wanted_spec=spec)
+    replays = [s for s in builder._overnight(ch, day, day_end, next_day_start, [placeholder]) if s.kind == "programme"]
+    assert replays
+    builder._raise_wanted([placeholder, *replays])   # a reused request: nothing is written
+    assert {s.wanted_id for s in [placeholder, *replays]} == {424242}
+
+
+def test_film_request_shared_across_days(conn):
+    """A film placed on two days of one build raises a single wanted row."""
+    builder = Builder(conn, seed=1)
+    spec = {"kind": "movie", "lineup_id": 998, "title": "Brazil", "season": None, "episode": None,
+            "year": 1985, "reuse": None}
+    ch = builder.channels[0]["id"]
+    monday, thursday = (Slot(channel_id=ch, day=d, start_ts=0, end_ts=1, media_id=None, offset=0, kind="programme",
+                             title="Brazil", wanted_spec=dict(spec)) for d in ("2026-09-21", "2026-09-24"))
+    try:
+        with dbm.tx(conn):
+            builder._raise_wanted([monday])
+            builder._raise_wanted([thursday])
+        assert monday.wanted_id is not None and monday.wanted_id == thursday.wanted_id
+        assert conn.execute("SELECT COUNT(*) FROM wanted WHERE lineup_id = 998").fetchone()[0] == 1
+    finally:
+        with dbm.tx(conn):
+            conn.execute("DELETE FROM wanted WHERE lineup_id = 998")
+
+
+def test_anchor_after_midnight_across_clock_change(conn):
+    """An anchor after midnight lands on the next calendar day's wall clock, including the night
+    the clocks go back (02:30 on 25 October 2026 is 02:30 GMT, not 24 hours after 02:30 BST)."""
+    tz = tz_of(conn)
+    builder = Builder(conn, seed=1)
+    ch = builder.channels[0]
+    show = replace(builder._free_shows[ch["id"]][0], mode="strip", anchor_time="02:30",
+                   anchor_days=list(range(7)), resting_until=None)
+    builder._anchored[ch["id"]] = [show]
+    day = date(2026, 10, 24)
+    anchors = builder._anchors_for(ch, day, local_ts(day, "08:00", tz), local_ts(date(2026, 10, 25), "04:00", tz))
+    assert [ts for ts, _ in anchors] == [local_ts(date(2026, 10, 25), "02:30", tz)]
+
+
+def test_failed_build_is_logged(conn, monkeypatch):
+    """A build that raises is recorded as an error rather than left 'running' in the run log."""
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(Builder, "build_channel_day", boom)
+    with pytest.raises(RuntimeError):
+        build_horizon(conn, start_day=parse_day("2026-09-21"), days=1, seed=1,
+                      now=local_ts(parse_day("2026-09-21"), "07:00", tz_of(conn)))
+    row = conn.execute("SELECT status, summary FROM run_log WHERE kind = 'schedule' ORDER BY id DESC LIMIT 1").fetchone()
+    assert row["status"] == "error" and "boom" in row["summary"]

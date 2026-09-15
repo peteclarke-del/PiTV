@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import subprocess
-from typing import Any, Iterator
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request
 
 from ... import db as dbm
-from ...db import effective, row_to_dict
-from ..auth import require_admin
+from ...db import DEFAULT_SETTINGS, effective, genre_list, get_setting, row_to_dict
+from ...logsetup import tail
+from ..auth import is_content_client, require_admin
 
 
 def get_conn(request: Request) -> Iterator[sqlite3.Connection]:
@@ -27,6 +29,84 @@ def admin_conn(request: Request, conn: sqlite3.Connection = Depends(get_conn)) -
     return conn
 
 
+async def read_json(request: Request, empty: Any = None) -> Any:
+    """The request body as JSON, or `empty` when there is none. 415 when it is labelled as
+    something else (the rule FastAPI applies to Body() parameters, which also takes an
+    unlabelled body as JSON); 400 when it does not parse."""
+    if not (await request.body()).strip():
+        return empty
+    ctype = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if ctype and ctype != "application/json" and not ctype.endswith("+json"):
+        raise HTTPException(415, "send the body as application/json")
+    try:
+        return await request.json()
+    except ValueError as exc:
+        raise HTTPException(400, "the body is not valid JSON") from exc
+
+
+def content_conn(request: Request, conn: sqlite3.Connection = Depends(get_conn)) -> sqlite3.Connection:
+    """pitv_content's side of the contract: its shared token, else an admin session."""
+    if not is_content_client(request):
+        require_admin(request, conn)
+    return conn
+
+
+async def _json_object(request: Request) -> dict[str, Any]:
+    body = await read_json(request)
+    if not isinstance(body, dict):
+        raise HTTPException(400, "expected a JSON object")
+    return body
+
+
+async def admin_json(request: Request, _: sqlite3.Connection = Depends(admin_conn)) -> dict[str, Any]:
+    """A JSON object body, read only once the caller is known to be an admin.
+
+    FastAPI parses a Body() parameter before it runs any dependency, so on a Body() endpoint an
+    anonymous caller gets the whole upload parsed before the 401. The endpoints that take whole
+    documents (and so a larger size cap in app.RequestGuard) declare their body with this."""
+    return await _json_object(request)
+
+
+async def content_json(request: Request, _: sqlite3.Connection = Depends(content_conn)) -> dict[str, Any]:
+    """As admin_json, for the endpoints pitv_content calls with its token."""
+    return await _json_object(request)
+
+
+def optional_int(value: Any, name: str) -> int | None:
+    """A whole number from a JSON body, None for null or "", 400 for anything else."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise HTTPException(400, f"{name} must be a whole number")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, f"{name} must be a whole number") from exc
+
+
+def optional_text(value: Any, name: str, limit: int = 500) -> str | None:
+    """Trimmed text from a JSON body, None for null or blank, 400 for a non-string."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(400, f"{name} must be text")
+    return value.strip()[:limit] or None
+
+
+def tool_url(conn: sqlite3.Connection) -> str:
+    """Base URL of pitv_content's local API."""
+    return get_setting(conn, "content_tool_url") or DEFAULT_SETTINGS["content_tool_url"]
+
+
+def log_tail(path: Path, lines: int, q: str = "", level: str = "") -> list[dict[str, Any]]:
+    """The last `lines` entries of a log (clamped to 10..5000), filtered by substring and
+    minimum level; 503 when the file is there but cannot be read."""
+    try:
+        return tail(path, max(10, min(lines, 5000)), q, level.upper())
+    except OSError as exc:
+        raise HTTPException(503, f"{path.name} cannot be read ({exc.strerror or 'I/O error'})") from exc
+
+
 def run_cmd(args: list[str], timeout: float = 5) -> tuple[int, str, str]:
     """Run a command; (returncode, stdout, stderr) stripped. A missing binary or a timeout
     counts as a failure (returncode 1, the error in stderr) rather than an exception."""
@@ -39,7 +119,7 @@ def run_cmd(args: list[str], timeout: float = 5) -> tuple[int, str, str]:
 
 MEDIA_PUBLIC = ("id", "kind", "show_id", "season", "episode", "title", "year", "duration", "artist", "concert", "family_safe",
                 "vcodec", "acodec", "width", "height", "interlaced", "hwdec", "certificate",
-                "genres", "plot", "channel_hint", "excluded", "missing", "attention", "overrides",
+                "genres", "plot", "channel_hint", "home_channel_id", "excluded", "missing", "attention", "overrides",
                 "cache_path", "origin", "size", "source_id", "uid")
 
 
@@ -82,11 +162,8 @@ def slot_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
               "items", "video_title", "video_id"):
         if k in d:
             out[k] = d[k]
-    if "genres" in d and isinstance(d["genres"], str):
-        try:
-            out["genres"] = json.loads(d["genres"])
-        except ValueError:
-            out["genres"] = []
+    if "genres" in d:
+        out["genres"] = genre_list(d["genres"])
     return out
 
 

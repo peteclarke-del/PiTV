@@ -2,14 +2,13 @@
   import { untrack } from 'svelte';
   import { get, put, tryApi } from '../../lib/api.js';
   import { fmtDuration, fmtBytes, fmtDateTime, CERTIFICATES } from '../../lib/format.js';
-  import { num } from '../../lib/util.js';
+  import { num, splitList } from '../../lib/util.js';
   import { guard } from '../../lib/guard.svelte.js';
+  import AppBadge from '../../components/AppBadge.svelte';
   import Drawer from '../../components/Drawer.svelte';
   import Availability from '../../components/Availability.svelte';
 
-  let { id, onclose, onsaved } = $props();
-  let channels = $state([]);
-  $effect(() => { get('/api/channels').then((c) => (channels = c ?? [])).catch(() => {}); });
+  let { id, channels = [], onclose, onsaved } = $props();
   let item = $state(null);
   let form = $state(null);
 
@@ -18,19 +17,18 @@
     if (!m) { onclose?.(); return; }
     item = m;
     form = { title: m.title ?? '', year: m.year ?? '', certificate: m.certificate ?? '', genres: (m.genres ?? []).join(', '),
-             plot: m.plot ?? '', excluded: !!m.excluded, channel_hint: m.channel_hint ?? '', artist: m.artist ?? '', concert: !!m.concert, family_safe: m.family_safe !== 0,
+             plot: m.plot ?? '', excluded: !!m.excluded, artist: m.artist ?? '', concert: !!m.concert, family_safe: m.family_safe !== 0,
              home_channel_id: m.home_channel_id ?? '' };
   }
   $effect(() => { id; untrack(load); });
 
   const save = guard(async () => {
-    const genres = form.genres.split(',').map((g) => g.trim()).filter(Boolean);
+    const genres = splitList(form.genres);
     const body = { title: form.title, year: num(form.year, { min: 1900, max: 2100, int: true }), certificate: form.certificate || null,
                    genres: genres.length ? genres : null, plot: form.plot, excluded: form.excluded };
-    if (item.kind === 'ident') body.channel_hint = num(form.channel_hint, { min: 1, int: true });
     if (item.kind === 'music') { body.artist = form.artist; body.concert = form.concert ? 1 : 0; }
     if (item.kind === 'advert') body.family_safe = form.family_safe ? 1 : 0;
-    if (item.kind === 'movie') body.home_channel_id = form.home_channel_id === '' ? null : Number(form.home_channel_id);
+    if (item.kind === 'movie' || item.kind === 'ident') body.home_channel_id = form.home_channel_id === '' ? null : Number(form.home_channel_id);
     const r = await tryApi(put(`/api/media/${id}`, body), { success: 'Saved' });
     if (r) { item = r; onsaved?.(); }
   });
@@ -44,6 +42,7 @@
 <Drawer open={true} title={item?.title ?? 'Item'} subtitle={item?.filename ?? ''} {onclose}>
   {#if form}
     <div class="stack">
+      <p class="scope" style="margin:0"><AppBadge app="pitv" /> PiTV's catalogue entry: these overrides win over pitv_content's index.</p>
       <div class="row">
         <span class="badge">{item.kind}</span>{#if item.kind === 'music' && item.concert}<span class="badge info">concert</span>{/if}{#if item.kind === 'advert' && item.family_safe === 0}<span class="badge warn">not family-safe</span>{/if}
         <span class="mono small">{item.vcodec ?? '?'}{item.acodec ? `/${item.acodec}` : ''}</span>
@@ -77,14 +76,13 @@
           <span class="help">Indexed: {item.indexed?.certificate ?? 'none'}</span>
         </label>
         <label class="field">Genres<input bind:value={form.genres} placeholder="Comedy, Drama" /></label>
-        {#if item.kind === 'movie'}
-          <label class="field">Home channel
+        {#if item.kind === 'movie' || item.kind === 'ident'}
+          <label class="field">{item.kind === 'ident' ? 'Channel' : 'Home channel'}
             <select bind:value={form.home_channel_id}><option value="">(unassigned)</option>{#each channels as c (c.id)}<option value={c.id}>{c.number} {c.name}</option>{/each}</select>
-            <span class="help">Changing this moves the film's line-up entry to that channel; a film is on one channel only.</span>
+            <span class="help">{item.kind === 'ident'
+              ? `Which channel this ident introduces. Unassigned idents may air on any channel.${item.channel_hint ? ` Made for channel ${item.channel_hint}.` : ''}`
+              : "Changing this moves the film's line-up entry to that channel; a film is on one channel only."}</span>
           </label>
-        {/if}
-        {#if item.kind === 'ident'}
-          <label class="field">Channel number<input type="number" class="narrow" bind:value={form.channel_hint} min="1" /><span class="help">Which channel this ident belongs to.</span></label>
         {/if}
         {#if item.kind === 'movie' || item.kind === 'episode'}
           <label class="field wide">Plot<textarea bind:value={form.plot}></textarea></label>

@@ -7,10 +7,12 @@ import hmac
 import os
 import secrets
 import sqlite3
+import threading
 import time
+from pathlib import Path
 
 from fastapi import HTTPException, Request, Response
-from itsdangerous import BadSignature, URLSafeTimedSerializer
+from itsdangerous import BadData, URLSafeTimedSerializer
 
 from ..db import get_setting, set_setting, tx
 
@@ -21,6 +23,7 @@ _LEGACY_ITERATIONS = 200_000    # hashes written before the count was stored alo
 LOGIN_WINDOW_SECONDS = 300
 LOGIN_ATTEMPTS = 8
 _attempts: dict[str, list[float]] = {}
+_attempts_lock = threading.Lock()
 
 
 def hash_password(password: str, salt: bytes | None = None, iterations: int = PBKDF2_ITERATIONS) -> str:
@@ -68,6 +71,12 @@ def secret_key(conn: sqlite3.Connection) -> str:
     return key
 
 
+def rotate_secret(conn: sqlite3.Connection) -> None:
+    """Sessions are stateless signed cookies, so a new signing key is the only way to revoke
+    them. Called on a password change: whoever held a session under the old password loses it."""
+    set_setting(conn, "session_secret", secrets.token_hex(32))
+
+
 def serializer(conn: sqlite3.Connection) -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(secret_key(conn), salt="pitv-session")
 
@@ -80,22 +89,27 @@ def client_ip(request: Request) -> str:
     return request.client.host if request.client else "?"
 
 
-def rate_limited(ip: str) -> bool:
+def login_allowed(ip: str) -> bool:
+    """Count one login attempt against the address; False once it has used its allowance.
+
+    Checking and recording happen under one lock and before the password is verified, so a
+    burst of parallel requests cannot all pass the check and then each cost a PBKDF2 run."""
     now = time.time()
-    hits = [t for t in _attempts.get(ip, []) if now - t < LOGIN_WINDOW_SECONDS]
-    if hits:
-        _attempts[ip] = hits
-    else:
+    with _attempts_lock:
+        # Forget addresses that have gone quiet so the table cannot grow without bound.
+        for stale in [k for k, v in _attempts.items() if now - v[-1] >= LOGIN_WINDOW_SECONDS]:
+            del _attempts[stale]
+        hits = [t for t in _attempts.get(ip, []) if now - t < LOGIN_WINDOW_SECONDS]
+        if len(hits) >= LOGIN_ATTEMPTS:
+            _attempts[ip] = hits
+            return False
+        _attempts[ip] = [*hits, now]
+        return True
+
+
+def forget_attempts(ip: str) -> None:
+    with _attempts_lock:
         _attempts.pop(ip, None)
-    return len(hits) >= LOGIN_ATTEMPTS
-
-
-def record_attempt(ip: str) -> None:
-    now = time.time()
-    # Forget addresses that have gone quiet so the table cannot grow without bound.
-    for stale in [k for k, v in _attempts.items() if not v or now - v[-1] >= LOGIN_WINDOW_SECONDS]:
-        _attempts.pop(stale, None)
-    _attempts.setdefault(ip, []).append(now)
 
 
 def is_admin(request: Request, conn: sqlite3.Connection) -> bool:
@@ -104,9 +118,9 @@ def is_admin(request: Request, conn: sqlite3.Connection) -> bool:
         return False
     try:
         data = serializer(conn).loads(token, max_age=SESSION_SECONDS)
-    except BadSignature:
+    except BadData:
         return False
-    return bool(data.get("admin"))
+    return isinstance(data, dict) and bool(data.get("admin"))
 
 
 def has_admin(request: Request, conn: sqlite3.Connection) -> bool:
@@ -132,3 +146,38 @@ def set_session_cookie(request: Request, response: Response, conn: sqlite3.Conne
     proxy in front of the Pi) so the browser never sends the session back in clear."""
     response.set_cookie(COOKIE, make_session(conn), max_age=SESSION_SECONDS, httponly=True,
                         samesite="lax", secure=_is_https(request))
+
+
+# --- pitv_content's token ---------------------------------------------------------------------
+
+CONTENT_TOKEN_FILE = "content-token"
+
+
+def content_token(data_dir: Path, rotate: bool = False) -> str:
+    """The token pitv_content presents on the manifest, report and make-room endpoints, which it
+    calls without a browser session. It lives in a file only the service user can read, beside
+    the database: pitv_content on the same Pi runs as that user and reads it there; on another
+    machine the admin copies it across from the Content page."""
+    path = data_dir / CONTENT_TOKEN_FILE
+    if not rotate:
+        try:
+            token = path.read_text().strip()
+        except OSError:
+            token = ""
+        if len(token) >= 32:
+            return token
+    token = secrets.token_urlsafe(32)
+    tmp = path.with_name(f".{CONTENT_TOKEN_FILE}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(token + "\n")
+    os.chmod(tmp, 0o600)          # O_CREAT's mode does not apply to a file left by a crash
+    os.replace(tmp, path)
+    return token
+
+
+def is_content_client(request: Request) -> bool:
+    """Whether the request carries pitv_content's token as a bearer credential."""
+    scheme, _, value = request.headers.get("authorization", "").partition(" ")
+    token = getattr(request.app.state, "content_token", "")
+    return scheme.lower() == "bearer" and bool(token) and hmac.compare_digest(value.strip(), token)

@@ -47,6 +47,7 @@ def test_old_database_is_upgraded_in_place(tmp_path):
     assert {"uid", "location", "last_indexed_at", "index_summary"} <= src_cols and "last_scan_summary" not in src_cols
     assert not conn.execute("SELECT name FROM sqlite_master WHERE name = 'probe_cache'").fetchone()
     assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'media_uid'").fetchone()
+    assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'schedule_wanted'").fetchone()
     assert conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0] == 6
     # music rows are now allowed, and a fetched item needs no source
     with dbm.tx(conn):

@@ -1,9 +1,10 @@
 <script>
   // Editable list of short strings shown as chips; type and press Enter or comma to add.
+  import { splitList } from '../lib/util.js';
   let { value = [], onchange, placeholder = 'Add…', label = '', lower = false } = $props();
   let text = $state('');
   function add() {
-    const parts = text.split(',').map((t) => t.trim()).filter(Boolean).map((t) => (lower ? t.toLowerCase() : t));
+    const parts = splitList(text).map((t) => (lower ? t.toLowerCase() : t));
     if (!parts.length) { text = ''; return; }
     const next = [...value];
     for (const p of parts) if (!next.includes(p)) next.push(p);

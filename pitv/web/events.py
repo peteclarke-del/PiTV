@@ -12,6 +12,9 @@ import threading
 import time
 from typing import Any
 
+QUEUE_SIZE = 200        # events held for one client; a client that stops reading loses the excess
+MAX_SUBSCRIBERS = 32    # open streams; a household has a handful of tabs, so more is a runaway client
+
 
 class EventBus:
     def __init__(self) -> None:
@@ -23,9 +26,16 @@ class EventBus:
     def attach(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
 
-    def subscribe(self) -> asyncio.Queue:
-        q: asyncio.Queue = asyncio.Queue(maxsize=200)
+    def is_full(self) -> bool:
         with self._lock:
+            return len(self._subs) >= MAX_SUBSCRIBERS
+
+    def subscribe(self) -> asyncio.Queue | None:
+        """A queue for one client, or None when MAX_SUBSCRIBERS streams are already open."""
+        with self._lock:
+            if len(self._subs) >= MAX_SUBSCRIBERS:
+                return None
+            q: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_SIZE)
             self._subs.add(q)
         return q
 

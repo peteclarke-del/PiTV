@@ -14,17 +14,24 @@
   let wanted = $state(null);
   let lineupById = $state({});
   let adding = $state(null);       // add-wanted form
+  // The line-up only supplies channel numbers for the badges; it is fetched again only after a
+  // library change, not on every progress poll.
+  let lineupFor = -1;              // changes.library value lineupById was fetched for
 
   async function load() {
     wanted = (await tryApi(get('/api/wanted'))) ?? wanted ?? [];
-    if ((wanted ?? []).some((w) => w.lineup_id)) {
+    const version = changes.library;
+    if (lineupFor !== version && wanted.some((w) => w.lineup_id)) {
+      lineupFor = version;
       const entries = await tryApi(get('/api/lineup'));
-      if (entries) { const m = {}; for (const e of entries) m[e.id] = e; lineupById = m; }
+      if (entries) lineupById = Object.fromEntries(entries.map((e) => [e.id, e]));
+      else lineupFor = -1;
     }
   }
   $effect(() => { changes.library; untrack(load); });
   poll(load, 20000); // pitv_content updates progress without an SSE event
 
+  const LIBRARY_TAB = { movie: 'movies', advert: 'adverts', music: 'music' };
   const active = (st) => ['downloading', 'transcoding', 'searching', 'running'].includes(st);
   const pct = (p) => (p > 1 ? p / 100 : p);
 
@@ -68,7 +75,7 @@
               <td style="min-width:160px"><StatusBadge status={w.status} />
                 {#if active(w.status)}<ProgressBar value={pct(w.progress ?? 0)} />{/if}
                 {#if w.message}<div class="tiny muted">{w.message}</div>{/if}
-                {#if w.status === 'done' && w.media_id}<div class="tiny"><a href="#/admin/library/{w.kind === 'movie' ? 'movies' : w.kind === 'advert' ? 'adverts' : ''}">in library</a></div>{/if}</td>
+                {#if w.status === 'done' && w.media_id}<div class="tiny"><a href="#/admin/library/{LIBRARY_TAB[w.kind] ?? 'shows'}">in library</a></div>{/if}</td>
               <td class="num">{w.attempts}</td>
               <td class="small muted nowrap">{fmtAgo(w.created_at, clock.ts)}</td>
               <td class="right nowrap">
@@ -88,6 +95,7 @@
 <Drawer open={!!adding} title="Add wanted item" onclose={() => (adding = null)}>
   {#if adding}
     <div class="stack">
+      <p class="scope" style="margin:0"><AppBadge app="content" title="Recorded by PiTV, fetched by pitv_content" /> PiTV records the request; pitv_content fetches it on its next run.</p>
       <label class="field">Kind<select bind:value={adding.kind}><option value="episode">Episode</option><option value="movie">Movie</option><option value="advert">Advert</option><option value="music">Music video</option></select></label>
       <label class="field">Title<input bind:value={adding.title} placeholder={adding.kind === 'episode' ? 'Show title' : adding.kind === 'music' ? 'Artist - Title, e.g. Queen - Radio Ga Ga' : 'Title'} /></label>
       {#if adding.kind === 'music'}

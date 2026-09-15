@@ -4,7 +4,8 @@ Only the handful of settings needed before the database is open live here (paths
 ports). Everything that describes the television itself (channels, sources, weights,
 dayparts) lives in the database and is edited through the admin UI.
 
-Values come from environment variables, falling back to sensible per-platform defaults.
+Values come from environment variables, falling back to the system paths the installer creates
+on the Pi and to XDG locations elsewhere.
 """
 
 from __future__ import annotations
@@ -58,7 +59,9 @@ class Config:
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.run_dir.mkdir(parents=True, exist_ok=True)
+        # The control sockets live here; a run dir this creates (the /tmp fallback included) is
+        # private to the user, so no one else can reach the player through it.
+        self.run_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
 
 
 def load_config() -> Config:

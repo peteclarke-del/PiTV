@@ -1,11 +1,13 @@
 <script>
   // A channel's line-up: the series and films it carries, including material pitv_content still has to fetch.
   import AppBadge from '../../components/AppBadge.svelte';
-  import { untrack } from 'svelte';
-  import { get, post, put, del, tryApi } from '../../lib/api.js';
-  import { confirm, toast } from '../../lib/stores.svelte.js';
+  import { onMount } from 'svelte';
+  import { get, post, put, del, tryApi, confirmApi } from '../../lib/api.js';
+  import { hasLineup } from '../../lib/format.js';
+  import { debounce } from '../../lib/util.js';
   import Drawer from '../../components/Drawer.svelte';
 
+  // Channels mounts a fresh drawer per channel, so `channel` is fixed for this instance.
   let { channel, channels = [], onclose, onchanged } = $props();
   let entries = $state(null);
   let q = $state('');
@@ -13,17 +15,22 @@
   let searching = $state(false);
   let manual = $state(null);   // {title, year, kind, episode_minutes, transient}
   let busy = $state(false);
-  let timer;
 
-  async function load() {
-    entries = (await tryApi(get('/api/lineup', { channel_id: channel.id }))) ?? [];
+  async function fetchEntries() {
+    entries = (await tryApi(get('/api/lineup', { channel_id: channel.id }))) ?? entries ?? [];
+  }
+  // After an edit: refresh this list and the parent's per-channel counts.
+  function afterEdit() {
+    fetchEntries();
     onchanged?.();
   }
-  $effect(() => { channel.id; untrack(load); }); // eslint-disable-line no-unused-expressions
-  async function search(v) {
-    q = v; clearTimeout(timer);
-    timer = setTimeout(async () => { searching = true; options = (await tryApi(get('/api/lineup/options', { q, limit: 30 }))) ?? []; searching = false; }, 250);
-  }
+  onMount(fetchEntries);
+  const searchSoon = debounce(async () => {
+    searching = true;
+    options = (await tryApi(get('/api/lineup/options', { q, limit: 30 }))) ?? [];
+    searching = false;
+  }, 250);
+  function search(v) { q = v; searchSoon(); }
   async function addOption(o) {
     const body = { channel_id: channel.id };
     if (o.show_id) body.show_id = o.show_id; else if (o.media_id) body.media_id = o.media_id;
@@ -31,7 +38,7 @@
     busy = true;
     const r = await tryApi(post('/api/lineup', body), { success: `${o.title} added${o.channel_id && o.channel_id !== channel.id ? ` (moved from Ch ${o.channel_number})` : ''}` });
     busy = false;
-    if (r) { q = ''; options = []; load(); }
+    if (r) { q = ''; options = []; afterEdit(); }
   }
   async function addManual() {
     const body = { channel_id: channel.id, title: manual.title.trim(), year: manual.year === '' ? null : Number(manual.year), kind: manual.kind, transient: manual.transient,
@@ -39,20 +46,20 @@
     busy = true;
     const r = await tryApi(post('/api/lineup', body), { success: `${body.title} added; pitv_content will look for it` });
     busy = false;
-    if (r) { manual = null; load(); }
+    if (r) { manual = null; afterEdit(); }
   }
   async function setField(e, field, value) {
     const r = await tryApi(put(`/api/lineup/${e.id}`, { [field]: value }));
-    if (r) load();
+    if (r) afterEdit();
   }
   async function move(e, channelId) {
     const target = channels.find((c) => c.id === Number(channelId));
     if (!target || target.id === channel.id) return;
-    if (await tryApi(put(`/api/lineup/${e.id}`, { channel_id: target.id }), { success: `${e.title} moved to ${target.name}` })) load();
+    if (await tryApi(put(`/api/lineup/${e.id}`, { channel_id: target.id }), { success: `${e.title} moved to ${target.name}` })) afterEdit();
   }
   async function remove(e) {
-    if (!(await confirm(`Remove "${e.title}" from ${channel.name}? It will have no channel until the generator or you place it again.`, { title: 'Remove from line-up', okLabel: 'Remove', danger: true }))) return;
-    if (await tryApi(del(`/api/lineup/${e.id}`))) load();
+    if (await confirmApi(`Remove "${e.title}" from ${channel.name}? It will have no channel until the generator or you place it again.`,
+      { title: 'Remove from line-up', okLabel: 'Remove', danger: true }, () => del(`/api/lineup/${e.id}`))) afterEdit();
   }
   function stateOf(e) {
     if (e.wanted_open) return ['info', `fetching ${e.wanted_open}`];
@@ -60,7 +67,7 @@
     if (e.on_disk) return ['ok', e.kind === 'show' && e.episodes_on_disk ? `on disk (${e.episodes_on_disk} eps)` : 'on disk'];
     return ['', 'not on disk'];
   }
-  let others = $derived(channels.filter((c) => c.id !== channel.id && c.enabled && ['general', 'cartoons'].includes(c.content ?? 'general')));
+  let others = $derived(channels.filter((c) => c.id !== channel.id && c.enabled && hasLineup(c)));
 </script>
 
 <Drawer open={true} title={`Line-up: ${channel.name}`} subtitle={`Channel ${channel.number} carries these series and films; each can be on one channel only`} {onclose} wide>
@@ -86,7 +93,7 @@
     </div>
     {#if manual}
       <div class="card">
-        <div class="card-title"><h3>Add by name</h3><button class="small ghost" onclick={() => (manual = null)}>✕</button></div>
+        <div class="card-title"><h3>Add by name</h3><button class="small ghost" onclick={() => (manual = null)} aria-label="Cancel">✕</button></div>
         <div class="form-grid">
           <label class="field">Title<input bind:value={manual.title} /></label>
           <label class="field">Year<input class="narrow" type="number" min="1900" max="2100" bind:value={manual.year} /></label>
@@ -135,6 +142,5 @@
   .opts { list-style: none; margin: .3rem 0 0; padding: .2rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-elev); max-height: 280px; overflow: auto; display: flex; flex-direction: column; }
   .item { width: 100%; display: flex; justify-content: space-between; gap: .5rem; text-align: left; min-height: 0; padding: .35rem .5rem; }
   .item > span:first-child { flex: 1; min-width: 0; }
-  tr.off td { opacity: .55; }
   tr.off td:last-child, tr.off td:nth-child(4) { opacity: 1; }
 </style>

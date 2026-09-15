@@ -2,6 +2,10 @@
 Description=PiTV web interface
 After=network-online.target pitv-player.service
 Wants=network-online.target
+# The database. On an installer-made card it is a bind mount from /work; elsewhere this is a no-op.
+RequiresMountsFor=/var/lib/pitv
+# No start limit: the admin is how the Pi is repaired, so it keeps retrying. RestartSec paces it.
+StartLimitIntervalSec=0
 
 [Service]
 Type=notify
@@ -16,19 +20,22 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 ExecStart=/opt/pitv/.venv/bin/pitv web
 Restart=always
 RestartSec=3
-StartLimitIntervalSec=0
 MemoryHigh=400M
 MemoryMax=600M
 OOMPolicy=kill
 Nice=5
-# sudo (for the fixed systemctl commands) needs setuid, so NoNewPrivileges is not an option here.
+# Sandbox. The admin's service actions run `sudo -n systemctl ...` (/etc/sudoers.d/pitv), and
+# sudo needs its setuid bit. So no NoNewPrivileges=, and none of the settings that imply it for
+# a service running as a user on systemd 252 (Debian 12): ProtectKernelTunables=,
+# ProtectKernelModules=, ProtectKernelLogs=, ProtectClock=, ProtectHostname=, PrivateDevices=,
+# RestrictSUIDSGID=, RestrictNamespaces=, RestrictRealtime=, RestrictAddressFamilies=,
+# LockPersonality=, MemoryDenyWriteExecute=, SystemCallFilter= and SystemCallArchitectures=.
+# What remains are the mount namespace protections. ProtectSystem=full rather than strict, as
+# for the player: the cache directory can change at runtime.
 ProtectSystem=full
 ProtectHome=read-only
 PrivateTmp=yes
-ProtectKernelTunables=yes
 ProtectControlGroups=yes
-StandardOutput=journal
-StandardError=journal
 SyslogIdentifier=pitv-web
 
 [Install]

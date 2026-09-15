@@ -17,11 +17,13 @@ and an SMB account on the NAS with read access to the shares (read-only is enoug
    mode (`normal` for a first install), hostname, maintenance user, network and Wi-Fi, NAS
    host, credentials and shares, display mode, system partition size, USB drive, and the
    PiTV admin password; saves the answers in `pitv-install.json`; then writes and verifies
-   the card.
+   the card. The maintenance user is the only account that can log in over SSH.
 3. Put the card in the Pi with the USB drive and remote dongle attached and power on. The
    first boot takes several minutes (DietPi setup, packages, both apps) and ends with a
    reboot into normal operation. Its log is at `/work/install/install.log` and in the admin
-   under Logs.
+   under Logs. If it fails, the last lines of the log (also on the TV) give the reason: log in
+   over SSH as the maintenance user, fix it and run `sudo bash /boot/Automation_Custom_Script.sh`
+   to finish. DietPi does not run it again by itself.
 4. Open `http://pitv/`. The admin password is the one given to the installer (or set it on
    first visit). The shares you gave the installer are pitv_content's sources: check them on
    the Sources page in the pitv_content section. Once pitv_content has indexed them, PiTV
@@ -31,7 +33,9 @@ and an SMB account on the NAS with read access to the shares (read-only is enoug
 
 Later upgrades: `pitv-installer upgrade --host pitv --user <maintenance user>` syncs the
 local checkouts over SSH and re-runs both install scripts without touching the work
-partition or the USB drive.
+partition, the USB drive or the NAS settings (`--nas` changes the NAS host). The first
+connection shows the Pi's host key fingerprint and records it once accepted; a different key
+later is refused.
 
 ## Route 2: manual install on Raspberry Pi OS Lite
 
@@ -43,20 +47,21 @@ partition or the USB drive.
    git clone https://github.com/peteclarke-del/PiTV.git ~/PiTV
    cd ~/PiTV && sudo ./setup/install.sh
    ```
-   `install.sh` is idempotent. It installs mpv, ffmpeg, Python, Pillow, evdev and
-   cifs-utils; creates the `pitv` system user; copies the code to `/opt/pitv` with a venv;
-   asks once for the NAS username and password (stored root-only in
-   `/etc/pitv/smb-credentials`); writes CIFS mount and automount units for the shares under
-   `/mnt/` (read-only); creates the cache directory and its `acquired` folders; installs the
-   three services and a sudoers entry granting exactly the service actions the admin offers
-   (restart the web service; restart, stop and start the player; restart pitv_content's API;
-   start a pitv_content run); sets `cache_dir` and
-   `acquire_dir` in PiTV's database, which is all PiTV keeps about content; writes the share
-   list to `/etc/pitv/nas-sources.json` for pitv_content; and runs `boot-trim.sh`. Environment
-   variables: `NAS_HOST` (`synologynas`), `SHARES` (`tvshows movies ads tvsports
-   music%20videos`; a space in a share name is written `%20`), `CACHE_DIR`
-   (`/mnt/cache/pitv`), `DISPLAY_MODE` (`hdmi576`), `EXPORT_TO` (the LAN range the cache
-   drive's mount point is exported to over NFS, `192.168.0.0/24`).
+   `install.sh` is idempotent. It asks once for the NAS username and password (stored
+   root-only in `/etc/pitv/smb-credentials`); installs mpv, ffmpeg, Python, Pillow, evdev and
+   cifs-utils; creates the `pitv` system user; copies the code to `/opt/pitv` with a venv,
+   owned by root so the service cannot rewrite it; writes a CIFS mount and automount unit per
+   share under `/mnt/` (read-only); creates the cache directory and its `acquired` folders on
+   the mounted drive; installs the three services and a sudoers entry, checked with `visudo`,
+   granting exactly the service actions the admin offers (restart the web service; restart,
+   stop and start the player; restart pitv_content's API; start a pitv_content run); sets
+   `cache_dir` and `acquire_dir` in PiTV's database, which is all PiTV keeps about content;
+   writes the share list to `/etc/pitv/nas-sources.json` for pitv_content; and runs
+   `boot-trim.sh`. Environment variables: `NAS_HOST` (`synologynas`), `SHARES` (`tvshows
+   movies ads tvsports music%20videos`; a space in a share name is written `%20`),
+   `CACHE_DIR` (`/mnt/cache/pitv`), `DISPLAY_MODE` (`hdmi576`), and `NAS_USER` with
+   `NAS_PASS` to write the credentials without the prompt. Later runs reuse the values of the
+   first from `/etc/pitv/install.env`.
 3. Mount the USB drive at `/mnt/cache` (add it to `/etc/fstab` with `nofail`) before running
    the installer, or set the cache directory afterwards in Admin, Weighting, Cache.
 4. Install pitv_content from its own repository (private,
@@ -75,8 +80,10 @@ Updating later: `cd ~/PiTV && git pull && sudo ./setup/install.sh`, then
 
 ## The television
 
-The set is a 14" 4:3 colour CRT fed through an HDMI-to-SCART converter. `DISPLAY_MODE`
-selects the `config.txt` block written by `boot-trim.sh`:
+The set is a 14" 4:3 colour CRT fed through an HDMI-to-SCART converter. `boot-trim.sh`
+keeps everything it sets in one marked block at the end of `config.txt`, rewritten on every
+run, and switches on the analogue jack, which carries composite mode's sound. `DISPLAY_MODE`
+selects the display lines in that block:
 
 | Mode | Output |
 |---|---|

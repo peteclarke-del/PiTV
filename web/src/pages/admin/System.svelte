@@ -1,8 +1,8 @@
 <script>
   import AppBadge from '../../components/AppBadge.svelte';
   import { onMount } from 'svelte';
-  import { ApiError, confirmApi, get, post, tryApi } from '../../lib/api.js';
-  import { isOffline, toolGet } from '../../lib/toolapi.js';
+  import { confirmApi, get, post, tryApi } from '../../lib/api.js';
+  import { isOffline, toolProbe } from '../../lib/toolapi.js';
   import HostCard from '../../components/HostCard.svelte';
   import { auth, toast } from '../../lib/stores.svelte.js';
   import { fmtBytes, fmtDateTime } from '../../lib/format.js';
@@ -22,19 +22,13 @@
   }
 
   // pitv_content's host comes from its own API, not from this machine, so the card stays right
-  // when the two apps run on separate boxes. While it is unreachable it is probed every 30 s:
-  // each failed probe is a 503 the browser logs on the console.
+  // when the two apps run on separate boxes.
   let content = $state(null);
   let contentNote = $state('');
-  let contentProbeAt = 0;
   async function loadContent() {
-    if (!content && contentNote && Date.now() - contentProbeAt < 30000) return;
-    contentProbeAt = Date.now();
     try {
-      const doc = await toolGet('system');
-      if (!doc || typeof doc !== 'object' || !('hostname' in doc)) throw new ApiError(0, 'not pitv_content');
-      content = doc;
-      contentNote = '';
+      content = (await toolProbe('system', (d) => 'hostname' in d)) ?? null;
+      contentNote = content ? '' : 'pitv_content API offline.';
     } catch (e) {
       content = null;
       contentNote = isOffline(e) ? 'pitv_content API offline.'
@@ -64,7 +58,7 @@
   // Stopping the player blanks the screen, and restarting the web service drops this page for a moment: ask first.
   async function serviceAction(unit, action) {
     const verb = { restart: 'Restart', stop: 'Stop', start: 'Start' }[action] ?? action;
-    const call = () => post(`/api/system/service/${unit}/${action}`);
+    const call = () => post(`/api/system/service/${encodeURIComponent(unit)}/${encodeURIComponent(action)}`);
     const opts = { success: `${verb} requested for ${unit}` };
     acting = unit;
     if (action === 'stop' || unit === 'pitv-web.service') {

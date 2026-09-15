@@ -1,0 +1,5 @@
+# Scripts and units run on the Pi; a CRLF checkout on Windows would break them on upgrade.
+*.sh text eol=lf
+*.service text eol=lf
+*.template text eol=lf
+*.py text eol=lf

@@ -14,7 +14,8 @@
     onchange?.(next);
   }
   function onDoc(e) { if (open && root && !root.contains(e.target)) open = false; }
-  function onKey(e) { if (e.key === 'Escape') open = false; }
+  // Escape closes the popover only; stopping it here keeps an enclosing drawer open.
+  function onKey(e) { if (e.key === 'Escape' && open) { open = false; e.stopPropagation(); } }
 </script>
 
 <svelte:document onclick={onDoc} onkeydown={onKey} />

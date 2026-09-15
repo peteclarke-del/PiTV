@@ -3,9 +3,9 @@ from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
+from conftest import make_library
 from fastapi.testclient import TestClient
 
-from conftest import make_library
 from pitv import db as dbm
 from pitv.db import DEFAULT_SETTINGS, now_ts
 from pitv.scheduler.build import build_horizon
@@ -178,7 +178,7 @@ def test_content_manifest_and_report(client, tmp_path):
         {"request_id": "m:999999", "media_id": 999999, "status": "done", "file": {"path": "/nonexistent.mp4"}},
     ], "run": {"tool": "pitv_content test", "started_ts": 1, "finished_ts": 2}}).json()
     assert r["ok"] and r["items_done"] == 1 and r["wanted_done"] == 1 and r["items_failed"] == 1
-    assert [x for x in client.get("/api/wanted").json() if x["id"] == w["id"]][0]["status"] == "done"
+    assert next(x for x in client.get("/api/wanted").json() if x["id"] == w["id"])["status"] == "done"
     item = client.get(f"/api/media/{first['media_id']}").json()
     assert item["cache_path"] == str(copy) and item["cached"] is True
     music = client.get("/api/media", params={"kind": "music", "q": "Radio Ga Ga"}).json()["items"]
@@ -197,10 +197,10 @@ def test_content_manifest_ignores_part_files(client, tmp_path):
         target = cache / os.path.basename(item["target"])
         assert item["already_cached"] is False and target.parent == cache
         target.with_name(target.name + ".part").write_bytes(b"x")
-        item = [i for i in client.get("/api/content/manifest").json()["items"] if i["media_id"] == item["media_id"]][0]
+        item = next(i for i in client.get("/api/content/manifest").json()["items"] if i["media_id"] == item["media_id"])
         assert item["already_cached"] is False
         target.write_bytes(b"x")
-        item = [i for i in client.get("/api/content/manifest").json()["items"] if i["media_id"] == item["media_id"]][0]
+        item = next(i for i in client.get("/api/content/manifest").json()["items"] if i["media_id"] == item["media_id"])
         assert item["already_cached"] is True
         assert client.post("/api/content/make-room", json={"bytes": 1}).json()["ok"] is True
         assert target.exists(), "files in the current manifest are protected from eviction"
@@ -317,6 +317,35 @@ def test_remote_endpoint_only_takes_remote_keys(client):
     assert anon.get("/api/browse", params={"path": "/"}).status_code == 401
 
 
+def test_pitv_content_uses_its_token_not_a_session(client, env):
+    """With a password set pitv_content has no session; its token opens only its own endpoints."""
+    import os
+    import stat
+    assert client.get("/api/auth").json()["password_set"]
+    anon = TestClient(client.app)
+    token = client.get("/api/content/token").json()["token"]
+    path = env.data_dir / "content-token"
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600 and path.read_text().strip() == token
+    bearer = {"Authorization": f"Bearer {token}"}
+    assert anon.get("/api/content/manifest").status_code == 401
+    assert anon.get("/api/content/manifest", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert anon.get("/api/content/manifest", headers=bearer).status_code == 200
+    assert anon.post("/api/content/make-room", json={"bytes": 0}, headers=bearer).status_code == 200
+    assert anon.get("/api/content/tool", headers=bearer).status_code == 401     # the admin's, not pitv_content's
+    assert anon.get("/api/settings", headers=bearer).status_code == 401
+    rotated = client.post("/api/content/token").json()["token"]
+    assert rotated != token and anon.get("/api/content/manifest", headers=bearer).status_code == 401
+    assert anon.get("/api/content/manifest", headers={"Authorization": f"Bearer {rotated}"}).status_code == 200
+
+
+def test_setting_ranges():
+    from pitv.web.api.settings_rules import SettingError, check_setting
+    assert check_setting("osd_scale", 1.25) == 1.25
+    for key, value in (("osd_scale", 9), ("osd_safe_margin", 0.5), ("memory_limit_mb", 10), ("horizon_days", 0)):
+        with pytest.raises(SettingError):
+            check_setting(key, value)
+
+
 def test_control_socket_commands_are_validated():
     from pitv.player.controller import validate_control
     assert validate_control({"cmd": "key", "key": "GUIDE"}) == ("key", "guide")
@@ -402,6 +431,7 @@ def test_proxy_rejects_path_escapes(client):
 def test_service_actions_match_sudoers(client):
     """The admin offers exactly the systemctl commands the installer lets the pitv user run."""
     from pathlib import Path
+
     from pitv.web.api.services import SERVICE_ACTIONS
     install = (Path(__file__).parents[1] / "setup" / "install.sh").read_text()
     rule = next(line for line in install.splitlines() if line.startswith("pitv ALL=(root) NOPASSWD:"))
@@ -446,6 +476,7 @@ def test_spa_never_serves_outside_the_bundle(client):
 
 def test_unhandled_errors_do_not_leak_details(client):
     import asyncio
+
     from fastapi import Request
     handler = client.app.exception_handlers[Exception]
     request = Request({"type": "http", "method": "GET", "path": "/api/x", "headers": [], "query_string": b""})
@@ -481,3 +512,131 @@ def test_lineup_api(client):
     client.put(f"/api/channels/{target}", json={"nas_only": "inherit"})
     gen = client.post("/api/lineup/generate", json={"rebalance": True}).json()
     assert gen["assigned"] > 0
+
+
+# --- request hardening ----------------------------------------------------------------------------
+
+JSON = {"Content-Type": "application/json"}
+
+
+def test_cross_site_writes_are_refused(client):
+    """A page on another site (or another port of this host) cannot drive the API through the
+    admin's browser; the UI itself, scripts and pitv_content send no such headers or match."""
+    body = {"key": "guide"}
+    for headers in ({"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "same-site"},
+                    {"Origin": "http://evil.example"}, {"Origin": "null"}):
+        assert client.post("/api/player/key", json=body, headers=headers).status_code == 403, headers
+    for headers in ({"Sec-Fetch-Site": "same-origin"}, {"Origin": "http://testserver"}, {}):
+        assert client.post("/api/player/key", json=body, headers=headers).status_code == 200, headers
+    r = client.get("/api/now", headers={"Sec-Fetch-Site": "cross-site"})
+    assert r.status_code == 200
+    assert r.headers["x-content-type-options"] == "nosniff" and r.headers["x-frame-options"] == "DENY"
+
+
+def test_request_bodies_are_capped(client):
+    from pitv.web.app import MAX_BODY
+    r = client.post("/api/player/key", content=b" " * (MAX_BODY + 1), headers=JSON)
+    assert r.status_code == 413
+
+    def chunked():   # no Content-Length, so the cap has to count what arrives
+        for _ in range(MAX_BODY // 65536 + 2):
+            yield b" " * 65536
+    assert client.post("/api/player/key", content=chunked(), headers=JSON).status_code == 413
+
+
+def test_document_uploads_are_read_only_after_the_admin_check(client):
+    anon = TestClient(client.app)
+    for path in ("/api/catalogue/import", "/api/lineup/import", "/api/content/report"):
+        assert anon.post(path, content=b"{not json", headers=JSON).status_code == 401, path
+        assert client.post(path, content=b"{not json", headers=JSON).status_code == 400, path
+    assert client.post("/api/lineup/import", content=b"{}", headers={"Content-Type": "text/plain"}).status_code == 415
+    assert client.post("/api/lineup/import", json=[1]).status_code == 400
+
+
+def test_proxy_requires_json_bodies(client):
+    client.put("/api/settings", json={"content_tool_url": "http://127.0.0.1:9"})
+    form = {"Content-Type": "application/x-www-form-urlencoded"}
+    assert client.post("/api/content/tool/api/settings", content=b"a=1", headers=form).status_code == 415
+    assert client.post("/api/content/tool/api/settings", content=b"{bad", headers=JSON).status_code == 400
+    assert client.post("/api/content/tool/api/run", json={}).status_code == 503   # well formed; tool offline
+
+
+def test_password_change_revokes_other_sessions(client):
+    other = TestClient(client.app)
+    assert other.post("/api/auth/login", json={"password": "secret123"}).status_code == 200
+    assert other.get("/api/jobs").status_code == 200
+    r = client.post("/api/auth/password", json={"current": "secret123", "password": "secret456"})
+    assert r.status_code == 200 and "pitv_session=" in r.headers["set-cookie"]
+    assert other.get("/api/jobs").status_code == 401
+    assert client.get("/api/jobs").status_code == 200   # the caller carries on with its new cookie
+    assert client.post("/api/auth/password", json={"current": "secret456", "password": "secret123"}).status_code == 200
+
+
+def test_login_attempts_are_counted_before_verification():
+    from pitv.web import auth
+    ip = "203.0.113.7"
+    try:
+        assert all(auth.login_allowed(ip) for _ in range(auth.LOGIN_ATTEMPTS))
+        assert not auth.login_allowed(ip)
+        auth.forget_attempts(ip)
+        assert auth.login_allowed(ip)
+    finally:
+        auth.forget_attempts(ip)
+
+
+def test_settings_refuse_secrets_and_malformed_urls(client):
+    from pitv.web.api.settings_rules import SettingError, check_setting
+    for key in ("admin_password_hash", "session_secret"):
+        with pytest.raises(SettingError):
+            check_setting(key, "x")
+        assert client.put("/api/settings", json={key: "x"}).status_code == 400
+    for url in ("http://127.0.0.1:99999", "http://127.0.0.1:abc", "http://0.0.0.0:8081", "http://[::ffff:8.8.8.8]:8081"):
+        assert client.put("/api/settings", json={"content_tool_url": url}).status_code == 400, url
+    assert check_setting("content_tool_url", "http://100.101.102.103:8081")   # a Tailscale peer
+    assert client.post("/api/settings/reset", json={"keys": "timezone"}).status_code == 400
+
+
+def test_bad_references_are_client_errors(client):
+    assert client.post("/api/wanted", json={"kind": "episode", "title": "X", "show_id": 999999}).status_code == 409
+    assert client.post("/api/wanted", json={"kind": "movie", "title": "X", "year": "soon"}).status_code == 400
+    assert client.post("/api/wanted", json={"kind": "movie", "title": ["X"]}).status_code == 400
+    r = client.post("/api/schedule/insert", json={"channel_id": 999999, "start_ts": now_ts() + 3600, "media_id": 1})
+    assert r.status_code == 404
+    sid = client.get("/api/shows").json()[0]["id"]
+    for bad in ({"year": "soon"}, {"genres": "Comedy"}, {"home_channel_id": "one"}, {"anchor_days": 3}):
+        assert client.put(f"/api/shows/{sid}", json=bad).status_code == 400, bad
+
+
+def test_event_streams_are_capped():
+    from pitv.web.events import MAX_SUBSCRIBERS, EventBus
+    bus = EventBus()
+    queues = [bus.subscribe() for _ in range(MAX_SUBSCRIBERS)]
+    assert all(q is not None for q in queues) and bus.is_full() and bus.subscribe() is None
+    bus.unsubscribe(queues[0])
+    assert not bus.is_full() and bus.subscribe() is not None
+
+
+def test_job_runner_bounds_history_and_notes():
+    import time
+
+    from pitv.web.events import EventBus
+    from pitv.web.tasks import MAX_JOBS_KEPT, MAX_NOTES, JobRunner
+    runner = JobRunner(EventBus())
+
+    def noisy(job):
+        job.notes.extend(str(i) for i in range(MAX_NOTES * 3))
+
+    def wait():
+        deadline = time.monotonic() + 10
+        while any(j["status"] in ("queued", "running") for j in runner.recent(10 ** 6)):
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+
+    for _ in range(MAX_JOBS_KEPT + 10):
+        runner.submit("test", "noisy", noisy)
+    wait()
+    runner.submit("test", "noisy", noisy)   # pruning happens on submit
+    wait()
+    jobs = runner.recent(10 ** 6)
+    assert len(jobs) <= MAX_JOBS_KEPT + 1
+    assert all(len(runner._jobs[j["id"]].notes) <= MAX_NOTES for j in jobs)

@@ -1,7 +1,8 @@
 <script>
   import { untrack } from 'svelte';
-  import AppBadge from '../../components/AppBadge.svelte';
+  import AppBadge, { APP_LABEL } from '../../components/AppBadge.svelte';
   import { get, tryApi } from '../../lib/api.js';
+  import { toolGet } from '../../lib/toolapi.js';
   import { toast, clock } from '../../lib/stores.svelte.js';
   import { fmtBytes, fmtAgo } from '../../lib/format.js';
   import { debounce } from '../../lib/util.js';
@@ -16,7 +17,6 @@
     ['journal:pitv-player', 'Journal: pitv-player', 'pitv'], ['journal:pitv-web', 'Journal: pitv-web', 'pitv'],
     ['pitv-content', 'pitv_content log', 'content'],
   ];
-  const APP_LABEL = { pitv: 'PiTV', content: 'pitv_content' };
   const LEVELS = ['', 'DEBUG', 'INFO', 'WARNING', 'ERROR'];
   let source = $state(untrack(() => fixed) ?? 'player');
   let logPath = $state('');
@@ -51,7 +51,7 @@
         let r = null;
         if (source === 'pitv-content') {
           // Prefer pitv_content's own API when it answers; otherwise read the log file through PiTV.
-          if (liveTool) { try { r = await get('/api/content/tool/api/log', { lines, q, level }); r.exists = true; } catch { r = null; } }
+          if (liveTool) { try { r = { ...(await toolGet('log', { lines, q, level })), exists: true }; } catch { r = null; } }
           if (!r) r = await get('/api/content/tool/log', { lines, q, level });
         } else {
           r = await get(`/api/logs/${encodeURIComponent(source)}`, { lines, q, level });

@@ -1,4 +1,5 @@
 <script>
+  import { moveItem } from '../../lib/util.js';
   let { rows = $bindable([]) } = $props();
   function add() {
     const last = rows.at(-1);
@@ -20,7 +21,7 @@
           <td><input type="number" step="0.1" min="0" value={r.sport ?? 0} onchange={(e) => (r.sport = Number(e.currentTarget.value))} aria-label="Sport weight" /></td>
           <td><input type="number" min="1" placeholder="none" value={r.max_minutes ?? ''} onchange={(e) => (r.max_minutes = e.currentTarget.value === '' ? null : Number(e.currentTarget.value))} aria-label="Maximum minutes" /></td>
           <td class="nowrap">
-            <button class="small ghost" disabled={i === 0} onclick={() => { const [x] = rows.splice(i, 1); rows.splice(i - 1, 0, x); }} aria-label="Move up">↑</button>
+            <button class="small ghost" disabled={i === 0} onclick={() => moveItem(rows, i, -1)} aria-label="Move up">↑</button>
             <button class="small ghost" onclick={() => rows.splice(i, 1)} aria-label="Remove">✕</button>
           </td>
         </tr>
