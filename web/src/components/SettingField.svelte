@@ -7,12 +7,12 @@
   import WeightRows from '../pages/admin/WeightRows.svelte';
   import DaypartTable from '../pages/admin/DaypartTable.svelte';
   import MusicBlocks from '../pages/admin/MusicBlocks.svelte';
+  import { fmtProfile } from '../lib/format.js';
 
   let { field: f, value = $bindable(), error = '', changed = false, secretSet = false } = $props();
   const WIDE = new Set(['list', 'chips', 'path', 'weights', 'times', 'dayparts', 'music_blocks', 'decades', 'readonly']);
   const placeholder = (f) => (f.type === 'time' ? 'HH:MM' : f.type === 'hours' ? 'e.g. 1,2,3 or 01:00-06:00' : f.type === 'path' ? '/path/to/folder'
     : f.default != null && f.default !== '' && typeof f.default !== 'object' ? `default: ${f.default}` : '');
-  const profile = (p) => (p ? `${p.width}×${p.height} ${p.vcodec}${p.acodec ? `/${p.acodec}` : ''}${p.max_bitrate_kbps ? `, up to ${p.max_bitrate_kbps} kbit/s` : ''}${p.deinterlace ? `, deinterlace ${p.deinterlace}` : ''}` : '–');
 </script>
 
 {#snippet title()}
@@ -57,7 +57,7 @@
         <span>Film <span class="mono">{Number(value?.movie ?? 0).toFixed(2)}</span><input type="range" min="0" max="1" step="0.05" bind:value={value.movie} aria-label="Film weight" /></span>
       </span>
     {:else if f.type === 'readonly'}
-      <span class="small mono">{f.key === 'content_profile' ? profile(value) : JSON.stringify(value)}</span>
+      <span class="small">{f.key === 'content_profile' ? fmtProfile(value) : JSON.stringify(value)}</span>
     {:else if f.type === 'secret'}
       <input type="password" autocomplete="new-password" bind:value placeholder={secretSet ? 'set: leave blank to keep' : 'not set'} />
     {:else}

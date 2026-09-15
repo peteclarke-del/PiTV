@@ -132,3 +132,11 @@ export function safeUrl(url, secure = false) {
     return null;
   }
 }
+
+/** A screen profile's quality in words: what pitv_content encodes to and the best source it fetches. */
+export function fmtProfile(p) {
+  if (!p) return '–';
+  const fps = p.frame_rate ? `, ${Math.round(p.frame_rate * 100) / 100} fps` : '';
+  return `${p.label}: encodes to ${p.width}×${p.height} ${String(p.vcodec).toUpperCase()} (${p.aspect}${fps}), `
+    + `from the best source up to ${p.max_source_height >= 2160 ? '4K' : `${p.max_source_height}p`}`;
+}

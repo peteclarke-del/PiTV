@@ -147,7 +147,9 @@ def _make_video(dest: Path, seconds: int, templates: Path) -> None:
         # 4:3 colour bars with a running timecode and the clip length, so the preview window
         # shows that the live offset is right; 1 fps keeps a 25-minute file around 100 KB.
         mins, secs = divmod(seconds, 60)
-        label = f"PiTV test signal  %{{pts\\:gmtime\\:0\\:%H\\:%M\\:%S}} of {mins:02d}\\:{secs:02d}"
+        # Colons inside the strftime format need a further escape, or drawtext reads them as
+        # more arguments to pts and draws nothing.
+        label = f"PiTV test signal  %{{pts\\:gmtime\\:0\\:%H\\\\\\:%M\\\\\\:%S}} of {mins:02d}\\:{secs:02d}"
         draw = (f"drawtext=text='{label}':fontsize=18:fontcolor=white:box=1:boxcolor=black@0.6:"
                 "x=(w-text_w)/2:y=h-40")
         subprocess.run(

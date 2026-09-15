@@ -92,10 +92,14 @@ selects the display lines in that block:
 | `hdmi43` | 1024x768 for a 4:3 monitor |
 | `hdmi` | The monitor's preferred mode |
 
-mpv is told the screen is 4:3 (`display_aspect`) so the anamorphic 720x576 frame has the
-right geometry: 4:3 programmes fill the screen and widescreen films are letterboxed.
-Overlays keep a 7% overscan margin and use larger type; margin, text scale and
-`drm_connector` (if mpv picks the wrong output) are in Admin, Settings, Player and screen.
+The screen is chosen in Admin, Settings, Screen and quality: CRT or LCD, PAL or NTSC, 4:3 or
+widescreen, or HD at 720p, 1080p or 4K. The player asks for that screen's HDMI mode
+(`--drm-mode`, 720x576 at 50 Hz for the default CRT (PAL)), tells mpv its shape (4:3
+programmes fill a 4:3 set and widescreen films are letterboxed), and sets the overlays'
+overscan margin and text size (7% and larger type on a tube). Changing the screen relaunches
+mpv within a few seconds. `DISPLAY_MODE` above sets what the Pi shows while it boots; keep it
+in step with the screen chosen. Margin, text size, shape and `drm_connector` (if mpv picks the
+wrong output) can be adjusted on the same pane.
 
 On the desktop the windowed player (`setup/dev.sh start`) is a preview of the Pi's picture:
 a 768x576 4:3 window with the same scaler and deinterlacer and the same cache-first file

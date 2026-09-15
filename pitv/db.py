@@ -348,6 +348,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "osd_safe_margin": 0.07,           # fraction of the screen kept clear on every edge (CRT overscan)
     "osd_scale": 1.25,                 # text size multiplier; 1.25 suits a small 4:3 CRT at 576 lines
     "drm_connector": "",               # e.g. "Composite-1" or "HDMI-A-1"; empty = mpv default
+    "display_profile": "crt_pal",       # the set PiTV drives; see pitv/display.py
     "display_aspect": "4:3",           # the physical screen shape; 720x576 PAL has non-square pixels, mpv needs to know
     "pi_hwdec": "drm-prime,v4l2m2m-copy",
     "audio_device": "auto",
@@ -365,8 +366,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "transient_keep_days": 7,          # fetched transient files are deleted this long after airing
     # folders the admin folder picker may browse, e.g. for pitv_content source roots (plus the cache, acquire and home dirs)
     "browse_roots": ["/mnt", "/media", "/srv"],
-    "content_profile": {"width": 768, "height": 576, "vcodec": "h264", "acodec": "aac", "max_bitrate_kbps": 4000,
-                        "deinterlace": "if_interlaced"},
     "content_tool_url": "http://127.0.0.1:8081",   # pitv_content's local API (index, sources, settings, run, log)
     "nas_fallback": True,              # play the NAS original when the cache copy is missing or unplayable
     # resilience

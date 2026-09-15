@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import sqlite3
@@ -13,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from ... import __version__, catalogue, settings_schema, tool_client
+from ... import __version__, catalogue, display, settings_schema, tool_client
 from ... import db as dbm
 from ... import lineup as lineup_mod
 from ...db import (
@@ -48,6 +49,7 @@ from .deps import (
 from .services import CONTENT_RUN, CONTENT_TIMER, SERVICE_ACTIONS, services
 from .settings_rules import HHMM, SECRET_SETTINGS, SettingError, check_setting
 
+log = logging.getLogger("pitv.web")
 router = APIRouter(prefix="/api", dependencies=[Depends(admin_conn)])
 
 SHOW_OVERRIDE_FIELDS = {"title", "year", "certificate", "genres", "plot", "kids"}
@@ -585,7 +587,9 @@ def delete_channel(cid: int, conn: sqlite3.Connection = Depends(admin_conn)):
 # --- settings -------------------------------------------------------------------------------------
 
 def _public_settings(conn: sqlite3.Connection) -> dict[str, Any]:
-    return {k: v for k, v in all_settings(conn).items() if k not in SECRET_SETTINGS}
+    """Every setting but the secrets, plus the quality the screen profile implies (read-only)."""
+    settings = {k: v for k, v in all_settings(conn).items() if k not in SECRET_SETTINGS}
+    return {**settings, "content_profile": display.content_profile(settings)}
 
 
 @router.get("/settings")
@@ -605,11 +609,26 @@ def put_settings(request: Request, body: dict[str, Any] = Body(...), conn: sqlit
         clean = {k: check_setting(k, v) for k, v in body.items()}
     except SettingError as exc:
         raise HTTPException(400, str(exc)) from exc
+    if "display_profile" in clean:
+        # A new screen brings its shape and margins; values sent alongside it win.
+        clean = {**display.implied_settings(clean["display_profile"]), **clean}
     with tx(conn):
         for k, v in clean.items():
             set_setting(conn, k, v)
     request.app.state.player.call("settings-changed")
+    if "display_profile" in clean:
+        _sync_content_screen(conn, clean["display_profile"])
     return _public_settings(conn)
+
+
+def _sync_content_screen(conn: sqlite3.Connection, profile_id: str) -> None:
+    """pitv_content's catalogue runs have no manifest and encode to its own screen setting; keep
+    it on PiTV's so the admin has one screen to choose. Best effort: offline, it picks the screen
+    up from the next manifest anyway."""
+    status, payload = tool_client.request(tool_url(conn), "PUT", "settings", body={"profile": profile_id}, timeout=5)
+    if status >= 400:
+        log.warning("pitv_content did not take the screen %s (HTTP %s): %s", profile_id, status,
+                    payload.get("error") if isinstance(payload, dict) else payload)
 
 
 @router.post("/settings/reset")

@@ -14,20 +14,28 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import display
+
 LEVELS = ("basic", "standard", "advanced")
 
 PANES: tuple[tuple[str, str, str], ...] = (
+    ("screen", "Screen and quality", "The set PiTV drives: the picture it plays, and the quality pitv_content fetches and encodes."),
     ("day", "Broadcast day", "When each channel's day runs and how far ahead PiTV builds it."),
     ("programming", "Programming", "What PiTV picks for a slot: the mix of eras, series and films, repeats and dayparts."),
     ("certificates", "Certificates", "When each certificate may air, and children's programming."),
     ("adverts", "Adverts", "Which adverts fill the breaks and which are kept off family channels."),
     ("music", "Music", "How the music channel's day is built."),
-    ("player", "Player and screen", "How the set behaves: the remote, on-screen graphics, decoding and self-protection."),
+    ("player", "Player", "How the set behaves: the remote, decoding and self-protection."),
     ("content", "Cache and pitv_content", "PiTV's side of the shared cache, and what it asks pitv_content for."),
     ("maintenance", "Maintenance", "PiTV's own daily housekeeping."),
 )
 
 _CERTS = ["U", "PG", "12", "12A", "15", "18"]
+_SCREEN_HELP = ("Sets the picture PiTV plays and pitv_content encodes to, and fetches the best source up to two "
+                "steps higher (equal at 4K). Choosing one also resets the screen shape and on-screen margins below. "
+                "The player asks for this HDMI mode; a set that cannot show it stays blank until you choose again. "
+                "pitv_content's catalogue runs follow the same screen. 4K encodes on a Pi 4 run far slower than "
+                "real time, so the 4K screen suits material that arrives as HEVC or a faster pitv_content machine.")
 
 
 def _f(key: str, pane: str, level: str, label: str, kind: str, help_: str, **extra: Any) -> dict[str, Any]:
@@ -35,6 +43,18 @@ def _f(key: str, pane: str, level: str, label: str, kind: str, help_: str, **ext
 
 
 FIELDS: tuple[dict[str, Any], ...] = (
+    # --- screen and quality --------------------------------------------------------------------
+    _f("display_profile", "screen", "basic", "Screen", "choice", _SCREEN_HELP, choices=display.CHOICES),
+    _f("content_profile", "screen", "basic", "Quality", "readonly", "What this screen asks of pitv_content."),
+    _f("osd_scale", "screen", "standard", "On-screen text size", "float",
+       "1.25 suits a 14 inch 4:3 set at 576 lines.", min=0.5, max=2.5, step=0.05),
+    _f("display_aspect", "screen", "advanced", "Screen shape", "choice",
+       "The physical screen; PAL's 720x576 frame has non-square pixels, so mpv must be told.",
+       choices=["4:3", "16:9"]),
+    _f("osd_safe_margin", "screen", "advanced", "Overscan-safe margin", "float",
+       "Fraction of each screen edge kept clear of graphics; a CRT hides about 5 to 8%.", min=0, max=0.2, step=0.01),
+    _f("drm_connector", "screen", "advanced", "Video output", "text",
+       "Force the output, e.g. Composite-1 or HDMI-A-1; empty lets mpv choose."),
     # --- broadcast day -------------------------------------------------------------------------
     _f("timezone", "day", "basic", "Timezone", "text", "IANA zone name the schedule is built in, e.g. Europe/London."),
     _f("day_start", "day", "basic", "Day start", "time", "When a broadcast day begins and the overnight replay ends."),
@@ -126,15 +146,6 @@ FIELDS: tuple[dict[str, Any], ...] = (
        "How long the channel badge stays on screen after a change.", min=1, max=60),
     _f("channel_switch_static", "player", "standard", "Static between channels", "bool",
        "A short burst of snow covers the seek when changing channel."),
-    _f("osd_scale", "player", "standard", "On-screen text size", "float",
-       "1.25 suits a 14 inch 4:3 set at 576 lines.", min=0.5, max=2.5, step=0.05),
-    _f("osd_safe_margin", "player", "advanced", "Overscan-safe margin", "float",
-       "Fraction of each screen edge kept clear of graphics; a CRT hides about 5 to 8%.", min=0, max=0.2, step=0.01),
-    _f("display_aspect", "player", "advanced", "Screen shape", "choice",
-       "The physical screen; PAL's 720x576 frame has non-square pixels, so mpv must be told.",
-       choices=["4:3", "16:9"]),
-    _f("drm_connector", "player", "advanced", "Video output", "text",
-       "Force the output, e.g. Composite-1 or HDMI-A-1; empty lets mpv choose."),
     _f("pi_hwdec", "player", "advanced", "Pi hardware decoders", "text",
        "mpv --hwdec list tried in order on the Pi, e.g. drm-prime,v4l2m2m-copy."),
     _f("audio_device", "player", "advanced", "Audio device", "text", "mpv audio device name; auto picks the default output."),
@@ -169,8 +180,6 @@ FIELDS: tuple[dict[str, Any], ...] = (
        "Fetched transient material is deleted this long after it airs.", min=0, max=365),
     _f("browse_roots", "content", "advanced", "Folders the picker may browse", "chips",
        "Absolute paths the folder picker may open, for example for pitv_content's source roots."),
-    _f("content_profile", "content", "advanced", "Encoding profile", "readonly",
-       "What PiTV asks pitv_content to encode to."),
     # --- maintenance ---------------------------------------------------------------------------
     _f("catalogue_hour", "maintenance", "standard", "Catalogue import hour", "int",
        "Daily import of pitv_content's library index; the schedule is extended afterwards.", min=0, max=23),
@@ -183,6 +192,14 @@ FIELDS: tuple[dict[str, Any], ...] = (
 BY_KEY: dict[str, dict[str, Any]] = {f["key"]: f for f in FIELDS}
 # Settings with no field: edited elsewhere or never by hand.
 UNLISTED = frozenset({"keymap", "admin_password_hash"})
+# Fields shown but not stored: derived from other settings when the schema is served.
+COMPUTED = frozenset({"content_profile"})
+
+
+def choice_values(key: str) -> list[Any] | None:
+    """The values a choice setting accepts (choices may be plain values or {value, label})."""
+    choices = BY_KEY.get(key, {}).get("choices")
+    return None if choices is None else [c["value"] if isinstance(c, dict) else c for c in choices]
 
 
 def bounds(key: str) -> tuple[float, float] | None:

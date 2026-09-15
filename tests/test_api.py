@@ -650,17 +650,35 @@ def test_settings_schema_matches_the_defaults(client):
     from pitv.db import DEFAULT_SETTINGS
     keys = [f["key"] for f in settings_schema.FIELDS]
     assert len(keys) == len(set(keys))
-    assert set(keys) | settings_schema.UNLISTED == set(DEFAULT_SETTINGS)
+    assert set(keys) - settings_schema.COMPUTED | settings_schema.UNLISTED == set(DEFAULT_SETTINGS)
     panes = {pid for pid, _, _ in settings_schema.PANES}
     for f in settings_schema.FIELDS:
         assert f["pane"] in panes and f["level"] in settings_schema.LEVELS, f["key"]
+        if f["key"] in settings_schema.COMPUTED:
+            continue
         default = DEFAULT_SETTINGS[f["key"]]
         if "min" in f:
             assert f["min"] <= default <= f["max"], f["key"]
         if "choices" in f:
-            assert default in f["choices"], f["key"]
+            assert default in settings_schema.choice_values(f["key"]), f["key"]
     doc = client.get("/api/settings/schema").json()
     assert [p["id"] for p in doc["panes"]] == [pid for pid, _, _ in settings_schema.PANES]
     by_key = {f["key"]: f for f in doc["fields"]}
     assert by_key["day_start"]["value"] == "08:00" and by_key["osd_scale"]["max"] == 2.5
     assert "admin_password_hash" not in by_key
+
+
+def test_screen_profile_sets_quality_and_screen(client):
+    """Choosing the screen sets what pitv_content encodes to and the best source it fetches (two
+    rungs higher, equal at 4K), and brings the screen's shape and margins with it."""
+    from pitv import display
+    ceilings = {p.height: p.max_source_height for p in display.PROFILES}
+    assert ceilings == {576: 1080, 480: 1080, 720: 1440, 1080: 2160, 2160: 2160}
+    assert display.BY_ID["lcd_2160p"].vcodec == "hevc" and display.BY_ID["lcd_1080p"].vcodec == "h264"
+    r = client.put("/api/settings", json={"display_profile": "lcd_1080p"}).json()
+    assert r["display_aspect"] == "16:9" and r["osd_safe_margin"] == 0.03
+    assert r["content_profile"]["height"] == 1080 and r["content_profile"]["max_source_height"] == 2160
+    assert client.get("/api/content/manifest").json()["profile"]["name"] == "lcd_1080p"
+    r = client.put("/api/settings", json={"display_profile": "crt_pal", "osd_scale": 1.5}).json()
+    assert r["display_aspect"] == "4:3" and r["osd_safe_margin"] == 0.07 and r["osd_scale"] == 1.5
+    assert client.put("/api/settings", json={"display_profile": "plasma"}).status_code == 400

@@ -42,6 +42,10 @@ class Mpv:
         # request_id -> (event, reply holder); the reader thread fills the holder and sets the event.
         self._pending: dict[int, tuple[threading.Event, list[dict[str, Any]]]] = {}
         self.alive = False
+        # Each connection's reader owns one generation; stop() moves on to the next, so the
+        # reader of a connection closed on purpose (a restart) exits without reporting a loss
+        # or marking the next connection dead.
+        self._generation = 0
 
     # --- lifecycle ---------------------------------------------------------------------
 
@@ -68,9 +72,11 @@ class Mpv:
             self._reap(kill=True)  # do not leave a headless mpv behind
             raise MpvError("mpv IPC socket did not appear")
         self.alive = True
-        threading.Thread(target=self._read_loop, name="mpv-reader", daemon=True).start()
+        threading.Thread(target=self._read_loop, args=(self.sock, self._generation), name="mpv-reader", daemon=True).start()
 
     def stop(self) -> None:
+        with self._lock:
+            self._generation += 1
         try:
             if self.sock:
                 self.command("quit", timeout=1.0)
@@ -108,8 +114,7 @@ class Mpv:
 
     # --- protocol ------------------------------------------------------------------------
 
-    def _read_loop(self) -> None:
-        sock = self.sock
+    def _read_loop(self, sock: socket.socket, generation: int) -> None:
         buf = b""
         while self.alive and sock is not None:
             try:
@@ -127,6 +132,8 @@ class Mpv:
         # Under the lock so no request can register after the wake-up: `_request` checks
         # `alive` and registers under the same lock.
         with self._lock:
+            if generation != self._generation:
+                return   # stop() closed this connection on purpose
             self.alive = False
             waiting = list(self._pending.values())
         for ev, _ in waiting:
@@ -222,7 +229,7 @@ class Mpv:
             pass  # removing an overlay that is not shown is an mpv error and a no-op for us
 
 
-def default_args(windowed: bool) -> list[str]:
+def default_args(windowed: bool, geometry: str = "768x576", title: str = "CRT (PAL)") -> list[str]:
     common = [
         "--idle=yes", "--force-window=yes", "--keep-open=no", "--no-osc", "--osd-level=0",
         "--input-default-bindings=no", "--input-vo-keyboard=yes", "--cursor-autohide=always",
@@ -231,10 +238,10 @@ def default_args(windowed: bool) -> list[str]:
         "--audio-pitch-correction=no", "--volume-max=100", "--sub=no", "--no-config",
     ]
     if windowed:
-        # Desktop preview: a 4:3 window the size of the PAL frame (768x576 square pixels shows
-        # exactly what a 720x576 anamorphic frame looks like on the set), same scaler and
-        # deinterlacer as the Pi, so transcodes from pitv_content can be judged on screen.
-        return common + ["--geometry=768x576", "--title=PiTV (Pi display preview 4:3 PAL)", "--hwdec=auto-safe",
+        # Desktop preview: a window the shape and size of the screen profile's frame (768x576
+        # square pixels shows exactly what a 720x576 anamorphic frame looks like on a 4:3 set),
+        # same scaler and deinterlacer as the Pi, so transcodes from pitv_content can be judged.
+        return common + [f"--geometry={geometry}", f"--title=PiTV preview: {title}", "--hwdec=auto-safe",
                          "--keepaspect-window=yes", "--scale=bilinear", "--cscale=bilinear", "--dscale=bilinear"]
     return common + [
         "--vo=gpu", "--gpu-context=drm", "--fullscreen", "--ao=alsa",

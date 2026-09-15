@@ -2,7 +2,7 @@
   // What PiTV asks pitv_content for. pitv_content's reports back are listed under Last run on the same tab.
   import { onMount } from 'svelte';
   import { get, tryApi } from '../../lib/api.js';
-  import { fmtDateTime } from '../../lib/format.js';
+  import { fmtDateTime, fmtProfile } from '../../lib/format.js';
   import AppBadge from '../../components/AppBadge.svelte';
   import DataTable from '../../components/DataTable.svelte';
   import { downloadJson } from '../../lib/util.js';
@@ -42,6 +42,7 @@
     <button class="small primary" onclick={downloadManifest} disabled={!manifest}>Download manifest JSON</button>
   </div>
   <p class="scope">PiTV publishes this for pitv_content: every file the schedule needs through the next broadcast day, to copy, transcode or fetch into the cache.</p>
+  {#if manifest?.profile}<p class="small">Quality: {fmtProfile(manifest.profile)}. <a href="#/admin/settings/screen">Change the screen</a></p>{/if}
   {#if manifest && manifestStats}
     <div class="stats">
       <div class="stat"><b>{manifestStats.total}</b><span>Items</span></div>

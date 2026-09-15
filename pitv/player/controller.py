@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import db as dbm
-from .. import sdnotify
+from .. import display, sdnotify
 from ..config import Config
 from ..db import all_settings, enabled_channels, now_ts
 from ..guide import block_entry, next_programmes, slot_at
@@ -156,17 +156,49 @@ class Player:
         return int(time.time()) + self.offset
 
     def _mpv_args(self) -> list[str]:
-        args = default_args(windowed=not self.on_pi)
+        screen = display.profile(self.settings)
+        args = default_args(windowed=not self.on_pi, geometry=display.preview_geometry(self.settings), title=screen.label)
         dev = self.settings["audio_device"] or "auto"
         if dev != "auto":
             args.append(f"--audio-device={dev}")
         if self.on_pi:
+            args.append(f"--drm-mode={screen.drm_mode}")
             if self.settings["drm_connector"]:
                 args.append(f"--drm-connector={self.settings['drm_connector']}")
             if self.settings["display_aspect"]:
                 # 720x576 into a 4:3 set: pixels are not square.
                 args.append(f"--monitoraspect={self.settings['display_aspect']}")
         return args + self.cfg.mpv_extra_args
+
+    def _setup_mpv(self) -> None:
+        """What a fresh mpv needs from us: window keys on the desktop, its warnings in our log,
+        and the viewer's volume."""
+        if not self.on_pi:   # the desktop window takes keys; on the Pi evdev does
+            for key, action in WINDOW_KEYS.items():
+                self.mpv.keybind(key, f"pitv {action}")
+        try:
+            self.mpv.command("request_log_messages", "warn")
+            self.mpv.set("volume", self.volume)
+            self.mpv.set("mute", self.muted)
+        except MpvError as exc:
+            log.warning("mpv setup: %s", exc)
+
+    def _restart_mpv(self, args: list[str]) -> None:
+        """Relaunch mpv with new arguments (a new screen, output or audio device) and rejoin
+        what is on air; the player itself keeps running."""
+        log.info("screen or output settings changed; restarting mpv")
+        self.mpv.stop()
+        self.mpv.args = args
+        self.playing_path = None
+        self.playing_slot_id = None
+        self.osd_expiry.clear()
+        try:
+            self.mpv.start()
+            self._setup_mpv()
+        except MpvError as exc:
+            self._fail(f"mpv did not restart: {exc}")
+            return
+        self.play_live()
 
     def _load_channels(self) -> None:
         self.channels = enabled_channels(self.conn)
@@ -230,15 +262,7 @@ class Player:
         signal.signal(signal.SIGTERM, self._on_signal)
         signal.signal(signal.SIGINT, self._on_signal)
         try:
-            if not self.on_pi:   # the desktop window takes keys; on the Pi evdev does
-                for key, action in WINDOW_KEYS.items():
-                    self.mpv.keybind(key, f"pitv {action}")
-            try:
-                self.mpv.command("request_log_messages", "warn")  # surface mpv's own warnings/errors in our log
-                self.mpv.set("volume", self.volume)
-                self.mpv.set("mute", self.muted)
-            except MpvError as exc:
-                log.warning("mpv setup: %s", exc)
+            self._setup_mpv()
             self.control.start()
             self.evdev.start()
             if self.tty:
@@ -399,8 +423,8 @@ class Player:
 
     def _reload_settings(self) -> None:
         """Pick up admin changes to settings and channels: at once when the web service says
-        so, and once a minute regardless (the cache directory and mpv arguments are read at start
-        only; those need a player restart)."""
+        so, and once a minute regardless. A change to mpv's arguments (the screen, output or
+        audio device) relaunches mpv; the cache directory is read at start only."""
         try:
             self.settings = all_settings(self.conn)
             self.tz = tz_of(self.conn)
@@ -408,6 +432,10 @@ class Player:
             self._load_channels()
         except sqlite3.Error as exc:
             log.warning("settings reload failed: %s", exc)
+            return
+        args = self._mpv_args()
+        if args != self.mpv.args:
+            self._restart_mpv(args)
 
     def tick(self) -> None:
         if not self.mpv.running():

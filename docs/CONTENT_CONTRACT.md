@@ -117,8 +117,9 @@ service is down. Schema 2.
   "generated_ts": 1789430400, "horizon_ts": 1789542000,
   "cache_dir": "/mnt/cache/pitv", "acquire_dir": "/mnt/cache/pitv/acquired",
   "free_bytes": 500000000000, "cache_max_bytes": 644245094400, "pi": true,
-  "profile": {"width": 768, "height": 576, "vcodec": "h264", "acodec": "aac",
-              "max_bitrate_kbps": 4000, "deinterlace": "if_interlaced"},
+  "profile": {"name": "crt_pal", "label": "CRT (PAL)", "width": 768, "height": 576, "aspect": "4:3",
+              "max_source_height": 1080, "vcodec": "h264", "acodec": "aac", "max_bitrate_kbps": 4000,
+              "frame_rate": 25, "deinterlace": "if_interlaced"},
   "running_marker": "/mnt/cache/pitv/.pitv_content.running",
   "reports_dir": "/mnt/cache/pitv/reports",
   "items": [
@@ -143,6 +144,17 @@ service is down. Schema 2.
 }
 ```
 
+- `profile` follows the screen chosen in PiTV's admin (`pitv/display.py`). Encode to
+  `width`x`height` (square pixels, `aspect` the screen's shape), `vcodec` (H.264 up to 1080
+  lines, HEVC above, which is what the Pi 4 decodes in hardware), at most `max_bitrate_kbps`,
+  conformed to `frame_rate` when it is set (PAL 25, NTSC 29.97; null keeps the source rate).
+  When fetching, look across every enabled provider and start from the best source available
+  up to `max_source_height` lines: two rungs above the target on the 720, 1080, 1440, 2160
+  ladder, and equal to it at 4K. Prefer the higher resolution, then the higher bitrate, among
+  hits of the same title; never go above the ceiling, and take a lower source only when
+  nothing better exists. A copy or transcode from the NAS uses the file there as it is.
+  PiTV also sets pitv_content's own screen setting (`PUT /api/settings {"profile": <name>}`)
+  whenever the admin changes the screen, so catalogue runs, which have no manifest, match.
 - Every scheduled file appears once, however many slots or channels use it.
 - `action` is `copy` (the source already decodes in hardware on the Pi and fits the profile),
   `transcode` (it does not), or `fetch` (there is no known source; find it online, encode it to
@@ -183,7 +195,7 @@ applies a report once: a dropped copy of one it already took over HTTP is recogn
     {"request_id": "w:78", "media_id": null, "wanted_id": 78, "status": "failed",
      "message": "youtube bot check", "file": null}
   ],
-  "run": {"started_ts": 1789430400, "finished_ts": 1789434000, "tool": "pitv-content 0.2.0",
+  "run": {"started_ts": 1789430400, "finished_ts": 1789434000, "tool": "pitv-content 0.3.0",
           "log_tail": "..."}
 }
 ```
@@ -244,7 +256,7 @@ right if the applications are ever split across machines. Any reading that canno
 the platform is `null`.
 
 ```json
-{"version": "0.2.0", "python": "3.12.3",
+{"version": "0.3.0", "python": "3.12.3",
  "tools": {"ffmpeg": "5.1.6", "ffprobe": "5.1.6", "yt-dlp": "2026.08.19", "curl": "7.88.1"},
  "hostname": "pitv", "model": "Raspberry Pi 4 Model B Rev 1.5", "pi": true,
  "uptime_s": 583200, "load": [1.09, 1.39, 2.29], "temperature_c": 52.0,
@@ -281,8 +293,8 @@ PiTV never contacts the sources itself, as all online access is pitv_content's.
 
 - Series come from a source with episode lists (TVmaze needs no key); films from a film
   database. Adverts and music videos are candidates for the video itself: `match.source` is the
-  video site, `match.url` the video, and `duration_seconds`, `uploader` and a thumbnail as
-  `image` replace the series fields. A music candidate may carry `artist` and the release
+  video site, `match.url` the video, and `duration_seconds`, `uploader`, `max_height` (the
+  best resolution the video offers) and a thumbnail as `image` replace the series fields. A music candidate may carry `artist` and the release
   `year` from a music database.
 - Candidates are ordered best first. Every field but `match`, `kind` and `title` may be
   missing or null. `summary` is plain text; `image` is an https URL the admin may show.

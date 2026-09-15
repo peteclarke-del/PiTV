@@ -24,7 +24,7 @@ HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _DEVICE_TOKEN = re.compile(r"^[A-Za-z0-9_.:,/=+-]{0,200}$")
 _TZ_NAME = re.compile(r"^[A-Za-z0-9_+/-]{1,64}$")
 _PATH_KEYS = ("cache_dir", "acquire_dir")
-_DEVICE_KEYS = ("audio_device", "drm_connector", "pi_hwdec", "display_aspect")
+_DEVICE_KEYS = ("audio_device", "drm_connector", "pi_hwdec", "display_aspect", "display_profile")
 _HHMM_KEYS = ("day_start", "day_end", "kids_cutoff")
 _PORTS = range(1, 65536)
 # Stored with the settings but never read or written through the settings API.
@@ -90,7 +90,7 @@ def check_setting(key: str, value: Any) -> Any:
     if key not in DEFAULT_SETTINGS or key in SECRET_SETTINGS:
         raise SettingError(f"unknown setting {key}")
     default = DEFAULT_SETTINGS[key]
-    choices = settings_schema.BY_KEY.get(key, {}).get("choices")
+    choices = settings_schema.choice_values(key)
     if choices is not None and value not in choices:
         raise SettingError(f"{key} must be one of {', '.join(map(str, choices))}")
     if key in _PATH_KEYS:

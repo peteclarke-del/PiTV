@@ -437,9 +437,20 @@ controller (main thread, half-second loop)
      readiness checks, pruning (pitv/player/maintenance.py)
 ```
 
-- One long-lived mpv started once, no X: on the Pi `--vo=gpu --gpu-context=drm --fullscreen
-  --ao=alsa --hwdec=drm-prime,v4l2m2m-copy --profile=fast --monitoraspect=4:3`, plus
-  `--drm-connector` and `--audio-device` when set. `--sub=no`, `--no-config`, a 64 MiB
+- One long-lived mpv, no X: on the Pi `--vo=gpu --gpu-context=drm --fullscreen --ao=alsa
+  --hwdec=drm-prime,v4l2m2m-copy --profile=fast`, the screen profile's `--drm-mode` (e.g.
+  `720x576@50`) and `--monitoraspect`, plus `--drm-connector` and `--audio-device` when set.
+  A settings change that alters these relaunches mpv and rejoins what is on air; the player
+  process keeps running. The desktop preview is a window the shape of the profile's frame,
+  scaled to fit.
+- Screen profiles (`pitv/display.py`, setting `display_profile`): CRT or LCD in PAL, PAL
+  widescreen, NTSC and NTSC widescreen, and LCD at 720p, 1080p and 4K. Each fixes the frame
+  pitv_content encodes to and the player shows, the HDMI mode, the screen shape, the overlay
+  margin and text size, and the best source worth fetching: two rungs above the target on
+  the 720, 1080, 1440, 2160 ladder (576 and 480 lines take up to 1080p, 720p up to 1440p,
+  1080p up to 4K) and equal to it at 4K. The 4K profile encodes to HEVC, the only codec the
+  Pi 4 decodes in hardware above 1080p. PAL profiles conform to 25 fps and NTSC to 29.97; HD
+  keeps the source rate. The manifest's `profile` carries all of it (contract section 2). `--sub=no`, `--no-config`, a 64 MiB
   demuxer cache with 20 s read-ahead.
 - Channel change: `loadfile` with named arguments (`url`, `flags=replace`, and per-file
   `options` carrying `start` and the decode settings) and a 0.35 s burst of static
@@ -614,7 +625,7 @@ PiTV:
 | Dashboard | Catalogue counts (cached, NAS only, fetched online), line-up summary per channel with unfetched placeholders and unplaced items, schedule horizon, readiness result, recent runs and jobs; import the catalogue (optionally re-indexing first), build or force-rebuild the week, check readiness |
 | Catalogue | The last import (when, from where, counts) with import, re-index and import, and upload an index file; Add to the catalogue, in two steps: pitv_content first looks the title up online (series from TVmaze, films from OMDb with a key, adverts and music videos as candidate videos; contract section 8) and the admin picks the right one from posters, years, network, genres, running time and summary, or adds without a match with a warning; then a series or film (year, genres, channel or "choose by genres", episode length, remove after airing, prefilled from the match) becomes a line-up entry carrying the confirmed identity (`match`), which every fetch request for it passes on that pitv_content fetches before it airs, and an advert or music video (optionally with a link) joins the wanted list; lists of series, films, titles added here (with their state), music, adverts, idents and items needing attention, each with where it comes from and whether it is cached; per-show editor (overrides, channel, strip or weekly anchor, rest weeks, category, next-episode cursor, upcoming airings); per-item editor (overrides, channel for films and idents, exclude, family-safe, concert, cache status, recent and upcoming airings); "needs attention" list with inline year and certificate fixes, including items no channel accepts |
 | Channels | Add, edit, delete channels. The editor has five sections: Channel (number, name, colour, enabled, description, content type), Programmes (allowed and excluded genres with catalogue counts; NAS-only override at Standard), Breaks (adverts on or off and per break, family-safe adverts, idents; the pattern editor at Standard), Mix (Standard: TV and film balance, era and genre weights) and Dayparts (Advanced: weekday, Saturday and Sunday tables, overnight replay start). Each channel's line-up in a drawer: add from a searchable list or by title, remove, move, enable, transient and remove-after-airing toggles, state per entry (on disk, not on disk, fetching, scheduled). Generate, rebalance, export and import line-ups |
-| Settings | PiTV's settings in eight panes: Broadcast day, Programming, Certificates, Adverts, Music, Player and screen, Cache and pitv_content, Maintenance. Drawn from `GET /api/settings/schema` (`pitv/settings_schema.py`), which gives each setting its pane, level, label, help and range; validation takes its ranges from the same table. Edits in several panes are saved together, only the changed keys are sent, values are cleaned for their type and clamped to their range, and a pane's fields can be put back to their defaults before saving. The old `#/admin/weighting` address opens it |
+| Settings | PiTV's settings in nine panes: Screen and quality (the screen profile, what it asks of pitv_content, text size, and at Advanced shape, margin and output), Broadcast day, Programming, Certificates, Adverts, Music, Player, Cache and pitv_content, Maintenance. The Content page's manifest card shows the quality in force with a link to change it. Drawn from `GET /api/settings/schema` (`pitv/settings_schema.py`), which gives each setting its pane, level, label, help and range; validation takes its ranges from the same table. Edits in several panes are saved together, only the changed keys are sent, values are cleaned for their type and clamped to their range, and a pane's fields can be put back to their defaults before saving. The old `#/admin/weighting` address opens it |
 | Schedule | The EPG grid, editable: lock, remove, replace, insert at a time or before a slot, rebuild from here; build jobs and notes from the last edit |
 | Wanted | The wanted list for pitv_content: requests raised by line-up placeholders (marked with their channel and as transient) and items added by hand (film, episode, advert or music video, optionally with a URL); retry, delete, queue missing episodes |
 | Player | Now playing and whether from the cache or the NAS, stream details, virtual remote, cache usage, maintenance status, restart the player; remote keymap editor with press-to-learn |

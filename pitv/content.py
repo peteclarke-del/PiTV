@@ -18,6 +18,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+from . import display
 from .catalogue import KINDS, family_safe, keyword_pattern, write_mirror
 from .db import (
     all_settings,
@@ -90,7 +91,7 @@ def _media_request(m: dict[str, Any], cache: MediaCache, acquire: str, max_heigh
             "duration": m.get("duration"), "already_cached": copy is not None, "transient": bool(m.get("transient"))}
     if m.get("origin", "nas") == "nas":
         original = Path(m["path"])
-        # Anything the Pi cannot decode in hardware, or well above the CRT's 576 lines, is
+        # Anything the Pi cannot decode in hardware, or well above the screen's lines, is
         # re-encoded to the profile; the rest is copied as it is.
         transcode = (m.get("vcodec") or "") not in PI_HW_CODECS or (m.get("height") or 0) > max_height * 1.5
         name = f"{m['id']}_{original.stem}{'.mp4' if transcode else original.suffix}"
@@ -129,8 +130,8 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
     cache = MediaCache.from_settings(settings)
     acquire = acquire_dir(settings)
     horizon = manifest_window(settings, tz, now, days)
-    profile = settings.get("content_profile") or {}
-    max_height = as_int(profile.get("height")) or 576
+    profile = display.content_profile(settings)
+    max_height = profile["height"]
     items: dict[str, dict[str, Any]] = {}
 
     def add(request_id: str, slot: dict[str, Any], build: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
