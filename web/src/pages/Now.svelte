@@ -2,7 +2,7 @@
   import { untrack } from 'svelte';
   import { get, post, tryApi, normalisePlayer } from '../lib/api.js';
   import { changes, clock, player } from '../lib/stores.svelte.js';
-  import { fmtRange, fmtTime, fmtDuration } from '../lib/format.js';
+  import { fmtRange, fmtTime, fmtDuration, plural } from '../lib/format.js';
   import ChannelBadge from '../components/ChannelBadge.svelte';
   import ProgressBar from '../components/ProgressBar.svelte';
   import PlayerStatus from '../components/PlayerStatus.svelte';
@@ -87,7 +87,10 @@
               <div class="now">
                 <div class="label">Now</div>
                 <div class="title">{s.title}</div>
-                {#if s.subtitle}<div class="muted small">{s.subtitle}</div>{/if}
+                {#if s.block}
+                  {#if s.video_title}<div class="video">♪ {s.video_title}</div>{/if}
+                  <div class="muted small">{s.subtitle || 'Music videos'}{s.items ? ` · ${plural(s.items, 'video')}` : ''}</div>
+                {:else if s.subtitle}<div class="muted small">{s.subtitle}</div>{/if}
                 <div class="muted small">{fmtRange(s.start_ts, s.end_ts)} · {fmtDuration(s.end_ts - s.start_ts)}{s.replay ? ' · replay' : ''}</div>
                 <ProgressBar value={progress(s)} />
               </div>
@@ -98,7 +101,7 @@
           {#if c.next.length}
             <ul class="next">
               {#each c.next as n (n.id)}
-                <li><span class="mono time">{fmtTime(n.start_ts)}</span><span class="truncate"><b>{n.title}</b>{n.subtitle ? ` · ${n.subtitle}` : ''}</span></li>
+                <li><span class="mono time">{fmtTime(n.start_ts)}</span><span class="truncate"><b>{n.title}</b>{n.block ? ` · ${plural(n.items ?? 1, 'video')}` : n.subtitle ? ` · ${n.subtitle}` : ''}</span></li>
               {/each}
             </ul>
           {/if}
@@ -114,6 +117,7 @@
   .now { display: flex; flex-direction: column; gap: .2rem; }
   .label { font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; font-weight: 700; color: var(--accent); }
   .title { font-size: 1.15rem; font-weight: 650; line-height: 1.25; }
+  .video { font-size: .95rem; color: var(--info); font-weight: 550; }
   .next { list-style: none; margin: 0; padding: .5rem 0 0; border-top: 1px dashed var(--border); display: flex; flex-direction: column; gap: .3rem; font-size: .9rem; }
   .next li { display: flex; gap: .6rem; align-items: baseline; min-width: 0; }
   .time { color: var(--fg-muted); flex: none; font-size: .85rem; }

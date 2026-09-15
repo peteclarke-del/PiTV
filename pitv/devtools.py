@@ -43,6 +43,11 @@ FAKE_SHOWS = [
     ("Fawlty Towers", 1975, 2, 6, 30, ["Comedy"], "PG", False),
     ("The Clangers", 1969, 2, 13, 10, ["Animation", "Children"], "U", True),
     ("The Sweeney", 1975, 4, 13, 50, ["Crime", "Drama"], "15", False),
+    ("Bananaman", 1983, 3, 13, 5, ["Animation", "Children"], "U", True),
+    ("Dungeons & Dragons", 1983, 3, 9, 22, ["Animation", "Fantasy"], "U", True),
+    ("Thundercats", 1985, 4, 20, 22, ["Animation", "Action"], "U", True),
+    ("SuperTed", 1983, 3, 12, 10, ["Animation", "Children"], "U", True),
+    ("Count Duckula", 1988, 4, 15, 22, ["Animation", "Comedy"], "U", True),
 ]
 
 # (title, year, minutes, certificate, genres)
@@ -102,6 +107,29 @@ FAKE_SPORT = [
     ("British Superbike Championship", 1988, False, 10, 50),
     ("World's Strongest Man", 1977, False, 8, 50),
     ("Britain's Strongest Man", 1979, False, 6, 45),
+]
+
+# (artist, title, year, genre, minutes) - music videos; concerts live under Concerts/
+FAKE_MUSIC = [
+    ("Queen", "Radio Ga Ga", 1984, "Pop", 5), ("Duran Duran", "Rio", 1982, "New Wave", 5),
+    ("The Human League", "Don't You Want Me", 1981, "Synth", 4), ("Madness", "Our House", 1982, "Ska", 3),
+    ("Iron Maiden", "Run to the Hills", 1982, "Metal", 4), ("Def Leppard", "Pour Some Sugar on Me", 1987, "Metal", 5),
+    ("Dire Straits", "Money for Nothing", 1985, "Rock", 8), ("The Clash", "London Calling", 1979, "Punk", 3),
+    ("Chic", "Le Freak", 1978, "Disco", 5), ("Earth, Wind & Fire", "September", 1978, "Disco", 4),
+    ("The Jam", "Going Underground", 1980, "Punk", 3), ("Kate Bush", "Running Up That Hill", 1985, "Pop", 5),
+    ("Pet Shop Boys", "West End Girls", 1985, "Synth", 5), ("Whitney Houston", "How Will I Know", 1985, "Pop", 4),
+    ("The Smiths", "This Charming Man", 1983, "Indie", 3), ("Bon Jovi", "Livin' on a Prayer", 1986, "Rock", 4),
+    ("Marvin Gaye", "Sexual Healing", 1982, "Soul", 4), ("Bob Marley", "Could You Be Loved", 1980, "Reggae", 4),
+    ("Blur", "Parklife", 1994, "Indie", 3), ("Oasis", "Wonderwall", 1995, "Rock", 4),
+    ("The Beatles", "Hey Jude", 1968, "Pop", 8), ("The Rolling Stones", "Jumpin' Jack Flash", 1968, "Rock", 4),
+    ("Pulp", "Common People", 1995, "Indie", 6), ("Prince", "1999", 1982, "Funk", 6),
+    ("Donna Summer", "I Feel Love", 1977, "Disco", 6), ("Black Sabbath", "Paranoid", 1970, "Metal", 3),
+    ("Soft Cell", "Tainted Love", 1981, "Synth", 3), ("Wham!", "Club Tropicana", 1983, "Pop", 4),
+]
+FAKE_CONCERTS = [
+    ("Queen", "Live at Wembley", 1986, "Rock", 118), ("Dire Straits", "Alchemy Live", 1983, "Rock", 95),
+    ("Talking Heads", "Stop Making Sense", 1984, "New Wave", 88), ("Iron Maiden", "Live After Death", 1985, "Metal", 90),
+    ("Prince", "Sign o' the Times", 1987, "Funk", 85), ("The Who", "Live at Shea", 1982, "Rock", 100),
 ]
 
 _DURATION_TEMPLATES: dict[int, Path] = {}
@@ -180,6 +208,12 @@ def build_fake_library(root: Path, seed: int = 1, with_nfo: bool = True,
             for e in range(1, eps + 1):
                 _make_video(show_dir / "Season 01" / f"{title} - S01E{e:02d} - Episode {e}.mp4", minutes * 60, title)
 
+    music = root / "music videos"
+    for artist, title, year, genre, minutes in FAKE_MUSIC:
+        _make_video(music / genre / f"{artist} - {title} ({year}).mp4", minutes * 60, title)
+    for artist, title, year, genre, minutes in FAKE_CONCERTS:
+        _make_video(music / "Concerts" / genre / f"{artist} - {title} ({year}).mp4", minutes * 60, title)
+
     for title, year, minutes, cert, genres in FAKE_MOVIES:
         safe = title.replace(":", "").replace("/", "-")
         folder = movies / (f"{safe} ({year})" if year else safe)
@@ -198,4 +232,4 @@ def build_fake_library(root: Path, seed: int = 1, with_nfo: bool = True,
         for i in (1, 2):
             _make_video(pitv / "Idents" / f"ch{ch}" / f"Ident {i}.mp4", rnd.choice([8, 10, 15]), f"ch{ch}")
     _make_video(pitv / "Static" / "static.mp4", 2, "static")
-    return {"tv": tv, "movies": movies, "pitv": pitv, "sport": sport}
+    return {"tv": tv, "movies": movies, "pitv": pitv, "sport": sport, "music": music}

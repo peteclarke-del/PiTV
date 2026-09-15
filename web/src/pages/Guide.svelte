@@ -3,7 +3,7 @@
   import { get, post, tryApi } from '../lib/api.js';
   import { changes, clock, route, player } from '../lib/stores.svelte.js';
   import { setQuery } from '../lib/router.js';
-  import { fmtDay, fmtRange, fmtDuration } from '../lib/format.js';
+  import { fmtDay, fmtRange, fmtDuration, plural } from '../lib/format.js';
   import EpgGrid from '../components/EpgGrid.svelte';
   import Drawer from '../components/Drawer.svelte';
   import ChannelBadge from '../components/ChannelBadge.svelte';
@@ -28,7 +28,7 @@
 
   async function loadDays() {
     days = await get('/api/schedule/days');
-    if (!day || !days.days.some((d) => d.day === day)) day = days.today;
+    if (!day || !days.days.some((d) => d.day === day)) day = days.days.some((d) => d.day === days.today) ? days.today : (days.days[0]?.day ?? '');
   }
   async function loadSlots() {
     if (!dayInfo) { data = null; return; }
@@ -109,9 +109,11 @@
         {#if isCurrent}<span class="badge ok">On now</span>{/if}
         {#if selected.replay}<span class="badge">Replay</span>{/if}
         {#if selected.kind === 'filler'}<span class="badge">Filler</span>{/if}
+        {#if selected.block}<span class="badge info">{plural(selected.items ?? 1, 'video')}</span>{/if}
       </div>
       <dl class="kv">
-        {#if selected.year}<dt>Year</dt><dd>{selected.year}</dd>{/if}
+        {#if selected.block && selected.video_title && selected.kind !== 'filler' && selected.video_title !== selected.block}<dt>Now playing</dt><dd>{selected.video_title}</dd>{/if}
+        {#if selected.year && !selected.block}<dt>Year</dt><dd>{selected.year}</dd>{/if}
         {#if selected.certificate}<dt>Certificate</dt><dd>{selected.certificate}</dd>{/if}
         <dt>Duration</dt><dd>{fmtDuration(selected.end_ts - selected.start_ts)}{selected.duration && Math.abs(selected.duration - (selected.end_ts - selected.start_ts)) > 90 ? ` (file ${fmtDuration(selected.duration)})` : ''}</dd>
         {#if selected.genres?.length}<dt>Genres</dt><dd>{selected.genres.join(', ')}</dd>{/if}

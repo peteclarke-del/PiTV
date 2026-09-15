@@ -20,8 +20,7 @@ from typing import Any
 from .. import db as dbm
 from ..config import Config
 from ..db import all_settings, now_ts, row_to_dict
-from ..acquire.worker import AcquisitionWorker
-from .cache import MediaCache, PrefetchWorker
+from .cache import MediaCache
 from .control_socket import ControlServer
 from .hwdec import decode_options, is_raspberry_pi
 from .input import EvdevInput, TerminalInput
@@ -81,6 +80,7 @@ class Player:
         self.stopping = False
         self._last_drift_check = 0.0
         self._stream_info_at = 0.0
+        self._substituted_slots: set[int] = set()
         self.stream_info: dict[str, Any] = {}
         self._state_cache: str = ""
         self.keyboard = keyboard
@@ -90,18 +90,13 @@ class Player:
 
         cache_dir = self.settings.get("cache_dir") or ""
         self.cache = MediaCache(Path(cache_dir) if cache_dir else None,
-                                int(float(self.settings.get("cache_max_gb", 200)) * 1024 ** 3),
-                                float(self.settings.get("cache_copy_mbps", 0) or 0))
+                                int(float(self.settings.get("cache_max_gb", 200)) * 1024 ** 3))
         self.renderer = Renderer(cfg.run_dir)
         self.mpv = Mpv(cfg.mpv_binary, cfg.mpv_socket, self._mpv_args(), on_event=self._on_mpv_event)
         self.control = ControlServer(cfg.player_socket, self._handle_control, self.state)
         self.evdev = EvdevInput(self._on_key, self.settings.get("keymap") or {})
         self.tty = TerminalInput(self._on_key) if keyboard else None
-        self.prefetch = PrefetchWorker(self.cache, cfg.db_path, float(self.settings.get("prefetch_hours", 4)),
-                                       lambda: self.channel["id"] if self.channel else None, self.clock,
-                                       days=int(self.settings.get("prefetch_days", 1)))
-        self.maintenance = Maintenance(cfg.db_path, cfg.ffprobe_binary, self.clock, self._schedule_changed)
-        self.acquire = AcquisitionWorker(cfg.db_path, self.clock, self.on_pi, cfg.ffprobe_binary, self._schedule_changed)
+        self.maintenance = Maintenance(cfg.db_path, cfg.ffprobe_binary, self.clock, self._schedule_changed, self.cache)
 
     # --- helpers ---------------------------------------------------------------------------
 
@@ -134,17 +129,44 @@ class Player:
                                 " ORDER BY s.start_ts DESC LIMIT 1", (channel_id, ts, ts)).fetchone()
         return dict(row) if row else None
 
+    @staticmethod
+    def _collapse(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Consecutive music-channel slots with the same block become one entry (title = block)."""
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            prev = out[-1] if out else None
+            if r.get("block") and prev and prev.get("block") == r["block"] and prev["end_ts"] == r["start_ts"] \
+                    and prev.get("replay") == r.get("replay"):
+                prev["end_ts"] = r["end_ts"]
+                continue
+            e = dict(r)
+            if e.get("block"):
+                e["video_title"] = e["title"]
+                e["title"] = e["block"]
+                e["subtitle"] = "Music videos"
+            out.append(e)
+        return out
+
     def next_programmes(self, channel_id: int, after: int, n: int = 12) -> list[dict[str, Any]]:
-        rows = self.conn.execute(SLOT_SQL + " WHERE s.channel_id = ? AND s.start_ts > ? AND s.kind = 'programme'"
-                                 " ORDER BY s.start_ts LIMIT ?", (channel_id, after, n)).fetchall()
-        return [dict(r) for r in rows]
+        rows = self.conn.execute(SLOT_SQL + " WHERE s.channel_id = ? AND s.start_ts >= ? AND s.kind = 'programme'"
+                                 " ORDER BY s.start_ts LIMIT ?", (channel_id, after, n * 40)).fetchall()
+        return self._collapse([dict(r) for r in rows])[:n]
 
     def current_programme(self, channel_id: int, ts: int) -> dict[str, Any] | None:
-        """The programme 'on' now: during an ad break, the one that follows."""
+        """The programme 'on' now: during an ad break, the one that follows; on a music channel,
+        the whole block with the current video as its subtitle."""
         slot = self.slot_at(channel_id, ts)
         if slot and slot["kind"] == "programme":
+            if slot.get("block"):
+                rows = self.conn.execute(SLOT_SQL + " WHERE s.channel_id = ? AND s.block = ? AND s.replay = ?"
+                                         " AND s.end_ts > ? AND s.start_ts < ? ORDER BY s.start_ts",
+                                         (channel_id, slot["block"], slot["replay"], ts - 12 * 3600, ts + 12 * 3600)).fetchall()
+                for e in self._collapse([dict(r) for r in rows]):
+                    if e["start_ts"] <= ts < e["end_ts"]:
+                        e["subtitle"] = slot["title"]  # the video playing now
+                        return e
             return slot
-        nxt = self.next_programmes(channel_id, ts, 1)
+        nxt = self.next_programmes(channel_id, ts + 1, 1)
         return nxt[0] if nxt else None
 
     # --- lifecycle -------------------------------------------------------------------------
@@ -179,9 +201,7 @@ class Player:
         self.evdev.start()
         if self.tty:
             self.tty.start()
-        self.prefetch.start()
         self.maintenance.start()
-        self.acquire.start()
         signal.signal(signal.SIGTERM, lambda *_: self.actions.put(("quit", None)))
         signal.signal(signal.SIGINT, lambda *_: self.actions.put(("quit", None)))
         self.tune(self.initial_channel, show_badge=True)
@@ -197,7 +217,7 @@ class Player:
         self.stopping = True
         self._end_history()
         self._save_state()
-        for part in (self.prefetch, self.maintenance, self.acquire, self.evdev, self.control):
+        for part in (self.maintenance, self.evdev, self.control):
             try:
                 part.stop()
             except Exception:  # noqa: BLE001
@@ -318,7 +338,6 @@ class Player:
             self._overlay(OVERLAY_STATIC, self.renderer.static(), ttl=0.35)
         self.play_live()
         self._save_state()
-        self.prefetch.poke()
         if show_badge:
             self.show_badge()
         self._publish(force=True)
@@ -345,7 +364,9 @@ class Player:
             self.playing_slot_id = None
             self.playing_path = None
             self.last_error = f"file not available: {slot['media_path']}"
-            log.warning(self.last_error)
+            log.error("%s (channel %s, '%s')", self.last_error, self.channel["number"], slot.get("title"))
+            if self._substitute_live(slot):
+                return
             self._show_testcard("Waiting for the file server", slot.get("title") or "")
             return
         offset = max(0.0, now - slot["start_ts"] + float(slot.get("offset") or 0))
@@ -390,6 +411,30 @@ class Player:
             log.info("stream: %s", " ".join(f"{k}={v}" for k, v in info.items()))
         except Exception as exc:  # noqa: BLE001
             log.warning("could not read stream info: %s", exc)
+
+    def _substitute_live(self, slot: dict[str, Any]) -> bool:
+        """The file for the slot on air is gone but its share is mounted: replace it and
+        rebalance the rest of the channel's day, then play whatever is now scheduled."""
+        src = self.conn.execute("SELECT s.path FROM media m JOIN sources s ON s.id = m.source_id WHERE m.id = ?",
+                                (slot["media_id"],)).fetchone()
+        if not src or not Path(src["path"]).is_dir():
+            return False  # the whole share is down; nothing sensible to substitute with
+        if slot["id"] in self._substituted_slots:
+            return False
+        self._substituted_slots.add(slot["id"])
+        try:
+            from ..scheduler.build import rebuild_from
+            result = rebuild_from(self.conn, self.channel["id"], self.clock(), now=self.clock(),
+                                  exclude_media_ids={slot["media_id"]})
+            log.error("substituted missing '%s' on channel %s and rebalanced the day: %s", slot.get("title"),
+                      self.channel["number"], result.get("summary"))
+        except Exception:  # noqa: BLE001
+            log.exception("live substitution failed")
+            return False
+        self.failed_slot_id = None
+        self.play_live()
+        self._schedule_changed()
+        return True
 
     def _show_testcard(self, text: str, sub: str) -> None:
         try:
@@ -466,7 +511,6 @@ class Player:
             self._set_volume(int(arg))
         elif action == "schedule-changed":
             self.guide_loaded_at = 0
-            self.prefetch.poke()
 
     def action(self, act: str) -> None:
         if act == "quit":
@@ -565,7 +609,7 @@ class Player:
         self._sync_osd_size()
         now = self.clock()
         cur = self.current_programme(self.channel["id"], now)
-        nxt = self.next_programmes(self.channel["id"], cur["start_ts"] if cur else now, 1)
+        nxt = self.next_programmes(self.channel["id"], cur["end_ts"] if cur else now, 1)
         position = None
         if cur and cur["end_ts"] > cur["start_ts"]:
             position = (now - cur["start_ts"]) / (cur["end_ts"] - cur["start_ts"])
@@ -590,7 +634,7 @@ class Player:
         for ch in self.channels:
             cur = self.current_programme(ch["id"], now)
             items = [cur] if cur else []
-            items += self.next_programmes(ch["id"], cur["start_ts"] if cur else now, 40)
+            items += self.next_programmes(ch["id"], cur["end_ts"] if cur else now, 40)
             rows[ch["id"]] = items
         self.guide_rows = rows
         self.guide_loaded_at = time.time()
@@ -648,9 +692,6 @@ class Player:
         if cmd == "schedule-changed":
             self.actions.put(("schedule-changed", None))
             return {"ok": True}
-        if cmd == "acquire-poke":
-            self.acquire.poke()
-            return {"ok": True}
         if cmd == "quit":
             self.actions.put(("quit", None))
             return {"ok": True}
@@ -680,7 +721,7 @@ class Player:
             "volume": self.volume, "muted": self.muted, "guide_open": self.guide_open,
             "playing": self.playing_path not in (None, "testcard"), "testcard": self.playing_path == "testcard",
             "hwdec": self.hwdec_current, "on_pi": self.on_pi, "last_key": self.last_key, "error": self.last_error,
-            "cache": self.cache.usage(), "maintenance": self.maintenance.status, "acquire": self.acquire.status(),
+            "cache": self.cache.usage(), "maintenance": self.maintenance.status,
             "stream": self.stream_info, "file": self.playing_path if self.playing_path != "testcard" else None,
             "input_devices": [getattr(d, "name", "?") for d in self.evdev.devices.values()],
         }

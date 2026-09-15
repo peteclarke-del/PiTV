@@ -27,6 +27,9 @@ class NfoInfo:
     aired: str | None = None
     season: int | None = None
     episode: int | None = None
+    artist: str | None = None
+    tags: list[str] = field(default_factory=list)
+    runtime: int | None = None
 
     @property
     def kids(self) -> bool:
@@ -79,7 +82,7 @@ def read_nfo(path: Path) -> NfoInfo | None:
         return None
     text = text[start:]
     # Kodi appends scraper URLs after the closing root tag; cut them off.
-    for root_tag in ("</tvshow>", "</movie>", "</episodedetails>"):
+    for root_tag in ("</tvshow>", "</movie>", "</episodedetails>", "</musicvideo>"):
         idx = text.find(root_tag)
         if idx >= 0:
             text = text[: idx + len(root_tag)]
@@ -99,4 +102,7 @@ def read_nfo(path: Path) -> NfoInfo | None:
     info.aired = _text(root, "aired")
     info.season = _int(_text(root, "season"))
     info.episode = _int(_text(root, "episode"))
+    info.artist = _text(root, "artist")
+    info.tags = [t.text.strip() for t in root.findall("tag") if t.text and t.text.strip()]
+    info.runtime = _int(_text(root, "runtime"))
     return info

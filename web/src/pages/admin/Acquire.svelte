@@ -34,12 +34,13 @@
   const pct = (p) => (p > 1 ? p / 100 : p);
 
   function openAdd(preset = {}) {
-    adding = { kind: 'episode', title: '', year: '', season: '', episode: '', provider: 'auto', ref: '', ...preset };
+    adding = { kind: 'episode', title: '', year: '', season: '', episode: '', provider: 'auto', ref: '', genre: '', ...preset };
   }
   async function submitAdd() {
     const b = { kind: adding.kind, title: adding.title, provider: adding.provider, ref: adding.ref || null,
                 year: adding.year === '' ? null : Number(adding.year) };
     if (adding.kind === 'episode') { b.season = adding.season === '' ? null : Number(adding.season); b.episode = adding.episode === '' ? null : Number(adding.episode); }
+    if (adding.kind === 'music' && adding.genre) b.genre = adding.genre.trim().toLowerCase();
     busy = true;
     const r = await tryApi(post('/api/wanted', b), { success: `Queued "${b.title}"` });
     busy = false;
@@ -99,7 +100,7 @@
           {#each wanted ?? [] as w (w.id)}
             <tr>
               <td><b>{w.show_title ? `${w.show_title} · ` : ''}{w.title}</b>{#if w.auto}<span class="badge" title="Queued automatically">auto</span>{/if}
-                <div class="tiny muted">{w.kind}{w.year ? ` · ${w.year}` : ''}{w.season != null ? ` · S${String(w.season).padStart(2, '0')}E${String(w.episode ?? 0).padStart(2, '0')}` : ''}</div></td>
+                <div class="tiny muted">{w.kind}{w.year ? ` · ${w.year}` : ''}{w.season != null ? ` · S${String(w.season).padStart(2, '0')}E${String(w.episode ?? 0).padStart(2, '0')}` : ''}{w.kind === 'music' && w.artist ? ` · ${w.artist}` : ''}{w.kind === 'music' && w.genre ? ` · ${w.genre}` : ''}</div></td>
               <td class="small"><div>{w.provider}</div>{#if w.ref}<div class="tiny muted mono truncate" style="max-width:220px" title={w.ref}>{w.ref}</div>{/if}</td>
               <td style="min-width:160px"><span class="badge {badge(w.status)}">{w.status}</span>
                 {#if active(w.status)}<ProgressBar value={pct(w.progress ?? 0)} />{/if}
@@ -125,7 +126,7 @@
     <form class="inline-form" onsubmit={doSearch}>
       <label class="field" style="flex:1;min-width:200px">Title<input bind:value={search.q} placeholder="e.g. Blake's 7" /></label>
       <label class="field">Year<input class="narrow" type="number" min="1900" max="2100" bind:value={search.year} placeholder="any" /></label>
-      <label class="field">Add as<select bind:value={pickKind}><option value="movie">Movie</option><option value="episode">Episode</option><option value="advert">Advert</option></select></label>
+      <label class="field">Add as<select bind:value={pickKind}><option value="movie">Movie</option><option value="episode">Episode</option><option value="advert">Advert</option><option value="music">Music video</option></select></label>
       <button class="primary" type="submit" disabled={search.busy || !search.q.trim()}>{search.busy ? 'Searching…' : 'Search'}</button>
     </form>
     {#if search.results}
@@ -190,8 +191,11 @@
 <Drawer open={!!adding} title="Add wanted item" onclose={() => (adding = null)}>
   {#if adding}
     <div class="stack">
-      <label class="field">Kind<select bind:value={adding.kind}><option value="episode">Episode</option><option value="movie">Movie</option><option value="advert">Advert</option></select></label>
-      <label class="field">Title<input bind:value={adding.title} placeholder={adding.kind === 'episode' ? 'Show title' : 'Title'} /></label>
+      <label class="field">Kind<select bind:value={adding.kind}><option value="episode">Episode</option><option value="movie">Movie</option><option value="advert">Advert</option><option value="music">Music video</option></select></label>
+      <label class="field">Title<input bind:value={adding.title} placeholder={adding.kind === 'episode' ? 'Show title' : adding.kind === 'music' ? 'Artist - Title, e.g. Queen - Radio Ga Ga' : 'Title'} /></label>
+      {#if adding.kind === 'music'}
+        <label class="field">Genre<input bind:value={adding.genre} placeholder="pop" list="music-genres" /><span class="help">Optional; decides the genre folder the video is saved under.</span></label>
+      {/if}
       <label class="field">Year<input class="narrow" type="number" min="1900" max="2100" bind:value={adding.year} /></label>
       {#if adding.kind === 'episode'}
         <div class="row">

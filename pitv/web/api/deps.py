@@ -26,7 +26,7 @@ def admin_conn(request: Request, conn: sqlite3.Connection = Depends(get_conn)) -
     return conn
 
 
-MEDIA_PUBLIC = ("id", "kind", "show_id", "season", "episode", "title", "year", "duration",
+MEDIA_PUBLIC = ("id", "kind", "show_id", "season", "episode", "title", "year", "duration", "artist", "concert", "family_safe",
                 "vcodec", "acodec", "width", "height", "interlaced", "hwdec", "certificate",
                 "genres", "plot", "channel_hint", "excluded", "missing", "attention", "overrides",
                 "transcoded_path", "size", "source_id")
@@ -63,7 +63,7 @@ def show_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
 def slot_public(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
     out = {k: d.get(k) for k in ("id", "channel_id", "day", "start_ts", "end_ts", "media_id",
-                                 "offset", "kind", "part", "replay", "locked", "title", "subtitle")}
+                                 "offset", "kind", "part", "replay", "locked", "title", "subtitle", "block")}
     for k in ("year", "certificate", "duration", "plot", "show_id", "season", "episode", "hwdec", "media_kind"):
         if k in d:
             out[k] = d[k]
@@ -78,3 +78,25 @@ def slot_public(row: sqlite3.Row) -> dict[str, Any]:
 SLOT_QUERY = ("SELECT s.*, m.year, m.certificate, m.duration, m.plot, m.show_id, m.season, m.episode,"
               " m.hwdec, m.genres, m.kind AS media_kind FROM schedule s"
               " LEFT JOIN media m ON m.id = s.media_id")
+
+
+def collapse_blocks(slots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge consecutive slots that share a `block` (music channel) into one guide entry."""
+    out: list[dict[str, Any]] = []
+    for sl in slots:
+        prev = out[-1] if out else None
+        if (sl.get("block") and prev and prev.get("block") == sl["block"] and prev["channel_id"] == sl["channel_id"]
+                and prev["end_ts"] == sl["start_ts"] and prev.get("replay") == sl.get("replay")):
+            prev["end_ts"] = sl["end_ts"]
+            prev["items"] = prev.get("items", 1) + 1
+            continue
+        if sl.get("block"):
+            entry = dict(sl)
+            entry["video_title"] = sl["title"]
+            entry["title"] = sl["block"]
+            entry["subtitle"] = "Music videos"
+            entry["items"] = 1
+            out.append(entry)
+        else:
+            out.append(dict(sl))
+    return out

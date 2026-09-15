@@ -8,8 +8,8 @@
   import ShowEditor from './ShowEditor.svelte';
   import MediaEditor from './MediaEditor.svelte';
 
-  const TABS = [['shows', 'Shows'], ['movies', 'Movies'], ['adverts', 'Adverts'], ['idents', 'Idents'], ['attention', 'Needs attention']];
-  const KIND = { movies: 'movie', adverts: 'advert', idents: 'ident' };
+  const TABS = [['shows', 'Shows'], ['movies', 'Movies'], ['music', 'Music'], ['adverts', 'Adverts'], ['idents', 'Idents'], ['attention', 'Needs attention']];
+  const KIND = { movies: 'movie', adverts: 'advert', idents: 'ident', music: 'music' };
   const PAGE = 50;
 
   let tab = $derived(route.parts[2] ?? 'shows');
@@ -48,6 +48,9 @@
     if (s.mode === 'auto') return 'auto';
     const days = (s.anchor_days ?? []).map((d) => ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'][d]).join('');
     return `${s.mode} ${s.anchor_time ?? ''} ${days}`.trim();
+  }
+  async function setFamilySafe(m, v) {
+    if (await tryApi(put(`/api/media/${m.id}`, { family_safe: v }), { success: v ? 'Marked family-safe' : 'Marked not family-safe' })) m.family_safe = v ? 1 : 0;
   }
   async function fix(item) {
     const f = fixes[item.id] ?? {};
@@ -128,10 +131,31 @@
         </tbody>
       </table>
     </div>
+  {:else if tab === 'music'}
+    <div class="card pad-0 table-wrap">
+      <table>
+        <thead><tr><th>Artist</th><th>Title</th><th>Year</th><th>Genres</th><th>Length</th><th>Codec</th><th></th></tr></thead>
+        <tbody>
+          {#each media?.items ?? [] as m (m.id)}
+            <tr class="clickable" onclick={() => (mediaId = m.id)}>
+              <td>{m.artist ?? '–'}</td>
+              <td><b>{m.title}</b>{#if m.concert}<span class="badge info">concert</span>{/if}<div class="tiny muted truncate" style="max-width:320px">{m.filename}</div></td>
+              <td>{m.year ?? '–'}</td>
+              <td class="small">{(m.genres ?? []).join(', ') || '–'}</td>
+              <td class="small">{fmtDuration(m.duration)}</td>
+              <td class="small"><span class="mono">{m.vcodec ?? '?'}</span> {#if m.hwdec}<span class="badge ok">HW</span>{:else}<span class="badge warn">SW</span>{/if}</td>
+              <td>{#if m.excluded}<span class="badge">excluded</span>{/if}{#if m.attention}<span class="badge warn" title={m.attention}>!</span>{/if}</td>
+            </tr>
+          {:else}
+            <tr><td colspan="7" class="empty">{media ? 'No music videos found. Add a music source under Sources.' : 'Loading…'}</td></tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
   {:else}
     <div class="card pad-0 table-wrap">
       <table>
-        <thead><tr><th>Title</th><th>Year</th><th>Cert</th><th>Length</th><th>Codec</th>{#if tab === 'idents'}<th>Channel</th>{/if}<th></th></tr></thead>
+        <thead><tr><th>Title</th><th>Year</th><th>Cert</th><th>Length</th><th>Codec</th>{#if tab === 'idents'}<th>Channel</th>{/if}{#if tab === 'adverts'}<th>Family-safe</th>{/if}<th></th></tr></thead>
         <tbody>
           {#each media?.items ?? [] as m (m.id)}
             <tr class="clickable" onclick={() => (mediaId = m.id)}>
@@ -141,10 +165,11 @@
               <td class="small">{fmtDuration(m.duration)}</td>
               <td class="small"><span class="mono">{m.vcodec ?? '?'}</span> {#if m.hwdec}<span class="badge ok">HW</span>{:else}<span class="badge warn">SW</span>{/if}</td>
               {#if tab === 'idents'}<td>{m.channel_hint ?? '–'}</td>{/if}
+              {#if tab === 'adverts'}<td onclick={(e) => e.stopPropagation()}><label class="check small" title={m.family_safe ? 'Family-safe: may air on family-safe channels' : 'Not family-safe: never airs on family-safe channels'}><input type="checkbox" checked={!!m.family_safe} onchange={(e) => setFamilySafe(m, e.currentTarget.checked)} />{m.family_safe ? 'yes' : 'no'}</label></td>{/if}
               <td>{#if m.excluded}<span class="badge">excluded</span>{/if}{#if m.attention}<span class="badge warn" title={m.attention}>!</span>{/if}</td>
             </tr>
           {:else}
-            <tr><td colspan="7" class="empty">{media ? 'No items found.' : 'Loading…'}</td></tr>
+            <tr><td colspan="8" class="empty">{media ? 'No items found.' : 'Loading…'}</td></tr>
           {/each}
         </tbody>
       </table>

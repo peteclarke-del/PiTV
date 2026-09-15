@@ -1,13 +1,24 @@
 <script>
   import { untrack } from 'svelte';
   import { get, post, tryApi } from '../../lib/api.js';
-  import { changes, jobs, confirm, clock } from '../../lib/stores.svelte.js';
+  import { changes, jobs, confirm, clock, toast } from '../../lib/stores.svelte.js';
   import { fmtDay, fmtDateTime, fmtAgo } from '../../lib/format.js';
   import JobList from './JobList.svelte';
 
   let summary = $state(null);
   let days = $state(null);
   let runs = $state([]);
+  let readiness = $state(null);
+  let checking = $state(false);
+  async function checkReadiness() {
+    checking = true;
+    const r = await tryApi(post('/api/content/readiness', { days: 1, substitute: true }));
+    checking = false;
+    if (!r) return;
+    readiness = r;
+    (r.status === 'ok' ? toast.success : toast.error)(`Readiness ${r.status}: ${r.summary}`);
+    load();
+  }
 
   async function load() {
     try {
@@ -37,7 +48,15 @@
     <button class="primary" onclick={scan}>Scan all sources</button>
     <button onclick={build}>Build schedule</button>
     <button class="danger" onclick={rebuild}>Rebuild week</button>
+    <button onclick={checkReadiness} disabled={checking}>{checking ? 'Checking…' : 'Check readiness'}</button>
   </div>
+  {#if readiness}
+    <div class="card">
+      <div class="card-title"><h3>Readiness</h3><span class="badge {readiness.status === 'ok' ? 'ok' : readiness.status === 'warning' ? 'warn' : 'danger'}">{readiness.status}</span><button class="small ghost" onclick={() => (readiness = null)}>✕</button></div>
+      <p class="small">{readiness.summary}</p>
+      {#if readiness.notes?.length}<pre class="log">{readiness.notes.join('\n')}</pre>{:else}<p class="tiny muted">No notes: every programme for tomorrow is reachable.</p>{/if}
+    </div>
+  {/if}
 
   <div class="grid">
     <div class="card">
@@ -47,11 +66,12 @@
           <div class="stat"><b>{summary.shows}</b><span>Shows</span></div>
           <div class="stat"><b>{summary.kinds.episode ?? 0}</b><span>Episodes</span></div>
           <div class="stat"><b>{summary.kinds.movie ?? 0}</b><span>Movies</span></div>
+          <div class="stat"><b>{summary.kinds.music ?? 0}</b><span>Music videos</span></div>
           <div class="stat"><b>{summary.kinds.advert ?? 0}</b><span>Adverts</span></div>
           <div class="stat"><b>{summary.kinds.ident ?? 0}</b><span>Idents</span></div>
           <div class="stat"><b>{summary.hours}</b><span>Hours</span></div>
         </div>
-        <p class="small muted mt">{summary.hwdec} of {summary.programmes} programmes can be hardware decoded.
+        <p class="small muted mt">{summary.hwdec} of {summary.programmes} programmes can be hardware decoded{summary.concerts ? `; ${summary.concerts} concerts` : ''}.
           {#if summary.attention}<a href="#/admin/library/attention" class="badge warn">{summary.attention} need attention</a>{:else}<span class="badge ok">Nothing needs attention</span>{/if}</p>
       {:else}<div class="skeleton" style="height:80px"></div>{/if}
     </div>

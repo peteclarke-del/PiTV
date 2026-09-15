@@ -6,7 +6,7 @@ Wants=network-online.target
 
 [Mount]
 What=//@NAS@/@SHARE@
-Where=/mnt/@SHARE@
+Where=/mnt/@MOUNT@
 Type=cifs
 Options=credentials=/etc/pitv/smb-credentials,vers=3.0,ro,noserverino,cache=loose,actimeo=60,uid=pitv,gid=pitv,iocharset=utf8,_netdev,x-systemd.automount,x-systemd.idle-timeout=0,x-systemd.mount-timeout=30
 TimeoutSec=30

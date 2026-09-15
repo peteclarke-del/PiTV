@@ -12,6 +12,10 @@
 
   async function load() {
     try { info = await get('/api/system'); error = ''; } catch (e) { error = e.detail || e.message; }
+    if (info && info.content_provider === undefined) {
+      // Older backends omit it from /api/system; fall back to the settings value.
+      try { info.content_provider = (await get('/api/settings')).content_provider ?? ''; } catch { /* leave blank */ }
+    }
   }
   onMount(load);
 
@@ -48,7 +52,7 @@
       <div class="card-title"><h3>PiTV</h3><button class="small ghost" onclick={load}>Refresh</button></div>
       {#if info}
         <dl class="kv">
-          <dt>Version</dt><dd>{info.version} · Python {info.python}</dd>
+          <dt>Version</dt><dd>{info.version} · Python {info.python}{info.content_provider ? ` · content: ${info.content_provider}` : ''}</dd>
           <dt>mpv</dt><dd>{info.mpv || 'not found'}</dd>
           <dt>Host</dt><dd>{info.hostname} · {info.uptime}</dd>
           <dt>Load</dt><dd>{info.load ? info.load.map((l) => l.toFixed(2)).join(' / ') : '–'}</dd>
@@ -83,6 +87,7 @@
         <dl class="kv">
           <dt>Directory</dt><dd class="mono small">{info.data.path}</dd>
           <dt>Database</dt><dd>{fmtBytes(info.data.db_size)}</dd>
+          <dt>Cache</dt><dd class="mono small">{info.cache_dir || '(not configured)'}</dd>
           <dt>Free space</dt><dd>{info.data.free != null ? `${fmtBytes(info.data.free)} of ${fmtBytes(info.data.total)}` : '–'}</dd>
         </dl>
       {/if}

@@ -14,7 +14,7 @@ from ...db import all_settings, now_ts, row_to_dict, set_setting, tx
 from ...scheduler.rules import broadcast_day_for, day_bounds, tz_of
 from .. import auth
 from ..events import format_sse
-from .deps import SLOT_QUERY, get_conn, slot_public
+from .deps import SLOT_QUERY, collapse_blocks, get_conn, slot_public
 
 router = APIRouter()
 
@@ -32,16 +32,30 @@ def api_now(request: Request, conn: sqlite3.Connection = Depends(get_conn), next
     for ch in channels:
         cur = conn.execute(SLOT_QUERY + " WHERE s.channel_id = ? AND s.start_ts <= ? AND s.end_ts > ?"
                            " ORDER BY s.start_ts DESC LIMIT 1", (ch["id"], now, now)).fetchone()
-        nxt = conn.execute(SLOT_QUERY + " WHERE s.channel_id = ? AND s.start_ts > ? AND s.kind = 'programme'"
-                           " ORDER BY s.start_ts LIMIT ?", (ch["id"], now, next)).fetchall()
         current = slot_public(cur) if cur else None
+        if current and current.get("block"):
+            # Music channel: the "programme" is the whole block; keep the current video too.
+            blk = conn.execute(SLOT_QUERY + " WHERE s.channel_id = ? AND s.block = ? AND s.replay = ? AND s.end_ts > ?"
+                               " AND s.start_ts < ? ORDER BY s.start_ts", (ch["id"], current["block"], cur["replay"],
+                                                                          now - 12 * 3600, now + 12 * 3600)).fetchall()
+            merged = collapse_blocks([slot_public(r) for r in blk])
+            for m in merged:
+                if m["start_ts"] <= now < m["end_ts"]:
+                    m["video_title"] = current["title"]
+                    m["video_id"] = current["id"]
+                    current = m
+                    break
+        after = current["end_ts"] if current else now
+        nxt_rows = conn.execute(SLOT_QUERY + " WHERE s.channel_id = ? AND s.start_ts >= ? AND s.kind = 'programme'"
+                                " ORDER BY s.start_ts LIMIT ?", (ch["id"], after, next * 40)).fetchall()
+        nxt = collapse_blocks([slot_public(r) for r in nxt_rows])[:next]
         if current and cur["kind"] != "programme":
             # During an ad break, show the programme that follows as "now".
             prog = conn.execute(SLOT_QUERY + " WHERE s.channel_id = ? AND s.start_ts <= ? AND s.kind = 'programme'"
                                 " ORDER BY s.start_ts DESC LIMIT 1", (ch["id"], now)).fetchone()
             current["break"] = True
             current["previous_programme"] = slot_public(prog) if prog else None
-        out.append({"channel": channel_public(ch), "now": current, "next": [slot_public(r) for r in nxt]})
+        out.append({"channel": channel_public(ch), "now": current, "next": nxt})
     player = request.app.state.player_state
     return {"ts": now, "channels": out, "player": player}
 
@@ -64,7 +78,10 @@ def api_schedule(conn: sqlite3.Connection = Depends(get_conn), start: int | None
     q += " ORDER BY s.channel_id, s.start_ts"
     rows = conn.execute(q, params).fetchall()
     channels = [channel_public(r) for r in conn.execute("SELECT * FROM channels WHERE enabled = 1 ORDER BY number")]
-    return {"ts": now, "start": start, "end": end, "channels": channels, "slots": [slot_public(r) for r in rows]}
+    slots = [slot_public(r) for r in rows]
+    if not ads:
+        slots = collapse_blocks(slots)
+    return {"ts": now, "start": start, "end": end, "channels": channels, "slots": slots}
 
 
 @router.get("/api/schedule/day/{day}")
@@ -82,8 +99,11 @@ def api_schedule_day(day: str, conn: sqlite3.Connection = Depends(get_conn), ads
     q += " ORDER BY s.channel_id, s.start_ts"
     rows = conn.execute(q, (day,)).fetchall()
     channels = [channel_public(r) for r in conn.execute("SELECT * FROM channels WHERE enabled = 1 ORDER BY number")]
+    slots = [slot_public(r) for r in rows]
+    if not ads:
+        slots = collapse_blocks(slots)
     return {"day": day, "day_start": day_start, "day_end": day_end, "next_day_start": next_start,
-            "channels": channels, "slots": [slot_public(r) for r in rows]}
+            "channels": channels, "slots": slots}
 
 
 @router.get("/api/schedule/days")

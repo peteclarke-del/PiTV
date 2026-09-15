@@ -10,9 +10,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from ..db import now_ts, row_to_dict, run_log_finish, run_log_start, tx
-from .naming import (is_video, looks_like_sample, parse_certificate_tag, parse_episode,
-                     parse_title_year)
+from ..db import CARTOON_GENRES, MUSIC_GENRES, get_setting, now_ts, row_to_dict, run_log_finish, run_log_start, tx
+from .naming import (is_video, looks_like_sample, parse_certificate_tag, parse_decade_dir,
+                     parse_episode, parse_music, parse_title_year)
 from .nfo import read_nfo
 from .probe import probe_cached
 
@@ -57,7 +57,8 @@ def _upsert_media(conn: sqlite3.Connection, seen: set[str], summary: ScanSummary
                   show_id: int | None = None, season: int | None = None,
                   episode: int | None = None, certificate: str | None = None,
                   genres: list[str] | None = None, plot: str | None = None,
-                  channel_hint: int | None = None, ffprobe_binary: str = "ffprobe") -> None:
+                  channel_hint: int | None = None, ffprobe_binary: str = "ffprobe",
+                  artist: str | None = None, concert: int = 0) -> None:
     size, mtime = _stat(path)
     probe = probe_cached(conn, path, size, mtime, ffprobe_binary)
     attention: list[str] = []
@@ -82,6 +83,7 @@ def _upsert_media(conn: sqlite3.Connection, seen: set[str], summary: ScanSummary
         hwdec=int(probe.hwdec) if probe else 0,
         certificate=certificate, genres=json.dumps(genres or []), plot=plot,
         channel_hint=channel_hint, attention="; ".join(attention) or None, updated_at=now_ts(),
+        artist=artist, concert=concert,
     )
     if existing:
         sets = ", ".join(f"{k} = :{k}" for k in params)
@@ -206,15 +208,43 @@ def _year_from_parents(path: Path, root: Path) -> int | None:
     return None
 
 
+_ADULT_DIRS = {"adult", "18", "alcohol", "tobacco", "not for kids", "grown-ups"}
+_FAMILY_DIRS = {"kids", "family", "children", "family safe", "toys"}
+
+
+def advert_family_safe(path: Path, root: Path, keywords: list[str]) -> bool:
+    """False for adverts that must never air on a family channel: alcohol, tobacco, adult or
+    gambling, judged from folder names and keywords in the file name. A Kids/Family folder
+    always wins; an override in the admin UI beats both."""
+    parts = [p.lower() for p in path.relative_to(root).parts[:-1]]
+    if any(p in _FAMILY_DIRS for p in parts):
+        return True
+    if any(p in _ADULT_DIRS for p in parts):
+        return False
+    name = path.stem.lower()
+    return not any(k.lower() in name for k in keywords)
+
+
 def _scan_flat(conn: sqlite3.Connection, source: dict, kind: str, summary: ScanSummary,
                seen: set[str], progress: Progress, ffprobe_binary: str) -> None:
     root = Path(source["path"])
     files = sorted(p for p in root.rglob("*") if p.is_file() and is_video(p))
     total = len(files)
+    keywords = get_setting(conn, "adult_advert_keywords") or []
     for i, f in enumerate(files, 1):
         progress(f.name, i, total)
         ty = parse_title_year(f.stem)
         year = ty.year or _year_from_parents(f, root)
+        anfo = read_nfo(f.with_suffix(".nfo")) if kind == "advert" else None
+        if kind == "advert":
+            safe = int(advert_family_safe(f, root, keywords))
+            tags = {t.lower() for t in (anfo.tags if anfo else [])}
+            if tags & {"alcohol", "tobacco", "adult", "gambling", "18"}:
+                safe = 0
+            elif tags & {"family", "kids", "children", "family-safe"}:
+                safe = 1
+            if anfo and anfo.year and year is None:
+                year = anfo.year
         hint = None
         if kind == "ident":
             for parent in f.relative_to(root).parents:
@@ -225,11 +255,84 @@ def _scan_flat(conn: sqlite3.Connection, source: dict, kind: str, summary: ScanS
         _upsert_media(conn, seen, summary, source_id=source["id"], kind=kind, path=f,
                       title=ty.title, year=year, channel_hint=hint,
                       ffprobe_binary=ffprobe_binary)
+        if kind == "advert":
+            conn.execute("UPDATE media SET family_safe = ?, plot = COALESCE(?, plot) WHERE path = ?",
+                         (safe, anfo.plot if anfo else None, str(f)))
+
+
+_CONCERT_DIRS = {"concerts", "concert", "live", "gigs", "festivals", "full shows"}
+
+
+def _scan_music(conn: sqlite3.Connection, source: dict, summary: ScanSummary, seen: set[str],
+                progress: Progress, ffprobe_binary: str) -> None:
+    """Music videos: `Genre/Artist - Title (1984).mp4`, `1980s/Disco/...`, `Concerts/Artist - Live at X (1986).mp4`.
+    Genre and decade come from any ancestor folder; a concert is anything under a concerts
+    folder or longer than 35 minutes."""
+    root = Path(source["path"])
+    genre_names = {g.lower() for g in (get_setting(conn, "music_genres") or MUSIC_GENRES)}
+    files = sorted(p for p in root.rglob("*") if p.is_file() and is_video(p) and not looks_like_sample(p))
+    total = len(files)
+    for i, f in enumerate(files, 1):
+        progress(f.name, i, total)
+        mi = parse_music(f.stem)
+        genres: list[str] = []
+        decade = None
+        concert = 0
+        for parent in f.relative_to(root).parents:
+            n = parent.name
+            if not n:
+                continue
+            if n.lower() in genre_names and n.title() not in genres:
+                genres.append(n.title())
+            if n.lower() in _CONCERT_DIRS:
+                concert = 1
+            d = parse_decade_dir(n)
+            if d and decade is None:
+                decade = d
+            if _YEAR_DIR.match(n) and mi.year is None:
+                mi = parse_music(f.stem)
+                mi.year = int(n)
+        nfo = read_nfo(f.with_suffix(".nfo"))
+        if nfo:
+            genres = list(dict.fromkeys(genres + [g for g in nfo.genres]))
+            mi.year = mi.year or nfo.year
+            if nfo.artist and not mi.artist:
+                mi.artist = nfo.artist
+                mi.title = nfo.title or mi.title
+            if any(t.lower() in ("concert", "live") for t in nfo.tags):
+                concert = 1
+        year = mi.year or (decade + 5 if decade else None)   # mid-decade when only the decade is known
+        title = f"{mi.artist} - {mi.title}" if mi.artist else mi.title
+        _upsert_media(conn, seen, summary, source_id=source["id"], kind="music", path=f, title=title,
+                      year=year, genres=genres, ffprobe_binary=ffprobe_binary, artist=mi.artist, concert=concert)
+        row = conn.execute("SELECT id, duration, attention FROM media WHERE path = ?", (str(f),)).fetchone()
+        extra = []
+        if row and row["duration"] and row["duration"] >= 35 * 60 and not concert:
+            conn.execute("UPDATE media SET concert = 1 WHERE id = ?", (row["id"],))
+        if not genres:
+            extra.append("No genre folder (put it under e.g. Pop/ or Rock/)")
+        if mi.year is None and decade:
+            extra.append(f"Year approximated from the {decade}s folder")
+        if extra and row:
+            att = "; ".join(x for x in ([row["attention"]] if row["attention"] else []) + extra)
+            conn.execute("UPDATE media SET attention = ? WHERE id = ?", (att, row["id"]))
+
+
+def _is_cartoon(genres: list[str], cartoon_genres: set[str]) -> bool:
+    return any(g.lower() in cartoon_genres for g in genres)
 
 
 def _assign_home_channels(conn: sqlite3.Connection) -> None:
-    """Give every show without a home channel the least-loaded enabled channel."""
-    channels = [r["id"] for r in conn.execute("SELECT id FROM channels WHERE enabled = 1 ORDER BY number")]
+    """Give every show without a home channel a channel: cartoons go to a cartoons channel when
+    one is enabled; everything else is spread over the general channels, least loaded first."""
+    cartoon_genres = {g.lower() for g in (get_setting(conn, "cartoon_genres") or CARTOON_GENRES)}
+    toons = [r["id"] for r in conn.execute("SELECT id FROM channels WHERE enabled = 1 AND content = 'cartoons' ORDER BY number")]
+    if toons:
+        for r in conn.execute("SELECT id, genres, category FROM shows WHERE home_channel_id IS NULL AND excluded = 0 AND missing = 0"):
+            genres = json.loads(r["genres"] or "[]")
+            if r["category"] == "cartoon" or _is_cartoon(genres, cartoon_genres):
+                conn.execute("UPDATE shows SET home_channel_id = ?, category = 'cartoon' WHERE id = ?", (toons[0], r["id"]))
+    channels = [r["id"] for r in conn.execute("SELECT id FROM channels WHERE enabled = 1 AND content = 'general' ORDER BY number")]
     if not channels:
         return
     load = {cid: 0 for cid in channels}
@@ -262,6 +365,8 @@ def scan_source(conn: sqlite3.Connection, source: dict, progress: Progress = _no
             _scan_tv(conn, source, summary, seen, progress, ffprobe_binary)
         elif source["type"] == "movie":
             _scan_movies(conn, source, summary, seen, progress, ffprobe_binary)
+        elif source["type"] == "music":
+            _scan_music(conn, source, summary, seen, progress, ffprobe_binary)
         else:
             _scan_flat(conn, source, source["type"], summary, seen, progress, ffprobe_binary)
         # Anything under this source we did not see has gone missing.

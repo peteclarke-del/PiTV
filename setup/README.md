@@ -19,6 +19,17 @@
 5. Reboot. Within ~15 s the test card shows, then channel 1. Open `http://pitv/` for the
    web UI, set the admin password, run **Scan**, then **Build schedule**.
 
+### Filling the cache with pitv_content
+
+The separate `pitv_content` tool (PiTV_content project) runs on the desktop at 01:00 and 06:30,
+reads `http://pitv/api/content/manifest?days=1`, copies or transcodes tomorrow's programmes into
+the Pi's cache and fetches anything on the wanted list (music videos, missing episodes) into
+`<cache>/acquired/...`, then posts `/api/content/report`. The installer exports the cache
+directory over NFS to the LAN for that; on the desktop mount it with
+`sudo mount -t nfs pitv:/mnt/cache /mnt/pitv-cache`. Set Admin → Weighting → Cache →
+"Content provider" to `pitv_content` so PiTV's own downloader stays out of the way (its copy-only
+safety net for the next few hours stays on). Downloads never go onto the NAS shares.
+
 ### The television
 
 The target set is a 14" 4:3 colour CRT. By default the installer configures the Pi 4's

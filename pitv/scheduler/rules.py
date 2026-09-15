@@ -122,15 +122,16 @@ def is_kids(item: dict[str, Any]) -> bool:
     return any(str(g).lower() in KIDS_GENRES for g in genres)
 
 
-def allowed_at(item: dict[str, Any], start_minutes: int, settings: dict[str, Any]) -> bool:
-    """Certificate and kids rules for a programme starting at a given local minute of day."""
+def allowed_at(item: dict[str, Any], start_minutes: int, settings: dict[str, Any], kids_rule: bool = True) -> bool:
+    """Certificate and kids rules for a programme starting at a given local minute of day.
+    kids_rule=False (cartoon channels) lets children's programmes run all evening."""
     cert = effective_cert(item, settings)
     earliest = cert_earliest_minutes(cert, settings, item.get("kind") or "movie")
     # The broadcast day wraps past midnight; a start after 00:00 counts as late night.
     start = start_minutes if start_minutes >= hhmm_to_minutes(settings.get("day_start", "08:00")) else start_minutes + 1440
     if earliest and start < earliest:
         return False
-    if is_kids(item) and item.get("kind") != "movie":
+    if kids_rule and is_kids(item) and item.get("kind") != "movie":
         cutoff = hhmm_to_minutes(settings.get("kids_cutoff", "21:00"))
         if start >= cutoff:
             return False

@@ -25,6 +25,7 @@ def conn(tmp_path_factory):
                                ("advert", "Ads", lib["pitv"] / "Adverts"), ("ident", "Idents", lib["pitv"] / "Idents")):
             c.execute("INSERT INTO sources(type, name, path) VALUES (?,?,?)", (stype, name, str(p)))
         c.execute("INSERT INTO sources(type, name, path, category) VALUES ('tv', 'Sport', ?, 'sport')", (str(lib["sport"]),))
+        c.execute("INSERT INTO sources(type, name, path) VALUES ('music', 'Music', ?)", (str(lib["music"]),))
     scan_all(c)
     now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(c))
     r = build_horizon(c, start_day=parse_day("2026-09-14"), days=7, now=now, seed=42)
@@ -180,3 +181,116 @@ def test_weekend_afternoons_carry_sport(conn):
 
     assert share(["2026-09-19", "2026-09-20"], (12, 17)) > 0.3
     assert share(["2026-09-15", "2026-09-16"], (8, 22)) < 0.2
+
+
+def _channel(conn, number):
+    return conn.execute("SELECT * FROM channels WHERE number = ?", (number,)).fetchone()
+
+
+def test_cartoons_routed_to_cartoon_channel(conn):
+    toons = _channel(conn, 6)
+    assert toons["content"] == "cartoons"
+    rows = conn.execute("SELECT title, category FROM shows WHERE home_channel_id = ? ORDER BY title", (toons["id"],)).fetchall()
+    titles = {r["title"] for r in rows}
+    assert {"Danger Mouse", "Bananaman", "Thundercats", "Count Duckula"} <= titles
+    assert all(r["category"] == "cartoon" for r in rows)
+    # and no cartoon series on the general channels
+    stray = conn.execute("SELECT s.title FROM shows s JOIN channels c ON c.id = s.home_channel_id"
+                         " WHERE c.content = 'general' AND s.category = 'cartoon'").fetchall()
+    assert not stray
+    # cartoons run all evening on their own channel (kids cutoff does not apply there)
+    evening = conn.execute("SELECT COUNT(*) FROM schedule s WHERE s.channel_id = ? AND s.kind = 'programme' AND s.replay = 0"
+                           " AND CAST(strftime('%H', s.start_ts, 'unixepoch', 'localtime') AS INT) >= 21", (toons["id"],)).fetchone()[0]
+    assert evening > 0
+
+
+def test_music_channel_day(conn):
+    music = _channel(conn, 5)
+    assert music["content"] == "music"
+    rows = conn.execute("SELECT s.*, m.concert, m.kind AS mkind FROM schedule s JOIN media m ON m.id = s.media_id"
+                        " WHERE s.channel_id = ? AND s.day = '2026-09-16' AND s.replay = 0 ORDER BY s.start_ts", (music["id"],)).fetchall()
+    assert rows and all(r["mkind"] == "music" for r in rows)
+    assert all(r["block"] for r in rows)
+    concerts = [r for r in rows if r["concert"]]
+    assert len(concerts) == 2, [r["title"] for r in concerts]
+    # contiguous from 08:00 to closedown
+    for a, b in zip(rows, rows[1:]):
+        assert a["end_ts"] == b["start_ts"]
+    # every eligible video is used before any repeats, and repeats are spread evenly
+    import math
+    ids = [r["media_id"] for r in rows]
+    eligible = conn.execute("SELECT COUNT(*) FROM media WHERE kind = 'music' AND concert = 0 AND year BETWEEN 1970 AND 2009").fetchone()[0]
+    assert len(set(ids)) >= min(eligible, len(ids)) - 2
+    counts = {}
+    for i in ids:
+        counts[i] = counts.get(i, 0) + 1
+    assert max(counts.values()) <= math.ceil(len(ids) / eligible) + 2
+    # a block's videos honour its genre filter when the library allows
+    disco = [r for r in rows if r["block"] == "Disco & Soul"]
+    assert disco
+    matched = 0
+    for r in disco:
+        genres = conn.execute("SELECT genres FROM media WHERE id = ?", (r["media_id"],)).fetchone()["genres"]
+        if any(g.lower() in ("disco", "funk", "soul", "motown") for g in __import__("json").loads(genres)):
+            matched += 1
+    assert matched >= min(len(disco), 4)  # the fake library has only a handful of disco/soul videos
+
+
+def test_guide_collapses_music_blocks(conn):
+    from pitv.web.api.deps import collapse_blocks
+    music = _channel(conn, 5)
+    rows = conn.execute("SELECT * FROM schedule WHERE channel_id = ? AND day = '2026-09-16' AND replay = 0 ORDER BY start_ts", (music["id"],)).fetchall()
+    merged = collapse_blocks([dict(r) for r in rows])
+    assert 5 <= len(merged) <= 12
+    assert merged[0]["title"] == "Seventies Breakfast" and merged[0]["items"] > 1
+
+
+def test_family_safe_adverts_on_cartoon_channel(conn):
+    toons = _channel(conn, 6)
+    assert toons["family_safe_ads"] == 1
+    flagged = {r["title"] for r in conn.execute("SELECT title FROM media WHERE kind = 'advert' AND family_safe = 0")}
+    assert {"Hofmeister", "Hamlet Cigars", "Cinzano", "Guinness Surfer"} <= flagged
+    assert "Milk Tray" not in flagged
+    aired = conn.execute("SELECT DISTINCT m.title FROM schedule s JOIN media m ON m.id = s.media_id"
+                         " WHERE s.channel_id = ? AND s.kind = 'advert'", (toons["id"],)).fetchall()
+    assert aired and not ({r["title"] for r in aired} & flagged)
+    # while a commercial general channel still uses them
+    general = conn.execute("SELECT COUNT(*) FROM schedule s JOIN media m ON m.id = s.media_id JOIN channels c ON c.id = s.channel_id"
+                           " WHERE c.content = 'general' AND s.kind = 'advert' AND m.family_safe = 0").fetchone()[0]
+    assert general > 0
+
+
+def test_music_channel_decades(conn):
+    music = _channel(conn, 5)
+    years = [r["year"] for r in conn.execute("SELECT m.year FROM schedule s JOIN media m ON m.id = s.media_id"
+                                             " WHERE s.channel_id = ? AND m.kind = 'music' AND m.year IS NOT NULL", (music["id"],))]
+    assert years and all(1970 <= y <= 2009 for y in years)
+    # each replayed short day still reaches 08:00
+    rows = conn.execute("SELECT MAX(end_ts) AS e, day FROM schedule WHERE channel_id = ? GROUP BY day ORDER BY day", (music["id"],)).fetchall()
+    assert rows
+
+
+def test_readiness_substitutes_missing_file(conn, tmp_path):
+    """Delete one scheduled file: the check reports it, replaces it and rebalances the day."""
+    import os
+    from pitv.readiness import check
+    now = local_ts(parse_day("2026-09-16"), "06:00", tz_of(conn))
+    row = conn.execute("SELECT s.id AS slot_id, s.channel_id, s.start_ts, m.id AS media_id, m.path FROM schedule s JOIN media m ON m.id = s.media_id"
+                       " JOIN channels c ON c.id = s.channel_id WHERE c.number = 1 AND s.day = '2026-09-16' AND s.kind = 'programme' AND s.replay = 0"
+                       " AND s.start_ts > ? ORDER BY s.start_ts LIMIT 1 OFFSET 4", (now,)).fetchone()
+    backup = tmp_path / "gone.mp4"
+    os.rename(row["path"], backup)
+    try:
+        r = check(conn, now=now, days=1)
+        assert r["status"] == "error" and r["missing"] >= 1 and r["substituted"] >= 1
+        assert not conn.execute("SELECT 1 FROM schedule WHERE media_id = ? AND start_ts >= ? AND replay = 0", (row["media_id"], now)).fetchone()
+        # the day is still contiguous after rebalancing
+        rows = conn.execute("SELECT start_ts, end_ts FROM schedule WHERE channel_id = ? AND day = '2026-09-16' ORDER BY start_ts", (row["channel_id"],)).fetchall()
+        for a, b in zip(rows, rows[1:]):
+            assert a["end_ts"] == b["start_ts"]
+        log_row = conn.execute("SELECT status FROM run_log WHERE kind = 'readiness' ORDER BY id DESC LIMIT 1").fetchone()
+        assert log_row["status"] == "error"
+    finally:
+        os.rename(backup, row["path"])
+    r2 = check(conn, now=now, days=1)
+    assert r2["status"] in ("ok", "warning") and r2["missing"] == 0

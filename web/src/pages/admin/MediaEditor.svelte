@@ -14,7 +14,7 @@
     if (!m) { onclose?.(); return; }
     item = m;
     form = { title: m.title ?? '', year: m.year ?? '', certificate: m.certificate ?? '', genres: (m.genres ?? []).join(', '),
-             plot: m.plot ?? '', excluded: !!m.excluded, channel_hint: m.channel_hint ?? '' };
+             plot: m.plot ?? '', excluded: !!m.excluded, channel_hint: m.channel_hint ?? '', artist: m.artist ?? '', concert: !!m.concert, family_safe: m.family_safe !== 0 };
   }
   $effect(() => { id; load(); }); // eslint-disable-line no-unused-expressions
 
@@ -24,12 +24,14 @@
     const body = { title: form.title, year: form.year === '' ? null : Number(form.year), certificate: form.certificate || null,
                    genres: genres.length ? genres : null, plot: form.plot, excluded: form.excluded };
     if (item.kind === 'ident') body.channel_hint = form.channel_hint === '' ? null : Number(form.channel_hint);
+    if (item.kind === 'music') { body.artist = form.artist; body.concert = form.concert ? 1 : 0; }
+    if (item.kind === 'advert') body.family_safe = form.family_safe ? 1 : 0;
     const r = await tryApi(put(`/api/media/${id}`, body), { success: 'Saved' });
     saving = false;
     if (r) { item = r; onsaved?.(); }
   }
   async function clearOverrides() {
-    const r = await tryApi(put(`/api/media/${id}`, { title: null, year: null, certificate: null, genres: null, plot: null }), { success: 'Overrides cleared' });
+    const r = await tryApi(put(`/api/media/${id}`, { title: null, year: null, certificate: null, genres: null, plot: null, artist: null }), { success: 'Overrides cleared' });
     if (r) { await load(); onsaved?.(); }
   }
   let overridden = $derived(item ? Object.keys(item.overrides ?? {}) : []);
@@ -44,7 +46,7 @@
   {#if form}
     <div class="stack">
       <div class="row">
-        <span class="badge">{item.kind}</span>
+        <span class="badge">{item.kind}</span>{#if item.kind === 'music' && item.concert}<span class="badge info">concert</span>{/if}{#if item.kind === 'advert' && item.family_safe === 0}<span class="badge warn">not family-safe</span>{/if}
         <span class="mono small">{item.vcodec ?? '?'}{item.acodec ? `/${item.acodec}` : ''}</span>
         {#if item.width}<span class="small muted">{item.width}×{item.height}{item.interlaced ? 'i' : ''}</span>{/if}
         {#if item.hwdec}<span class="badge ok">Hardware decode</span>{:else}<span class="badge warn">Software decode</span>{/if}
@@ -63,6 +65,9 @@
         <div class="row small muted">Overriding scanned: {overridden.join(', ')} <button class="small ghost" onclick={clearOverrides}>Clear overrides</button></div>
       {/if}
       <div class="form-grid">
+        {#if item.kind === 'music'}
+          <label class="field">Artist<input bind:value={form.artist} /><span class="help">Scanned: {item.scanned.artist ?? 'none'}</span></label>
+        {/if}
         <label class="field">Title<input bind:value={form.title} /><span class="help">Scanned: {item.scanned.title}</span></label>
         <label class="field">Year<input type="number" bind:value={form.year} min="1900" max="2100" /><span class="help">Scanned: {item.scanned.year ?? 'none'}</span></label>
         <label class="field">Certificate
@@ -75,6 +80,12 @@
         {/if}
         {#if item.kind === 'movie' || item.kind === 'episode'}
           <label class="field wide">Plot<textarea bind:value={form.plot}></textarea></label>
+        {/if}
+        {#if item.kind === 'music'}
+          <label class="check"><input type="checkbox" bind:checked={form.concert} /> Concert<span class="help">Concerts fill the evening concert blocks instead of the video rotation.</span></label>
+        {/if}
+        {#if item.kind === 'advert'}
+          <label class="check"><input type="checkbox" bind:checked={form.family_safe} /> Family-safe<span class="help">Off = never airs on a channel with family-safe adverts on (alcohol, tobacco, adult, gambling).</span></label>
         {/if}
         <label class="check"><input type="checkbox" bind:checked={form.excluded} /> Excluded from scheduling</label>
       </div>

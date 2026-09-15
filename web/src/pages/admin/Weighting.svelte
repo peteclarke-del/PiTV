@@ -5,15 +5,26 @@
   import { CERTIFICATES } from '../../lib/format.js';
   import WeightRows from './WeightRows.svelte';
   import DaypartTable from './DaypartTable.svelte';
+  import ChipList from '../../components/ChipList.svelte';
+  const DECADES = [1930, 1940, 1950, 1960, 1970, 1980, 1990, 2000, 2010, 2020];
 
   let s = $state(null);
   let saving = $state(false);
   let savedOnce = $state(false);
 
   let providers = $state({ archive: true, url: false });
+  let facets = $state(null);
+  function addBlock() {
+    const last = s.music_blocks.at(-1);
+    s.music_blocks.push({ start: last ? last.start : '08:00', name: '', genres: [], decades: [1980], concert: false });
+  }
+  function moveBlock(i, d) { const j = i + d; if (j < 0 || j >= s.music_blocks.length) return; const [x] = s.music_blocks.splice(i, 1); s.music_blocks.splice(j, 0, x); }
+  function toggleMusicDecade(d) { s.music_decades = (s.music_decades ?? []).includes(d) ? s.music_decades.filter((x) => x !== d) : [...(s.music_decades ?? []), d].sort(); }
+  function toggleDecade(b, d) { b.decades = (b.decades ?? []).includes(d) ? b.decades.filter((x) => x !== d) : [...(b.decades ?? []), d].sort(); }
   async function load() {
     s = await tryApi(get('/api/settings'));
-    if (s) { s.dayparts_saturday ??= []; s.dayparts_sunday ??= []; }
+    if (s) { s.dayparts_saturday ??= []; s.dayparts_sunday ??= []; s.music_blocks ??= []; s.music_genres ??= []; s.cartoon_genres ??= []; s.music_decades ??= []; s.adult_advert_keywords ??= []; }
+    tryApi(get('/api/music/facets')).then((f) => (facets = f ?? null));
     if (s) providers = { archive: (s.acquire_providers ?? []).includes('archive'), url: (s.acquire_providers ?? []).includes('url') };
   }
   onMount(load);
@@ -37,6 +48,14 @@
     body.dayparts_saturday = cleanDp(s.dayparts_saturday);
     body.dayparts_sunday = cleanDp(s.dayparts_sunday);
     body.era_pool_normalise = Math.max(0, Math.min(1, Number(s.era_pool_normalise) || 0));
+    body.music_blocks = (s.music_blocks ?? []).map((b) => {
+      const o = { start: b.start, name: b.name, genres: (b.genres ?? []).map((g) => String(g).toLowerCase()), decades: (b.decades ?? []).map(Number).sort() };
+      if (b.concert) o.concert = true;
+      return o;
+    });
+    for (const k of ['music_concert_repeat_days', 'music_video_repeat_hours']) body[k] = parseInt(body[k], 10) || 0;
+    body.music_decades = (s.music_decades ?? []).map(Number).sort();
+    body.adult_advert_keywords = (s.adult_advert_keywords ?? []).map((k) => String(k).toLowerCase());
     const r = await tryApi(put('/api/settings', body), { success: 'Settings saved' });
     saving = false;
     if (r) { s = r; savedOnce = true; providers = { archive: (s.acquire_providers ?? []).includes('archive'), url: (s.acquire_providers ?? []).includes('url') }; }
@@ -155,6 +174,13 @@
       <div class="card">
         <div class="card-title"><h3>Cache</h3></div>
         <div class="stack">
+          <label class="field">Content provider
+            <select bind:value={s.content_provider}><option value="builtin">builtin – PiTV copies and fetches itself</option><option value="pitv_content">pitv_content – desktop tool</option></select>
+            <span class="help">pitv_content is the separate desktop tool that copies/transcodes tomorrow's programmes into the Pi's cache overnight and fetches the wanted list; builtin uses PiTV's own copier and archive.org/yt-dlp fetcher.</span>
+          </label>
+          {#if s.content_profile}
+            <div class="note small">Content profile: {s.content_profile.width}×{s.content_profile.height} {s.content_profile.vcodec}{s.content_profile.acodec ? `/${s.content_profile.acodec}` : ''}{s.content_profile.max_bitrate_kbps ? ` · ≤${s.content_profile.max_bitrate_kbps} kbit/s` : ''}{s.content_profile.deinterlace ? ` · deinterlace: ${s.content_profile.deinterlace}` : ''} <span class="muted">(what transcoded copies are made to; read-only)</span></div>
+          {/if}
           <label class="field">Cache directory<input class="mono" bind:value={s.cache_dir} placeholder="/mnt/cache/pitv" /><span class="help">Folder on the attached drive for local copies of upcoming programmes; empty disables the cache.</span></label>
           <label class="field">Maximum size (GB)<input type="number" min="0" bind:value={s.cache_max_gb} /><span class="help">Oldest copies are removed once the cache exceeds this.</span></label>
           <label class="field">Copy speed limit (Mbit/s)<input type="number" min="0" bind:value={s.cache_copy_mbps} /><span class="help">0 = unlimited. Throttle to keep the NAS responsive while a programme plays.</span></label>
@@ -191,6 +217,64 @@
     </div>
 
     <div class="card">
+      <div class="card-title"><h3>Music channel</h3></div>
+      <p class="help small muted">A music channel's day is built from these blocks in time order: each block plays videos matching any of its genres and decades (empty = any); a concert block plays one full concert. The library counts on the right show what is actually available.</p>
+      <div class="music">
+        <div class="table-wrap">
+          <table class="blocks">
+            <thead><tr><th>Start</th><th>Name</th><th>Genres</th><th>Decades</th><th>Concert</th><th></th></tr></thead>
+            <tbody>
+              {#each s.music_blocks as b, i (i)}
+                <tr>
+                  <td><input type="time" bind:value={b.start} /></td>
+                  <td><input bind:value={b.name} placeholder="Block name" /></td>
+                  <td style="min-width:200px"><ChipList value={b.genres ?? []} onchange={(v) => (b.genres = v)} placeholder="genre…" lower /></td>
+                  <td class="decades">{#each DECADES as d (d)}<label class="dec" class:on={(b.decades ?? []).includes(d)}><input type="checkbox" checked={(b.decades ?? []).includes(d)} onchange={() => toggleDecade(b, d)} />{d}s</label>{/each}</td>
+                  <td class="center"><input type="checkbox" checked={!!b.concert} onchange={(e) => (b.concert = e.currentTarget.checked)} aria-label="Concert block" /></td>
+                  <td class="nowrap"><button class="small ghost" disabled={i === 0} onclick={() => moveBlock(i, -1)} aria-label="Move up">↑</button><button class="small ghost" disabled={i === s.music_blocks.length - 1} onclick={() => moveBlock(i, 1)} aria-label="Move down">↓</button><button class="small ghost" onclick={() => s.music_blocks.splice(i, 1)} aria-label="Remove">✕</button></td>
+                </tr>
+              {:else}
+                <tr><td colspan="6" class="muted small">No blocks: the music channel would be empty.</td></tr>
+              {/each}
+            </tbody>
+          </table>
+          <div class="mt"><button class="small" onclick={addBlock}>Add block</button></div>
+        </div>
+        <aside class="facets">
+          <h4>In the library</h4>
+          {#if facets}
+            <div class="small"><b>{facets.concerts}</b> concerts</div>
+            <div class="tiny muted mt" style="margin-top:.4rem">Decades</div>
+            <div class="row tight">{#each Object.entries(facets.decades) as [d, n] (d)}<span class="chip">{d} <b>{n}</b></span>{:else}<span class="muted small">none</span>{/each}</div>
+            <div class="tiny muted" style="margin-top:.4rem">Genres</div>
+            <div class="row tight">{#each Object.entries(facets.genres) as [g, n] (g)}<span class="chip">{g} <b>{n}</b></span>{:else}<span class="muted small">none</span>{/each}</div>
+          {:else}<div class="skeleton" style="height:60px"></div>{/if}
+        </aside>
+      </div>
+      <div class="field mt"><span>Decades played</span>
+        <div class="decades">{#each DECADES as d (d)}<label class="dec" class:on={(s.music_decades ?? []).includes(d)}><input type="checkbox" checked={(s.music_decades ?? []).includes(d)} onchange={() => toggleMusicDecade(d)} />{d}s</label>{/each}</div>
+        <span class="help">The music channel only plays these decades.</span>
+      </div>
+      <div class="form-grid mt">
+        <label class="field">Concert repeat (days)<input type="number" min="0" bind:value={s.music_concert_repeat_days} /><span class="help">Minimum days before the same concert is shown again.</span></label>
+        <label class="field">Video repeat (hours)<input type="number" min="0" bind:value={s.music_video_repeat_hours} /><span class="help">Minimum hours before the same video is played again.</span></label>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><h3>Genres</h3></div>
+      <div class="form-grid">
+        <label class="field">Music genres<ChipList value={s.music_genres} onchange={(v) => (s.music_genres = v)} placeholder="add genre…" lower /><span class="help">Genre folder names recognised under a music source (matched case-insensitively).</span></label>
+        <label class="field">Cartoon genres<ChipList value={s.cartoon_genres} onchange={(v) => (s.cartoon_genres = v)} placeholder="add genre…" lower /><span class="help">Shows with any of these genres are routed to a cartoons channel.</span></label>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><h3>Family-safe adverts</h3></div>
+      <label class="field">Adult advert keywords<ChipList value={s.adult_advert_keywords} onchange={(v) => (s.adult_advert_keywords = v)} placeholder="add word…" lower /><span class="help">Adverts whose file name contains one of these words are flagged as not family-safe and never air on a channel with family-safe adverts on. Individual adverts can be overridden in Library → Adverts.</span></label>
+    </div>
+
+    <div class="card">
       <div class="card-title"><h3>Dayparts</h3></div>
       <p class="help small muted">Weights by time of day: TV, movie, kids and sport multipliers plus an optional maximum programme length. Weekdays, Saturday and Sunday each have their own table; channels may override any of them.</p>
       <h4>Weekday</h4>
@@ -206,3 +290,18 @@
 {:else}
   <div class="skeleton" style="height:300px"></div>
 {/if}
+
+<style>
+  .music { display: grid; gap: 1rem; grid-template-columns: 1fr; }
+  @media (min-width: 1000px) { .music { grid-template-columns: 1fr 260px; align-items: start; } }
+  .blocks td { padding: .3rem .3rem; vertical-align: top; }
+  .blocks input[type="time"] { min-width: 6.5rem; }
+  .decades { min-width: 220px; display: flex; flex-wrap: wrap; gap: .2rem; }
+  .dec { font-size: .72rem; padding: .1rem .4rem; border: 1px solid var(--border); border-radius: 999px; cursor: pointer; user-select: none; }
+  .dec input { display: none; }
+  .dec.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .facets { background: var(--bg-sunken); border-radius: var(--radius-sm); padding: .75rem; }
+  .facets h4 { margin: 0 0 .4rem; font-size: .85rem; }
+  .row.tight { gap: .25rem; }
+  .row.tight .chip { font-size: .72rem; padding: .1rem .4rem; }
+</style>

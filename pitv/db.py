@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS settings (
 
 CREATE TABLE IF NOT EXISTS sources (
     id INTEGER PRIMARY KEY,
-    type TEXT NOT NULL CHECK (type IN ('tv', 'movie', 'advert', 'ident')),
+    type TEXT NOT NULL CHECK (type IN ('tv', 'movie', 'advert', 'ident', 'music')),
     name TEXT NOT NULL,
     path TEXT NOT NULL,            -- local mount path
     remote TEXT,                   -- e.g. smb://synologynas/tvshows/ (informational)
@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS channels (
     daypart_profile TEXT,                      -- JSON or NULL (use global)
     overnight_replay_from TEXT NOT NULL DEFAULT '08:00',
     idents_enabled INTEGER NOT NULL DEFAULT 1,
+    content TEXT NOT NULL DEFAULT 'general',   -- general | music | cartoons
+    family_safe_ads INTEGER NOT NULL DEFAULT 0, -- only child-friendly adverts (cartoon channels default on)
     description TEXT NOT NULL DEFAULT ''
 );
 
@@ -83,7 +85,7 @@ CREATE TABLE IF NOT EXISTS shows (
 CREATE TABLE IF NOT EXISTS media (
     id INTEGER PRIMARY KEY,
     source_id INTEGER NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL CHECK (kind IN ('episode', 'movie', 'advert', 'ident')),
+    kind TEXT NOT NULL CHECK (kind IN ('episode', 'movie', 'advert', 'ident', 'music')),
     show_id INTEGER REFERENCES shows(id) ON DELETE CASCADE,
     season INTEGER,
     episode INTEGER,
@@ -103,6 +105,9 @@ CREATE TABLE IF NOT EXISTS media (
     genres TEXT,                   -- JSON list
     plot TEXT,
     channel_hint INTEGER,          -- idents: channel number the ident belongs to
+    artist TEXT,                   -- music videos
+    concert INTEGER NOT NULL DEFAULT 0,   -- music: full concert / live show
+    family_safe INTEGER NOT NULL DEFAULT 1,   -- adverts: 0 = alcohol/tobacco/adult; never on a family channel
     excluded INTEGER NOT NULL DEFAULT 0,
     missing INTEGER NOT NULL DEFAULT 0,
     attention TEXT,                -- reason this item needs a look, or NULL
@@ -133,7 +138,8 @@ CREATE TABLE IF NOT EXISTS schedule (
     replay INTEGER NOT NULL DEFAULT 0,    -- 1 for overnight replays
     locked INTEGER NOT NULL DEFAULT 0,
     title TEXT NOT NULL DEFAULT '',       -- denormalised for fast guide rendering
-    subtitle TEXT NOT NULL DEFAULT ''     -- episode title, or '(1983) PG' for a film
+    subtitle TEXT NOT NULL DEFAULT '',    -- episode title, or '(1983) PG' for a film
+    block TEXT                            -- music: consecutive slots with the same block show as one programme
 );
 CREATE INDEX IF NOT EXISTS schedule_lookup ON schedule(channel_id, start_ts);
 CREATE INDEX IF NOT EXISTS schedule_day ON schedule(day);
@@ -165,7 +171,7 @@ CREATE TABLE IF NOT EXISTS probe_cache (
 
 CREATE TABLE IF NOT EXISTS wanted (
     id INTEGER PRIMARY KEY,
-    kind TEXT NOT NULL CHECK (kind IN ('episode', 'movie', 'advert')),
+    kind TEXT NOT NULL CHECK (kind IN ('episode', 'movie', 'advert', 'music')),
     title TEXT NOT NULL,
     year INTEGER,
     season INTEGER,
@@ -173,6 +179,8 @@ CREATE TABLE IF NOT EXISTS wanted (
     show_id INTEGER REFERENCES shows(id) ON DELETE SET NULL,
     provider TEXT NOT NULL DEFAULT 'auto',     -- auto | archive | url
     ref TEXT,                                  -- archive.org identifier[/file] or a URL
+    genre TEXT,                                -- music: destination genre folder
+    artist TEXT,
     status TEXT NOT NULL DEFAULT 'queued',     -- queued | searching | downloading | transcoding | done | failed
     progress REAL NOT NULL DEFAULT 0,
     message TEXT,
@@ -180,16 +188,6 @@ CREATE TABLE IF NOT EXISTS wanted (
     media_id INTEGER REFERENCES media(id) ON DELETE SET NULL,
     auto INTEGER NOT NULL DEFAULT 0,
     attempts INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS transcode_queue (
-    id INTEGER PRIMARY KEY,
-    media_id INTEGER NOT NULL UNIQUE REFERENCES media(id) ON DELETE CASCADE,
-    status TEXT NOT NULL DEFAULT 'queued',     -- queued | running | done | failed
-    progress REAL NOT NULL DEFAULT 0,
-    message TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER
 );
@@ -243,6 +241,26 @@ DEFAULT_DAYPARTS_SUNDAY = [
     {"name": "Sunday late", "start": "22:30", "tv": 0.6, "movie": 1.5, "kids": 0.0, "sport": 1.0},
 ]
 
+# A music channel's day: blocks by genre/decade with two full concerts. Genres match the
+# folder/file names in the music share (case-insensitive); empty lists mean "anything".
+DEFAULT_MUSIC_BLOCKS = [
+    {"start": "08:00", "name": "Seventies Breakfast", "genres": [], "decades": [1970]},
+    {"start": "09:30", "name": "Eighties Pop", "genres": ["pop", "new wave", "synth"], "decades": [1980]},
+    {"start": "11:00", "name": "Nineties Morning", "genres": [], "decades": [1990]},
+    {"start": "12:30", "name": "Disco & Soul", "genres": ["disco", "funk", "soul", "motown"], "decades": [1970, 1980]},
+    {"start": "13:30", "name": "Concert", "genres": [], "decades": [], "concert": True},
+    {"start": "15:30", "name": "Noughties", "genres": [], "decades": [2000]},
+    {"start": "17:00", "name": "Eighties Chart Show", "genres": [], "decades": [1980]},
+    {"start": "18:30", "name": "Rock & Metal", "genres": ["rock", "hard rock", "metal", "heavy metal", "punk", "glam"], "decades": []},
+    {"start": "20:30", "name": "Concert", "genres": [], "decades": [], "concert": True},
+    {"start": "22:30", "name": "Nineties Indie & Dance", "genres": ["indie", "dance", "electronic", "britpop"], "decades": [1990]},
+    {"start": "23:30", "name": "Late Soul", "genres": ["soul", "r&b", "reggae", "jazz", "blues"], "decades": []},
+]
+MUSIC_GENRES = ["pop", "rock", "metal", "hard rock", "heavy metal", "disco", "funk", "soul", "punk", "new wave",
+                "synth", "indie", "dance", "electronic", "hip hop", "rap", "reggae", "ska", "jazz", "blues",
+                "country", "folk", "classical", "r&b", "motown", "glam"]
+CARTOON_GENRES = ["animation", "cartoon", "anime", "animated"]
+
 DEFAULT_SETTINGS: dict[str, Any] = {
     "timezone": "Europe/London",
     "day_start": "08:00",
@@ -266,6 +284,18 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "dayparts_sunday": DEFAULT_DAYPARTS_SUNDAY,
     "era_pool_normalise": 0.5,         # 0 = weight per item; 1 = eras share airtime by weight regardless of library size
     "sport_back_to_back_weekends": True,
+    "music_blocks": DEFAULT_MUSIC_BLOCKS,
+    "music_decades": [1970, 1980, 1990, 2000],   # the music channel plays these decades only
+    "adult_advert_keywords": ["beer", "lager", "ale", "cider", "wine", "whisky", "whiskey", "vodka", "gin", "rum",
+                              "brandy", "cinzano", "martini", "guinness", "hofmeister", "carling", "heineken",
+                              "stella", "fosters", "castlemaine", "skol", "harp", "tennents", "bacardi", "smirnoff",
+                              "cigar", "cigarette", "tobacco", "hamlet", "benson", "silk cut", "marlboro", "rothmans",
+                              "embassy", "condom", "durex", "lingerie", "adult", "18+", "xxx", "bookmaker", "betting",
+                              "casino", "lottery"],
+    "music_concert_repeat_days": 14,
+    "music_video_repeat_hours": 36,
+    "music_genres": MUSIC_GENRES,
+    "cartoon_genres": CARTOON_GENRES,
     "movie_repeat_days": 21,
     "episode_recency_days": 7,
     "same_slot_bonus": 3.0,
@@ -291,21 +321,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "audio_device": "auto",
     # local cache on the attached drive
     "cache_dir": "",                   # e.g. /mnt/cache/pitv ; empty = disabled
-    "cache_max_gb": 600,
-    "cache_copy_mbps": 0,              # 0 = unlimited
-    "prefetch_hours": 4,               # always keep at least this far ahead cached
-    "prefetch_days": 1,                # and everything through the end of the next N broadcast days
-    # acquisition of missing programmes and transcoding (see docs/PLAN.md §7)
-    "acquire_enabled": False,
-    "acquire_dir": "",                 # empty = <cache_dir>/acquired
-    "acquire_providers": ["archive"],  # archive (archive.org) and/or url
+    "cache_max_gb": 600,               # pitv_content fills the cache; PiTV only evicts (LRU) under this cap
+    # requests to pitv_content (which fetches, encodes and fills the cache; see docs/PLAN.md §7)
+    "acquire_dir": "",                 # empty = <cache_dir>/acquired ; where pitv_content files what it fetches
     "acquire_fill_gaps": False,        # queue missing episodes between the ones on disk
-    "acquire_hours": "00:00-23:59",
-    "transcode_enabled": False,
-    "transcode_hours": "01:00-07:00",
-    "transcode_max_height": 720,
-    "transcode_bitrate_kbps": 4000,
+    "content_profile": {"width": 768, "height": 576, "vcodec": "h264", "acodec": "aac", "max_bitrate_kbps": 4000,
+                        "deinterlace": "if_interlaced"},
     # maintenance
+    "readiness_hours": [6, 7],         # verify tomorrow's files exist and substitute what is missing
     "scan_hour": 4,
     "history_keep_days": 180,
 }
@@ -323,6 +346,12 @@ DEFAULT_CHANNELS = [
     {"number": 4, "name": "PiTV Four", "short_name": "Four", "colour": "#2a9d8f", "ads_enabled": 1,
      "pattern": "show, ad, ad", "description": "Alternative commercial: comedy, imports, films, late night",
      "kind_weights": {"tv": 0.55, "movie": 0.45}},
+    {"number": 5, "name": "PiTV Music", "short_name": "Music", "colour": "#b5179e", "ads_enabled": 0,
+     "pattern": "show", "description": "Music videos by genre and decade, with two full concerts a day",
+     "kind_weights": {"tv": 1.0, "movie": 0.0}, "content": "music"},
+    {"number": 6, "name": "PiTV Toons", "short_name": "Toons", "colour": "#ffb703", "ads_enabled": 1,
+     "pattern": "show, show, ad, ad", "description": "Cartoons all day; child-friendly adverts only",
+     "kind_weights": {"tv": 1.0, "movie": 0.0}, "content": "cartoons", "family_safe_ads": 1},
 ]
 
 
@@ -353,24 +382,69 @@ def init_db(conn: sqlite3.Connection) -> None:
             for ch in DEFAULT_CHANNELS:
                 conn.execute(
                     "INSERT INTO channels(number, name, short_name, colour, ads_enabled, pattern,"
-                    " description, kind_weights) VALUES (?,?,?,?,?,?,?,?)",
+                    " description, kind_weights, content, family_safe_ads) VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (ch["number"], ch["name"], ch["short_name"], ch["colour"], ch["ads_enabled"],
-                     ch["pattern"], ch["description"], json.dumps(ch["kind_weights"])))
+                     ch["pattern"], ch["description"], json.dumps(ch["kind_weights"]), ch.get("content", "general"),
+                     ch.get("family_safe_ads", 0)))
 
 
 # Columns added after the first release: (table, column, DDL). Applied when missing.
 MIGRATIONS: list[tuple[str, str, str]] = [
     ("schedule", "subtitle", "TEXT NOT NULL DEFAULT ''"),
+    ("schedule", "block", "TEXT"),
     ("sources", "category", "TEXT NOT NULL DEFAULT 'general'"),
     ("shows", "category", "TEXT NOT NULL DEFAULT 'general'"),
+    ("media", "artist", "TEXT"),
+    ("media", "concert", "INTEGER NOT NULL DEFAULT 0"),
+    ("channels", "content", "TEXT NOT NULL DEFAULT 'general'"),
+    ("channels", "family_safe_ads", "INTEGER NOT NULL DEFAULT 0"),
+    ("media", "family_safe", "INTEGER NOT NULL DEFAULT 1"),
+    ("wanted", "genre", "TEXT"),
+    ("wanted", "artist", "TEXT"),
 ]
 
 
+def _table_sql(conn: sqlite3.Connection, table: str) -> str:
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()
+    return row["sql"] if row else ""
+
+
+def _rebuild_table(conn: sqlite3.Connection, table: str) -> None:
+    """Recreate a table from SCHEMA (to widen a CHECK constraint), keeping all rows."""
+    start = SCHEMA.index(f"CREATE TABLE IF NOT EXISTS {table} (")
+    end = SCHEMA.index(");", start) + 2
+    create_new = SCHEMA[start:end].replace(f"CREATE TABLE IF NOT EXISTS {table} (", f"CREATE TABLE {table}__new (")
+    old_cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})")]
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.execute("BEGIN")
+        conn.execute(create_new)
+        new_cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table}__new)")]
+        common = ", ".join(c for c in old_cols if c in new_cols)
+        conn.execute(f"INSERT INTO {table}__new ({common}) SELECT {common} FROM {table}")
+        conn.execute(f"DROP TABLE {table}")
+        conn.execute(f"ALTER TABLE {table}__new RENAME TO {table}")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.execute("PRAGMA foreign_keys=ON")
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
+    # Widened CHECK constraints (music sources and media) need a table rebuild.
+    if "'music'" not in _table_sql(conn, "sources"):
+        _rebuild_table(conn, "sources")
+    if "'music'" not in _table_sql(conn, "media"):
+        _rebuild_table(conn, "media")
+    if _table_sql(conn, "wanted") and "'music'" not in _table_sql(conn, "wanted"):
+        _rebuild_table(conn, "wanted")
     for table, column, ddl in MIGRATIONS:
         cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+    conn.executescript(SCHEMA)  # recreate any indexes dropped with a rebuilt table
 
 
 def _migrate_settings(conn: sqlite3.Connection) -> None:

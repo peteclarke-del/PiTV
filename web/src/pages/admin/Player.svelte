@@ -119,6 +119,7 @@
           <dl class="kv small">
             <dt>Last build</dt><dd>{#if maint.last_build}<span class="badge {maint.last_build.status === 'ok' ? 'ok' : 'warn'}">{maint.last_build.status}</span> {maint.last_build.summary} <span class="muted">({fmtAgo(maint.last_build.at, clock.ts)})</span>{:else}<span class="muted">not yet</span>{/if}</dd>
             <dt>Last scan</dt><dd>{maint.last_scan ? fmtAgo(maint.last_scan, clock.ts) : 'not yet'}</dd>
+            <dt>Readiness</dt><dd>{#if maint.last_readiness}<span class="badge {maint.last_readiness.status === 'ok' ? 'ok' : 'warn'}">{maint.last_readiness.status}</span> {maint.last_readiness.summary} <span class="muted">({fmtAgo(maint.last_readiness.at, clock.ts)})</span>{:else}<span class="muted">not checked yet</span>{/if}</dd>
             {#if maint.error}<dt>Error</dt><dd><span class="badge danger">{maint.error}</span></dd>{/if}
             <dt>Acquiring</dt><dd>
               {#if acq}

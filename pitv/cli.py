@@ -33,7 +33,8 @@ def cmd_fake_library(cfg, args) -> int:
             for stype, name, p, cat in (("tv", "TV Shows", paths["tv"], "general"), ("movie", "Movies", paths["movies"], "general"),
                                         ("advert", "Adverts", paths["pitv"] / "Adverts", "general"),
                                         ("ident", "Idents", paths["pitv"] / "Idents", "general"),
-                                        ("tv", "Sport", paths["sport"], "sport")):
+                                        ("tv", "Sport", paths["sport"], "sport"),
+                                        ("music", "Music videos", paths["music"], "general")):
                 exists = conn.execute("SELECT id FROM sources WHERE path = ?", (str(p),)).fetchone()
                 if not exists:
                     conn.execute("INSERT INTO sources(type, name, path, category) VALUES (?,?,?,?)",
@@ -126,6 +127,41 @@ def cmd_reset_schedule(cfg, args) -> int:
     return 0
 
 
+def cmd_content_manifest(cfg, args) -> int:
+    import json as _json
+    from .content import manifest
+    conn = _open(cfg)
+    data = manifest(conn, days=args.days)
+    text = _json.dumps(data, indent=2)
+    if args.out:
+        Path(args.out).write_text(text)
+        print(f"{len(data['items'])} items, {len(data['wanted'])} wanted -> {args.out}")
+    else:
+        print(text)
+    return 0
+
+
+def cmd_content_report(cfg, args) -> int:
+    import json as _json
+    from .content import apply_report
+    conn = _open(cfg)
+    data = _json.loads(Path(args.file).read_text())
+    print(apply_report(conn, data))
+    return 0
+
+
+def cmd_readiness(cfg, args) -> int:
+    from .logsetup import setup_logging
+    from .readiness import check
+    setup_logging(cfg, "schedule")
+    conn = _open(cfg)
+    r = check(conn, days=args.days, substitute=not args.no_substitute)
+    print(f"Readiness {r['status']}: {r['summary']}")
+    for n in r["notes"]:
+        print("  " + n)
+    return 0 if r["status"] != "error" else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pitv", description="PiTV: 1980s television for the Raspberry Pi")
     sub = p.add_subparsers(dest="command", required=True)
@@ -170,6 +206,19 @@ def build_parser() -> argparse.ArgumentParser:
     rs = sub.add_parser("reset-schedule", help="delete the whole schedule")
     rs.add_argument("--history", action="store_true", help="also delete airing history")
     rs.set_defaults(func=cmd_reset_schedule)
+
+    cm = sub.add_parser("content-manifest", help="what pitv_content should cache/fetch for the next day(s)")
+    cm.add_argument("--days", type=int, default=1)
+    cm.add_argument("--out", help="write JSON here instead of stdout")
+    cm.set_defaults(func=cmd_content_manifest)
+    cr = sub.add_parser("content-report", help="apply a pitv_content report JSON file")
+    cr.add_argument("file")
+    cr.set_defaults(func=cmd_content_report)
+
+    rd = sub.add_parser("readiness", help="verify scheduled files exist; substitute and rebalance what is missing")
+    rd.add_argument("--days", type=int, default=1)
+    rd.add_argument("--no-substitute", action="store_true")
+    rd.set_defaults(func=cmd_readiness)
 
     w = sub.add_parser("web", help="run the web interface")
     w.add_argument("--host")

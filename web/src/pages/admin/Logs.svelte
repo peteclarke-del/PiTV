@@ -1,15 +1,19 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { get, tryApi } from '../../lib/api.js';
   import { toast, clock } from '../../lib/stores.svelte.js';
   import { fmtBytes, fmtAgo } from '../../lib/format.js';
 
+  /** fixed: show only this source and hide the selector (e.g. 'pitv-content' on the Content tab). */
+  let { fixed = null, height = 'calc(100vh - 260px)' } = $props();
   const SOURCES = [
     ['player', 'Player log'], ['web', 'Web log'], ['scan', 'Scan log'], ['schedule', 'Schedule log'],
+    ['pitv-content', 'pitv_content log'],
     ['journal:pitv-player', 'Journal: pitv-player'], ['journal:pitv-web', 'Journal: pitv-web'],
   ];
   const LEVELS = ['', 'DEBUG', 'INFO', 'WARNING', 'ERROR'];
-  let source = $state('player');
+  let source = $state(untrack(() => fixed) ?? 'player');
+  let logPath = $state('');
   let lines = $state(300);
   let level = $state('');
   let q = $state('');
@@ -39,8 +43,8 @@
         journal = await get(`/api/logs/journal/${source.slice(8)}`, { lines });
         entries = null; exists = true;
       } else {
-        const r = await get(`/api/logs/${source}`, { lines, q, level });
-        entries = r.lines; exists = r.exists; journal = null;
+        const r = await get(source === 'pitv-content' ? '/api/content/tool/log' : `/api/logs/${source}`, { lines, q, level });
+        entries = r.lines; exists = r.exists; journal = null; logPath = r.path ?? '';
       }
       files = await get('/api/logs');
     } catch (e) {
@@ -74,7 +78,7 @@
 
 <div class="stack">
   <div class="row">
-    <select bind:value={source} aria-label="Log">{#each SOURCES as [v, l] (v)}<option value={v}>{l}</option>{/each}</select>
+    {#if !fixed}<select bind:value={source} aria-label="Log">{#each SOURCES as [v, l] (v)}<option value={v}>{l}</option>{/each}</select>{/if}
     <select bind:value={lines} aria-label="Lines">{#each [100, 300, 1000, 3000] as n (n)}<option value={n}>{n} lines</option>{/each}</select>
     {#if !isJournal}
       <select bind:value={level} aria-label="Minimum level">{#each LEVELS as l (l)}<option value={l}>{l || 'All levels'}</option>{/each}</select>
@@ -88,9 +92,11 @@
   </div>
   {#if fileInfo}
     <div class="tiny muted mono">{fileInfo.path} · {fmtBytes(fileInfo.size)}{fileInfo.modified ? ` · updated ${fmtAgo(fileInfo.modified, clock.ts)}` : ''}</div>
+  {:else if source === 'pitv-content' && logPath}
+    <div class="tiny muted mono">{logPath}</div>
   {/if}
 
-  <div class="log" bind:this={box} onscroll={onScroll} class:loading>
+  <div class="log" bind:this={box} onscroll={onScroll} class:loading style="height:{height}">
     {#if isJournal}
       {#if journal?.error}<div class="line err">{journal.error}</div>{/if}
       {#each journalLines as l, i (i)}<div class="line {journalClass(l)}">{l}</div>{:else}<div class="line muted">{journal ? 'Journal is empty (only available on the Pi under systemd).' : 'Loading…'}</div>{/each}
@@ -98,7 +104,7 @@
       {#each entries as e, i (i)}
         <div class="line {levelClass(e.level)}"><span class="ts">{e.ts}</span> <span class="lv">{e.level}</span> <span class="lg">{e.logger}</span> <span class="msg">{e.msg}</span></div>
       {:else}
-        <div class="line muted">{exists ? 'No matching lines.' : 'This log file does not exist yet.'}</div>
+        <div class="line muted">{exists ? 'No matching lines.' : source === 'pitv-content' ? 'No pitv_content log yet: the tool writes it while it runs.' : 'This log file does not exist yet.'}</div>
       {/each}
     {:else}
       <div class="line muted">Loading…</div>
@@ -108,7 +114,7 @@
 </div>
 
 <style>
-  .log { position: relative; font-family: var(--mono); font-size: .78rem; line-height: 1.4; background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius); padding: .5rem .6rem; height: calc(100vh - 260px); min-height: 300px; overflow: auto; }
+  .log { position: relative; font-family: var(--mono); font-size: .78rem; line-height: 1.4; background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius); padding: .5rem .6rem; min-height: 200px; overflow: auto; }
   .log.loading { opacity: .7; }
   .line { white-space: pre-wrap; word-break: break-word; padding: .05rem 0; border-bottom: 1px dotted color-mix(in srgb, var(--border) 60%, transparent); }
   .ts { color: var(--fg-faint); }

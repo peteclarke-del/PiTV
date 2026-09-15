@@ -16,7 +16,7 @@ before implementation starts.
 | OS | Raspberry Pi OS Lite 64-bit (Bookworm), no desktop, boots straight into the player |
 | Video decode | Pi 4 hardware H.264 (and HEVC) via V4L2 M2M; see §5.2 |
 | Boot | Target ~15 s from power to picture; test card shown while the NAS mounts |
-| Channels | Defined in the admin UI. Default four: 1 and 2 programmes only, 3 and 4 with adverts in a `show, ad, ad` pattern |
+| Channels | Defined in the admin UI, each can be enabled/disabled. Default six: 1 and 2 programmes only, 3 and 4 with adverts, 5 music (blocks by decade/genre, two concerts a day), 6 cartoons (family-safe adverts only) |
 | Broadcast day | 08:00–00:00 scheduled; 00:00–08:00 replays that day's schedule from 08:00 (see §4.6) |
 | Era | Programmes: any age, with a healthy mix either side of 1980 (weights editable per channel). Adverts: 1980s/1990s only. Year from folder/file names, NFO, or overrides |
 | Watershed | 21:00. UK certificate rules: U/PG any time, 12 not before 20:00, 15 not before 21:00, 18 not before 22:00 |
@@ -157,7 +157,27 @@ Real 80s scheduling is about regularity, and it also gives episode order for fre
 
 The scheduler first pins anchors into the week, then fills the remaining gaps.
 
-### 4.4 Sport and the weekend
+### 4.4 Music and cartoon channels
+
+Channels have a `content` type: `general`, `music` or `cartoons`, and can be enabled or
+disabled individually. Defaults ship six: four general, **PiTV Music** (5) and **PiTV Toons** (6).
+
+- **Music** comes from `smb://synologynas/music videos/` (source type `music`,
+  `<Genre>/<Artist> - <Title> (<Year>).mp4`, concerts under `Concerts/<Genre>/` or anything
+  over 35 minutes). The day is a sequence of **blocks** by decade and genre with two full
+  concerts (13:30 and 20:30 by default), covering the 1970s to the 2000s inclusive:
+  Seventies Breakfast, Eighties Pop, Nineties Morning, Disco & Soul, Concert, Noughties,
+  Eighties Chart Show, Rock & Metal, Concert, Nineties Indie & Dance, Late Soul. A block picks
+  videos matching its genre and decade, widening to decade-only, then anything in the allowed
+  decades, then repeats, so a thin library never leaves gaps. Guides show a block as one
+  programme with the current video beneath it.
+- **Cartoons**: series with an Animation/Cartoon/Anime genre are routed to the cartoon channel
+  automatically (or set a show's category to `cartoon`). Children's programmes may run all
+  evening there. Its adverts are **family-safe only**: adverts are flagged from folder and
+  keyword heuristics (alcohol, tobacco, adult, gambling brands) and from `<tag>`s in their NFO,
+  editable per advert in the admin UI.
+
+### 4.5 Sport and the weekend
 
 Sport lives on its own share (`smb://synologynas/tvsports/`, a `tv` source with category
 `sport`) and is limited to wrestling, snooker, motorcycle racing and strongman competitions,
@@ -178,7 +198,7 @@ At weekends two or more sport programmes may run back to back, including the sam
 a programme may not overrun the end of its daypart by more than about half an hour, so a
 block never swallows the evening.
 
-### 4.5 Dayparts (weekday defaults, editable per channel)
+### 4.6 Dayparts (weekday defaults, editable per channel)
 
 | Time | Daypart | Prefers |
 |---|---|---|
@@ -195,7 +215,7 @@ block never swallows the evening.
 Hard rules override any daypart: certificate vs. time, and "no kids-only content after
 21:00".
 
-### 4.6 Gap filling
+### 4.7 Gap filling
 
 For each channel and day, walk from 08:00 to 00:00 following the channel's pattern:
 
@@ -215,7 +235,7 @@ For each channel and day, walk from 08:00 to 00:00 following the channel's patte
 Start times are rounded to 5 minutes where padding allows, because "19:35" reads right in
 a listing and "19:37" does not.
 
-### 4.7 Repeat control and overnight
+### 4.8 Repeat control and overnight
 
 - Movies: never twice in one week; across weeks, weighted by time since last airing.
 - Episodes: only ever advance; repeats only happen when a series wraps.
@@ -225,7 +245,7 @@ a listing and "19:37" does not.
   slot, cut off at 08:00 when the new day begins. The replay start time is a per-channel
   setting (e.g. replay from 19:00 instead).
 
-### 4.8 Manual editing
+### 4.9 Manual editing
 
 In the admin UI a slot can be: locked (regeneration leaves it alone), replaced with a
 chosen item (following items shift), removed, or moved to another time; a specific show
@@ -412,28 +432,48 @@ prefers the cached copy, then a transcoded copy, then the NAS original. A NAS hi
 the cap is reached; files scheduled within the window are protected. Copies can be
 rate-limited (`cache_copy_mbps`) so they never starve playback.
 
-### 7.2 Acquiring programmes that are not on the NAS
+### 7.2 Division of responsibilities: PiTV and pitv_content
 
-The scheduler only ever schedules what is in the library. Missing material is handled by a
-**wanted list** that is worked through by an acquisition worker in the player:
+PiTV schedules, requests and streams; the separate **pitv_content** tool (project
+`PiTV_content`, formerly `PiTV_ads`) finds, fetches, trims, encodes and places content. Both
+run on the same Pi and share its cache drive. The NAS is read-only: PiTV mounts the shares
+read-only and nothing is ever written to them; everything pitv_content produces lives on the
+Pi's cache drive. PiTV contains no download or encoding code of its own.
 
-- Entries are added by hand in the admin UI (title, year, season/episode, or a specific
-  archive.org item or URL), or automatically when `acquire_fill_gaps` is on and a season
-  on disk has holes (S01E01, S01E03 present, S01E02 missing).
-- Providers: the **Internet Archive** (search, pick a file, download) and **explicit URLs**
-  (direct media links, or pages handled by `yt-dlp` when installed). These are the sources
-  the owner is entitled to use; there is no torrent or usenet support and none is planned.
-- Downloads land in `acquire_dir` (default `<cache_dir>/acquired`) with Kodi-style names,
-  are re-encoded to H.264 if needed, then that folder is registered as a source and
-  scanned, so the next schedule build can use them.
-- Runs inside `acquire_hours`, one item at a time, three attempts before giving up, with
-  live progress in the admin UI.
+| | PiTV | pitv_content |
+|---|---|---|
+| Owns | schedule, player, remote, guide, web app, cache eviction, readiness | search, download, trimming, encoding to the CRT profile, filing |
+| Reads | NAS shares (read-only), `<cache>` and `<cache>/acquired/...` | `GET /api/content/manifest` (or `pitv content-manifest`) |
+| Writes | the database, `<cache>/reports/*.applied` markers; deletes LRU cache files | `<cache>/<media_id>_<stem>.<ext>` (copies/transcodes), `<cache>/acquired/...` (fetched items in Kodi layouts), `pitv_content.status.json`, `logs/pitv-content.log`, `reports/*.json` |
+| Talks | `POST /api/content/report`, `/api/content/tool` (status), `systemctl start pitv-content.service` | `POST /api/content/report`, `POST /api/content/make-room` |
 
-### 7.3 Transcode queue
+**Contract.** The manifest (`schema: 1`) lists every file scheduled from now through the end
+of the next broadcast day: `media_id`, Pi path, `share`/`relpath`/`remote`, codec, size,
+interlacing, `channels`, `first_air_ts`, `deadline_ts`, `priority`, and a `target`
+(`<cache>/<media_id>_<stem>.<ext>`) with `action` `copy` (already H.264/HEVC) or
+`transcode` (CRT profile: 768x576 4:3, H.264, AAC, deinterlaced if needed). It also carries
+the **wanted list** (missing episodes found by gap detection, films, adverts, music videos
+added in the admin UI) with destination folders under `<cache>/acquired/`, duration ranges,
+an exact search phrase in `hints[0]`, year tolerance, plus `free_bytes`, `pi`, the running
+marker and reports directory paths. The report gives per-item and per-wanted status;
+"bot check" and "rate limit" failures are retried without using up an attempt; reports may
+also be dropped as files in `<cache>/reports/` and are picked up by maintenance.
 
-Any library file the Pi cannot hardware-decode can be queued (individually or "all
-software-decoded files") and is re-encoded overnight (`transcode_hours`) with the Pi 4's
-H.264 hardware encoder into `<acquire_dir>/transcoded/`; the player then plays that copy.
+**Shared-drive rules.** pitv_content writes `.part` files and renames atomically, never
+deletes, and touches `<cache>/.pitv_content.running` while working; PiTV ignores `.part`
+files, never evicts files under two hours old or in the current manifest, and does not evict
+while the marker is fresh.
+
+**Nightly workflow** (Pi local time): ~04:00 PiTV scans the NAS and the acquired folders and
+tops up the 7-day schedule; 01:00 pitv_content main run; 05:00 catch-up run; 06:00 and 07:00
+PiTV **readiness** checks verify every programme through tomorrow is playable (cache,
+transcoded copy or NAS original). A programme whose file is missing while its share is
+mounted is replaced and the rest of that channel-day rebalanced, logged as an ERROR; if a
+whole share is down nothing is substituted and the player shows the test card at air time.
+The same substitution happens live if a file fails when it comes on air.
+
+**Status in the admin UI.** pitv_content has no interface of its own, so the admin Content
+tab reads its status file, service and timer state, log and reports, and can start a run.
 
 ## 8. Boot and system setup
 

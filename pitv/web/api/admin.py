@@ -25,11 +25,12 @@ router = APIRouter(prefix="/api", dependencies=[Depends(admin_conn)])
 SECRET_SETTINGS = {"admin_password_hash", "session_secret"}
 SHOW_OVERRIDE_FIELDS = {"title", "year", "certificate", "genres", "plot", "kids"}
 SHOW_DIRECT_FIELDS = {"home_channel_id", "mode", "anchor_time", "anchor_days", "rest_weeks", "excluded", "category"}
-MEDIA_OVERRIDE_FIELDS = {"title", "year", "certificate", "genres", "plot", "season", "episode"}
-MEDIA_DIRECT_FIELDS = {"excluded", "channel_hint"}
+SHOW_CATEGORIES = ("general", "sport", "kids", "cartoon")
+MEDIA_OVERRIDE_FIELDS = {"title", "year", "certificate", "genres", "plot", "season", "episode", "artist"}
+MEDIA_DIRECT_FIELDS = {"excluded", "channel_hint", "concert", "family_safe"}
 CHANNEL_FIELDS = {"number", "name", "short_name", "colour", "enabled", "ads_enabled", "ads_per_break",
                   "pattern", "era_weights", "genre_weights", "kind_weights", "daypart_profile",
-                  "overnight_replay_from", "idents_enabled", "description"}
+                  "overnight_replay_from", "idents_enabled", "description", "content", "family_safe_ads"}
 JSON_CHANNEL_FIELDS = {"era_weights", "genre_weights", "kind_weights", "daypart_profile"}
 
 
@@ -53,8 +54,8 @@ def list_sources(conn: sqlite3.Connection = Depends(admin_conn)):
 @router.post("/sources")
 def create_source(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
     stype = body.get("type")
-    if stype not in ("tv", "movie", "advert", "ident"):
-        raise HTTPException(400, "type must be tv, movie, advert or ident")
+    if stype not in ("tv", "movie", "advert", "ident", "music"):
+        raise HTTPException(400, "type must be tv, movie, advert, ident or music")
     path = str(body.get("path", "")).strip()
     name = str(body.get("name", "")).strip() or Path(path).name or stype
     if not path:
@@ -144,8 +145,9 @@ def library_summary(conn: sqlite3.Connection = Depends(admin_conn)):
     attention = conn.execute("SELECT COUNT(*) FROM media WHERE missing = 0 AND attention IS NOT NULL").fetchone()[0]
     shows = conn.execute("SELECT COUNT(*) FROM shows WHERE missing = 0").fetchone()[0]
     hours = conn.execute("SELECT SUM(duration)/3600.0 FROM media WHERE missing = 0 AND kind IN ('episode','movie')").fetchone()[0]
+    concerts = conn.execute("SELECT COUNT(*) FROM media WHERE missing = 0 AND kind = 'music' AND concert = 1").fetchone()[0]
     return {"kinds": kinds, "shows": shows, "hwdec": hw["hw"] or 0, "programmes": hw["n"] or 0,
-            "attention": attention, "hours": round(hours or 0, 1)}
+            "attention": attention, "hours": round(hours or 0, 1), "concerts": concerts}
 
 
 @router.get("/shows")
@@ -216,6 +218,8 @@ def update_show(sid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Connec
             direct[k] = v
     if "mode" in direct and direct["mode"] not in ("auto", "strip", "weekly"):
         raise HTTPException(400, "mode must be auto, strip or weekly")
+    if "category" in direct and direct["category"] not in SHOW_CATEGORIES:
+        raise HTTPException(400, "category must be general, sport, kids or cartoon")
     if "anchor_days" in direct and direct["anchor_days"] is not None:
         direct["anchor_days"] = json.dumps([int(d) for d in direct["anchor_days"]])
     if "excluded" in direct:
@@ -273,6 +277,22 @@ def list_media(conn: sqlite3.Connection = Depends(admin_conn), kind: str | None 
     return {"total": total, "items": [media_public(r) for r in rows]}
 
 
+@router.get("/music/facets")
+def music_facets(conn: sqlite3.Connection = Depends(admin_conn)):
+    """Counts of music videos by genre and decade, for the music channel editor."""
+    genres: dict[str, int] = {}
+    decades: dict[str, int] = {}
+    concerts = 0
+    for r in conn.execute("SELECT genres, year, concert FROM media WHERE kind = 'music' AND missing = 0 AND excluded = 0"):
+        for g in json.loads(r["genres"] or "[]"):
+            genres[g] = genres.get(g, 0) + 1
+        if r["year"]:
+            d = f"{(r['year'] // 10) * 10}s"
+            decades[d] = decades.get(d, 0) + 1
+        concerts += int(r["concert"] or 0)
+    return {"genres": dict(sorted(genres.items())), "decades": dict(sorted(decades.items())), "concerts": concerts}
+
+
 @router.get("/media/{mid}")
 def get_media(mid: int, conn: sqlite3.Connection = Depends(admin_conn)):
     row = conn.execute("SELECT * FROM media WHERE id = ?", (mid,)).fetchone()
@@ -300,7 +320,7 @@ def update_media(mid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Conne
             else:
                 overrides[k] = v
         elif k in MEDIA_DIRECT_FIELDS:
-            direct[k] = int(bool(v)) if k == "excluded" else v
+            direct[k] = int(bool(v)) if k in ("excluded", "concert", "family_safe") else v
     direct["overrides"] = json.dumps(overrides)
     if "year" in overrides or "certificate" in overrides:
         # Clear attention flags the override resolves.
@@ -339,6 +359,9 @@ def library_search(conn: sqlite3.Connection = Depends(admin_conn), q: str = "", 
     if kind in ("programme", "movie"):
         for r in conn.execute("SELECT * FROM media WHERE kind = 'movie' AND missing = 0 AND excluded = 0 AND title LIKE ? ORDER BY title LIMIT ?", (like, limit)):
             out.append({"type": "movie", "id": r["id"], "title": r["title"], "year": r["year"], "duration": r["duration"], "certificate": r["certificate"]})
+    if kind in ("programme", "music"):
+        for r in conn.execute("SELECT * FROM media WHERE kind = 'music' AND missing = 0 AND excluded = 0 AND title LIKE ? ORDER BY title LIMIT ?", (like, limit)):
+            out.append({"type": "music", "id": r["id"], "title": r["title"], "year": r["year"], "duration": r["duration"], "concert": r["concert"]})
     return out
 
 
@@ -366,13 +389,17 @@ def _clean_channel_fields(body: dict[str, Any]) -> dict[str, Any]:
             continue
         if k in JSON_CHANNEL_FIELDS:
             fields[k] = json.dumps(v) if v not in (None, "", {}, []) else None
-        elif k in ("enabled", "ads_enabled", "idents_enabled"):
+        elif k in ("enabled", "ads_enabled", "idents_enabled", "family_safe_ads"):
             fields[k] = int(bool(v))
         elif k in ("number", "ads_per_break"):
             fields[k] = int(v)
         elif k == "pattern":
             tokens = parse_pattern(str(v))
             fields[k] = ", ".join(tokens)
+        elif k == "content":
+            if v not in ("general", "music", "cartoons"):
+                raise HTTPException(400, "content must be general, music or cartoons")
+            fields[k] = v
         else:
             fields[k] = v
     return fields
@@ -583,6 +610,9 @@ def rebuild(request: Request, body: dict[str, Any] = Body(...), conn: sqlite3.Co
 
 
 def _titles(media: sqlite3.Row) -> tuple[str, str]:
+    if media["kind"] == "music":
+        year = f"({media['year']})" if media["year"] else ""
+        return media["title"], " ".join(x for x in (year, ", ".join(json.loads(media["genres"] or "[]"))) if x)
     if media["kind"] == "episode":
         from ...scheduler.build import episode_subtitle
         return media["show_title"] or media["title"], episode_subtitle(dict(media))
@@ -642,6 +672,7 @@ def system_info(request: Request, conn: sqlite3.Connection = Depends(admin_conn)
                  "db_size": cfg.db_path.stat().st_size if cfg.db_path.exists() else 0,
                  "free": data_usage.free if data_usage else None, "total": data_usage.total if data_usage else None},
         "jobs": request.app.state.jobs.recent(10),
+        "cache_dir": all_settings(conn).get("cache_dir") or "",
     }
 
 

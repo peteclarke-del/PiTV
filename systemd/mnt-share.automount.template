@@ -1,8 +1,8 @@
 [Unit]
-Description=PiTV media share @SHARE@ (automount)
+Description=PiTV media share @MOUNT@ (automount)
 
 [Automount]
-Where=/mnt/@SHARE@
+Where=/mnt/@MOUNT@
 TimeoutIdleSec=0
 
 [Install]

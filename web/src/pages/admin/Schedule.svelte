@@ -2,7 +2,7 @@
   import { untrack } from 'svelte';
   import { get, post, del, tryApi } from '../../lib/api.js';
   import { changes, clock, confirm, toast } from '../../lib/stores.svelte.js';
-  import { fmtDay, fmtRange, fmtDuration, fmtDateTime, fmtTime, tsToLocalDay, tsToLocalTime, localToTs } from '../../lib/format.js';
+  import { fmtDay, fmtRange, fmtDuration, fmtDateTime, fmtTime, tsToLocalDay, tsToLocalTime, localToTs, plural } from '../../lib/format.js';
   import EpgGrid from '../../components/EpgGrid.svelte';
   import Drawer from '../../components/Drawer.svelte';
   import Modal from '../../components/Modal.svelte';
@@ -35,7 +35,7 @@
 
   async function loadDays() {
     days = await get('/api/schedule/days');
-    if (!day || !days.days.some((d) => d.day === day)) day = days.today;
+    if (!day || !days.days.some((d) => d.day === day)) day = days.days.some((d) => d.day === days.today) ? days.today : (days.days[0]?.day ?? '');
   }
   async function loadSlots() {
     if (!dayInfo) { data = null; return; }
@@ -141,6 +141,7 @@
         <span class="badge">{selected.kind}</span>
         {#if selected.locked}<span class="badge info">locked</span>{/if}
         {#if selected.replay}<span class="badge">replay</span>{/if}
+        {#if selected.block}<span class="badge info">{selected.items ? plural(selected.items, 'video') : `block: ${selected.block}`}</span>{/if}
       </div>
       <dl class="kv small">
         <dt>Day</dt><dd>{fmtDay(selected.day)}</dd>

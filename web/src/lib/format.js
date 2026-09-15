@@ -78,3 +78,7 @@ export function tsToLocalTime(ts) {
 export const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 export const CERTIFICATES = ['U', 'PG', '12', '12A', '15', '18'];
 export const PATTERN_TOKENS = ['show', 'tv', 'movie', 'ad', 'ident', 'break'];
+
+export function plural(n, word) {
+  return `${n} ${word}${n === 1 ? '' : 's'}`;
+}

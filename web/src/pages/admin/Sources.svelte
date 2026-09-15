@@ -7,7 +7,7 @@
   import FolderPicker from './FolderPicker.svelte';
   import JobList from './JobList.svelte';
 
-  const TYPES = [['tv', 'TV shows'], ['movie', 'Movies'], ['advert', 'Adverts'], ['ident', 'Idents']];
+  const TYPES = [['tv', 'TV shows'], ['movie', 'Movies'], ['advert', 'Adverts'], ['ident', 'Idents'], ['music', 'Music videos']];
   let sources = $state(null);
   let editing = $state(null); // {id?, type, name, path, remote, enabled}
   let picking = $state(false);
@@ -76,7 +76,7 @@
     <div class="stack">
       <label class="field">Type
         <select bind:value={editing.type}>{#each TYPES as [v, l] (v)}<option value={v}>{l}</option>{/each}</select>
-        <span class="help">TV sources are scanned as Show/Season/Episode folders; movies, adverts and idents as flat files.</span>
+        <span class="help">{editing.type === 'music' ? 'Music videos: Genre/Artist - Title (1984).mp4; concerts under a Concerts/ folder or anything over 35 minutes.' : 'TV sources are scanned as Show/Season/Episode folders; movies, adverts and idents as flat files.'}</span>
       </label>
       <label class="field">Name<input bind:value={editing.name} placeholder="e.g. NAS TV shows" /></label>
       {#if editing.type === 'tv'}

@@ -25,14 +25,14 @@
   const isNew = !c.id;
   let f = $state({
     number: c.number ?? '', name: c.name ?? '', short_name: c.short_name ?? '', colour: c.colour ?? '#e63946',
-    enabled: c.enabled ?? 1, ads_enabled: !!c.ads_enabled, ads_per_break: c.ads_per_break ?? 2,
+    enabled: c.enabled ?? 1, ads_enabled: !!c.ads_enabled, ads_per_break: c.ads_per_break ?? 2, family_safe_ads: !!c.family_safe_ads,
     pattern: c.pattern_tokens ?? (c.pattern ? c.pattern.split(',').map((t) => t.trim()) : ['show']),
     eraUse: !!c.era_weights, era: c.era_weights ?? { '1980-1989': 0.85, '1990-1999': 0.15 },
     kindUse: !!c.kind_weights, kind: { tv: c.kind_weights?.tv ?? 0.7, movie: c.kind_weights?.movie ?? 0.3 },
     genreUse: !!c.genre_weights, genre: c.genre_weights ?? {},
     dp: splitProfile(c.daypart_profile),
     overnight_replay_from: c.overnight_replay_from ?? '08:00', idents_enabled: c.idents_enabled ?? 1,
-    description: c.description ?? '',
+    description: c.description ?? '', content: c.content ?? 'general',
   });
   f.enabled = !!f.enabled; f.idents_enabled = !!f.idents_enabled;
   let saving = $state(false);
@@ -51,11 +51,11 @@
   }
   async function save() {
     const body = {
-      name: f.name, short_name: f.short_name, colour: f.colour, enabled: f.enabled, ads_enabled: f.ads_enabled,
+      name: f.name, short_name: f.short_name, colour: f.colour, enabled: f.enabled, ads_enabled: f.ads_enabled, family_safe_ads: f.family_safe_ads,
       ads_per_break: Number(f.ads_per_break) || 1, pattern: f.pattern.join(', '),
       era_weights: f.eraUse ? f.era : null, kind_weights: f.kindUse ? { tv: Number(f.kind.tv), movie: Number(f.kind.movie) } : null,
       genre_weights: f.genreUse ? f.genre : null, daypart_profile: joinProfile(f.dp),
-      overnight_replay_from: f.overnight_replay_from, idents_enabled: f.idents_enabled, description: f.description,
+      overnight_replay_from: f.overnight_replay_from, idents_enabled: f.idents_enabled, description: f.description, content: f.content,
     };
     if (f.number !== '') body.number = Number(f.number);
     saving = true;
@@ -73,6 +73,10 @@
       <label class="field">Short name<input bind:value={f.short_name} placeholder="One" /><span class="help">Used on the badge and remote.</span></label>
       <label class="field">Colour<span class="row"><input type="color" bind:value={f.colour} /><input class="narrow mono" bind:value={f.colour} /></span></label>
       <label class="field wide">Description<input bind:value={f.description} placeholder="Mainstream: drama, sitcoms…" /></label>
+      <label class="field wide">Content
+        <select bind:value={f.content}><option value="general">General (shows and films)</option><option value="music">Music videos</option><option value="cartoons">Cartoons</option></select>
+        <span class="help">Music: the day is built from genre/decade blocks and two concerts, see Weighting → Music blocks. Cartoons: animated series are routed here automatically and may run all evening.</span>
+      </label>
       <label class="check"><input type="checkbox" bind:checked={f.enabled} /> Enabled</label>
       <label class="check"><input type="checkbox" bind:checked={f.idents_enabled} /> Idents between programmes</label>
       <label class="field">Overnight replay from<input type="time" bind:value={f.overnight_replay_from} /><span class="help">Overnight the day's schedule is replayed from this time of day.</span></label>
@@ -83,6 +87,7 @@
     <div class="form-grid">
       <label class="check"><input type="checkbox" bind:checked={f.ads_enabled} /> Ad breaks on this channel</label>
       <label class="field">Ads per break<input type="number" class="narrow" min="1" max="10" bind:value={f.ads_per_break} disabled={!f.ads_enabled} /></label>
+      <label class="check wide"><input type="checkbox" bind:checked={f.family_safe_ads} /> Family-safe adverts only<span class="help">No alcohol, tobacco, adult or gambling adverts on this channel (flagged by the keywords under Weighting → Family-safe adverts).</span></label>
     </div>
 
     <h3>Pattern</h3>

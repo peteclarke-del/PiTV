@@ -20,10 +20,10 @@ _TITLE_YEAR_PAREN = re.compile(rf"^(?P<title>.+?)\s*[\(\[](?P<year>{_YEAR})[\)\]
 _TITLE_YEAR_DOTTED = re.compile(rf"^(?P<title>.+?)[\.\s_-]+(?P<year>{_YEAR})(?:[\.\s_-]|$)")
 _LEADING_YEAR = re.compile(rf"^(?P<year>{_YEAR})\s*[-_. ]+\s*(?P<title>.+)$")
 
-_SXXEYY = re.compile(r"[Ss](?P<s>\d{1,2})\s*[Ee](?P<e>\d{1,3})(?:[-Ee]+\d{1,3})*")
+_SXXEYY = re.compile(r"[Ss](?P<s>\d{1,4})\s*[Ee](?P<e>\d{1,3})(?:[-Ee]+\d{1,3})*")
 _DATED = re.compile(r"(?<!\d)(?P<y>19[3-9]\d|20[0-4]\d)[-. ](?P<m>0[1-9]|1[0-2])[-. ](?P<d>0[1-9]|[12]\d|3[01])(?!\d)")
 _NXNN = re.compile(r"(?<!\d)(?P<s>\d{1,2})[xX](?P<e>\d{1,3})(?!\d)")
-_SEASON_DIR = re.compile(r"^(?:season|series|s)\s*_?(?P<s>\d{1,2})$", re.IGNORECASE)
+_SEASON_DIR = re.compile(r"^(?:season|series|s)\s*_?(?P<s>\d{1,4})$", re.IGNORECASE)
 _SPECIALS_DIR = re.compile(r"^specials?$", re.IGNORECASE)
 _EP_ONLY = re.compile(r"^(?:e|ep|episode)?\s*_?(?P<e>\d{1,3})\b", re.IGNORECASE)
 _CERT_TAG = re.compile(r"\[(?P<cert>U|PG|12A?|15|18)\]", re.IGNORECASE)
@@ -124,3 +124,33 @@ def is_video(path: PurePath) -> bool:
 def looks_like_sample(path: PurePath) -> bool:
     n = path.stem.lower()
     return n == "sample" or n.endswith("-sample") or n.endswith(".sample") or "/sample/" in str(path).lower()
+
+
+_ARTIST_TITLE = re.compile(r"^(?P<artist>[^-–]+?)\s+[-–]\s+(?P<title>.+)$")
+_DECADE_DIR = re.compile(r"^(?:(?P<full>19[3-9]0|20[0-4]0)s?|(?P<short>[3-9]0)s)$", re.IGNORECASE)
+
+
+@dataclass
+class MusicInfo:
+    artist: str | None
+    title: str
+    year: int | None
+
+
+def parse_music(name: str) -> MusicInfo:
+    """'Queen - Radio Ga Ga (1984)' -> artist Queen, title Radio Ga Ga, year 1984."""
+    ty = parse_title_year(name)
+    m = _ARTIST_TITLE.match(ty.title)
+    if m:
+        return MusicInfo(clean_title(m.group("artist")), clean_title(m.group("title")), ty.year)
+    return MusicInfo(None, ty.title, ty.year)
+
+
+def parse_decade_dir(name: str) -> int | None:
+    """'1980s', '80s', '1980' -> 1980."""
+    m = _DECADE_DIR.match(name.strip())
+    if not m:
+        return None
+    if m.group("full"):
+        return int(m.group("full"))
+    return 1900 + int(m.group("short"))

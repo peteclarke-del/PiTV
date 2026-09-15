@@ -5,7 +5,10 @@
 set -euo pipefail
 
 NAS_HOST="${NAS_HOST:-synologynas}"
-SHARES="${SHARES:-tvshows movies ads tvsports}"
+# Share names as on the NAS; a space is written as %20 (mounted at /mnt/<name without spaces>).
+SHARES="${SHARES:-tvshows movies ads tvsports music%20videos}"
+mount_name() { echo "$1" | sed 's/%20//g; s/ //g'; }
+share_name() { echo "$1" | sed 's/%20/ /g'; }
 INSTALL_DIR=/opt/pitv
 DATA_DIR=/var/lib/pitv
 CACHE_DIR="${CACHE_DIR:-/mnt/cache/pitv}"
@@ -47,22 +50,30 @@ chmod 600 /etc/pitv/smb-credentials
 
 log "CIFS automounts for: $SHARES"
 for share in $SHARES; do
-  mkdir -p "/mnt/$share"
-  sed -e "s/@NAS@/$NAS_HOST/g" -e "s/@SHARE@/$share/g" "$SRC_DIR/systemd/mnt-share.mount.template" > "/etc/systemd/system/mnt-$share.mount"
-  sed -e "s/@SHARE@/$share/g" "$SRC_DIR/systemd/mnt-share.automount.template" > "/etc/systemd/system/mnt-$share.automount"
+  m="$(mount_name "$share")"; n="$(share_name "$share")"
+  mkdir -p "/mnt/$m"
+  sed -e "s|@NAS@|$NAS_HOST|g" -e "s|@SHARE@|$n|g" -e "s|@MOUNT@|$m|g" "$SRC_DIR/systemd/mnt-share.mount.template" > "/etc/systemd/system/mnt-$m.mount"
+  sed -e "s|@MOUNT@|$m|g" "$SRC_DIR/systemd/mnt-share.automount.template" > "/etc/systemd/system/mnt-$m.automount"
 done
 
 log "Local cache directory ($CACHE_DIR)"
-mkdir -p "$CACHE_DIR" && chown pitv:pitv "$CACHE_DIR" || true
+mkdir -p "$CACHE_DIR"/acquired/{tvshows,tvsports,movies,ads,"music videos"} "$CACHE_DIR"/logs "$CACHE_DIR"/reports && chown -R pitv:pitv "$CACHE_DIR" || true
+
+log "Export the cache over NFS so pitv_content on the desktop can fill it (EXPORT_TO=${EXPORT_TO:-192.168.0.0/24})"
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nfs-kernel-server >/dev/null
+CACHE_ROOT="$(dirname "$CACHE_DIR")"
+grep -q "^$CACHE_ROOT " /etc/exports 2>/dev/null || echo "$CACHE_ROOT ${EXPORT_TO:-192.168.0.0/24}(rw,sync,no_subtree_check,all_squash,anonuid=$(id -u pitv),anongid=$(id -g pitv))" >> /etc/exports
+exportfs -ra || true
+systemctl enable --now nfs-server >/dev/null 2>&1 || true
 
 log "systemd services"
 cp "$SRC_DIR/systemd/pitv-player.service" "$SRC_DIR/systemd/pitv-web.service" "$SRC_DIR/systemd/pitv-splash.service" /etc/systemd/system/
 cat > /etc/sudoers.d/pitv <<'SUDO'
-pitv ALL=(root) NOPASSWD: /usr/bin/systemctl restart pitv-player, /usr/bin/systemctl stop pitv-player, /usr/bin/systemctl start pitv-player, /usr/bin/systemctl restart pitv-web, /usr/bin/systemctl reboot
+pitv ALL=(root) NOPASSWD: /usr/bin/systemctl restart pitv-player, /usr/bin/systemctl stop pitv-player, /usr/bin/systemctl start pitv-player, /usr/bin/systemctl restart pitv-web, /usr/bin/systemctl start pitv-content.service, /usr/bin/systemctl reboot
 SUDO
 chmod 440 /etc/sudoers.d/pitv
 systemctl daemon-reload
-for share in $SHARES; do systemctl enable --now "mnt-$share.automount"; done
+for share in $SHARES; do systemctl enable --now "mnt-$(mount_name "$share").automount"; done
 systemctl enable pitv-splash pitv-player pitv-web
 
 log "Database, sources and cache settings"
@@ -73,14 +84,25 @@ cfg = load_config(); cfg.ensure_dirs()
 conn = dbm.connect(cfg.db_path); dbm.init_db(conn)
 with dbm.tx(conn):
     for stype, name, share, cat in (("tv", "TV Shows", "tvshows", "general"), ("movie", "Movies", "movies", "general"),
-                                    ("advert", "Adverts", "ads", "general"), ("tv", "Sport", "tvsports", "sport")):
+                                    ("advert", "Adverts", "ads", "general"), ("tv", "Sport", "tvsports", "sport"),
+                                    ("music", "Music videos", "music%20videos", "general")):
         if share in "$SHARES".split():
-            path = f"/mnt/{share}"
+            path = f"/mnt/{share.replace('%20', '')}"
             if not conn.execute("SELECT 1 FROM sources WHERE path = ?", (path,)).fetchone():
                 conn.execute("INSERT INTO sources(type, name, path, remote, category) VALUES (?,?,?,?,?)",
                              (stype, name, path, f"smb://$NAS_HOST/{share}/", cat))
     if not dbm.get_setting(conn, "cache_dir"):
         dbm.set_setting(conn, "cache_dir", "$CACHE_DIR")
+    # Everything pitv_content downloads lands under the cache, never on the NAS; register those folders.
+    acq = "$CACHE_DIR/acquired"
+    for stype, name, sub, cat in (("tv", "Acquired shows", "tvshows", "general"), ("tv", "Acquired sport", "tvsports", "sport"),
+                                  ("movie", "Acquired movies", "movies", "general"), ("advert", "Acquired adverts", "ads", "general"),
+                                  ("music", "Acquired music videos", "music videos", "general")):
+        path = f"{acq}/{sub}"
+        if not conn.execute("SELECT 1 FROM sources WHERE path = ?", (path,)).fetchone():
+            conn.execute("INSERT INTO sources(type, name, path, category) VALUES (?,?,?,?)", (stype, name, path, cat))
+    if not dbm.get_setting(conn, "acquire_dir"):
+        dbm.set_setting(conn, "acquire_dir", acq)
 print("sources:", [dict(r) for r in conn.execute("SELECT type, path FROM sources")])
 PY
 

@@ -1,6 +1,6 @@
 <script>
   // Horizontal EPG grid: channels as rows, time across. Scrolls inside its own container.
-  import { fmtTime, fmtRange } from '../lib/format.js';
+  import { fmtTime, fmtRange, plural } from '../lib/format.js';
   import ChannelBadge from './ChannelBadge.svelte';
 
   let { channels = [], slots = [], start = 0, end = 0, now = 0, ppm = 4, selectedId = null,
@@ -34,8 +34,15 @@
     if (el) el.scrollBy({ left: min * ppm, behavior: 'smooth' });
   }
 
+  function hue(name) { let h = 0; for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) % 360; return h; }
+  function slotStyle(s, w) {
+    let st = `left:${x(s.start_ts)}px;width:${w}px`;
+    if (s.block) st += `;--blk:${hue(s.block)}`;
+    return st;
+  }
   function slotClass(s) {
     const c = [s.kind];
+    if (s.block) c.push('music');
     if (s.end_ts <= now) c.push('past');
     else if (s.start_ts <= now) c.push('current');
     if (s.locked) c.push('locked');
@@ -62,12 +69,12 @@
       <div class="track" style="width:{width}px">
         {#each byChannel.get(ch.id) ?? [] as s (s.id)}
           {@const w = Math.max(2, x(s.end_ts) - x(s.start_ts))}
-          <button class="slot {slotClass(s)}" style="left:{x(s.start_ts)}px;width:{w}px"
+          <button class="slot {slotClass(s)}" style={slotStyle(s, w)}
                   onclick={() => onselect?.(s)}
                   title="{s.title} {s.subtitle ? `– ${s.subtitle}` : ''} ({fmtRange(s.start_ts, s.end_ts)})">
             <span class="inner">
               <span class="t truncate">{#if s.locked}<span class="lock">🔒</span>{/if}{s.kind === 'filler' ? (s.title || 'Filler') : s.kind === 'advert' ? (s.title || 'Advert') : s.kind === 'ident' ? 'Ident' : s.title}</span>
-              {#if w > 70}<span class="st truncate">{fmtTime(s.start_ts)}{s.subtitle ? ` · ${s.subtitle}` : ''}</span>{/if}
+              {#if w > 70}<span class="st truncate">{fmtTime(s.start_ts)}{s.block && s.items ? ` · ${plural(s.items, 'video')}` : s.block && !s.items ? ` · ${s.block}` : s.subtitle ? ` · ${s.subtitle}` : ''}</span>{/if}
             </span>
           </button>
         {/each}
@@ -110,6 +117,7 @@
   .slot.advert { background: color-mix(in srgb, var(--warn) 22%, var(--bg-elev)); border-color: color-mix(in srgb, var(--warn) 50%, var(--border-strong)); }
   .slot.ident { background: color-mix(in srgb, var(--info) 22%, var(--bg-elev)); }
   .slot.filler { background: repeating-linear-gradient(45deg, var(--bg-sunken) 0 6px, var(--bg-elev) 6px 12px); color: var(--fg-muted); }
+  .slot.music { background: color-mix(in srgb, hsl(var(--blk, 280) 60% 55%) 22%, var(--bg-elev)); border-color: color-mix(in srgb, hsl(var(--blk, 280) 60% 45%) 55%, var(--border-strong)); }
   .slot.replay { opacity: .7; border-style: dashed; }
   .slot.selected { outline: 2px solid var(--info); outline-offset: -1px; }
   .slot:hover { filter: brightness(.96); }
