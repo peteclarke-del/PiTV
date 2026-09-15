@@ -1,56 +1,58 @@
 <script>
+  // The programme catalogue: everything PiTV can schedule, by kind, plus what was added here by
+  // hand (custom programming pitv_content fetches). Each list loads whole; DataTable filters,
+  // sorts and pages it in the browser.
   import { untrack } from 'svelte';
-  import { get, put, tryApi } from '../../lib/api.js';
-  import { changes, clock, route } from '../../lib/stores.svelte.js';
+  import { del, get, put, tryApi, confirmApi } from '../../lib/api.js';
+  import { changes, clock, route, toast } from '../../lib/stores.svelte.js';
   import { navigate } from '../../lib/router.js';
-  import { fmtDuration, fmtAgo, fmtEpisode, CERTIFICATES, WEEKDAYS } from '../../lib/format.js';
-  import { debounce, onEnter, num } from '../../lib/util.js';
+  import { fmtDuration, fmtAgo, fmtEpisode, lineupState, CERTIFICATES, WEEKDAYS } from '../../lib/format.js';
+  import { num } from '../../lib/util.js';
   import { guard } from '../../lib/guard.svelte.js';
   import ChannelBadge from '../../components/ChannelBadge.svelte';
+  import DataTable from '../../components/DataTable.svelte';
+  import Tabs from '../../components/Tabs.svelte';
   import ShowEditor from './ShowEditor.svelte';
   import MediaEditor from './MediaEditor.svelte';
   import CatalogueCard from './CatalogueCard.svelte';
+  import AddToCatalogue from './AddToCatalogue.svelte';
   import Availability from '../../components/Availability.svelte';
   import Codec from '../../components/Codec.svelte';
 
-  const TABS = [['shows', 'Shows'], ['movies', 'Movies'], ['music', 'Music'], ['adverts', 'Adverts'], ['idents', 'Idents'], ['attention', 'Needs attention']];
+  const TABS = [
+    { id: 'shows', label: 'Series', level: 'basic' }, { id: 'movies', label: 'Films', level: 'basic' },
+    { id: 'custom', label: 'Added here', level: 'basic', title: 'Titles added by hand that pitv_content fetches' },
+    { id: 'music', label: 'Music', level: 'standard' }, { id: 'adverts', label: 'Adverts', level: 'standard' },
+    { id: 'idents', label: 'Idents', level: 'advanced' }, { id: 'attention', label: 'Needs attention', level: 'standard' },
+  ];
   const KIND = { movies: 'movie', adverts: 'advert', idents: 'ident', music: 'music' };
-  const PAGE = 50;
+  // The browser filters and sorts the whole list, so ask for all of it.
+  const ALL = 20000;
 
-  let tab = $derived(route.parts[2] ?? 'shows');
-  let q = $state('');
+  let tab = $derived(TABS.some((t) => t.id === route.parts[2]) ? route.parts[2] : 'shows');
   let channels = $state([]);
-  let shows = $state(null);
-  let media = $state(null); // {total, items}
-  let offset = $state(0);
-  let attention = $state(null);
+  let rows = $state(null);
   let showId = $state(null);
   let mediaId = $state(null);
-  let fixes = $state({}); // attention tab: pending quick-fix values by media id
+  let adding = $state(false);
+  let fixes = $state({}); // Needs attention: pending quick-fix values by media id
 
   let chById = $derived(new Map(channels.map((c) => [c.id, c])));
 
-  // Only the newest request may write: switching tabs or typing quickly leaves older ones in flight.
+  // Only the newest request may write: switching tabs quickly leaves older ones in flight.
   let seq = 0;
   async function load() {
     const t = tab, n = ++seq;
     if (!channels.length) channels = (await tryApi(get('/api/channels'))) ?? [];
-    const r = await tryApi(t === 'shows' ? get('/api/shows', { q })
+    const r = await tryApi(t === 'shows' ? get('/api/shows')
       : t === 'attention' ? get('/api/library/attention')
-      : get('/api/media', { kind: KIND[t], q, limit: PAGE, offset }));
+      : t === 'custom' ? get('/api/lineup')
+      : get('/api/media', { kind: KIND[t], limit: ALL }));
     if (n !== seq) return;
-    if (t === 'shows') shows = r ?? shows ?? [];
-    else if (t === 'attention') attention = r ?? attention ?? [];
-    else media = r ?? media;
+    rows = t === 'custom' ? (r ?? []).filter((e) => e.external) : KIND[t] ? r?.items ?? [] : r ?? [];
   }
-  $effect(() => { tab; changes.library; offset; untrack(load); });
-  // Resetting a non-zero offset refetches through the effect above.
-  const reload = debounce(() => { if (offset) offset = 0; else load(); }, 250);
-  function search(v) { q = v; reload(); }
-  function switchTab(id) {
-    q = ''; offset = 0;
-    navigate(`/admin/library/${id}`);
-  }
+  $effect(() => { tab; changes.library; untrack(() => { rows = null; load(); }); });
+
   function modeLabel(s) {
     if (s.mode === 'auto') return 'auto';
     const days = (s.anchor_days ?? []).map((d) => WEEKDAYS[d]?.slice(0, 2)).join('');
@@ -68,126 +70,90 @@
     if (!Object.keys(body).length) return;
     if (await tryApi(put(`/api/media/${item.id}`, body), { success: 'Saved' })) { delete fixes[item.id]; load(); }
   });
+  const removeCustom = (e) => confirmApi(`Remove ${e.title} from the catalogue? Its request to pitv_content is withdrawn.`,
+    { title: 'Remove title', okLabel: 'Remove', danger: true }, () => del(`/api/lineup/${e.id}`), { success: 'Removed' }).then((r) => { if (r) load(); });
+  function added(message) { adding = false; toast.success(message); if (tab === 'custom') load(); else navigate('/admin/library/custom'); }
+
+  const title = { key: 'title', label: 'Title', cell: titleCell };
+  const year = { key: 'year', label: 'Year' };
+  const length = { key: 'duration', label: 'Length', class: 'small num', cell: lengthCell };
+  const codec = { key: 'vcodec', label: 'Codec', class: 'small', cell: codecCell };
+  const plays = { key: 'cached', label: 'Plays from', get: (m) => (m.cache_path ? 0 : m.origin === 'nas' ? 1 : 2), cell: availabilityCell };
+  const flags = { key: 'flags', label: '', get: (m) => (m.attention ? 2 : m.excluded ? 1 : 0), cell: flagsCell };
+  const channel = (get, cell) => ({ key: 'channel', label: 'Channel', get: (r) => chById.get(get(r))?.number, cell });
+  let columns = $derived({
+    shows: [
+      { key: 'title', label: 'Title', cell: showTitleCell }, channel((s) => s.home_channel_id, homeChannelCell),
+      { key: 'mode', label: 'Mode', class: 'small', get: modeLabel }, { key: 'certificate', label: 'Cert' },
+      { key: 'year', label: 'Years', class: 'small', cell: yearsCell }, { key: 'episode_count', label: 'Eps', class: 'num' },
+      { key: 'last_aired', label: 'Last aired', class: 'small muted', get: (s) => s.last_aired?.ts, cell: lastAiredCell },
+    ],
+    movies: [title, year, { key: 'certificate', label: 'Cert' }, length, codec, plays, channel((m) => m.home_channel_id, homeChannelCell), flags],
+    music: [{ key: 'artist', label: 'Artist' }, { ...title, cell: musicTitleCell }, year,
+      { key: 'genres', label: 'Genres', class: 'small', get: (m) => (m.genres ?? []).join(', ') }, length, codec, plays, flags],
+    adverts: [title, year, length, codec, plays, { key: 'family_safe', label: 'Family-safe', cell: familySafeCell }, flags],
+    idents: [title, length, codec, plays, channel((m) => m.home_channel_id, identChannelCell), flags],
+    custom: [
+      { key: 'title', label: 'Title', cell: customTitleCell }, { key: 'kind', label: 'Kind', get: (e) => (e.kind === 'show' ? 'series' : 'film') },
+      year, channel((e) => e.channel_id, lineupChannelCell), { key: 'state', label: 'State', get: (e) => lineupState(e)[1], cell: stateCell },
+      { key: 'transient', label: 'After airing', get: (e) => (e.transient ? 'removed' : 'kept') },
+      { key: 'actions', label: '', class: 'right', sortable: false, cell: removeCell },
+    ],
+    attention: [
+      { key: 'title', label: 'Item', get: (i) => `${i.show_title ?? ''} ${i.title}`, cell: attentionItemCell },
+      { key: 'attention', label: 'Reason', class: 'small' }, { key: 'fix', label: 'Quick fix', sortable: false, cell: fixCell },
+    ],
+  }[tab]);
+  const EMPTY = {
+    shows: 'No series in the catalogue.', movies: 'No films in the catalogue.', music: 'No music videos. Add a music source under pitv_content, Sources, then import the catalogue.',
+    adverts: 'No adverts.', idents: 'No idents.', custom: 'Nothing added by hand yet: use Add to the catalogue.', attention: 'Nothing needs attention.',
+  };
+  const edit = (r) => (tab === 'shows' ? (showId = r.id) : KIND[tab] ? (mediaId = r.id) : undefined);
 </script>
 
 <div class="stack">
   <CatalogueCard />
-  <nav class="tabs sub">
-    {#each TABS as [id, label] (id)}
-      <button class:active={tab === id} onclick={() => switchTab(id)}>{label}</button>
-    {/each}
-  </nav>
-
-  {#if tab !== 'attention'}
-    <div class="row">
-      <input type="search" placeholder="Search titles…" aria-label="Search titles" value={q} oninput={(e) => search(e.currentTarget.value)} style="flex:1;max-width:360px" />
-      {#if tab !== 'shows' && media}
-        <span class="small muted">{media.total} items</span>
-        <span class="btn-group">
-          <button class="small" disabled={offset === 0} onclick={() => (offset = Math.max(0, offset - PAGE))}>Prev</button>
-          <button class="small" disabled={offset + PAGE >= media.total} onclick={() => (offset += PAGE)}>Next</button>
-        </span>
-      {:else if shows}
-        <span class="small muted">{shows.length} shows</span>
-      {/if}
-    </div>
-  {/if}
-
-  {#if tab === 'shows'}
-    <div class="card pad-0 table-wrap">
-      <table>
-        <thead><tr><th>Title</th><th>Channel</th><th>Mode</th><th>Cert</th><th>Years</th><th class="num">Eps</th><th>Last aired</th></tr></thead>
-        <tbody>
-          {#each shows ?? [] as s (s.id)}
-            <tr class="clickable" tabindex="0" onclick={() => (showId = s.id)} onkeydown={onEnter(() => (showId = s.id))}>
-              <td><b>{s.title}</b>{#if s.category && s.category !== 'general'}<span class="badge info">{s.category}</span>{/if}{#if s.excluded}<span class="badge">excluded</span>{/if}{#if s.attention_count}<span class="badge warn">{s.attention_count}</span>{/if}</td>
-              <td>{#if chById.get(s.home_channel_id)}<ChannelBadge channel={chById.get(s.home_channel_id)} size="sm" name={false} />{:else}<span class="muted">–</span>{/if}</td>
-              <td class="small">{modeLabel(s)}</td>
-              <td>{s.certificate ?? '–'}</td>
-              <td class="small">{s.year ?? '?'}{s.end_year && s.end_year !== s.year ? `–${s.end_year}` : ''}</td>
-              <td class="num">{s.episode_count}</td>
-              <td class="small muted">{#if s.last_aired}{fmtEpisode(s.last_aired.season, s.last_aired.episode)} · {fmtAgo(s.last_aired.ts, clock.ts)}{:else}never{/if}</td>
-            </tr>
-          {:else}
-            <tr><td colspan="7" class="empty">{shows ? 'No shows found.' : 'Loading…'}</td></tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-  {:else if tab === 'attention'}
-    <div class="card pad-0 table-wrap">
-      <table>
-        <thead><tr><th>Item</th><th>Reason</th><th>Quick fix</th></tr></thead>
-        <tbody>
-          {#each attention ?? [] as item (item.id)}
-            <tr>
-              <td><button class="ghost small" onclick={() => (mediaId = item.id)}><b>{item.show_title ? `${item.show_title} · ` : ''}{item.title}</b></button>
-                <div class="tiny muted">{item.kind}{item.year ? ` · ${item.year}` : ''}{item.vcodec ? ` · ${item.vcodec}` : ''}</div></td>
-              <td class="small">{item.attention}</td>
-              <td>
-                <div class="inline-form">
-                  <input class="xnarrow" type="number" placeholder="Year" aria-label="Year" min="1900" max="2100" value={fixes[item.id]?.year ?? ''} oninput={(e) => (fixes[item.id] = { ...fixes[item.id], year: e.currentTarget.value })} />
-                  <select value={fixes[item.id]?.certificate ?? ''} aria-label="Certificate" onchange={(e) => (fixes[item.id] = { ...fixes[item.id], certificate: e.currentTarget.value })}>
-                    <option value="">Cert</option>{#each CERTIFICATES as c (c)}<option value={c}>{c}</option>{/each}
-                  </select>
-                  <button class="small primary" onclick={() => fix(item)} disabled={fix.busy || (!fixes[item.id]?.year && !fixes[item.id]?.certificate)}>Save</button>
-                </div>
-              </td>
-            </tr>
-          {:else}
-            <tr><td colspan="3" class="empty">{attention ? 'Nothing needs attention.' : 'Loading…'}</td></tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-  {:else if tab === 'music'}
-    <div class="card pad-0 table-wrap">
-      <table>
-        <thead><tr><th>Artist</th><th>Title</th><th>Year</th><th>Genres</th><th>Length</th><th>Codec</th><th>Plays from</th><th></th></tr></thead>
-        <tbody>
-          {#each media?.items ?? [] as m (m.id)}
-            <tr class="clickable" tabindex="0" onclick={() => (mediaId = m.id)} onkeydown={onEnter(() => (mediaId = m.id))}>
-              <td>{m.artist ?? '–'}</td>
-              <td><b>{m.title}</b>{#if m.concert}<span class="badge info">concert</span>{/if}<div class="tiny muted truncate" style="max-width:320px">{m.filename}</div></td>
-              <td>{m.year ?? '–'}</td>
-              <td class="small">{(m.genres ?? []).join(', ') || '–'}</td>
-              <td class="small">{fmtDuration(m.duration)}</td>
-              <td class="small"><Codec item={m} /></td>
-              <td><Availability item={m} /></td>
-              <td>{#if m.excluded}<span class="badge">excluded</span>{/if}{#if m.attention}<span class="badge warn" title={m.attention}>!</span>{/if}</td>
-            </tr>
-          {:else}
-            <tr><td colspan="8" class="empty">{media ? 'No music videos in the catalogue. Add a music source in pitv_content Sources, then import the catalogue.' : 'Loading…'}</td></tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-  {:else}
-    <div class="card pad-0 table-wrap">
-      <table>
-        <thead><tr><th>Title</th><th>Year</th><th>Cert</th><th>Length</th><th>Codec</th><th>Plays from</th>{#if tab === 'idents'}<th>Channel</th>{/if}{#if tab === 'adverts'}<th>Family-safe</th>{/if}<th></th></tr></thead>
-        <tbody>
-          {#each media?.items ?? [] as m (m.id)}
-            <tr class="clickable" tabindex="0" onclick={() => (mediaId = m.id)} onkeydown={onEnter(() => (mediaId = m.id))}>
-              <td><b>{m.title}</b><div class="tiny muted truncate" style="max-width:320px">{m.filename}</div></td>
-              <td>{m.year ?? '–'}</td>
-              <td>{m.certificate ?? '–'}</td>
-              <td class="small">{fmtDuration(m.duration)}</td>
-              <td class="small"><Codec item={m} /></td>
-              <td><Availability item={m} /></td>
-              {#if tab === 'idents'}<td>{#if chById.get(m.home_channel_id)}<ChannelBadge channel={chById.get(m.home_channel_id)} size="sm" />{:else}<span class="muted">any</span>{/if}</td>{/if}
-              {#if tab === 'adverts'}<td onclick={(e) => e.stopPropagation()}><label class="check small" title={m.family_safe ? 'Family-safe: may air on family-safe channels' : 'Not family-safe: never airs on family-safe channels'}><input type="checkbox" checked={!!m.family_safe} onchange={(e) => setFamilySafe(m, e.currentTarget.checked)} />{m.family_safe ? 'yes' : 'no'}</label></td>{/if}
-              <td>{#if m.excluded}<span class="badge">excluded</span>{/if}{#if m.attention}<span class="badge warn" title={m.attention}>!</span>{/if}</td>
-            </tr>
-          {:else}
-            <tr><td colspan="9" class="empty">{media ? 'No items found.' : 'Loading…'}</td></tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-  {/if}
+  <div class="row">
+    <Tabs tabs={TABS} active={tab} onselect={(id) => navigate(`/admin/library/${id}`)} label="Catalogue lists" />
+    <span class="spacer"></span>
+    <button class="primary" onclick={() => (adding = true)}>Add to the catalogue</button>
+  </div>
+  {#key tab}
+    <DataTable id="catalogue-{tab}" {columns} {rows} search="Filter titles…" empty={EMPTY[tab]}
+      onrow={tab === 'shows' || KIND[tab] ? edit : null} rowClass={(r) => (r.excluded ? 'off' : '')} />
+  {/key}
 </div>
 
+{#snippet titleCell(m)}<b>{m.title}</b><div class="tiny muted truncate" style="max-width:320px">{m.filename}</div>{/snippet}
+{#snippet musicTitleCell(m)}<b>{m.title}</b>{#if m.concert}<span class="badge info">concert</span>{/if}<div class="tiny muted truncate" style="max-width:320px">{m.filename}</div>{/snippet}
+{#snippet showTitleCell(s)}<b>{s.title}</b>{#if s.category && s.category !== 'general'}<span class="badge info">{s.category}</span>{/if}{#if s.excluded}<span class="badge">excluded</span>{/if}{#if s.attention_count}<span class="badge warn">{s.attention_count}</span>{/if}{/snippet}
+{#snippet yearsCell(s)}{s.year ?? '?'}{s.end_year && s.end_year !== s.year ? `–${s.end_year}` : ''}{/snippet}
+{#snippet lastAiredCell(s)}{#if s.last_aired}{fmtEpisode(s.last_aired.season, s.last_aired.episode)} · {fmtAgo(s.last_aired.ts, clock.ts)}{:else}never{/if}{/snippet}
+{#snippet lengthCell(m)}{fmtDuration(m.duration)}{/snippet}
+{#snippet codecCell(m)}<Codec item={m} />{/snippet}
+{#snippet availabilityCell(m)}<Availability item={m} />{/snippet}
+{#snippet flagsCell(m)}{#if m.excluded}<span class="badge">excluded</span>{/if}{#if m.attention}<span class="badge warn" title={m.attention}>!</span>{/if}{/snippet}
+{#snippet badgeFor(id)}{#if chById.get(id)}<ChannelBadge channel={chById.get(id)} size="sm" name={false} />{:else}<span class="muted">–</span>{/if}{/snippet}
+{#snippet homeChannelCell(r)}{@render badgeFor(r.home_channel_id)}{/snippet}
+{#snippet lineupChannelCell(e)}{@render badgeFor(e.channel_id)}{/snippet}
+{#snippet identChannelCell(m)}{#if chById.get(m.home_channel_id)}<ChannelBadge channel={chById.get(m.home_channel_id)} size="sm" />{:else}<span class="muted">any</span>{/if}{/snippet}
+{#snippet familySafeCell(m)}<span role="presentation" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}><label class="check small" title={m.family_safe ? 'May air on family-safe channels' : 'Never airs on family-safe channels'}><input type="checkbox" checked={!!m.family_safe} onchange={(e) => setFamilySafe(m, e.currentTarget.checked)} />{m.family_safe ? 'yes' : 'no'}</label></span>{/snippet}
+{#snippet customTitleCell(e)}<b>{e.title}</b>{#if e.genres?.length}<div class="tiny muted">{e.genres.join(', ')}</div>{/if}{/snippet}
+{#snippet stateCell(e)}{@const [cls, text] = lineupState(e)}<span class="badge {cls}">{text}</span>{/snippet}
+{#snippet removeCell(e)}<button class="small ghost" onclick={() => removeCustom(e)}>Remove</button>{/snippet}
+{#snippet attentionItemCell(item)}<button class="ghost small" onclick={() => (mediaId = item.id)}><b>{item.show_title ? `${item.show_title} · ` : ''}{item.title}</b></button>
+  <div class="tiny muted">{item.kind}{item.year ? ` · ${item.year}` : ''}{item.vcodec ? ` · ${item.vcodec}` : ''}</div>{/snippet}
+{#snippet fixCell(item)}
+  <div class="inline-form">
+    <input class="xnarrow" type="number" placeholder="Year" aria-label="Year" min="1900" max="2100" value={fixes[item.id]?.year ?? ''} oninput={(e) => (fixes[item.id] = { ...fixes[item.id], year: e.currentTarget.value })} />
+    <select value={fixes[item.id]?.certificate ?? ''} aria-label="Certificate" onchange={(e) => (fixes[item.id] = { ...fixes[item.id], certificate: e.currentTarget.value })}>
+      <option value="">Cert</option>{#each CERTIFICATES as c (c)}<option value={c}>{c}</option>{/each}
+    </select>
+    <button class="small primary" onclick={() => fix(item)} disabled={fix.busy || (!fixes[item.id]?.year && !fixes[item.id]?.certificate)}>Save</button>
+  </div>
+{/snippet}
+
+<AddToCatalogue open={adding} {channels} onclose={() => (adding = false)} onadded={added} />
 {#if showId}
   <ShowEditor id={showId} {channels} onclose={() => (showId = null)} onsaved={load} />
 {/if}

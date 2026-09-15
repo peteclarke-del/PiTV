@@ -8,6 +8,7 @@
   import Drawer from '../../components/Drawer.svelte';
   import Availability from '../../components/Availability.svelte';
   import Codec from '../../components/Codec.svelte';
+  import DataTable from '../../components/DataTable.svelte';
 
   let { id, channels = [], onclose, onsaved } = $props();
   let show = $state(null);
@@ -59,6 +60,14 @@
     form.anchor_days = new Set(form.anchor_days);
   }
   let overridden = $derived(show ? Object.keys(show.overrides ?? {}) : []);
+  const episodeColumns = [
+    { key: 'ep', label: 'Ep', class: 'nowrap mono small', get: (e) => fmtEpisode(e.season, e.episode) },
+    { key: 'title', label: 'Title', cell: titleCell },
+    { key: 'duration', label: 'Length', class: 'small', cell: lengthCell },
+    { key: 'vcodec', label: 'Codec', class: 'small', cell: codecCell },
+    { key: 'plays', label: 'Plays from', get: (e) => (e.cached ? 'cached' : e.origin ?? 'nas'), cell: playsCell },
+    { key: 'actions', label: '', class: 'right', sortable: false, cell: nextCell },
+  ];
 </script>
 
 <Drawer open={true} title={show?.title ?? 'Show'} subtitle={show?.folder ?? ''} {onclose} wide>
@@ -125,23 +134,8 @@
         </ul>
       {/if}
       <h3>Episodes ({show.episodes.length})</h3>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Ep</th><th>Title</th><th>Length</th><th>Codec</th><th>Plays from</th><th></th></tr></thead>
-          <tbody>
-            {#each show.episodes as e (e.id)}
-              <tr class:off={e.missing || e.excluded}>
-                <td class="nowrap mono small">{fmtEpisode(e.season, e.episode)}</td>
-                <td>{e.title}{#if e.attention}<span class="badge warn" title={e.attention}>!</span>{/if}{#if e.missing}<span class="badge danger">missing</span>{/if}</td>
-                <td class="small">{fmtDuration(e.duration)}</td>
-                <td class="small"><Codec item={e} /></td>
-                <td><Availability item={e} /></td>
-                <td class="right"><button class="small ghost" onclick={() => setCursor(e.season ?? 0, e.episode ?? 0)}>Next</button></td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
+      <DataTable id="show-episodes" columns={episodeColumns} rows={show.episodes} card={false} search="Filter episodes…"
+        sort={{ key: 'ep', dir: 'asc' }} empty="No episodes indexed." rowClass={(e) => (e.missing || e.excluded ? 'off' : '')} />
     </div>
   {:else}
     <div class="skeleton" style="height:200px"></div>
@@ -152,3 +146,8 @@
   {/snippet}
 </Drawer>
 
+{#snippet titleCell(e)}{e.title}{#if e.attention}<span class="badge warn" title={e.attention}>!</span>{/if}{#if e.missing}<span class="badge danger">missing</span>{/if}{/snippet}
+{#snippet lengthCell(e)}{fmtDuration(e.duration)}{/snippet}
+{#snippet codecCell(e)}<Codec item={e} />{/snippet}
+{#snippet playsCell(e)}<Availability item={e} />{/snippet}
+{#snippet nextCell(e)}<button class="small ghost" onclick={() => setCursor(e.season ?? 0, e.episode ?? 0)}>Next</button>{/snippet}

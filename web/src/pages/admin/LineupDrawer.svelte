@@ -3,8 +3,9 @@
   import AppBadge from '../../components/AppBadge.svelte';
   import { onMount } from 'svelte';
   import { get, post, put, del, tryApi, confirmApi } from '../../lib/api.js';
-  import { hasLineup } from '../../lib/format.js';
+  import { hasLineup, lineupState } from '../../lib/format.js';
   import { debounce } from '../../lib/util.js';
+  import DataTable from '../../components/DataTable.svelte';
   import Drawer from '../../components/Drawer.svelte';
 
   // Channels mounts a fresh drawer per channel, so `channel` is fixed for this instance.
@@ -61,13 +62,19 @@
     if (await confirmApi(`Remove "${e.title}" from ${channel.name}? It will have no channel until the generator or you place it again.`,
       { title: 'Remove from line-up', okLabel: 'Remove', danger: true }, () => del(`/api/lineup/${e.id}`))) afterEdit();
   }
-  function stateOf(e) {
-    if (e.wanted_open) return ['info', `fetching ${e.wanted_open}`];
-    if (e.placeholders) return ['warn', `${e.placeholders} scheduled`];
-    if (e.on_disk) return ['ok', e.kind === 'show' && e.episodes_on_disk ? `on disk (${e.episodes_on_disk} eps)` : 'on disk'];
-    return ['', 'not on disk'];
-  }
   let others = $derived(channels.filter((c) => c.id !== channel.id && c.enabled && hasLineup(c)));
+  const kindLabel = (e) => (e.kind === 'movie' ? 'film' : 'series');
+  // No default sort: the API orders entries by kind, then title.
+  const columns = [
+    { key: 'title', label: 'Title', cell: titleCell },
+    { key: 'kind', label: 'Kind', get: kindLabel, cell: kindCell },
+    { key: 'state', label: 'State', get: (e) => lineupState(e)[1], cell: stateCell },
+    { key: 'enabled', label: 'On', title: 'Enabled', class: 'control', get: (e) => !!e.enabled, cell: flag },
+    { key: 'transient', label: 'Trans.', title: 'Transient: fetched files live only in the cache', get: (e) => !!e.transient, class: 'control', cell: flag },
+    { key: 'remove_after_airing', label: 'Rm. after', title: 'Remove from the line-up after it airs', get: (e) => !!e.remove_after_airing, class: 'control', cell: flag },
+    { key: 'move', label: 'Move to', sortable: false, cell: moveCell },
+    { key: 'actions', label: '', class: 'right control', sortable: false, cell: actionsCell },
+  ];
 </script>
 
 <Drawer open={true} title={`Line-up: ${channel.name}`} subtitle={`Channel ${channel.number} carries these series and films; each can be on one channel only`} {onclose} wide>
@@ -105,29 +112,8 @@
       </div>
     {/if}
 
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Title</th><th>Kind</th><th>State</th><th title="Enabled">On</th><th title="Transient: fetched for airing then removed">Trans.</th><th title="Remove after airing">Rm. after</th><th>Move to</th><th></th></tr></thead>
-        <tbody>
-          {#each entries ?? [] as e (e.id)}
-            {@const [cls, txt] = stateOf(e)}
-            <tr class:off={!e.enabled}>
-              <td><b>{e.title}</b>{#if e.year}<span class="muted small"> ({e.year})</span>{/if}{#if e.pinned}<span class="badge" title="Pinned: survives rebalance">📌</span>{/if}
-                <div class="tiny muted">{e.source}{e.external ? ' · external' : ''}{e.next_episode ? ` · next ${e.next_episode}` : ''}{e.episode_minutes ? ` · ${e.episode_minutes} min` : ''}{e.wanted_done ? ` · ${e.wanted_done} fetched` : ''}</div></td>
-              <td><span class="badge">{e.kind === 'movie' ? 'film' : 'series'}</span></td>
-              <td><span class="badge {cls}">{txt}</span></td>
-              <td><input type="checkbox" checked={!!e.enabled} onchange={(ev) => setField(e, 'enabled', ev.currentTarget.checked)} aria-label="Enabled" /></td>
-              <td><input type="checkbox" checked={!!e.transient} onchange={(ev) => setField(e, 'transient', ev.currentTarget.checked)} aria-label="Transient" /></td>
-              <td><input type="checkbox" checked={!!e.remove_after_airing} onchange={(ev) => setField(e, 'remove_after_airing', ev.currentTarget.checked)} aria-label="Remove after airing" /></td>
-              <td><select onchange={(ev) => { move(e, ev.currentTarget.value); ev.currentTarget.value = ''; }} aria-label="Move to channel" style="min-height:28px;padding:.15rem .3rem"><option value="">…</option>{#each others as c (c.id)}<option value={c.id}>{c.number} {c.short_name}</option>{/each}</select></td>
-              <td class="right"><button class="small danger" onclick={() => remove(e)}>Remove</button></td>
-            </tr>
-          {:else}
-            <tr><td colspan="8" class="empty">{entries ? 'Nothing in this line-up yet. Add titles above or run Generate on the Channels page.' : 'Loading…'}</td></tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
+    <DataTable id="lineup-entries" {columns} rows={entries} card={false} search="Filter this line-up…"
+      empty="Nothing in this line-up yet. Add titles above or run Generate on the Channels page." rowClass={(e) => (e.enabled ? '' : 'off')} />
     <p class="tiny muted">Pinned entries survive rebalance; a series or film can be on one channel only. Entries not on disk are scheduled ahead and fetched by pitv_content when the channel allows it.</p>
   </div>
   {#snippet footer()}
@@ -136,11 +122,19 @@
   {/snippet}
 </Drawer>
 
+{#snippet titleCell(e)}<b>{e.title}</b>{#if e.year}<span class="muted small">{` (${e.year})`}</span>{/if}{#if e.pinned}<span class="badge" title="Pinned: survives rebalance">📌</span>{/if}
+  <div class="tiny muted">{e.source}{e.external ? ' · external' : ''}{e.next_episode ? ` · next ${e.next_episode}` : ''}{e.episode_minutes ? ` · ${e.episode_minutes} min` : ''}{e.wanted_done ? ` · ${e.wanted_done} fetched` : ''}</div>{/snippet}
+{#snippet kindCell(e)}<span class="badge">{kindLabel(e)}</span>{/snippet}
+{#snippet stateCell(e)}{@const [cls, txt] = lineupState(e)}<span class="badge {cls}">{txt}</span>{/snippet}
+{#snippet flag(e, c)}<input type="checkbox" checked={!!e[c.key]} onchange={(ev) => setField(e, c.key, ev.currentTarget.checked)} aria-label={c.title} />{/snippet}
+{#snippet moveCell(e)}<select onchange={(ev) => { move(e, ev.currentTarget.value); ev.currentTarget.value = ''; }} aria-label="Move to channel" style="min-height:28px;padding:.15rem .3rem"><option value="">…</option>{#each others as c (c.id)}<option value={c.id}>{c.number} {c.short_name}</option>{/each}</select>{/snippet}
+{#snippet actionsCell(e)}<button class="small danger" onclick={() => remove(e)}>Remove</button>{/snippet}
+
 <style>
   .add { position: relative; }
   .add input { width: 100%; }
   .opts { list-style: none; margin: .3rem 0 0; padding: .2rem; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--bg-elev); max-height: 280px; overflow: auto; display: flex; flex-direction: column; }
   .item { width: 100%; display: flex; justify-content: space-between; gap: .5rem; text-align: left; min-height: 0; padding: .35rem .5rem; }
   .item > span:first-child { flex: 1; min-width: 0; }
-  tr.off td:last-child, tr.off td:nth-child(4) { opacity: 1; }
+  /* A disabled entry is dimmed, but its On checkbox and Remove button must stay readable. */
 </style>

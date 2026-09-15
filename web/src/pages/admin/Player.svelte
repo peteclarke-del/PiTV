@@ -8,6 +8,7 @@
   import ProgressBar from '../../components/ProgressBar.svelte';
   import ChannelBadge from '../../components/ChannelBadge.svelte';
   import AppBadge from '../../components/AppBadge.svelte';
+  import DataTable from '../../components/DataTable.svelte';
   import { playbackIssue } from '../../lib/playback.js';
   import KeymapEditor from './KeymapEditor.svelte';
 
@@ -32,6 +33,12 @@
   let cache = $derived(s.cache ?? { enabled: false });
   let cacheFrac = $derived(cache.enabled && cache.max ? cache.used / cache.max : 0);
   let maint = $derived(s.maintenance ?? {});
+  const historyColumns = [
+    { key: 'started_at', label: 'Started', class: 'nowrap small', cell: startedCell },
+    { key: 'channel', label: 'Ch', get: (h) => h.channel_number ?? h.channel_id },
+    { key: 'title', label: 'Title' },
+    { key: 'length', label: 'Length', class: 'small muted', get: (h) => (h.ended_at ? h.ended_at - h.started_at : null), cell: lengthCell },
+  ];
 </script>
 
 <div class="stack">
@@ -98,7 +105,7 @@
         <div class="card-title"><h3>Cache</h3><AppBadge app="pitv" /></div>
         <p class="scope">pitv_content fills the cache; PiTV plays from it and evicts under the size cap.</p>
         {#if !s.online}<p class="muted small">Unknown while the player is offline.</p>
-        {:else if !cache.enabled}<p class="muted small">Local cache disabled. Set a cache directory under Weighting, Cache.</p>
+        {:else if !cache.enabled}<p class="muted small">Local cache disabled. Set a cache folder under Settings, Cache and pitv_content.</p>
         {:else}
           <ProgressBar value={cacheFrac} />
           <p class="small muted" style="margin:.4rem 0 0">{fmtBytes(cache.used)} of {fmtBytes(cache.max)} used · {cache.files} files{cache.free != null ? ` · ${fmtBytes(cache.free)} free on disk` : ''}</p>
@@ -126,25 +133,17 @@
       <div class="card"><div class="card-title"><h3>Remote</h3><AppBadge app="pitv" /></div><Remote {channels} /></div>
       <div class="card pad-0">
         <div class="card-title" style="padding:.8rem 1rem 0"><h3>Airing history</h3><AppBadge app="pitv" /></div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>Started</th><th>Ch</th><th>Title</th><th>Length</th></tr></thead>
-            <tbody>
-              {#each history ?? [] as h (h.id)}
-                <tr><td class="nowrap small">{fmtDateTime(h.started_at)}</td><td>{h.channel_number ?? h.channel_id}</td><td>{h.title}</td>
-                  <td class="small muted">{h.ended_at ? fmtDuration(h.ended_at - h.started_at) : 'playing'}</td></tr>
-              {:else}
-                <tr><td colspan="4" class="empty">{history ? 'Nothing has aired yet.' : 'Loading…'}</td></tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
+        <DataTable id="player-history" columns={historyColumns} rows={history} card={false} search="Filter history…"
+          sort={{ key: 'started_at', dir: 'desc' }} empty="Nothing has aired yet." />
       </div>
     </div>
   </div>
 
   <div class="card"><div class="card-title"><h3>Remote keymap</h3><AppBadge app="pitv" /></div><KeymapEditor /></div>
 </div>
+
+{#snippet startedCell(h)}{fmtDateTime(h.started_at)}{/snippet}
+{#snippet lengthCell(h)}{h.ended_at ? fmtDuration(h.ended_at - h.started_at) : 'playing'}{/snippet}
 
 <style>
   .two { display: grid; gap: 1rem; grid-template-columns: 1fr; }

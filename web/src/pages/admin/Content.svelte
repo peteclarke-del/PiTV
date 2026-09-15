@@ -17,6 +17,8 @@
   import AppBadge from '../../components/AppBadge.svelte';
   import ReadinessNotes from '../../components/ReadinessNotes.svelte';
   import ManifestCard from './ManifestCard.svelte';
+  import Tabs from '../../components/Tabs.svelte';
+  import DataTable from '../../components/DataTable.svelte';
   import ContentTokenCard from './ContentTokenCard.svelte';
   import Logs from './Logs.svelte';
   import ToolRun from './ToolRun.svelte';
@@ -24,7 +26,8 @@
   import ToolJobs from './ToolJobs.svelte';
 
   // Unknown sub-paths (including #/admin/content/providers, now its own admin tab) show the status view.
-  const SUBTABS = [['overview', 'Status'], ['run', 'Run'], ['settings', 'Settings'], ['catalogue', 'Online catalogue'], ['jobs', 'Jobs'], ['log', 'Log']];
+  const SUBTABS = [['overview', 'Status', 'basic'], ['run', 'Run', 'standard'], ['settings', 'Settings', 'standard'],
+    ['catalogue', 'Online catalogue', 'standard'], ['jobs', 'Jobs', 'advanced'], ['log', 'Log', 'advanced']];
   const NEEDS_API = ['settings', 'catalogue', 'jobs'];
   let sub = $derived(SUBTABS.some(([id]) => id === route.parts[2]) ? route.parts[2] : 'overview');
   let tool = $state(null);          // GET /api/content/tool
@@ -88,6 +91,11 @@
   let stateBadge = $derived(st?.state === 'running' ? 'info' : st?.state === 'failed' ? 'danger' : 'ok');
   // systemd unit state: the timer-driven service is normally inactive, so only odd states are amber.
   const svc = (v) => (v === 'active' ? 'ok' : v === 'inactive' ? '' : 'warn');
+  const REPORT_COLUMNS = [
+    { key: 'started_at', label: 'When', class: 'small nowrap', cell: reportWhen },
+    { key: 'status', label: 'Status', cell: reportStatus },
+    { key: 'summary', label: 'Summary', class: 'small' },
+  ];
 </script>
 
 <div class="stack">
@@ -114,12 +122,8 @@
     {:else}<div class="skeleton" style="height:40px"></div>{/if}
   </div>
 
-  <nav class="tabs sub">
-    {#each SUBTABS as [id, label] (id)}
-      {@const locked = !online && NEEDS_API.includes(id)}
-      <button class:active={sub === id} onclick={() => navigate(`/admin/content/${id}`)} disabled={locked} title={locked ? 'Needs the pitv_content API' : ''}>{label}</button>
-    {/each}
-  </nav>
+  <Tabs active={sub} onselect={(id) => navigate(`/admin/content/${id}`)} label="pitv_content sections"
+    tabs={SUBTABS.map(([id, label, level]) => ({ id, label, level, disabled: !online && NEEDS_API.includes(id), title: !online && NEEDS_API.includes(id) ? 'Needs the pitv_content API' : '' }))} />
 
   {#if sub === 'overview'}
     <div class="overview">
@@ -159,9 +163,8 @@
           <div class="tiny muted mt">{fmtDateTime(st.last_run.started_ts)}{st.last_run.finished_ts ? ` to ${fmtDateTime(st.last_run.finished_ts)}` : ''}</div>
         {:else}<p class="muted small">No completed run reported.</p>{/if}
         <h4 class="mt">Reports</h4>
-        {#if tool?.reports?.length}
-          <ul class="runs">{#each tool.reports as r (r.id)}<li><StatusBadge status={r.status} /><span class="small">{r.summary || '–'}</span><span class="tiny muted nowrap">{fmtAgo(r.started_at, clock.ts)}</span></li>{/each}</ul>
-        {:else}<p class="muted small">No reports yet; the tool posts one after each run.</p>{/if}
+        <DataTable id="content-reports" columns={REPORT_COLUMNS} rows={tool ? tool.reports ?? [] : null} card={false} size={10}
+          sort={{ key: 'started_at', dir: 'desc' }} empty="No reports yet; the tool posts one after each run." />
       </div>
     </div>
     <div class="card">
@@ -170,7 +173,7 @@
       {#if readiness}
         <div class="row small mb"><StatusBadge status={readiness.status} /><span>{readiness.summary}</span></div>
         <ReadinessNotes notes={readiness.notes} />
-      {:else}<p class="muted small">Runs automatically at the readiness hours set under Weighting, Maintenance.</p>{/if}
+      {:else}<p class="muted small">Runs automatically at the readiness hours set under Settings, Maintenance.</p>{/if}
     </div>
     <ManifestCard />
     <ContentTokenCard />
@@ -179,7 +182,7 @@
   {:else if sub === 'settings'}
     {#if !online}<div class="empty">Settings need the pitv_content API.</div>
     {:else if !loadedSub.settings}<div class="skeleton" style="height:200px"></div>
-    {:else}<p class="scope" style="margin:0"><AppBadge app="content" /> pitv_content's own configuration, stored by pitv_content. PiTV relays the edits through its API; nothing here changes PiTV.</p><SchemaForm {schema} errors={schemaErrors} saving={savingSchema} onsave={saveSchema} app="content" />{/if}
+    {:else}<p class="scope" style="margin:0"><AppBadge app="content" /> pitv_content's own configuration, stored by pitv_content. PiTV relays the edits through its API; nothing here changes PiTV.</p><SchemaForm {schema} groups={['Providers', 'Search', 'Encoding', 'Schedule', 'Advanced']} errors={schemaErrors} saving={savingSchema} onsave={saveSchema} app="content" />{/if}
   {:else if sub === 'catalogue'}
     <p class="scope" style="margin:0"><AppBadge app="content" /> Online titles pitv_content knows about. Enabling one lets pitv_content fetch from it; anything fetched reaches PiTV's catalogue through the library index.</p>
     {#if !online}<div class="empty">The catalogue needs the pitv_content API.</div>{:else if !catalogue}<div class="skeleton" style="height:120px"></div>{:else}<ToolCatalogue {catalogue} onchange={() => loadSub('catalogue', true)} />{/if}
@@ -196,3 +199,6 @@
   .overview { display: grid; gap: 1rem; grid-template-columns: 1fr; }
   @media (min-width: 900px) { .overview { grid-template-columns: 3fr 2fr; align-items: start; } }
 </style>
+
+{#snippet reportWhen(r)}{fmtAgo(r.started_at, clock.ts)}{/snippet}
+{#snippet reportStatus(r)}<StatusBadge status={r.status} />{/snippet}

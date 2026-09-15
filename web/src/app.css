@@ -158,7 +158,8 @@ th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--
 th { font-weight: 600; color: var(--fg-muted); font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover td { background: var(--bg-sunken); }
-tr.off td { opacity: .6; }   /* disabled or missing rows; pages keep their toggles at full opacity */
+tr.off td { opacity: .6; }   /* disabled or missing rows */
+tr.off td.control { opacity: 1; }   /* ...whose switches and buttons stay usable */
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 /* badges & chips */
@@ -200,9 +201,6 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .empty { padding: 2rem 1rem; text-align: center; color: var(--fg-muted); }
 .sep { color: var(--fg-faint); }
 ul.plain { margin: 0; padding-left: 1.1rem; }
-.runs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .4rem; }
-.runs li { display: flex; gap: .5rem; align-items: baseline; }
-.runs li span:nth-child(2) { flex: 1; }
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: .3rem 1rem; font-size: .9rem; }
 .kv dt { color: var(--fg-muted); }
 .kv dd { margin: 0; word-break: break-word; }

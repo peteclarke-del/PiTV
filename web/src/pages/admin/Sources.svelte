@@ -8,13 +8,15 @@
   import { guard } from '../../lib/guard.svelte.js';
   import { fmtAgo } from '../../lib/format.js';
   import AppBadge from '../../components/AppBadge.svelte';
+  import DataTable from '../../components/DataTable.svelte';
   import Drawer from '../../components/Drawer.svelte';
   import FolderPicker from './FolderPicker.svelte';
 
   const TYPES = [['tv', 'TV shows'], ['movie', 'Movies'], ['advert', 'Adverts'], ['ident', 'Idents'], ['music', 'Music videos']];
   const CATEGORIES = [['general', 'General'], ['sport', 'Sport'], ['kids', 'Children\'s']];
-  const LOCATIONS = [['nas', 'NAS shares', 'Indexed read-only; pitv_content copies or transcodes from here into the cache before a programme airs.'],
-                     ['cache', 'Cache folders', 'Material pitv_content fetched online, filed under acquire_dir; it already plays from the cache.']];
+  const LOCATIONS = [['nas', 'NAS shares', 'Indexed read-only; pitv_content copies or transcodes from here into the cache before a programme airs.',
+                      'No NAS shares. Add the folders where TV shows, films, adverts, idents and music videos live.'],
+                     ['cache', 'Cache folders', 'Material pitv_content fetched online, filed under acquire_dir; it already plays from the cache.', 'Nothing fetched yet.']];
   let doc = $state(null);          // {owner, offline, error, sources}
   let editing = $state(null);      // form, with isNew
   let errors = $state({});
@@ -26,9 +28,22 @@
   $effect(() => { changes.library; untrack(load); });
 
   let offline = $derived(!!doc?.offline);
-  let byLocation = $derived(LOCATIONS.map(([loc, label, help]) => [loc, label, help, (doc?.sources ?? []).filter((s) => (s.location ?? 'nas') === loc)]));
+  let byLocation = $derived(LOCATIONS.map(([loc, label, help, empty]) =>
+    [loc, label, help, empty, doc ? (doc.sources ?? []).filter((s) => (s.location ?? 'nas') === loc) : null]));
   const typeLabel = (t) => TYPES.find((x) => x[0] === t)?.[1] ?? t;
   const indexedAt = (h) => h?.last_indexed_ts ?? h?.last_indexed ?? null;
+  // Worst first, so an ascending sort on Health lists the problems at the top.
+  const HEALTH = [['danger', 'not mounted'], ['danger', 'unreadable'], ['', 'unknown', "Health is reported by pitv_content's API"], ['ok', 'mounted']];
+  const healthRank = (h) => (h?.mounted === false ? 0 : h?.readable === false ? 1 : h?.mounted === true ? 3 : 2);
+  const columns = [
+    { key: 'name', label: 'Name', cell: nameCell },
+    { key: 'type', label: 'Type', get: (s) => typeLabel(s.type), cell: typeCell },
+    { key: 'root', label: 'Root', class: 'mono small', cell: rootCell },
+    { key: 'health', label: 'Health', get: (s) => healthRank(s.health), cell: healthCell },
+    { key: 'items', label: 'Items', class: 'num', get: (s) => s.health?.items },
+    { key: 'indexed', label: 'Last indexed', class: 'small muted nowrap', get: (s) => indexedAt(s.health), cell: indexedCell },
+    { key: 'actions', label: '', class: 'nowrap right', sortable: false, cell: actionsCell },
+  ];
 
   function add() { errors = {}; editing = { isNew: true, id: '', name: '', type: 'tv', category: 'general', root: '', remote: '', enabled: true }; }
   function edit(s) { errors = {}; editing = { isNew: false, id: s.id, name: s.name ?? '', type: s.type, category: s.category || 'general', root: s.root ?? '', remote: s.remote ?? '', enabled: s.enabled !== false }; }
@@ -79,42 +94,21 @@
     {/if}
   </div>
 
-  {#each byLocation as [loc, label, help, rows] (loc)}
+  {#each byLocation as [loc, label, help, empty, rows] (loc)}
     <div class="card pad-0">
       <div class="head"><h3>{label}</h3><span class="small muted">{help}</span></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Name</th><th>Type</th><th>Root</th><th>Health</th><th class="num">Items</th><th>Last indexed</th><th></th></tr></thead>
-          <tbody>
-            {#each rows as s (s.id)}
-              {@const h = s.health ?? {}}
-              <tr class:off={s.enabled === false}>
-                <td><b>{s.name}</b>{#if s.enabled === false}<span class="badge">disabled</span>{/if}<div class="tiny muted mono">{s.id}</div></td>
-                <td>{typeLabel(s.type)}{#if s.type === 'tv' && s.category && s.category !== 'general'}<span class="badge info">{s.category}</span>{/if}</td>
-                <td class="mono small" style="max-width:300px" title={s.root}><div class="truncate">{s.root}</div>{#if s.remote}<div class="tiny muted truncate">{s.remote}</div>{/if}</td>
-                <td>
-                  {#if h.mounted === false}<span class="badge danger">not mounted</span>
-                  {:else if h.readable === false}<span class="badge danger">unreadable</span>
-                  {:else if h.mounted === true}<span class="badge ok">mounted</span>
-                  {:else}<span class="badge" title="Health is reported by pitv_content's API">unknown</span>{/if}
-                  {#if h.error}<div class="tiny" style="color:var(--danger)">{h.error}</div>{/if}
-                </td>
-                <td class="num">{h.items ?? '–'}</td>
-                <td class="small muted nowrap">{indexedAt(h) ? fmtAgo(indexedAt(h), clock.ts) : 'never'}</td>
-                <td class="nowrap right">
-                  <button class="small" onclick={() => edit(s)} disabled={offline}>Edit</button>
-                  <button class="small danger" onclick={() => remove(s)} disabled={offline}>Remove</button>
-                </td>
-              </tr>
-            {:else}
-              <tr><td colspan="7" class="empty">{doc ? (loc === 'nas' ? 'No NAS shares. Add the folders where TV shows, films, adverts, idents and music videos live.' : 'Nothing fetched yet.') : 'Loading…'}</td></tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
+      <DataTable id="sources-{loc}" {columns} {rows} card={false} {empty} rowClass={(s) => (s.enabled === false ? 'off' : '')} />
     </div>
   {/each}
 </div>
+
+{#snippet nameCell(s)}<b>{s.name}</b>{#if s.enabled === false}<span class="badge">disabled</span>{/if}<div class="tiny muted mono">{s.id}</div>{/snippet}
+{#snippet typeCell(s)}{typeLabel(s.type)}{#if s.type === 'tv' && s.category && s.category !== 'general'}<span class="badge info">{s.category}</span>{/if}{/snippet}
+{#snippet rootCell(s)}<div style="max-width:300px" title={s.root}><div class="truncate">{s.root}</div>{#if s.remote}<div class="tiny muted truncate">{s.remote}</div>{/if}</div>{/snippet}
+{#snippet healthCell(s)}{@const [cls, text, title] = HEALTH[healthRank(s.health)]}<span class="badge {cls}" {title}>{text}</span>{#if s.health?.error}<div class="tiny" style="color:var(--danger)">{s.health.error}</div>{/if}{/snippet}
+{#snippet indexedCell(s)}{indexedAt(s.health) ? fmtAgo(indexedAt(s.health), clock.ts) : 'never'}{/snippet}
+{#snippet actionsCell(s)}<button class="small" onclick={() => edit(s)} disabled={offline}>Edit</button>
+  <button class="small danger" onclick={() => remove(s)} disabled={offline}>Remove</button>{/snippet}
 
 <Drawer open={!!editing} title={editing?.isNew ? 'Add source' : `Edit source ${editing?.id ?? ''}`} onclose={() => (editing = null)}>
   {#if editing}

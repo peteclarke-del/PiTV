@@ -4,6 +4,7 @@
   import { get, tryApi } from '../../lib/api.js';
   import { fmtDateTime } from '../../lib/format.js';
   import AppBadge from '../../components/AppBadge.svelte';
+  import DataTable from '../../components/DataTable.svelte';
   import { downloadJson } from '../../lib/util.js';
 
   let manifest = $state(null);
@@ -22,6 +23,15 @@
     for (const it of items) by[it.action] = (by[it.action] ?? 0) + 1;
     return { total: items.length, by, cached: items.filter((i) => i.already_cached).length, wanted: (manifest.wanted ?? []).length, shortfalls: (manifest.shortfalls ?? []).length };
   });
+  const title = (it) => (it.show_title ? `${it.show_title} · ${it.title}` : it.title);
+  const columns = [
+    { key: 'title', label: 'Title', get: title, cell: titleCell },
+    { key: 'kind', label: 'Kind', class: 'small' },
+    { key: 'action', label: 'Action', cell: actionCell },
+    { key: 'first_air_ts', label: 'First air', class: 'small nowrap', cell: airCell },
+    { key: 'channels', label: 'Channels', class: 'small', get: (it) => (it.channels ?? []).join(', ') },
+    { key: 'already_cached', label: 'Cached', get: (it) => !!it.already_cached, cell: cachedCell },
+  ];
   onMount(loadManifest);
 </script>
 
@@ -43,27 +53,14 @@
     </div>
     <p class="tiny muted mt">Generated {fmtDateTime(manifest.generated_ts)} · horizon {fmtDateTime(manifest.horizon_ts)} · cache <span class="mono">{manifest.cache_dir || '(unset)'}</span> · acquire <span class="mono">{manifest.acquire_dir || '(unset)'}</span>{manifest.profile ? ` · profile ${manifest.profile.width}×${manifest.profile.height} ${manifest.profile.vcodec}` : ''}</p>
     {#if manifest.note}<p class="note small">{manifest.note}</p>{/if}
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Title</th><th>Kind</th><th>Action</th><th>First air</th><th>Channels</th><th>Cached</th></tr></thead>
-        <tbody>
-          {#each manifest.items.slice(0, 50) as it (it.media_id ?? it.target)}
-            <tr>
-              <td><b>{it.title}</b><div class="tiny muted truncate" style="max-width:320px" title={it.relpath}>{it.relpath}</div></td>
-              <td class="small">{it.kind}</td>
-              <td><span class="badge {it.action === 'transcode' ? 'warn' : 'info'}">{it.action}</span></td>
-              <td class="small nowrap">{fmtDateTime(it.first_air_ts)}</td>
-              <td class="small">{(it.channels ?? []).join(', ')}</td>
-              <td>{#if it.already_cached}<span class="badge ok">yes</span>{:else}<span class="muted small">no</span>{/if}</td>
-            </tr>
-          {:else}
-            <tr><td colspan="6" class="empty">Nothing to fetch for this window.</td></tr>
-          {/each}
-        </tbody>
-      </table>
-      {#if manifest.items.length > 50}<p class="tiny muted">Showing the first 50 of {manifest.items.length} items; download the JSON for the full list.</p>{/if}
-    </div>
+    <DataTable id="manifest-items" {columns} rows={manifest.items ?? []} key={(it) => it.request_id} search="Filter items…"
+      sort={{ key: 'first_air_ts', dir: 'asc' }} card={false} empty="Nothing to fetch for this window." />
   {:else}
     <div class="skeleton" style="height:80px"></div>
   {/if}
 </div>
+
+{#snippet titleCell(it)}<b>{title(it)}</b>{#if it.uid}<div class="tiny muted truncate" style="max-width:320px" title={it.uid}>{it.uid}</div>{/if}{/snippet}
+{#snippet actionCell(it)}<span class="badge {it.action === 'transcode' ? 'warn' : 'info'}">{it.action}</span>{/snippet}
+{#snippet airCell(it)}{fmtDateTime(it.first_air_ts)}{/snippet}
+{#snippet cachedCell(it)}{#if it.already_cached}<span class="badge ok">yes</span>{:else}<span class="muted small">no</span>{/if}{/snippet}

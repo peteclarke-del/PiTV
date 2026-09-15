@@ -337,3 +337,19 @@ def test_old_report_files_are_pruned(conn, tmp_path):
         os.utime(f, (old, old))
     assert apply_report_files(conn, cache) == 0
     assert sorted(p.name for p in d.iterdir()) == ["recent.json"]   # unapplied and recent: retried next pass
+
+
+def test_added_title_without_a_channel_goes_where_its_genres_fit(tmp_path):
+    """The admin's Add to the catalogue may leave the channel to PiTV: a title lands on a channel
+    that accepts its genres, as the generator would place it, and one no channel takes is refused."""
+    ctx = make_library(tmp_path, max_episodes=1)
+    conn = ctx["conn"]
+    e = lineup.add(conn, None, title="Count Duckula", kind="show", year=1988, genres=["Animation"])
+    chosen = next(c for c in lineup.programme_channels(conn) if c["id"] == e["channel_id"])
+    assert lineup.channel_fit(chosen, {"animation"}) is not None
+    with dbm.tx(conn):
+        conn.execute("UPDATE channels SET excluded_genres = '[\"animation\"]'")
+    with pytest.raises(ValueError):
+        lineup.add(conn, None, title="Jamie and the Magic Torch", kind="show", genres=["Animation"])
+    with pytest.raises(ValueError):
+        lineup.add(conn, None, show_id=1)       # moving a library title needs a destination

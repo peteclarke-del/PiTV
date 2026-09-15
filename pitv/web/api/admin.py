@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from ... import __version__, catalogue, tool_client
+from ... import __version__, catalogue, settings_schema, tool_client
 from ... import db as dbm
 from ... import lineup as lineup_mod
 from ...db import (
@@ -384,7 +384,8 @@ def list_media(conn: sqlite3.Connection = Depends(admin_conn), kind: str | None 
         params.append(show_id)
     total = conn.execute(f"SELECT COUNT(*) FROM ({sql})", params).fetchone()[0]
     sql += " ORDER BY title, season, episode LIMIT ? OFFSET ?"
-    rows = conn.execute(sql, (*params, max(1, min(limit, 500)), max(0, offset))).fetchall()
+    # The admin lists a whole kind and filters, sorts and pages it in the browser.
+    rows = conn.execute(sql, (*params, max(1, min(limit, 20000)), max(0, offset))).fetchall()
     return {"total": total, "items": [media_public(r) for r in rows]}
 
 
@@ -590,6 +591,12 @@ def _public_settings(conn: sqlite3.Connection) -> dict[str, Any]:
 @router.get("/settings")
 def get_settings(conn: sqlite3.Connection = Depends(admin_conn)):
     return _public_settings(conn)
+
+
+@router.get("/settings/schema")
+def get_settings_schema(conn: sqlite3.Connection = Depends(admin_conn)):
+    """The settings panes: each field's pane, level, label, help, range, default and value."""
+    return settings_schema.schema(_public_settings(conn), DEFAULT_SETTINGS)
 
 
 @router.put("/settings")
@@ -938,7 +945,7 @@ def lineup_options(conn: sqlite3.Connection = Depends(admin_conn), q: str = "", 
 @router.post("/lineup")
 def lineup_add(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
     try:
-        return lineup_mod.add(conn, int(body["channel_id"]), show_id=body.get("show_id"), media_id=body.get("media_id"),
+        return lineup_mod.add(conn, optional_int(body.get("channel_id"), "channel_id"), show_id=body.get("show_id"), media_id=body.get("media_id"),
                               title=body.get("title"), year=body.get("year"), kind=body.get("kind"), genres=body.get("genres"),
                               transient=body.get("transient"), episode_minutes=body.get("episode_minutes"),
                               source="catalogue" if body.get("catalogue") else "manual")

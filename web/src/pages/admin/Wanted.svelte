@@ -10,6 +10,7 @@
   import ProgressBar from '../../components/ProgressBar.svelte';
   import StatusBadge from '../../components/StatusBadge.svelte';
   import Drawer from '../../components/Drawer.svelte';
+  import DataTable from '../../components/DataTable.svelte';
 
   let wanted = $state(null);
   let lineupById = $state({});
@@ -54,6 +55,15 @@
     const r = await tryApi(post('/api/wanted/scan-gaps'));
     if (r) { toast.success(r.added ? `${r.added} missing episode(s) queued` : 'No gaps found in the shows on disk'); load(); }
   });
+  // No default sort: the API already lists queued, then failed, then the rest, newest first.
+  const columns = [
+    { key: 'title', label: 'Item', get: (w) => [w.show_title, w.title].filter(Boolean).join(' · '), cell: itemCell },
+    { key: 'ref', label: 'Source', class: 'small', cell: sourceCell },
+    { key: 'status', label: 'Status', cell: statusCell },
+    { key: 'attempts', label: 'Attempts', class: 'num' },
+    { key: 'created_at', label: 'Added', class: 'small muted nowrap', cell: addedCell },
+    { key: 'actions', label: '', class: 'right nowrap', sortable: false, cell: actionsCell },
+  ];
 </script>
 
 <div class="stack">
@@ -63,34 +73,21 @@
       <button class="small" onclick={scanGaps} disabled={scanGaps.busy}>Queue missing episodes</button>
       <button class="small primary" onclick={() => openAdd()}>Add wanted</button>
     </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Item</th><th>Source</th><th>Status</th><th>Attempts</th><th>Added</th><th></th></tr></thead>
-        <tbody>
-          {#each wanted ?? [] as w (w.id)}
-            <tr>
-              <td><b>{w.show_title ? `${w.show_title} · ` : ''}{w.title}</b>{#if w.auto}<span class="badge" title="Queued automatically">auto</span>{/if}{#if w.lineup_id}<span class="badge info" title="Wanted because of a line-up entry">line-up{lineupById[w.lineup_id]?.channel_number ? ` Ch ${lineupById[w.lineup_id].channel_number}` : ''}</span>{/if}{#if w.transient}<span class="badge warn" title="Fetched for its airing, then removed">transient</span>{/if}
-                <div class="tiny muted">{w.kind}{w.year ? ` · ${w.year}` : ''}{w.season != null ? ` · ${fmtEpisode(w.season, w.episode)}` : ''}{w.kind === 'music' && w.artist ? ` · ${w.artist}` : ''}{w.kind === 'music' && w.genre ? ` · ${w.genre}` : ''}</div></td>
-              <td class="small">{#if w.ref}<div class="tiny muted mono truncate" style="max-width:220px" title={w.ref}>{w.ref}</div>{:else}<span class="muted">search</span>{/if}</td>
-              <td style="min-width:160px"><StatusBadge status={w.status} />
-                {#if active(w.status)}<ProgressBar value={pct(w.progress ?? 0)} />{/if}
-                {#if w.message}<div class="tiny muted">{w.message}</div>{/if}
-                {#if w.status === 'done' && w.media_id}<div class="tiny"><a href="#/admin/library/{LIBRARY_TAB[w.kind] ?? 'shows'}">in library</a></div>{/if}</td>
-              <td class="num">{w.attempts}</td>
-              <td class="small muted nowrap">{fmtAgo(w.created_at, clock.ts)}</td>
-              <td class="right nowrap">
-                {#if w.status === 'failed' || w.status === 'done'}<button class="small" onclick={() => retry(w)}>Retry</button>{/if}
-                <button class="small danger" onclick={() => removeWanted(w)}>Delete</button>
-              </td>
-            </tr>
-          {:else}
-            <tr><td colspan="6" class="empty">{wanted ? 'Nothing wanted. Add an item or queue missing episodes.' : 'Loading…'}</td></tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
+    <DataTable id="wanted-list" {columns} rows={wanted} card={false} search="Filter wanted items…"
+      empty="Nothing wanted. Add an item or queue missing episodes." />
   </div>
 </div>
+
+{#snippet itemCell(w)}<b>{w.show_title ? `${w.show_title} · ` : ''}{w.title}</b>{#if w.auto}<span class="badge" title="Queued automatically">auto</span>{/if}{#if w.lineup_id}<span class="badge info" title="Wanted because of a line-up entry">line-up{lineupById[w.lineup_id]?.channel_number ? ` Ch ${lineupById[w.lineup_id].channel_number}` : ''}</span>{/if}{#if w.transient}<span class="badge warn" title="Fetched for its airing, then removed">transient</span>{/if}
+  <div class="tiny muted">{w.kind}{w.year ? ` · ${w.year}` : ''}{w.season != null ? ` · ${fmtEpisode(w.season, w.episode)}` : ''}{w.kind === 'music' && w.artist ? ` · ${w.artist}` : ''}{w.kind === 'music' && w.genre ? ` · ${w.genre}` : ''}</div>{/snippet}
+{#snippet sourceCell(w)}{#if w.ref}<div class="tiny muted mono truncate" style="max-width:220px" title={w.ref}>{w.ref}</div>{:else}<span class="muted">search</span>{/if}{/snippet}
+{#snippet statusCell(w)}<div style="min-width:160px"><StatusBadge status={w.status} />
+  {#if active(w.status)}<ProgressBar value={pct(w.progress ?? 0)} />{/if}
+  {#if w.message}<div class="tiny muted">{w.message}</div>{/if}
+  {#if w.status === 'done' && w.media_id}<div class="tiny"><a href="#/admin/library/{LIBRARY_TAB[w.kind] ?? 'shows'}">in library</a></div>{/if}</div>{/snippet}
+{#snippet addedCell(w)}{fmtAgo(w.created_at, clock.ts)}{/snippet}
+{#snippet actionsCell(w)}{#if w.status === 'failed' || w.status === 'done'}<button class="small" onclick={() => retry(w)}>Retry</button>{/if}
+  <button class="small danger" onclick={() => removeWanted(w)}>Delete</button>{/snippet}
 
 <Drawer open={!!adding} title="Add wanted item" onclose={() => (adding = null)}>
   {#if adding}

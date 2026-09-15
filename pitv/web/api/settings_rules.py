@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
+from ... import settings_schema
 from ...db import DEFAULT_SETTINGS
 from ...player.input import ACTIONS
 
@@ -31,21 +32,6 @@ SECRET_SETTINGS = frozenset({"admin_password_hash", "session_secret"})
 # RFC 6598 shared address space: carrier-grade NAT, and the addresses Tailscale hands out,
 # which is how the two apps would most likely reach each other on separate machines.
 _SHARED_NET = ipaddress.ip_network("100.64.0.0/10")
-
-
-# Ranges for numbers whose extremes break something: the overlay geometry, the player's own
-# memory guard (systemd's MemoryMax sits above it), or the build horizon. Other numbers need
-# only be finite and non-negative.
-_BOUNDS: dict[str, tuple[float, float]] = {
-    "horizon_days": (1, 31),
-    "catalogue_hour": (0, 23),
-    "osd_safe_margin": (0, 0.2),
-    "osd_scale": (0.5, 2.5),
-    "badge_seconds": (1, 60),
-    "memory_limit_mb": (200, 3000),
-    "clock_wait_seconds": (0, 900),
-    "cache_max_gb": (1, 100_000),
-}
 
 
 class SettingError(ValueError):
@@ -104,6 +90,9 @@ def check_setting(key: str, value: Any) -> Any:
     if key not in DEFAULT_SETTINGS or key in SECRET_SETTINGS:
         raise SettingError(f"unknown setting {key}")
     default = DEFAULT_SETTINGS[key]
+    choices = settings_schema.BY_KEY.get(key, {}).get("choices")
+    if choices is not None and value not in choices:
+        raise SettingError(f"{key} must be one of {', '.join(map(str, choices))}")
     if key in _PATH_KEYS:
         _check_path(key, value)
     elif key == "content_tool_url":
@@ -142,7 +131,7 @@ def check_setting(key: str, value: Any) -> Any:
             raise SettingError(f"{key} must be true or false")
     elif isinstance(default, (int, float)):
         _check_number(key, value, default)
-        low, high = _BOUNDS.get(key, (0, math.inf))
+        low, high = settings_schema.bounds(key) or (0, math.inf)
         if not low <= value <= high:
             raise SettingError(f"{key} must be between {low} and {high}")
     elif isinstance(default, str):

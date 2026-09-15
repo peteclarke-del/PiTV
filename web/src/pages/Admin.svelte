@@ -8,7 +8,9 @@
   import Sources from './admin/Sources.svelte';
   import Library from './admin/Library.svelte';
   import Channels from './admin/Channels.svelte';
-  import Weighting from './admin/Weighting.svelte';
+  import Settings from './admin/Settings.svelte';
+  import LevelSwitch from '../components/LevelSwitch.svelte';
+  import { shown } from '../lib/prefs.svelte.js';
   import Schedule from './admin/Schedule.svelte';
   import PlayerPage from './admin/Player.svelte';
   import System from './admin/System.svelte';
@@ -18,15 +20,19 @@
   import Providers from './admin/Providers.svelte';
 
   // Two applications share this admin: PiTV (catalogue, line-ups, schedule, playback) and pitv_content
-  // (sources, providers, fetching, encoding). The navigation keeps them apart so it is clear which app a page changes.
+  // (sources, providers, fetching, encoding). The navigation keeps them apart so it is clear which app a
+  // page changes. Each section carries the familiarity level it belongs to; the current one always shows.
   const groups = [
     ['pitv', 'Schedules and plays: what is on each channel and when',
-      [['dashboard', 'Dashboard'], ['channels', 'Channels'], ['library', 'Catalogue'], ['schedule', 'Schedule'],
-       ['weighting', 'Weighting'], ['player', 'Player'], ['logs', 'Logs'], ['system', 'System']]],
+      [['dashboard', 'Dashboard', 'basic'], ['channels', 'Channels', 'basic'], ['library', 'Catalogue', 'basic'],
+       ['schedule', 'Schedule', 'basic'], ['settings', 'Settings', 'basic'], ['player', 'Player', 'standard'],
+       ['logs', 'Logs', 'advanced'], ['system', 'System', 'basic']]],
     ['content', 'Indexes the NAS, fetches and encodes: what can be played',
-      [['sources', 'Sources'], ['providers', 'Providers'], ['wanted', 'Wanted'], ['content', 'Content']]],
+      [['content', 'Content', 'basic'], ['sources', 'Sources', 'standard'], ['wanted', 'Wanted', 'standard'],
+       ['providers', 'Providers', 'advanced']]],
   ];
-  let tab = $derived(route.parts[1] ?? 'dashboard');
+  const ALIASES = { weighting: 'settings' };   // the Settings page's old address
+  let tab = $derived(ALIASES[route.parts[1]] ?? route.parts[1] ?? 'dashboard');
   // "Skip for now" lasts for this browser session. Storage can be unavailable (private windows,
   // blocked site data); the choice then lasts until the page is reloaded.
   const SKIP_KEY = 'pitv-skip-setup';
@@ -62,13 +68,15 @@
       {:else}
         <a class="badge warn" href="#/admin/system" title="Set a password in System">No admin password</a>
       {/if}
+      <span class="spacer"></span>
+      <LevelSwitch />
     </div>
     <nav class="admin-nav" aria-label="Admin sections">
       {#each groups as [app, blurb, items] (app)}
         <div class="navgroup {app}">
           <AppBadge {app} title={blurb} />
           <div class="tabs">
-            {#each items as [id, name] (id)}
+            {#each items.filter(([id, , level]) => shown(level) || id === tab) as [id, name] (id)}
               <a href="#/admin/{id}" class:active={tab === id}>{name}</a>
             {/each}
           </div>
@@ -79,7 +87,7 @@
     {:else if tab === 'sources'}<Sources />
     {:else if tab === 'library'}<Library />
     {:else if tab === 'channels'}<Channels />
-    {:else if tab === 'weighting'}<Weighting />
+    {:else if tab === 'settings'}<Settings />
     {:else if tab === 'schedule'}<Schedule />
     {:else if tab === 'wanted'}<Wanted />
     {:else if tab === 'providers'}<Providers />

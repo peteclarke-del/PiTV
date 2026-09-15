@@ -316,7 +316,7 @@ Anchors are pinned into the day first; the gaps are filled afterwards.
   the 1970s to the 2000s: Seventies
   Breakfast, Eighties Pop, Nineties Morning, Disco & Soul, Concert, Noughties, Eighties Chart
   Show, Rock & Metal, Concert, Nineties Indie & Dance, Late Soul (`music_blocks`,
-  `music_decades`, editable in Weighting). A block picks videos matching its genre and decade,
+  `music_decades`, editable in Settings, Music). A block picks videos matching its genre and decade,
   widening to decade only, then anything in the allowed decades, then repeats, so a thin
   library never leaves gaps. Videos are not repeated within 36 hours nor concerts within 14
   days unless nothing else fits. Guides show a block as one programme with the current video
@@ -589,17 +589,32 @@ The admin is organised into two labelled sections, PiTV and pitv_content, so it 
 which app a page or setting affects. A page belongs to the app whose code acts on it. Sources
 are edited in PiTV's admin but belong to pitv_content, because only pitv_content reads them;
 the wanted list stays under PiTV because it is PiTV's data, which pitv_content sees only
-through the manifest. The frontend is being reorganised to this layout alongside the move to
-the imported catalogue; the tables describe the target.
+through the manifest.
+
+Familiarity levels. A switch in the admin header chooses Basic, Standard or Advanced, kept per
+browser. Basic is what a household needs to run the set; Standard adds what shapes the
+schedule and the catalogue; Advanced adds the scheduler's arithmetic, the player's plumbing
+and pitv_content's internals. Each page, sub-page, channel editor section and setting carries
+a level, and anything above the chosen one is left out (the page being viewed always stays
+in the navigation). At Basic the navigation is Dashboard, Channels, Catalogue, Schedule,
+Settings, System and Content; Standard adds Player, Sources and Wanted; Advanced adds Logs and
+Providers.
+
+Tables. Every table of records (not the editors whose row order means something, such as
+dayparts, music blocks, the keymap and provider priority) is one component, `DataTable`: a
+filter box, sort by any column (ascending, descending, off; blanks last), columns moved by
+dragging a header or Alt+arrow on it, and pages of 10 to 100 rows or all. Sort, column order
+and page size are remembered per table in the browser. Lists are loaded whole and handled in
+the browser; the catalogue's media list allows up to 20,000 rows per kind.
 
 PiTV:
 
 | Page | What you can do |
 |---|---|
 | Dashboard | Catalogue counts (cached, NAS only, fetched online), line-up summary per channel with unfetched placeholders and unplaced items, schedule horizon, readiness result, recent runs and jobs; import the catalogue (optionally re-indexing first), build or force-rebuild the week, check readiness |
-| Catalogue | The last import (when, from where, counts) with import, re-index and import, and upload an index file; browse shows, episodes, films, adverts, idents and music with where each comes from and whether it is cached; per-show editor (overrides, channel, strip or weekly anchor, rest weeks, category, next-episode cursor, upcoming airings); per-item editor (overrides, channel for films and idents, exclude, family-safe, concert, cache status, recent and upcoming airings); "needs attention" list with inline year and certificate fixes, including items no channel accepts |
-| Channels | Add, edit, delete channels; number, name, colour, enabled, description; adverts on/off and per break; pattern editor (add, remove, reorder tokens); allowed and excluded genres as compact multi-select lists with catalogue counts; NAS-only override; era, genre and TV/movie weights; weekday, Saturday and Sunday daypart tables; overnight replay start; content type and family-safe adverts. Each channel's line-up in a drawer: add from a searchable list or by title, remove, move, enable, transient and remove-after-airing toggles, state per entry (on disk, not on disk, fetching, scheduled). Generate, rebalance, export and import line-ups |
-| Weighting | PiTV's global defaults: broadcast day, horizon, era and advert era weights, TV/movie balance, watershed times and unknown certificates, kids cutoff, variety and repeat settings, timing, advert rules and the fallback advert keywords, player settings (navigation keys, badge time, static, hardware decoders, audio device, overscan margin, text scale, DRM connector), cache (directory, size cap, NAS fallback) and the pitv_content API address, NAS-only and external scheduling (lead days, episode length, weight, transient retention), maintenance hours (catalogue import, readiness), music blocks and decades; reset to defaults |
+| Catalogue | The last import (when, from where, counts) with import, re-index and import, and upload an index file; Add to the catalogue: a series or film not on the NAS (title with suggestions from pitv_content's fetchable titles, year, genres, channel or "choose by genres", episode length, remove after airing) becomes a line-up entry that pitv_content fetches before it airs, and an advert or music video (optionally with a link) joins the wanted list; lists of series, films, titles added here (with their state), music, adverts, idents and items needing attention, each with where it comes from and whether it is cached; per-show editor (overrides, channel, strip or weekly anchor, rest weeks, category, next-episode cursor, upcoming airings); per-item editor (overrides, channel for films and idents, exclude, family-safe, concert, cache status, recent and upcoming airings); "needs attention" list with inline year and certificate fixes, including items no channel accepts |
+| Channels | Add, edit, delete channels. The editor has five sections: Channel (number, name, colour, enabled, description, content type), Programmes (allowed and excluded genres with catalogue counts; NAS-only override at Standard), Breaks (adverts on or off and per break, family-safe adverts, idents; the pattern editor at Standard), Mix (Standard: TV and film balance, era and genre weights) and Dayparts (Advanced: weekday, Saturday and Sunday tables, overnight replay start). Each channel's line-up in a drawer: add from a searchable list or by title, remove, move, enable, transient and remove-after-airing toggles, state per entry (on disk, not on disk, fetching, scheduled). Generate, rebalance, export and import line-ups |
+| Settings | PiTV's settings in eight panes: Broadcast day, Programming, Certificates, Adverts, Music, Player and screen, Cache and pitv_content, Maintenance. Drawn from `GET /api/settings/schema` (`pitv/settings_schema.py`), which gives each setting its pane, level, label, help and range; validation takes its ranges from the same table. Edits in several panes are saved together, only the changed keys are sent, values are cleaned for their type and clamped to their range, and a pane's fields can be put back to their defaults before saving. The old `#/admin/weighting` address opens it |
 | Schedule | The EPG grid, editable: lock, remove, replace, insert at a time or before a slot, rebuild from here; build jobs and notes from the last edit |
 | Wanted | The wanted list for pitv_content: requests raised by line-up placeholders (marked with their channel and as transient) and items added by hand (film, episode, advert or music video, optionally with a URL); retry, delete, queue missing episodes |
 | Player | Now playing and whether from the cache or the NAS, stream details, virtual remote, cache usage, maintenance status, restart the player; remote keymap editor with press-to-learn |

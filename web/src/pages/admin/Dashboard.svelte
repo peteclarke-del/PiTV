@@ -8,18 +8,29 @@
   import StatusBadge from '../../components/StatusBadge.svelte';
   import AppBadge from '../../components/AppBadge.svelte';
   import ReadinessNotes from '../../components/ReadinessNotes.svelte';
+  import DataTable from '../../components/DataTable.svelte';
   import JobList from './JobList.svelte';
+
+  // Each run carries its full details list (a readiness warning can be tens of kilobytes) and the
+  // page reloads on every library or schedule change, so fetch a few days' worth, not the whole log.
+  const RECENT_RUNS = 50;
+  const runColumns = [
+    { key: 'started_at', label: 'When', class: 'small nowrap', cell: whenCell },
+    { key: 'kind', label: 'Kind' },
+    { key: 'status', label: 'Status', cell: statusCell },
+    { key: 'summary', label: 'Summary', class: 'small' },
+  ];
 
   let summary = $state(null);
   let days = $state(null);
-  let runs = $state([]);
+  let runs = $state(null);
   let lineup = $state(null);      // {perChannel, total, placeholders, noChannel}
   let readiness = $state(null);
 
   async function load() {
     // Two batches in parallel so a failing line-up summary does not blank the rest of the page.
     const [r, l] = await Promise.all([
-      tryApi(Promise.all([get('/api/library/summary'), get('/api/schedule/days'), get('/api/jobs'), get('/api/runs', { limit: 5 })])),
+      tryApi(Promise.all([get('/api/library/summary'), get('/api/schedule/days'), get('/api/jobs'), get('/api/runs', { limit: RECENT_RUNS })])),
       tryApi(Promise.all([get('/api/lineup'), get('/api/library/attention'), get('/api/channels')])),
     ]);
     if (r) {
@@ -118,18 +129,13 @@
         {/if}
       {:else}<div class="skeleton" style="height:60px"></div>{/if}
     </div>
+  </div>
 
-    <div class="card">
-      <div class="card-title"><h3>Recent runs</h3><AppBadge app="pitv" /></div>
-      <p class="scope">PiTV's run log: catalogue imports, schedule builds, readiness checks and pitv_content's delivery reports as PiTV received them.</p>
-      {#if runs.length}
-        <ul class="runs">
-          {#each runs as r (r.id)}
-            <li><StatusBadge status={r.status} label={r.kind} /><span class="small">{r.summary || r.status}</span><span class="tiny muted nowrap">{fmtAgo(r.started_at, clock.ts)}</span></li>
-          {/each}
-        </ul>
-      {:else}<p class="muted small">No import or build has run yet.</p>{/if}
-    </div>
+  <div class="card pad-0">
+    <div class="card-title" style="padding:.8rem 1rem 0"><h3>Recent runs</h3><AppBadge app="pitv" /></div>
+    <p class="scope" style="padding:0 1rem;margin:.2rem 0 .4rem">PiTV's run log: catalogue imports, schedule builds, readiness checks and pitv_content's delivery reports as PiTV received them.</p>
+    <DataTable id="dashboard-runs" columns={runColumns} rows={runs} search="Filter runs…" sort={{ key: 'started_at', dir: 'desc' }} size={10}
+      card={false} empty="No import or build has run yet." />
   </div>
 
   <div class="card">
@@ -137,3 +143,6 @@
     <JobList />
   </div>
 </div>
+
+{#snippet whenCell(r)}<span title={fmtDateTime(r.started_at)}>{fmtAgo(r.started_at, clock.ts)}</span>{/snippet}
+{#snippet statusCell(r)}<StatusBadge status={r.status} />{/snippet}

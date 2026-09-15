@@ -4,6 +4,7 @@
   import { confirmApi, get, post, tryApi } from '../../lib/api.js';
   import { isOffline, toolProbe } from '../../lib/toolapi.js';
   import HostCard from '../../components/HostCard.svelte';
+  import DataTable from '../../components/DataTable.svelte';
   import { auth, toast } from '../../lib/stores.svelte.js';
   import { fmtBytes, fmtDateTime } from '../../lib/format.js';
   import { downloadJson } from '../../lib/util.js';
@@ -52,6 +53,23 @@
     if (r) { pw = { current: '', password: '', confirm: '' }; auth.password_set = true; auth.admin = true; }
   }
   const HEALTH = { ok: 'ok', idle: 'info', warn: 'warn', down: 'danger' };
+  const HEALTH_ORDER = { down: 0, warn: 1, absent: 2, idle: 3, ok: 4 };
+  const serviceColumns = [
+    { key: 'unit', label: 'Service', cell: unitCell },
+    { key: 'app', label: 'App', cell: appCell },
+    { key: 'health', label: 'Status', get: (s) => HEALTH_ORDER[s.health], cell: stateCell },
+    { key: 'responding', label: 'Answers', cell: answersCell },
+    { key: 'since_ts', label: 'Up since', class: 'small', get: (s) => s.since_ts, cell: sinceCell },
+    { key: 'memory', label: 'Memory', class: 'small num', cell: memoryCell },
+    { key: 'restarts', label: 'Restarts', class: 'small num' },
+    { key: 'actions', label: '', class: 'right nowrap', sortable: false, cell: actionsCell },
+  ];
+  const mountColumns = [
+    { key: 'name', label: 'Mount', cell: boldName },
+    { key: 'path', label: 'Path', class: 'mono small' },
+    { key: 'available', label: 'Status', cell: mountStatus },
+    { key: 'free', label: 'Free', class: 'small', get: (m) => m.usage?.free, cell: freeCell },
+  ];
   let acting = $state('');
   poll(load, 10000);
 
@@ -106,50 +124,13 @@
   <div class="card pad-0">
     <div class="card-title" style="padding:.8rem 1rem 0"><h3>Services</h3><AppBadge app="pitv" /><AppBadge app="content" /></div>
     <p class="scope" style="padding:0 1rem;margin:.2rem 0 .4rem">The systemd units of both applications. "Answers" is a live check that the process responds, so a service run by hand on a desktop still shows as up.</p>
-    <div class="table-wrap">
-    <table>
-      <thead><tr><th>Service</th><th>App</th><th>Status</th><th>Answers</th><th>Up since</th><th>Memory</th><th>Restarts</th><th></th></tr></thead>
-      <tbody>
-        {#each info?.services ?? [] as s (s.unit)}
-          <tr>
-            <td><div class="mono">{s.unit}</div><div class="tiny muted">{s.role}</div></td>
-            <td><AppBadge app={s.app} /></td>
-            <td><span class="badge {HEALTH[s.health] ?? ''}">{s.state}</span>{#if s.enabled && s.enabled !== 'enabled' && s.enabled !== 'static'}<div class="tiny muted">{s.enabled}</div>{/if}</td>
-            <td>{#if s.responding === true}<span class="badge ok">yes</span>{:else if s.responding === false}<span class="badge danger">no</span>{:else}<span class="muted">–</span>{/if}</td>
-            <td class="small">{s.since_ts ? fmtDateTime(s.since_ts) : '–'}</td>
-            <td class="small">{s.memory != null ? fmtBytes(s.memory) : '–'}</td>
-            <td class="small">{s.restarts ?? '–'}</td>
-            <td class="right nowrap">
-              {#each s.actions as a (a)}
-                <button class="small ghost" onclick={() => serviceAction(s.unit, a)} disabled={acting === s.unit}>{a}</button>
-              {/each}
-            </td>
-          </tr>
-        {:else}
-          <tr><td colspan="8" class="empty">{info ? 'No services reported.' : 'Loading…'}</td></tr>
-        {/each}
-      </tbody>
-    </table>
-    </div>
+    <DataTable id="system-services" columns={serviceColumns} rows={info?.services ?? null} key={(r) => r.unit} card={false} empty="No services reported." />
   </div>
 
   <div class="card pad-0">
     <div class="card-title" style="padding:.8rem 1rem 0"><h3>NAS mounts</h3><AppBadge app="content" /></div>
     <p class="scope" style="padding:0 1rem;margin:.2rem 0 .4rem">pitv_content's sources as mounted on the Pi. pitv_content indexes them; PiTV reads them only for NAS fallback playback.</p>
-    <div class="table-wrap">
-    <table>
-      <thead><tr><th>Mount</th><th>Path</th><th>Status</th><th>Free</th></tr></thead>
-      <tbody>
-        {#each info?.mounts ?? [] as m (m.path)}
-          <tr><td><b>{m.name}</b></td><td class="mono small">{m.path}</td>
-            <td>{#if m.available}<span class="badge ok">mounted</span>{:else}<span class="badge danger">missing</span>{/if}</td>
-            <td class="small">{m.usage ? `${fmtBytes(m.usage.free)} of ${fmtBytes(m.usage.total)}` : '–'}</td></tr>
-        {:else}
-          <tr><td colspan="4" class="empty">No sources configured.</td></tr>
-        {/each}
-      </tbody>
-    </table>
-    </div>
+    <DataTable id="system-mounts" columns={mountColumns} rows={info?.mounts ?? null} key={(r) => r.path} card={false} empty="No NAS sources configured." />
   </div>
 
   <div class="grid">
@@ -173,3 +154,14 @@
 
   <div class="card"><div class="card-title"><h3>Jobs</h3><AppBadge app="pitv" /></div><JobList /></div>
 </div>
+
+{#snippet unitCell(s)}<div class="mono">{s.unit}</div><div class="tiny muted">{s.role}</div>{/snippet}
+{#snippet appCell(s)}<AppBadge app={s.app} />{/snippet}
+{#snippet stateCell(s)}<span class="badge {HEALTH[s.health] ?? ''}">{s.state}</span>{#if s.enabled && s.enabled !== 'enabled' && s.enabled !== 'static'}<div class="tiny muted">{s.enabled}</div>{/if}{/snippet}
+{#snippet answersCell(s)}{#if s.responding === true}<span class="badge ok">yes</span>{:else if s.responding === false}<span class="badge danger">no</span>{:else}<span class="muted">–</span>{/if}{/snippet}
+{#snippet actionsCell(s)}{#each s.actions as a (a)}<button class="small ghost" onclick={() => serviceAction(s.unit, a)} disabled={acting === s.unit}>{a}</button>{/each}{/snippet}
+{#snippet mountStatus(m)}{#if m.available}<span class="badge ok">mounted</span>{:else}<span class="badge danger">missing</span>{/if}{/snippet}
+{#snippet sinceCell(s)}{s.since_ts ? fmtDateTime(s.since_ts) : '–'}{/snippet}
+{#snippet memoryCell(s)}{s.memory != null ? fmtBytes(s.memory) : '–'}{/snippet}
+{#snippet boldName(m)}<b>{m.name}</b>{/snippet}
+{#snippet freeCell(m)}{m.usage ? `${fmtBytes(m.usage.free)} of ${fmtBytes(m.usage.total)}` : '–'}{/snippet}

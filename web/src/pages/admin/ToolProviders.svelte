@@ -90,7 +90,7 @@
         {#each providers as p (p.id)}
           <tr class:off={!p.enabled}>
             <td><b>{p.name ?? p.id}</b><div class="tiny muted mono">{p.id} · {p.type}</div>{#if p.detail}<div class="tiny muted">{p.detail}</div>{/if}</td>
-            <td><input type="checkbox" checked={!!p.enabled} disabled={busy === p.id} onchange={(e) => send({ id: p.id, enabled: e.currentTarget.checked }, `${p.name ?? p.id} ${e.currentTarget.checked ? 'enabled' : 'disabled'}`)} aria-label="Enabled" /></td>
+            <td class="control"><input type="checkbox" checked={!!p.enabled} disabled={busy === p.id} onchange={(e) => send({ id: p.id, enabled: e.currentTarget.checked }, `${p.name ?? p.id} ${e.currentTarget.checked ? 'enabled' : 'disabled'}`)} aria-label="Enabled" /></td>
             <td><input class="xnarrow" type="number" min="0" value={p.order ?? 0} onchange={(e) => send({ id: p.id, order: Number(e.currentTarget.value) }, `${p.name ?? p.id} order set`)} aria-label="Order" />{#if errors.order}<div class="help err">{errors.order}</div>{/if}</td>
             <td><div class="kinds">{#each kindsAvailable as k (k)}<label class="check small"><input type="checkbox" checked={(p.kinds ?? []).includes(k)} disabled={busy === p.id} onchange={(e) => toggleKind(p, k, e.currentTarget.checked)} />{k}</label>{/each}</div>{#if errors.kinds}<div class="help err">{errors.kinds}</div>{/if}</td>
             <td>{#if p.healthy === true}<span class="badge ok">healthy</span>{:else if p.healthy === false}<span class="badge danger">unhealthy</span>{:else}<span class="badge">unknown</span>{/if}</td>
@@ -114,7 +114,6 @@
 </div>
 
 <style>
-  tr.off td:nth-child(2) { opacity: 1; }
   .kinds { display: flex; flex-wrap: wrap; gap: .2rem .6rem; }
   .opts { display: flex; flex-direction: column; gap: .25rem; min-width: 260px; }
   .opts .row { flex-wrap: nowrap; gap: .25rem; }

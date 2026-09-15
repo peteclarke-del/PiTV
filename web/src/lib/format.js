@@ -113,3 +113,11 @@ export const hasLineup = (channel) => ['general', 'cartoons'].includes(channel?.
 export function plural(n, word) {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
 }
+
+/** A line-up entry's progress as [badge class, text]: fetching, scheduled and waiting, on disk, or neither. */
+export function lineupState(e) {
+  if (e.wanted_open) return ['info', `fetching ${e.wanted_open}`];
+  if (e.placeholders) return ['warn', `${e.placeholders} scheduled`];
+  if (e.on_disk) return ['ok', e.kind === 'show' && e.episodes_on_disk ? `on disk (${e.episodes_on_disk} eps)` : 'on disk'];
+  return ['', 'not on disk'];
+}

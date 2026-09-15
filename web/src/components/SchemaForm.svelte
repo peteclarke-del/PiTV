@@ -1,12 +1,14 @@
 <script>
-  // Schema-driven settings form for pitv_content's PUT /api/settings. Each field is
-  // {key, label, help, type, default, value, choices?, min?, max?, group, restart_required};
-  // only changed keys are submitted, and secrets are never echoed back (blank = keep).
-  import ChipList from './ChipList.svelte';
+  // Settings form for either application, drawn from its settings schema. Fields show at the
+  // chosen familiarity level (a field without a level counts as standard); `group` narrows the
+  // form to one pane while edits in other panes are kept until saved. Only changed keys are
+  // submitted, cleaned for their type, and secrets are never echoed back (blank keeps them).
   import AppBadge from './AppBadge.svelte';
-  import { num } from '../lib/util.js';
+  import SettingField from './SettingField.svelte';
+  import { shown, LEVELS } from '../lib/prefs.svelte.js';
+  import { blank, clean } from '../lib/settingTypes.js';
 
-  let { schema = [], onsave, saving = false, errors = {}, groups = ['Providers', 'Search', 'Encoding', 'Schedule', 'Advanced'], app = '' } = $props();
+  let { schema = [], onsave, saving = false, errors = {}, groups = [], group = null, intro = '', app = '' } = $props();
   const SECRET_MASK = '••••';
   let values = $state({});
   // Re-seed the editable copy only when a new schema arrives, not on every keystroke.
@@ -14,86 +16,56 @@
   $effect(() => {
     if (schema === seeded) return;
     seeded = schema;
-    const v = {};
-    for (const f of schema) v[f.key] = original(f);
-    values = v;
+    values = Object.fromEntries(schema.map((f) => [f.key, original(f)]));
   });
-  const clone = (x) => (Array.isArray(x) ? [...x] : x);
-  const blank = (t) => (t === 'bool' ? false : t === 'list' ? [] : t === 'int' || t === 'float' ? 0 : '');
+  const copy = (x) => (x && typeof x === 'object' ? JSON.parse(JSON.stringify(x)) : x);
   const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
-  const original = (f) => (f.type === 'secret' ? '' : clone(f.value ?? f.default ?? blank(f.type)));
+  const original = (f) => (f.type === 'secret' ? '' : copy(f.value ?? f.default ?? blank(f.type)));
   const isChanged = (f) => !same(values[f.key], original(f));
-  let changedKeys = $derived(schema.filter(isChanged).map((f) => f.key));
-  let restart = $derived(schema.some((f) => f.restart_required && isChanged(f)));
-  let grouped = $derived.by(() => {
-    const order = [...groups, ...new Set(schema.map((f) => f.group || 'Other').filter((g) => !groups.includes(g)))];
-    return order.map((g) => [g, schema.filter((f) => (f.group || 'Other') === g)]).filter(([, fs]) => fs.length);
-  });
   const secretSet = (f) => f.value === SECRET_MASK || (typeof f.value === 'string' && f.value.length > 0);
 
-  function coerce(f, v) {
-    if (f.type === 'int' || f.type === 'float') return num(v, { min: f.min ?? -Infinity, max: f.max ?? Infinity, int: f.type === 'int' });
-    if (f.type === 'hours') return String(v ?? '').trim();
-    return v;
-  }
+  let changed = $derived(schema.filter(isChanged));
+  let restart = $derived(changed.some((f) => f.restart_required));
+  let inScope = $derived(schema.filter((f) => !group || (f.group || 'Other') === group));
+  let visible = $derived(inScope.filter((f) => shown(f.level)));
+  let hidden = $derived(inScope.length - visible.length);
+  let grouped = $derived.by(() => {
+    const order = [...groups, ...new Set(visible.map((f) => f.group || 'Other').filter((g) => !groups.includes(g)))];
+    return order.map((g) => [g, visible.filter((f) => (f.group || 'Other') === g)]).filter(([, fs]) => fs.length);
+  });
+  const nextLevel = $derived(LEVELS.find(([id]) => !shown(id))?.[1]);
+
   function submit() {
-    const body = {};
-    for (const f of schema) if (isChanged(f)) body[f.key] = coerce(f, values[f.key]);
-    onsave?.(body);
+    onsave?.(Object.fromEntries(changed.map((f) => [f.key, clean(f, values[f.key])])));
   }
-  function resetDefaults() {
-    for (const f of schema) values[f.key] = f.type === 'secret' ? '' : clone(f.default ?? blank(f.type));
+  function resetShown() {
+    for (const f of visible) values[f.key] = f.type === 'secret' ? '' : copy(f.default ?? blank(f.type));
   }
-  const placeholder = (f) => (f.type === 'time' ? 'HH:MM' : f.type === 'hours' ? 'e.g. 1,2,3 or 01:00-06:00' : f.type === 'path' ? '/path/to/folder' : f.default != null && f.default !== '' ? `default: ${f.default}` : '');
 </script>
 
 {#if !schema.length}
   <p class="muted small">No settings reported.</p>
 {:else}
   <div class="stack">
-    {#each grouped as [group, fields] (group)}
+    {#each grouped as [name, fields] (name)}
       <div class="card">
-        <div class="card-title"><h3>{group}</h3>{#if app}<AppBadge {app} />{/if}</div>
+        <div class="card-title"><h3>{name}</h3>{#if app}<AppBadge {app} />{/if}</div>
+        {#if intro && group}<p class="scope">{intro}</p>{/if}
         <div class="form-grid">
           {#each fields as f (f.key)}
-            {@const err = errors[f.key]}
-            {#if f.type === 'bool'}
-              <label class="check" class:changed={isChanged(f)}><input type="checkbox" bind:checked={values[f.key]} /> {f.label ?? f.key}{#if isChanged(f)}<span class="badge info">changed</span>{/if}{#if f.restart_required}<span class="badge" title="Restart required after change">restart</span>{/if}
-                {#if f.help}<span class="help">{f.help}</span>{/if}{#if err}<span class="help err">{err}</span>{/if}</label>
-            {:else}
-              <label class="field" class:wide={f.type === 'list' || f.type === 'path'} class:changed={isChanged(f)}>
-                <span>{f.label ?? f.key}{#if isChanged(f)}<span class="badge info">changed</span>{/if}{#if f.restart_required}<span class="badge" title="Restart required after change">restart</span>{/if}</span>
-                {#if f.type === 'choice'}
-                  <select bind:value={values[f.key]}>{#each f.choices ?? [] as c (String(typeof c === 'object' ? c.value : c))}{@const cv = typeof c === 'object' ? c.value : c}<option value={cv}>{typeof c === 'object' ? c.label ?? c.value : c}</option>{/each}</select>
-                {:else if f.type === 'int' || f.type === 'float'}
-                  <input type="number" step={f.type === 'float' ? 'any' : '1'} min={f.min ?? undefined} max={f.max ?? undefined} bind:value={values[f.key]} placeholder={placeholder(f)} />
-                {:else if f.type === 'list'}
-                  <ChipList value={values[f.key] ?? []} onchange={(v) => (values[f.key] = v)} placeholder="add…" label={f.label ?? f.key} />
-                {:else if f.type === 'secret'}
-                  <input type="password" autocomplete="new-password" bind:value={values[f.key]} placeholder={secretSet(f) ? 'set: leave blank to keep' : 'not set'} />
-                {:else}
-                  <input type="text" class:mono={f.type === 'path' || f.type === 'time' || f.type === 'hours'} bind:value={values[f.key]} placeholder={placeholder(f)} />
-                {/if}
-                {#if f.type === 'secret' && secretSet(f)}<span class="help">Currently set; only sent if you type a new value.</span>{/if}
-                {#if f.help}<span class="help">{f.help}</span>{/if}
-                {#if err}<span class="help err">{err}</span>{/if}
-              </label>
-            {/if}
+            <SettingField field={f} bind:value={values[f.key]} error={errors[f.key]} changed={isChanged(f)} secretSet={secretSet(f)} />
           {/each}
         </div>
       </div>
+    {:else}
+      <p class="muted small">Nothing here at this level.</p>
     {/each}
-    {#if restart}<div class="warn-box">A changed setting requires pitv_content to be restarted before it takes effect.</div>{/if}
+    {#if hidden && nextLevel}<p class="small muted">{hidden} more setting{hidden === 1 ? '' : 's'} here at {nextLevel}{nextLevel === 'Standard' ? ' and Advanced' : ''}.</p>{/if}
+    {#if restart}<div class="warn-box">A changed setting takes effect after pitv_content is restarted.</div>{/if}
     <div class="row">
-      <button class="primary" onclick={submit} disabled={saving || !changedKeys.length}>Save{changedKeys.length ? ` (${changedKeys.length})` : ''}</button>
-      <button onclick={resetDefaults} disabled={saving}>Reset to defaults</button>
-      {#if changedKeys.length}<span class="small muted">Unsaved: {changedKeys.join(', ')}</span>{/if}
+      <button class="primary" onclick={submit} disabled={saving || !changed.length}>Save{changed.length ? ` (${changed.length})` : ''}</button>
+      <button onclick={resetShown} disabled={saving} title="Puts the defaults back into the fields shown; nothing is saved until you press Save">Defaults for these</button>
+      {#if changed.length}<span class="small muted">Unsaved: {changed.map((f) => f.label ?? f.key).join(', ')}</span>{/if}
     </div>
   </div>
 {/if}
-
-<style>
-  .changed > span:first-child, label.check.changed { font-weight: 650; }
-
-  .field > span .badge { margin-left: .4rem; }
-</style>

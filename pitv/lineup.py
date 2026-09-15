@@ -101,6 +101,22 @@ def _load_hours(conn: sqlite3.Connection, channel_ids: list[int]) -> dict[tuple[
     return load
 
 
+def _cheapest(fits: list[tuple[dict[str, Any], float]], load: dict[tuple[int, str], float], bucket: str,
+              hours: float) -> dict[str, Any]:
+    """The channel an item goes to: the lowest load after taking it, scaled by how poorly it fits."""
+    return min(fits, key=lambda cf: ((load[(cf[0]["id"], bucket)] + hours) / cf[1], cf[0]["number"]))[0]
+
+
+def best_channel(conn: sqlite3.Connection, genres: list[str] | None, hours: float = 1.0) -> int | None:
+    """The channel the generator would give a new item with these genres, or None when no
+    channel accepts them."""
+    channels = programme_channels(conn)
+    fits = [(c, f) for c in channels if (f := channel_fit(c, _genre_set(genres))) is not None]
+    if not fits:
+        return None
+    return _cheapest(fits, _load_hours(conn, [c["id"] for c in channels]), "general", hours)["id"]
+
+
 def _insert(conn: sqlite3.Connection, channel_id: int, kind: str, key: str, title: str, year: int | None, *,
             show_id: int | None = None, media_id: int | None = None, genres: list[str] | None = None,
             source: str = "library", transient: int = 0, episode_minutes: int | None = None,
@@ -153,10 +169,9 @@ def generate(conn: sqlite3.Connection, rebalance: bool = False) -> dict[str, int
                 result["unmatched"] += 1
                 _flag(conn, it, f"No channel accepts its genres ({', '.join(sorted(it['genres'])) or 'none'})")
                 continue
-            # Cheapest channel wins: its load after taking the item, scaled by how poorly it fits.
             hours = it["secs"] / 3600
             b = it["bucket"]
-            target = min(fits, key=lambda cf: ((load[(cf[0]["id"], b)] + hours) / cf[1], cf[0]["number"]))[0]
+            target = _cheapest(fits, load, b, hours)
             key = f"{it['kind']}:{it['id']}"
             _insert(conn, target["id"], it["kind"], key, it["title"], it["year"],
                     show_id=it["id"] if it["kind"] == "show" else None,
@@ -185,11 +200,18 @@ def sync_home_channels(conn: sqlite3.Connection) -> None:
 
 # --- editing -------------------------------------------------------------------------------
 
-def add(conn: sqlite3.Connection, channel_id: int, *, show_id: int | None = None, media_id: int | None = None,
+def add(conn: sqlite3.Connection, channel_id: int | None, *, show_id: int | None = None, media_id: int | None = None,
         title: str | None = None, year: int | None = None, kind: str | None = None, genres: list[str] | None = None,
         transient: bool | None = None, episode_minutes: int | None = None, source: str = "manual") -> dict[str, Any]:
     """Add (or move) an entry. Library items are identified by show_id/media_id; anything else
-    is an external entry that pitv_content will be asked to fetch."""
+    is an external entry that pitv_content will be asked to fetch. Without a channel, an
+    external entry goes where the generator would put it by its genres."""
+    if channel_id is None:
+        if show_id is not None or media_id is not None:
+            raise ValueError("a channel is required to move a library title")
+        channel_id = best_channel(conn, genres)
+        if channel_id is None:
+            raise ValueError("no channel accepts these genres; choose one")
     with tx(conn):
         if show_id is not None:
             row = conn.execute("SELECT id, title, year, genres FROM shows WHERE id = ?", (show_id,)).fetchone()

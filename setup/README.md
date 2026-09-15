@@ -63,7 +63,7 @@ later is refused.
    `NAS_PASS` to write the credentials without the prompt. Later runs reuse the values of the
    first from `/etc/pitv/install.env`.
 3. Mount the USB drive at `/mnt/cache` (add it to `/etc/fstab` with `nofail`) before running
-   the installer, or set the cache directory afterwards in Admin, Weighting, Cache.
+   the installer, or set the cache folder afterwards in Admin, Settings, Cache and pitv_content.
 4. Install pitv_content from its own repository (private,
    https://github.com/peteclarke-del/PiTV_content) with the same cache directory, passing the
    share list so it becomes pitv_content's sources (read on its first install only; after
@@ -95,7 +95,7 @@ selects the display lines in that block:
 mpv is told the screen is 4:3 (`display_aspect`) so the anamorphic 720x576 frame has the
 right geometry: 4:3 programmes fill the screen and widescreen films are letterboxed.
 Overlays keep a 7% overscan margin and use larger type; margin, text scale and
-`drm_connector` (if mpv picks the wrong output) are in Admin, Weighting, Player.
+`drm_connector` (if mpv picks the wrong output) are in Admin, Settings, Player and screen.
 
 On the desktop the windowed player (`setup/dev.sh start`) is a preview of the Pi's picture:
 a 768x576 4:3 window with the same scaler and deinterlacer and the same cache-first file

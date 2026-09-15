@@ -640,3 +640,26 @@ def test_job_runner_bounds_history_and_notes():
     jobs = runner.recent(10 ** 6)
     assert len(jobs) <= MAX_JOBS_KEPT + 1
     assert all(len(runner._jobs[j["id"]].notes) <= MAX_NOTES for j in jobs)
+
+
+def test_settings_schema_matches_the_defaults(client):
+    """Every setting a person edits has exactly one field, each field names a real setting, and
+    every default sits inside its field's range and choices."""
+    from pitv import settings_schema
+    from pitv.db import DEFAULT_SETTINGS
+    keys = [f["key"] for f in settings_schema.FIELDS]
+    assert len(keys) == len(set(keys))
+    assert set(keys) | settings_schema.UNLISTED == set(DEFAULT_SETTINGS)
+    panes = {pid for pid, _, _ in settings_schema.PANES}
+    for f in settings_schema.FIELDS:
+        assert f["pane"] in panes and f["level"] in settings_schema.LEVELS, f["key"]
+        default = DEFAULT_SETTINGS[f["key"]]
+        if "min" in f:
+            assert f["min"] <= default <= f["max"], f["key"]
+        if "choices" in f:
+            assert default in f["choices"], f["key"]
+    doc = client.get("/api/settings/schema").json()
+    assert [p["id"] for p in doc["panes"]] == [pid for pid, _, _ in settings_schema.PANES]
+    by_key = {f["key"]: f for f in doc["fields"]}
+    assert by_key["day_start"]["value"] == "08:00" and by_key["osd_scale"]["max"] == 2.5
+    assert "admin_password_hash" not in by_key
