@@ -1,7 +1,8 @@
 <script>
   import { untrack } from 'svelte';
-  import { get, post, put, del, tryApi } from '../../lib/api.js';
-  import { changes, confirm, clock } from '../../lib/stores.svelte.js';
+  import { get, post, put, del, tryApi, confirmApi } from '../../lib/api.js';
+  import { scanAll } from '../../lib/actions.js';
+  import { changes, clock } from '../../lib/stores.svelte.js';
   import { fmtAgo } from '../../lib/format.js';
   import Drawer from '../../components/Drawer.svelte';
   import FolderPicker from './FolderPicker.svelte';
@@ -16,7 +17,7 @@
   async function load() {
     try { sources = await get('/api/sources'); } catch { sources = sources ?? []; }
   }
-  $effect(() => { changes.library; untrack(load); }); // eslint-disable-line no-unused-expressions
+  $effect(() => { changes.library; untrack(load); });
 
   const CATEGORIES = [['general', 'General'], ['sport', 'Sport'], ['kids', 'Children\'s']];
   function add() { editing = { type: 'tv', name: '', path: '', remote: '', enabled: true, category: 'general' }; }
@@ -30,11 +31,10 @@
     if (r) { editing = null; load(); }
   }
   async function remove(s) {
-    if (!(await confirm(`Delete source "${s.name}"? Its ${s.item_count} scanned items will be removed from the library.`, { title: 'Delete source', okLabel: 'Delete', danger: true }))) return;
-    if (await tryApi(del(`/api/sources/${s.id}`), { success: 'Source deleted' })) load();
+    if (await confirmApi(`Delete source "${s.name}"? Its ${s.item_count} scanned items will be removed from the library.`, { title: 'Delete source', okLabel: 'Delete', danger: true },
+      () => del(`/api/sources/${s.id}`), { success: 'Source deleted' })) load();
   }
   const scan = (s) => tryApi(post(`/api/sources/${s.id}/scan`), { success: `Scanning ${s.name}` });
-  const scanAll = () => tryApi(post('/api/scan'), { success: 'Scan started' });
 </script>
 
 <div class="stack">

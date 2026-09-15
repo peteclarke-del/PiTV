@@ -15,3 +15,5 @@ config/overrides.yaml
 .dev/
 node_modules/
 web/dist/
+dist/
+installer/cli/pitv-installer*

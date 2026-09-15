@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "mode": "normal",
+  "hostname": "pitv",
+  "timezone": "Europe/London",
+  "locale": "en_GB.UTF-8",
+  "keyboard": "gb",
+  "maintenance_user": {
+    "name": "pete",
+    "password": "change-me",
+    "ssh_authorized_keys": ["ssh-ed25519 AAAA... pete@desktop"]
+  },
+  "wifi": {
+    "enabled": false,
+    "country": "GB",
+    "ssid": "",
+    "psk": ""
+  },
+  "network": {
+    "ethernet": true,
+    "static_ip": "",
+    "gateway": "",
+    "dns": ""
+  },
+  "nas": {
+    "host": "synologynas",
+    "username": "pitv",
+    "password": "change-me",
+    "shares": ["tvshows", "movies", "ads", "tvsports", "music%20videos"]
+  },
+  "display_mode": "hdmi576",
+  "system_partition_gb": 8,
+  "work_drive": {
+    "device": "auto",
+    "label": "PITVWORK",
+    "cache_dir": "/mnt/cache/pitv"
+  },
+  "pitv": {
+    "admin_password": "",
+    "web_port": 80
+  },
+  "pitv_content": {
+    "youtube_cookies_file": "",
+    "settings": {}
+  }
+}

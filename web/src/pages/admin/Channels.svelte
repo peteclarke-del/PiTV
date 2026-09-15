@@ -1,7 +1,8 @@
 <script>
   import { untrack } from 'svelte';
-  import { get, post, put, del, tryApi } from '../../lib/api.js';
-  import { changes, confirm } from '../../lib/stores.svelte.js';
+  import { get, post, put, del, tryApi, confirmApi } from '../../lib/api.js';
+  import { changes } from '../../lib/stores.svelte.js';
+  import { onEnter } from '../../lib/util.js';
   import ChannelBadge from '../../components/ChannelBadge.svelte';
   import ChannelEditor from './ChannelEditor.svelte';
 
@@ -11,19 +12,20 @@
   async function load() {
     try { channels = await get('/api/channels'); } catch { channels = channels ?? []; }
   }
-  $effect(() => { changes.library; untrack(load); }); // eslint-disable-line no-unused-expressions
+  $effect(() => { changes.library; untrack(load); });
 
   async function remove(c) {
-    if (!(await confirm(`Delete channel ${c.number} "${c.name}"? Its schedule is removed and ${c.show_count} shows lose their home channel.`, { title: 'Delete channel', okLabel: 'Delete', danger: true }))) return;
-    if (await tryApi(del(`/api/channels/${c.id}`), { success: 'Channel deleted' })) { load(); changes.schedule++; }
+    const r = await confirmApi(`Delete channel ${c.number} "${c.name}"? Its schedule is removed and ${c.show_count} shows lose their home channel.`,
+      { title: 'Delete channel', okLabel: 'Delete', danger: true }, () => del(`/api/channels/${c.id}`), { success: 'Channel deleted' });
+    if (r) { load(); changes.schedule++; }
   }
   async function toggle(c, enabled) {
     const r = await tryApi(put(`/api/channels/${c.id}`, { enabled }), { success: `${c.name} ${enabled ? 'enabled' : 'disabled'} – rebuild the schedule to apply` });
     if (r) { load(); changes.schedule++; }
   }
   async function rebalance() {
-    if (!(await confirm('Clear every show\'s home channel and spread the shows evenly across the enabled channels? Manual assignments are lost.', { title: 'Rebalance shows', okLabel: 'Rebalance', danger: true }))) return;
-    const r = await tryApi(post('/api/channels/rebalance'), { success: 'Shows rebalanced' });
+    const r = await confirmApi('Clear every show\'s home channel and spread the shows evenly across the enabled channels? Manual assignments are lost.',
+      { title: 'Rebalance shows', okLabel: 'Rebalance', danger: true }, () => post('/api/channels/rebalance'), { success: 'Shows rebalanced' });
     if (r) channels = r;
   }
 </script>
@@ -38,7 +40,7 @@
       <thead><tr><th>On</th><th>Channel</th><th>Content</th><th>Short</th><th>Pattern</th><th>Ads</th><th class="num">Shows</th><th>Description</th><th></th></tr></thead>
       <tbody>
         {#each channels ?? [] as c (c.id)}
-          <tr class="clickable" class:off={!c.enabled} onclick={() => (editing = c)}>
+          <tr class="clickable" class:off={!c.enabled} tabindex="0" onclick={() => (editing = c)} onkeydown={onEnter(() => (editing = c))}>
             <td onclick={(e) => e.stopPropagation()}><label class="switch" title={c.enabled ? 'Enabled – click to disable' : 'Disabled – click to enable'}><input type="checkbox" checked={!!c.enabled} onchange={(e) => toggle(c, e.currentTarget.checked)} /><span></span></label></td>
             <td><ChannelBadge channel={c} /></td>
             <td>{#if c.content && c.content !== 'general'}<span class="badge info">{c.content}</span>{:else}<span class="muted small">general</span>{/if}</td>

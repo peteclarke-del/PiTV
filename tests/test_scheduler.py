@@ -237,12 +237,32 @@ def test_music_channel_day(conn):
 
 
 def test_guide_collapses_music_blocks(conn):
-    from pitv.web.api.deps import collapse_blocks
+    from pitv.guide import block_entry, collapse_blocks, next_programmes, slot_at
     music = _channel(conn, 5)
     rows = conn.execute("SELECT * FROM schedule WHERE channel_id = ? AND day = '2026-09-16' AND replay = 0 ORDER BY start_ts", (music["id"],)).fetchall()
     merged = collapse_blocks([dict(r) for r in rows])
     assert 5 <= len(merged) <= 12
     assert merged[0]["title"] == "Seventies Breakfast" and merged[0]["items"] > 1
+    # the shared lookups (player OSD and web) agree with the raw merge
+    ts = rows[3]["start_ts"] + 10
+    slot = slot_at(conn, music["id"], ts)
+    assert slot["id"] == rows[3]["id"]
+    entry = block_entry(conn, slot, ts)
+    assert entry["title"] == "Seventies Breakfast" and entry["video_title"] == slot["title"] and entry["video_id"] == slot["id"]
+    assert entry["start_ts"] == merged[0]["start_ts"] and entry["end_ts"] == merged[0]["end_ts"]
+    nxt = next_programmes(conn, music["id"], entry["end_ts"], 2)
+    assert len(nxt) == 2 and nxt[0]["start_ts"] == entry["end_ts"] and nxt[0]["title"] == merged[1]["title"]
+
+
+def test_slot_titles():
+    from pitv.scheduler.build import slot_titles
+    assert slot_titles({"kind": "episode", "title": "The Beach", "episode": 5}, "Minder") == ("Minder", "The Beach")
+    assert slot_titles({"kind": "episode", "title": "", "episode": 5}, "Minder") == ("Minder", "Episode 5")
+    assert slot_titles({"kind": "movie", "title": "Brazil", "year": 1985, "certificate": "15"}) == ("Brazil", "(1985) 15")
+    assert slot_titles({"kind": "movie", "title": "Mystery Movie"}) == ("Mystery Movie", "")
+    assert slot_titles({"kind": "music", "title": "Queen - Radio Ga Ga", "year": 1984, "genres": '["Pop", "Rock"]'}) == \
+        ("Queen - Radio Ga Ga", "(1984) Pop, Rock")
+    assert slot_titles({"kind": "music", "title": "X", "genres": ["Pop"]}) == ("X", "Pop")
 
 
 def test_family_safe_adverts_on_cartoon_channel(conn):

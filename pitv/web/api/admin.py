@@ -6,7 +6,6 @@ import json
 import os
 import shutil
 import sqlite3
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -15,10 +14,15 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from ... import __version__
+from ... import db as dbm
 from ...db import (DEFAULT_SETTINGS, all_settings, now_ts, row_to_dict, rows_to_dicts,
                    set_setting, tx)
-from ...scheduler.rules import parse_pattern
-from .deps import SLOT_QUERY, admin_conn, media_public, show_public, slot_public
+from ...guide import SLOT_QUERY
+from ...library.scanner import _assign_home_channels, scan_all
+from ...logsetup import log_dir, tail
+from ...scheduler.build import build_horizon, parse_day, rebuild_from, slot_titles
+from ...scheduler.rules import broadcast_day_for, parse_pattern, tz_of
+from .deps import admin_conn, media_public, run_cmd, show_public, slot_public
 
 router = APIRouter(prefix="/api", dependencies=[Depends(admin_conn)])
 
@@ -92,13 +96,13 @@ def delete_source(sid: int, conn: sqlite3.Connection = Depends(admin_conn)):
     return {"ok": True}
 
 
-def _scan_job(request: Request, source_ids: list[int] | None, label: str):
-    from ...library.scanner import scan_all
+def scan_job(request: Request, source_ids: list[int] | None, label: str) -> dict[str, Any]:
+    """Queue a library scan as a background job (its own connection; progress over SSE)."""
     cfg = request.app.state.cfg
     jobs = request.app.state.jobs
 
     def run(job):
-        conn = __import__("pitv.db", fromlist=["connect"]).connect(cfg.db_path)
+        conn = dbm.connect(cfg.db_path)
         try:
             def progress(msg, done, total):
                 jobs.progress(job, msg, done, total)
@@ -114,13 +118,13 @@ def _scan_job(request: Request, source_ids: list[int] | None, label: str):
 
 @router.post("/scan")
 def scan_all_sources(request: Request):
-    return _scan_job(request, None, "Scan all sources")
+    return scan_job(request, None, "Scan all sources")
 
 
 @router.post("/sources/{sid}/scan")
 def scan_source(sid: int, request: Request, conn: sqlite3.Connection = Depends(admin_conn)):
     src = _source_row(conn, sid)
-    return _scan_job(request, [sid], f"Scan {src['name']}")
+    return scan_job(request, [sid], f"Scan {src['name']}")
 
 
 @router.get("/browse")
@@ -449,7 +453,6 @@ def delete_channel(cid: int, conn: sqlite3.Connection = Depends(admin_conn)):
 @router.post("/channels/rebalance")
 def rebalance_channels(conn: sqlite3.Connection = Depends(admin_conn)):
     """Clear automatic home-channel assignments and redistribute shows evenly."""
-    from ...library.scanner import _assign_home_channels
     with tx(conn):
         conn.execute("UPDATE shows SET home_channel_id = NULL")
         _assign_home_channels(conn)
@@ -489,7 +492,6 @@ def reset_settings(body: dict[str, Any] = Body(default={}), conn: sqlite3.Connec
 
 @router.post("/schedule/build")
 def schedule_build(request: Request, body: dict[str, Any] = Body(default={})):
-    from ...scheduler.build import build_horizon, parse_day
     cfg = request.app.state.cfg
     jobs = request.app.state.jobs
     start = parse_day(body["start_day"]) if body.get("start_day") else None
@@ -498,7 +500,6 @@ def schedule_build(request: Request, body: dict[str, Any] = Body(default={})):
     channels = [int(c) for c in body.get("channels", [])] or None
 
     def run(job):
-        from ... import db as dbm
         conn = dbm.connect(cfg.db_path)
         try:
             result = build_horizon(conn, start_day=start, days=days, force=force, channel_numbers=channels,
@@ -525,8 +526,16 @@ def _editable(row: sqlite3.Row) -> None:
         raise HTTPException(409, "overnight replays follow the day's schedule; edit the original slot")
 
 
+def _media_with_show(conn: sqlite3.Connection, media_id: int) -> sqlite3.Row:
+    """A media row plus its series title, for placing it in the schedule; 404 if unusable."""
+    media = conn.execute("SELECT m.*, s.title AS show_title FROM media m LEFT JOIN shows s ON s.id = m.show_id WHERE m.id = ?",
+                         (media_id,)).fetchone()
+    if not media or not media["duration"]:
+        raise HTTPException(404, "media not found or has no duration")
+    return media
+
+
 def _rebuild(request: Request, conn: sqlite3.Connection, channel_id: int, from_ts: int) -> dict[str, Any]:
-    from ...scheduler.build import rebuild_from
     result = rebuild_from(conn, channel_id, from_ts)
     request.app.state.bus.publish_threadsafe("schedule", {"changed": True})
     return result
@@ -555,11 +564,8 @@ def replace_slot(slot_id: int, request: Request, body: dict[str, Any] = Body(...
                  conn: sqlite3.Connection = Depends(admin_conn)):
     row = _slot(conn, slot_id)
     _editable(row)
-    media = conn.execute("SELECT m.*, s.title AS show_title FROM media m LEFT JOIN shows s ON s.id = m.show_id WHERE m.id = ?",
-                         (int(body.get("media_id", 0)),)).fetchone()
-    if not media or not media["duration"]:
-        raise HTTPException(404, "media not found or has no duration")
-    title, subtitle = _titles(media)
+    media = _media_with_show(conn, int(body.get("media_id", 0)))
+    title, subtitle = slot_titles(dict(media), media["show_title"])
     end = row["start_ts"] + int(round(media["duration"]))
     with tx(conn):
         conn.execute("UPDATE schedule SET media_id = ?, end_ts = ?, title = ?, subtitle = ?, kind = 'programme', locked = 1, offset = 0 WHERE id = ?",
@@ -575,12 +581,9 @@ def insert_slot(request: Request, body: dict[str, Any] = Body(...), conn: sqlite
         raise HTTPException(400, "channel_id, start_ts and media_id required") from exc
     if start_ts <= now_ts():
         raise HTTPException(409, "start must be in the future")
-    media = conn.execute("SELECT m.*, s.title AS show_title FROM media m LEFT JOIN shows s ON s.id = m.show_id WHERE m.id = ?", (media_id,)).fetchone()
-    if not media or not media["duration"]:
-        raise HTTPException(404, "media not found or has no duration")
-    from ...scheduler.rules import broadcast_day_for, tz_of
+    media = _media_with_show(conn, media_id)
     day = broadcast_day_for(start_ts, all_settings(conn), tz_of(conn)).isoformat()
-    title, subtitle = _titles(media)
+    title, subtitle = slot_titles(dict(media), media["show_title"])
     end = start_ts + int(round(media["duration"]))
     overlapping = conn.execute("SELECT * FROM schedule WHERE channel_id = ? AND replay = 0 AND start_ts < ? AND end_ts > ? ORDER BY start_ts",
                                (channel_id, end, start_ts)).fetchall()
@@ -609,34 +612,19 @@ def rebuild(request: Request, body: dict[str, Any] = Body(...), conn: sqlite3.Co
     return _rebuild(request, conn, channel_id, from_ts)
 
 
-def _titles(media: sqlite3.Row) -> tuple[str, str]:
-    if media["kind"] == "music":
-        year = f"({media['year']})" if media["year"] else ""
-        return media["title"], " ".join(x for x in (year, ", ".join(json.loads(media["genres"] or "[]"))) if x)
-    if media["kind"] == "episode":
-        from ...scheduler.build import episode_subtitle
-        return media["show_title"] or media["title"], episode_subtitle(dict(media))
-    year = f"({media['year']})" if media["year"] else ""
-    return media["title"], " ".join(x for x in (year, media["certificate"] or "") if x)
-
-
 # --- system ---------------------------------------------------------------------------------------------
 
 def _cmd(args: list[str], timeout: float = 3) -> str:
-    try:
-        out = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
-        return out.stdout.strip()
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
+    """stdout of a command, or '' when it is missing or fails (this page must render anywhere)."""
+    return run_cmd(args, timeout)[1]
 
 
 @router.get("/system")
 def system_info(request: Request, conn: sqlite3.Connection = Depends(admin_conn)):
     cfg = request.app.state.cfg
     services = {}
-    for svc in ("pitv-player", "pitv-web", "pitv-scan.timer", "pitv-schedule.timer"):
-        state = _cmd(["systemctl", "is-active", svc])
-        services[svc] = state or "unknown"
+    for svc in ("pitv-player", "pitv-web"):
+        services[svc] = _cmd(["systemctl", "is-active", svc]) or "unknown"
     time_info = {}
     for line in _cmd(["timedatectl", "show"]).splitlines():
         if "=" in line:
@@ -680,9 +668,9 @@ def system_info(request: Request, conn: sqlite3.Connection = Depends(admin_conn)
 def service_action(name: str, action: str):
     if name not in ("pitv-player", "pitv-web") or action not in ("restart", "stop", "start"):
         raise HTTPException(400, "unsupported service or action")
-    out = subprocess.run(["sudo", "-n", "systemctl", action, name], capture_output=True, text=True, check=False)
-    if out.returncode != 0:
-        raise HTTPException(500, out.stderr.strip() or "systemctl failed")
+    rc, _, err = run_cmd(["sudo", "-n", "systemctl", action, name], timeout=30)
+    if rc != 0:
+        raise HTTPException(500, err or "systemctl failed")
     return {"ok": True}
 
 
@@ -719,16 +707,21 @@ def export_overrides(conn: sqlite3.Connection = Depends(admin_conn)):
 
 # --- logs ---------------------------------------------------------------------------------------------
 
-LOG_NAMES = ("player", "web", "scan", "schedule")
+LOG_NAMES = ("player", "web", "scan", "schedule", "install")
+INSTALL_LOG = Path("/work/install/install.log")   # written by the SD-card installer and first boot
+
+
+def _log_path(cfg, name: str) -> Path:
+    if name == "install":
+        return INSTALL_LOG if INSTALL_LOG.exists() else log_dir(cfg) / "install.log"
+    return log_dir(cfg) / f"{name}.log"
 
 
 @router.get("/logs")
 def list_logs(request: Request):
-    from ...logsetup import log_dir
-    d = log_dir(request.app.state.cfg)
     out = []
     for name in LOG_NAMES:
-        p = d / f"{name}.log"
+        p = _log_path(request.app.state.cfg, name)
         out.append({"name": name, "path": str(p), "size": p.stat().st_size if p.exists() else 0,
                     "modified": int(p.stat().st_mtime) if p.exists() else None})
     return out
@@ -737,10 +730,9 @@ def list_logs(request: Request):
 @router.get("/logs/{name}")
 def read_log(name: str, request: Request, lines: int = 300, q: str = "", level: str = ""):
     """Tail of a log file, newest last. `q` filters by substring, `level` by minimum level."""
-    from ...logsetup import log_dir, tail
     if name not in LOG_NAMES:
         raise HTTPException(404, "unknown log")
-    p = log_dir(request.app.state.cfg) / f"{name}.log"
+    p = _log_path(request.app.state.cfg, name)
     entries = tail(p, max(10, min(lines, 5000)), q, level.upper())
     return {"name": name, "lines": entries, "exists": p.exists()}
 
@@ -750,6 +742,5 @@ def read_journal(unit: str, lines: int = 300):
     """systemd journal for a PiTV unit (Pi only; empty elsewhere)."""
     if unit not in ("pitv-player", "pitv-web"):
         raise HTTPException(404, "unknown unit")
-    out = subprocess.run(["journalctl", "-u", unit, "-n", str(min(lines, 2000)), "--no-pager", "-o", "short-iso"],
-                         capture_output=True, text=True, check=False)
-    return {"unit": unit, "text": out.stdout if out.returncode == 0 else "", "error": out.stderr.strip()[:300]}
+    rc, out, err = run_cmd(["journalctl", "-u", unit, "-n", str(min(lines, 2000)), "--no-pager", "-o", "short-iso"], timeout=15)
+    return {"unit": unit, "text": out if rc == 0 else "", "error": err[:300]}

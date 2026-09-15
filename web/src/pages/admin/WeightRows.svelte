@@ -2,12 +2,12 @@
   // Editable key -> value rows for a JSON object setting (era weights, genre weights, watershed tables).
   let { value = {}, onchange, keyLabel = 'Key', valueLabel = 'Weight', keyPlaceholder = '', type = 'number', step = '0.05', min = '0', addLabel = 'Add row' } = $props();
   let rows = $state([]);
-  let seeded = $state(null);
+  // Re-seed from `value` only when the parent hands us a new object (not our own emit()).
+  let seeded = null;
   $effect(() => {
-    if (value !== seeded) {
-      seeded = value;
-      rows = Object.entries(value ?? {}).map(([k, v]) => ({ k, v }));
-    }
+    if (value === seeded) return;
+    seeded = value;
+    rows = Object.entries(value ?? {}).map(([k, v]) => ({ k, v }));
   });
   function emit() {
     const out = {};

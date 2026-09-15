@@ -107,6 +107,6 @@ class ControlServer:
         try:
             conn.sendall((json.dumps(reply) + "\n").encode())
         except OSError:
-            pass
+            pass  # the client hung up before reading the reply
         finally:
             conn.close()

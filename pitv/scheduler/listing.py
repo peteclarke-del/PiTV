@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import date, datetime
 
-from ..db import all_settings, now_ts
+from ..db import all_settings, enabled_channels, now_ts
 from .rules import broadcast_day_for, day_bounds, tz_of
 
 
@@ -25,7 +25,7 @@ def print_listing(conn: sqlite3.Connection, day: str | None = None,
     settings = all_settings(conn)
     tz = tz_of(conn)
     d = datetime.strptime(day, "%Y-%m-%d").date() if day else broadcast_day_for(now_ts(), settings, tz)
-    channels = conn.execute("SELECT * FROM channels WHERE enabled = 1 ORDER BY number").fetchall()
+    channels = enabled_channels(conn)
     if channel_numbers:
         channels = [c for c in channels if c["number"] in channel_numbers]
     day_start, day_end, _ = day_bounds(d, settings, tz)

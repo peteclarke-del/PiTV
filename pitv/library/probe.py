@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..db import now_ts
+from ..player.hwdec import PI_HW_CODECS
 
-HWDEC_CODECS = {"h264", "hevc"}  # what the Pi 4 decodes in hardware
 _INTERLACED_FIELD_ORDERS = {"tt", "bb", "tb", "bt"}
 
 
@@ -25,7 +25,7 @@ class ProbeResult:
 
     @property
     def hwdec(self) -> bool:
-        return (self.vcodec or "") in HWDEC_CODECS
+        return (self.vcodec or "") in PI_HW_CODECS
 
 
 def ffprobe(path: Path, binary: str = "ffprobe", timeout: int = 60) -> ProbeResult | None:

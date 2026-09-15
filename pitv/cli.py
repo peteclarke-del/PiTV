@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -128,11 +129,10 @@ def cmd_reset_schedule(cfg, args) -> int:
 
 
 def cmd_content_manifest(cfg, args) -> int:
-    import json as _json
     from .content import manifest
     conn = _open(cfg)
     data = manifest(conn, days=args.days)
-    text = _json.dumps(data, indent=2)
+    text = json.dumps(data, indent=2)
     if args.out:
         Path(args.out).write_text(text)
         print(f"{len(data['items'])} items, {len(data['wanted'])} wanted -> {args.out}")
@@ -142,10 +142,9 @@ def cmd_content_manifest(cfg, args) -> int:
 
 
 def cmd_content_report(cfg, args) -> int:
-    import json as _json
     from .content import apply_report
     conn = _open(cfg)
-    data = _json.loads(Path(args.file).read_text())
+    data = json.loads(Path(args.file).read_text())
     print(apply_report(conn, data))
     return 0
 
@@ -177,7 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("source", help="list or add sources")
     s.add_argument("action", choices=["list", "add"], nargs="?", default="list")
-    s.add_argument("--type", choices=["tv", "movie", "advert", "ident"])
+    s.add_argument("--type", choices=["tv", "movie", "advert", "ident", "music"])
     s.add_argument("--name")
     s.add_argument("--path")
     s.add_argument("--remote")

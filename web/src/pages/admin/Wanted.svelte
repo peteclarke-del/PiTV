@@ -1,9 +1,11 @@
 <script>
-  import { untrack, onMount } from 'svelte';
-  import { get, post, del, tryApi } from '../../lib/api.js';
-  import { changes, confirm, clock, toast } from '../../lib/stores.svelte.js';
-  import { fmtAgo } from '../../lib/format.js';
+  import { untrack } from 'svelte';
+  import { get, post, del, tryApi, confirmApi } from '../../lib/api.js';
+  import { changes, clock, toast } from '../../lib/stores.svelte.js';
+  import { fmtAgo, fmtEpisode } from '../../lib/format.js';
+  import { poll } from '../../lib/poll.svelte.js';
   import ProgressBar from '../../components/ProgressBar.svelte';
+  import StatusBadge from '../../components/StatusBadge.svelte';
   import Drawer from '../../components/Drawer.svelte';
 
   let wanted = $state(null);
@@ -13,11 +15,10 @@
   async function load() {
     try { wanted = await get('/api/wanted'); } catch { wanted = wanted ?? []; }
   }
-  $effect(() => { changes.library; untrack(load); }); // eslint-disable-line no-unused-expressions
-  onMount(() => { const t = setInterval(load, 20000); return () => clearInterval(t); });
+  $effect(() => { changes.library; untrack(load); });
+  poll(load, 20000); // pitv_content updates progress without an SSE event
 
   const active = (st) => ['downloading', 'transcoding', 'searching', 'running'].includes(st);
-  const badge = (st) => (st === 'done' ? 'ok' : st === 'failed' ? 'danger' : active(st) ? 'info' : '');
   const pct = (p) => (p > 1 ? p / 100 : p);
 
   function openAdd(preset = {}) {
@@ -35,8 +36,7 @@
   }
   const retry = (w) => tryApi(post(`/api/wanted/${w.id}/retry`), { success: 'Re-queued' }).then(load);
   async function removeWanted(w) {
-    if (!(await confirm(`Remove "${w.title}" from the wanted list?`, { title: 'Remove', okLabel: 'Remove', danger: true }))) return;
-    if (await tryApi(del(`/api/wanted/${w.id}`))) load();
+    if (await confirmApi(`Remove "${w.title}" from the wanted list?`, { title: 'Remove', okLabel: 'Remove', danger: true }, () => del(`/api/wanted/${w.id}`))) load();
   }
   async function scanGaps() {
     const r = await tryApi(post('/api/wanted/scan-gaps'));
@@ -58,9 +58,9 @@
           {#each wanted ?? [] as w (w.id)}
             <tr>
               <td><b>{w.show_title ? `${w.show_title} · ` : ''}{w.title}</b>{#if w.auto}<span class="badge" title="Queued automatically">auto</span>{/if}
-                <div class="tiny muted">{w.kind}{w.year ? ` · ${w.year}` : ''}{w.season != null ? ` · S${String(w.season).padStart(2, '0')}E${String(w.episode ?? 0).padStart(2, '0')}` : ''}{w.kind === 'music' && w.artist ? ` · ${w.artist}` : ''}{w.kind === 'music' && w.genre ? ` · ${w.genre}` : ''}</div></td>
+                <div class="tiny muted">{w.kind}{w.year ? ` · ${w.year}` : ''}{w.season != null ? ` · ${fmtEpisode(w.season, w.episode)}` : ''}{w.kind === 'music' && w.artist ? ` · ${w.artist}` : ''}{w.kind === 'music' && w.genre ? ` · ${w.genre}` : ''}</div></td>
               <td class="small">{#if w.ref}<div class="tiny muted mono truncate" style="max-width:220px" title={w.ref}>{w.ref}</div>{:else}<span class="muted">search</span>{/if}</td>
-              <td style="min-width:160px"><span class="badge {badge(w.status)}">{w.status}</span>
+              <td style="min-width:160px"><StatusBadge status={w.status} />
                 {#if active(w.status)}<ProgressBar value={pct(w.progress ?? 0)} />{/if}
                 {#if w.message}<div class="tiny muted">{w.message}</div>{/if}
                 {#if w.status === 'done' && w.media_id}<div class="tiny"><a href="#/admin/library/{w.kind === 'movie' ? 'movies' : w.kind === 'advert' ? 'adverts' : ''}">in library</a></div>{/if}</td>
@@ -78,7 +78,6 @@
       </table>
     </div>
   </div>
-
 </div>
 
 <Drawer open={!!adding} title="Add wanted item" onclose={() => (adding = null)}>
@@ -105,4 +104,3 @@
     <button class="primary" onclick={submitAdd} disabled={busy || !adding?.title?.trim()}>Add</button>
   {/snippet}
 </Drawer>
-

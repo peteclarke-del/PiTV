@@ -1,9 +1,11 @@
 <script>
   import { untrack } from 'svelte';
-  import { get, post, del, tryApi } from '../../lib/api.js';
-  import { changes, clock, confirm, toast } from '../../lib/stores.svelte.js';
+  import { get, post, del, tryApi, confirmApi } from '../../lib/api.js';
+  import { changes, clock, toast } from '../../lib/stores.svelte.js';
   import { fmtDay, fmtRange, fmtDuration, fmtDateTime, fmtTime, tsToLocalDay, tsToLocalTime, localToTs, plural } from '../../lib/format.js';
+  import { dayBounds, pickDay, builtToday, defaultPpm } from '../../lib/schedule.js';
   import EpgGrid from '../../components/EpgGrid.svelte';
+  import DayNav from '../../components/DayNav.svelte';
   import Drawer from '../../components/Drawer.svelte';
   import Modal from '../../components/Modal.svelte';
   import ChannelBadge from '../../components/ChannelBadge.svelte';
@@ -17,25 +19,19 @@
   let loading = $state(false);
   let selected = $state(null);
   let grid = $state(null);
-  let ppm = $state(window.matchMedia('(max-width: 600px)').matches ? 3 : 4);
+  const ppm = defaultPpm();
   let picker = $state(null);          // 'replace' | 'insert' | null
   let insert = $state(null);          // { channel_id, day, time, media_id, label }
   let notes = $state([]);             // notes from the last synchronous edit
   let busy = $state(false);
 
-  let dayInfo = $derived.by(() => {
-    if (!days) return null;
-    const i = days.days.findIndex((d) => d.day === day);
-    if (i < 0) return null;
-    const d = days.days[i], next = days.days[i + 1];
-    return { start: d.s, end: next ? next.s : d.e + 8 * 3600 };
-  });
+  let dayInfo = $derived(dayBounds(days, day));
   let channelById = $derived(new Map((data?.channels ?? []).map((c) => [c.id, c])));
   let editable = $derived(selected && selected.start_ts > clock.ts && !selected.replay);
 
   async function loadDays() {
     days = await get('/api/schedule/days');
-    if (!day || !days.days.some((d) => d.day === day)) day = days.days.some((d) => d.day === days.today) ? days.today : (days.days[0]?.day ?? '');
+    day = pickDay(days, day);
   }
   async function loadSlots() {
     if (!dayInfo) { data = null; return; }
@@ -43,19 +39,21 @@
     try { data = await get('/api/schedule', { start: dayInfo.start, end: dayInfo.end, ads: ads ? 1 : 0 }); }
     finally { loading = false; }
   }
-  $effect(() => { changes.schedule; untrack(() => loadDays().then(loadSlots).catch(() => {})); }); // eslint-disable-line no-unused-expressions
+  // Every schedule change refetches the day list; a new dayInfo (new day or new bounds) or the ads toggle refetches the slots.
+  $effect(() => { changes.schedule; untrack(() => loadDays().catch(() => {})); });
   let first = true;
   $effect(() => {
     if (!dayInfo) return;
-    ads; // eslint-disable-line no-unused-expressions
+    ads;
     untrack(() => loadSlots().then(() => {
       if (first) { first = false; if (day === days?.today) setTimeout(() => grid?.scrollTo(clock.ts, 80), 30); }
       if (selected) selected = data?.slots.find((s) => s.id === selected.id) ?? null;
     }).catch(() => {}));
   });
-  function shift(n) {
-    const i = days.days.findIndex((d) => d.day === day);
-    if (days.days[i + n]) day = days.days[i + n].day;
+  function goNow() {
+    const today = builtToday(days);
+    if (today && day !== today) { day = today; setTimeout(() => grid?.scrollTo(clock.ts, 80), 300); }
+    else grid?.scrollTo(clock.ts, 80);
   }
 
   function applyResult(r, msg) {
@@ -72,9 +70,9 @@
     if (r) { selected.locked = r.locked; changes.schedule++; }
   }
   async function remove() {
-    if (!(await confirm(`Remove "${selected.title}" and rebuild the rest of the day on this channel?`, { title: 'Remove slot', okLabel: 'Remove', danger: true }))) return;
     busy = true;
-    applyResult(await tryApi(del(`/api/schedule/slots/${selected.id}`)), 'Slot removed');
+    applyResult(await confirmApi(`Remove "${selected.title}" and rebuild the rest of the day on this channel?`, { title: 'Remove slot', okLabel: 'Remove', danger: true },
+      () => del(`/api/schedule/slots/${selected.id}`)), 'Slot removed');
     busy = false;
   }
   async function replaceWith(pick) {
@@ -84,9 +82,9 @@
     busy = false;
   }
   async function rebuildFromHere() {
-    if (!(await confirm(`Regenerate this channel from ${fmtTime(selected.start_ts)} onward? Locked slots are kept.`, { title: 'Rebuild from here', okLabel: 'Rebuild' }))) return;
     busy = true;
-    applyResult(await tryApi(post('/api/schedule/rebuild', { channel_id: selected.channel_id, from_ts: selected.start_ts })), 'Rebuilt');
+    applyResult(await confirmApi(`Regenerate this channel from ${fmtTime(selected.start_ts)} onward? Locked slots are kept.`, { title: 'Rebuild from here', okLabel: 'Rebuild' },
+      () => post('/api/schedule/rebuild', { channel_id: selected.channel_id, from_ts: selected.start_ts })), 'Rebuilt');
     busy = false;
   }
   function openInsert(slot) {
@@ -105,12 +103,8 @@
 
 <div class="stack">
   <div class="row">
-    <button class="small" onclick={() => shift(-1)} disabled={!days || days.days[0]?.day === day} aria-label="Previous day">◀</button>
-    <select bind:value={day} aria-label="Day">
-      {#each days?.days ?? [] as d (d.day)}<option value={d.day}>{fmtDay(d.day)}{d.day === days.today ? ' (today)' : ''}</option>{/each}
-    </select>
-    <button class="small" onclick={() => shift(1)} disabled={!days || days.days.at(-1)?.day === day} aria-label="Next day">▶</button>
-    <button class="small" onclick={() => { if (days && day !== days.today) { day = days.today; setTimeout(() => grid?.scrollTo(clock.ts, 80), 300); } else grid?.scrollTo(clock.ts, 80); }}>Now</button>
+    <DayNav {days} {day} onpick={(d) => (day = d)} />
+    <button class="small" onclick={goNow}>Now</button>
     <label class="check small"><input type="checkbox" bind:checked={ads} /> Show ads &amp; idents</label>
     <span class="spacer"></span>
     <button class="small primary" onclick={() => openInsert(null)} disabled={!data}>Insert programme…</button>

@@ -26,18 +26,23 @@ reads `http://pitv/api/content/manifest?days=1`, copies or transcodes tomorrow's
 the Pi's cache and fetches anything on the wanted list (music videos, missing episodes) into
 `<cache>/acquired/...`, then posts `/api/content/report`. The installer exports the cache
 directory over NFS to the LAN for that; on the desktop mount it with
-`sudo mount -t nfs pitv:/mnt/cache /mnt/pitv-cache`. Set Admin → Weighting → Cache →
-"Content provider" to `pitv_content` so PiTV's own downloader stays out of the way (its copy-only
-safety net for the next few hours stays on). Downloads never go onto the NAS shares.
+`sudo mount -t nfs pitv:/mnt/cache /mnt/pitv-cache`. PiTV itself never downloads or encodes;
+it only reads the cache and evicts old files from it. Downloads never go onto the NAS shares.
+The tool's status, log and settings are on the Admin → Content tab.
 
 ### The television
 
-The target set is a 14" 4:3 colour CRT. By default the installer configures the Pi 4's
-composite output (PAL, 4:3) on the 3.5 mm AV jack; use a TRRS-to-phono lead into the set's
-SCART or AV input. If the set is fed through an HDMI-to-SCART converter instead, install with
-`DISPLAY_MODE=hdmi43 sudo ./setup/install.sh` (HDMI forced to 1024x768, 4:3). Overlays keep a
-7% overscan margin and use larger type; both are adjustable in Admin → Weighting → Player.
-If mpv picks the wrong output, set `drm_connector` there (e.g. `Composite-1`).
+The set is a 14" 4:3 colour CRT fed through an **HDMI-to-SCART converter**. The installer
+configures HDMI to CEA mode 17 (720x576p, 50 Hz, 4:3 PAL) and tells mpv the screen is 4:3 so
+the anamorphic 720x576 frame is shown with the right geometry; 4:3 programmes fill the screen
+and widescreen films are letterboxed. `DISPLAY_MODE=composite` selects the Pi's own PAL
+composite output instead, `hdmi43` a 1024x768 monitor. Overlays keep a 7% overscan margin and
+use larger type; both are adjustable in Admin → Weighting → Player, as is `drm_connector` if
+mpv picks the wrong output.
+
+On the desktop the windowed player (`setup/dev.sh start`) is a preview of the Pi's picture:
+a 768x576 4:3 window with the same scaler and deinterlacer and the same cache-first file
+resolution, so what pitv_content transcodes can be checked as it plays.
 
 Updating later: `cd ~/PiTV && git pull && sudo ./setup/install.sh` then
 `sudo systemctl restart pitv-player pitv-web`.

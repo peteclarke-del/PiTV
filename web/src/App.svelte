@@ -1,8 +1,10 @@
 <script>
   import { onMount } from 'svelte';
   import { startRouter } from './lib/router.js';
-  import { route, clock, auth } from './lib/stores.svelte.js';
-  import { connectEvents, get } from './lib/api.js';
+  import { route, clock } from './lib/stores.svelte.js';
+  import { connectEvents, refreshAuth } from './lib/api.js';
+  import { fmtTime } from './lib/format.js';
+  import { poll } from './lib/poll.svelte.js';
   import Logo from './components/Logo.svelte';
   import Toast from './components/Toast.svelte';
   import ConfirmDialog from './components/ConfirmDialog.svelte';
@@ -18,15 +20,13 @@
     ['/admin', 'Admin'],
   ];
   let section = $derived(route.parts[0] ?? '');
-  let clockText = $derived(new Date(clock.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }).replace(/^24/, '00'));
 
   onMount(() => {
     startRouter();
     connectEvents();
-    const t = setInterval(() => { clock.ts = Math.floor(Date.now() / 1000); }, 1000);
-    get('/api/auth').then((a) => { auth.password_set = a.password_set; auth.admin = a.admin; auth.checked = true; }).catch(() => { auth.checked = true; });
-    return () => clearInterval(t);
+    refreshAuth();
   });
+  poll(() => { clock.ts = Math.floor(Date.now() / 1000); }, 1000);
 </script>
 
 <header class="top">
@@ -36,7 +36,7 @@
       <a href="#{path}" class:active={path === '/' ? section === '' : section === path.slice(1)}>{label}</a>
     {/each}
   </nav>
-  <span class="clock mono" aria-label="Current time">{clockText}</span>
+  <span class="clock mono" aria-label="Current time">{fmtTime(clock.ts)}</span>
 </header>
 
 <main>

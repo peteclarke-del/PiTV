@@ -1,7 +1,7 @@
 <script>
   import { untrack } from 'svelte';
-  import { get, post, tryApi } from '../../lib/api.js';
-  import { changes, confirm, player, clock } from '../../lib/stores.svelte.js';
+  import { get, post, confirmApi } from '../../lib/api.js';
+  import { changes, player, clock } from '../../lib/stores.svelte.js';
   import { fmtDateTime, fmtDuration, fmtRange, fmtBytes, fmtAgo } from '../../lib/format.js';
   import Remote from '../../components/Remote.svelte';
   import PlayerStatus from '../../components/PlayerStatus.svelte';
@@ -18,18 +18,16 @@
       channels = c; history = h;
     } catch { /* ignore */ }
   }
-  $effect(() => { changes.library; untrack(load); }); // eslint-disable-line no-unused-expressions
-  // Refresh history when the slot changes.
+  $effect(() => { changes.library; untrack(load); });
+  // The airing history grows whenever the player moves to a new slot.
   let lastSlot = null;
   $effect(() => {
     const id = s.slot?.id ?? null;
     if (id !== lastSlot) { lastSlot = id; untrack(load); }
   });
 
-  async function restart() {
-    if (await confirm('Restart the player service? The picture will drop for a few seconds.', { title: 'Restart player', okLabel: 'Restart' }))
-      tryApi(post('/api/system/service/pitv-player/restart'), { success: 'Restart requested' });
-  }
+  const restart = () => confirmApi('Restart the player service? The picture will drop for a few seconds.', { title: 'Restart player', okLabel: 'Restart' },
+    () => post('/api/system/service/pitv-player/restart'), { success: 'Restart requested' });
   let slotProgress = $derived.by(() => {
     const sl = s.slot; if (!sl || !sl.start_ts || !sl.end_ts) return 0;
     return (clock.ts - sl.start_ts) / (sl.end_ts - sl.start_ts);

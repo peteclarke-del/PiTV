@@ -20,7 +20,10 @@ from typing import Any
 from .. import db as dbm
 from .. import sdnotify
 from ..config import Config
-from ..db import all_settings, now_ts, row_to_dict
+from ..db import all_settings, enabled_channels, now_ts
+from ..guide import block_entry, next_programmes, slot_at
+from ..logsetup import setup_logging
+from ..scheduler.build import rebuild_from
 from .cache import MediaCache
 from .control_socket import ControlServer
 from .hwdec import decode_options, is_raspberry_pi
@@ -32,9 +35,7 @@ from .osd import (OVERLAY_BADGE, OVERLAY_GUIDE, OVERLAY_MESSAGE, OVERLAY_STATIC,
 
 log = logging.getLogger("pitv.player")
 
-SLOT_SQL = ("SELECT s.*, m.path AS media_path, m.transcoded_path, m.vcodec, m.interlaced, m.plot,"
-            " m.year AS media_year, m.certificate, m.missing AS media_missing, m.show_id"
-            " FROM schedule s LEFT JOIN media m ON m.id = s.media_id")
+TESTCARD = "testcard"   # sentinel in `playing_path` while the test card is on screen
 
 WINDOW_KEYS = {"UP": "up", "DOWN": "down", "LEFT": "left", "RIGHT": "right", "ENTER": "ok", "ESC": "back",
                "g": "guide", "i": "info", "SPACE": "pause", "m": "mute", "+": "vol_up", "=": "vol_up",
@@ -47,6 +48,8 @@ class Player:
     def __init__(self, cfg: Config, channel: int | None = None, keyboard: bool = False, now_override: str | None = None) -> None:
         self.cfg = cfg
         cfg.ensure_dirs()
+        # Used on the main thread only: input, mpv events and the control socket hand work
+        # over through `self.actions`, and the maintenance thread opens its own connection.
         self.conn = dbm.connect(cfg.db_path)
         dbm.init_db(self.conn)
         self.settings = all_settings(self.conn)
@@ -90,9 +93,7 @@ class Player:
         self.explicit_channel = channel is not None
         self.state_file = cfg.data_dir / "player_state.json"
 
-        cache_dir = self.settings.get("cache_dir") or ""
-        self.cache = MediaCache(Path(cache_dir) if cache_dir else None,
-                                int(float(self.settings.get("cache_max_gb", 200)) * 1024 ** 3))
+        self.cache = MediaCache.from_settings(self.settings)
         self.renderer = Renderer(cfg.run_dir)
         self.mpv = Mpv(cfg.mpv_binary, cfg.mpv_socket, self._mpv_args(), on_event=self._on_mpv_event)
         self.control = ControlServer(cfg.player_socket, self._handle_control, self.state)
@@ -106,17 +107,21 @@ class Player:
         return int(time.time()) + self.offset
 
     def _mpv_args(self) -> list[str]:
-        args = default_args(self.cfg.windowed or not self.on_pi, self.cfg.run_dir)
+        args = default_args(windowed=not self.on_pi, osd_socket_dir=self.cfg.run_dir)
         dev = self.settings.get("audio_device") or "auto"
         if dev != "auto":
             args.append(f"--audio-device={dev}")
-        conn_name = self.settings.get("drm_connector") or ""
-        if conn_name and self.on_pi and not self.cfg.windowed:
-            args.append(f"--drm-connector={conn_name}")
+        if self.on_pi:
+            conn_name = self.settings.get("drm_connector") or ""
+            if conn_name:
+                args.append(f"--drm-connector={conn_name}")
+            aspect = self.settings.get("display_aspect") or ""
+            if aspect:
+                args.append(f"--monitoraspect={aspect}")  # 720x576 into a 4:3 set: pixels are not square
         return args + self.cfg.mpv_extra_args
 
     def _load_channels(self) -> None:
-        self.channels = [row_to_dict(r) for r in self.conn.execute("SELECT * FROM channels WHERE enabled = 1 ORDER BY number")]
+        self.channels = enabled_channels(self.conn)
 
     def _testcard(self) -> Path:
         p = self.cfg.assets_dir / "testcard.png"
@@ -127,46 +132,20 @@ class Player:
         return p
 
     def slot_at(self, channel_id: int, ts: int) -> dict[str, Any] | None:
-        row = self.conn.execute(SLOT_SQL + " WHERE s.channel_id = ? AND s.start_ts <= ? AND s.end_ts > ?"
-                                " ORDER BY s.start_ts DESC LIMIT 1", (channel_id, ts, ts)).fetchone()
-        return dict(row) if row else None
-
-    @staticmethod
-    def _collapse(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Consecutive music-channel slots with the same block become one entry (title = block)."""
-        out: list[dict[str, Any]] = []
-        for r in rows:
-            prev = out[-1] if out else None
-            if r.get("block") and prev and prev.get("block") == r["block"] and prev["end_ts"] == r["start_ts"] \
-                    and prev.get("replay") == r.get("replay"):
-                prev["end_ts"] = r["end_ts"]
-                continue
-            e = dict(r)
-            if e.get("block"):
-                e["video_title"] = e["title"]
-                e["title"] = e["block"]
-                e["subtitle"] = "Music videos"
-            out.append(e)
-        return out
+        return slot_at(self.conn, channel_id, ts)
 
     def next_programmes(self, channel_id: int, after: int, n: int = 12) -> list[dict[str, Any]]:
-        rows = self.conn.execute(SLOT_SQL + " WHERE s.channel_id = ? AND s.start_ts >= ? AND s.kind = 'programme'"
-                                 " ORDER BY s.start_ts LIMIT ?", (channel_id, after, n * 40)).fetchall()
-        return self._collapse([dict(r) for r in rows])[:n]
+        return next_programmes(self.conn, channel_id, after, n)
 
     def current_programme(self, channel_id: int, ts: int) -> dict[str, Any] | None:
         """The programme 'on' now: during an ad break, the one that follows; on a music channel,
         the whole block with the current video as its subtitle."""
         slot = self.slot_at(channel_id, ts)
         if slot and slot["kind"] == "programme":
-            if slot.get("block"):
-                rows = self.conn.execute(SLOT_SQL + " WHERE s.channel_id = ? AND s.block = ? AND s.replay = ?"
-                                         " AND s.end_ts > ? AND s.start_ts < ? ORDER BY s.start_ts",
-                                         (channel_id, slot["block"], slot["replay"], ts - 12 * 3600, ts + 12 * 3600)).fetchall()
-                for e in self._collapse([dict(r) for r in rows]):
-                    if e["start_ts"] <= ts < e["end_ts"]:
-                        e["subtitle"] = slot["title"]  # the video playing now
-                        return e
+            entry = block_entry(self.conn, slot, ts)
+            if entry:
+                entry["subtitle"] = entry["video_title"]
+                return entry
             return slot
         nxt = self.next_programmes(channel_id, ts + 1, 1)
         return nxt[0] if nxt else None
@@ -174,7 +153,6 @@ class Player:
     # --- lifecycle -------------------------------------------------------------------------
 
     def run(self) -> int:
-        from ..logsetup import setup_logging
         setup_logging(self.cfg, "player")
         log.info("player starting: pi=%s windowed=%s mpv=%s data=%s", self.on_pi, self.cfg.windowed,
                  self.cfg.mpv_binary, self.cfg.data_dir)
@@ -192,13 +170,10 @@ class Player:
             self.mpv.keybind(key, f"pitv {action}")
         try:
             self.mpv.command("request_log_messages", "warn")  # surface mpv's own warnings/errors in our log
-        except MpvError:
-            pass
-        try:
             self.mpv.set("volume", self.volume)
             self.mpv.set("mute", self.muted)
-        except MpvError:
-            pass
+        except MpvError as exc:
+            log.warning("mpv setup: %s", exc)
         self.control.start()
         self.evdev.start()
         if self.tty:
@@ -221,31 +196,34 @@ class Player:
         self.stopping = True
         self._end_history()
         self._save_state()
-        for part in (self.maintenance, self.evdev, self.control):
+        for part in (self.maintenance, self.evdev, self.control, self.tty):
             try:
-                part.stop()
-            except Exception:  # noqa: BLE001
-                pass
-        if self.tty:
-            self.tty.stop()
+                if part is not None:
+                    part.stop()
+            except Exception:  # noqa: BLE001 - keep shutting the rest down
+                log.exception("stopping %s failed", type(part).__name__)
         self.mpv.stop()
 
     def _restore_state(self) -> None:
+        """Volume, mute and last channel survive a restart (a missing file is the first run)."""
         try:
             data = json.loads(self.state_file.read_text())
-            self.volume = int(data.get("volume", self.volume))
-            self.muted = bool(data.get("muted", False))
-            if not self.explicit_channel and data.get("channel"):
-                self.initial_channel = int(data["channel"])
-        except (OSError, ValueError):
-            pass
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError) as exc:
+            log.warning("player state file unreadable (%s): %s", self.state_file, exc)
+            return
+        self.volume = int(data.get("volume", self.volume))
+        self.muted = bool(data.get("muted", False))
+        if not self.explicit_channel and data.get("channel"):
+            self.initial_channel = int(data["channel"])
 
     def _save_state(self) -> None:
         try:
             self.state_file.write_text(json.dumps({"volume": self.volume, "muted": self.muted,
                                                    "channel": self.channel["number"] if self.channel else None}))
-        except OSError:
-            pass
+        except OSError as exc:
+            log.warning("could not save player state: %s", exc)
 
     # --- main loop ----------------------------------------------------------------------------
 
@@ -301,8 +279,8 @@ class Player:
                 self.playing_slot_id = None
                 try:
                     self.mpv.set("pause", False)
-                except MpvError:
-                    pass
+                except MpvError as exc:
+                    log.warning("unpause after clock jump failed: %s", exc)
                 if self.channel:
                     self.play_live()
             last_wall = now
@@ -334,12 +312,14 @@ class Player:
             self.stopping = True
 
     def _reload_settings(self) -> None:
+        """Pick up admin changes to settings and channels once a minute (the cache directory
+        and mpv arguments are read at start only; those need a player restart)."""
         try:
             self.settings = all_settings(self.conn)
             self.evdev.set_keymap(self.settings.get("keymap") or {})
             self._load_channels()
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as exc:
+            log.warning("settings reload failed: %s", exc)
 
     def tick(self) -> None:
         if not self.mpv.running():
@@ -368,8 +348,8 @@ class Player:
                         log.info("drift %.1fs; re-seeking", pos - expected)
                         try:
                             self.mpv.command("seek", expected, "absolute")
-                        except MpvError:
-                            pass
+                        except MpvError as exc:
+                            log.warning("re-seek failed: %s", exc)
             elif self.playing_path is None and time.time() >= self.retry_at:
                 self.play_live()
         if self.guide_open and time.time() - self.guide_loaded_at > 30:
@@ -392,8 +372,8 @@ class Player:
         self.failed_slot_id = None
         try:
             self.mpv.set("pause", False)
-        except MpvError:
-            pass
+        except MpvError as exc:
+            log.warning("unpause on tune failed: %s", exc)
         if switching and self.settings.get("channel_switch_static", True):
             self._sync_osd_size()
             self._overlay(OVERLAY_STATIC, self.renderer.static(), ttl=0.35)
@@ -481,10 +461,9 @@ class Player:
         if not src or not Path(src["path"]).is_dir():
             return False  # the whole share is down; nothing sensible to substitute with
         if slot["id"] in self._substituted_slots:
-            return False
+            return False  # already tried once for this slot; do not loop on a bad rebuild
         self._substituted_slots.add(slot["id"])
         try:
-            from ..scheduler.build import rebuild_from
             result = rebuild_from(self.conn, self.channel["id"], self.clock(), now=self.clock(),
                                   exclude_media_ids={slot["media_id"]})
             log.error("substituted missing '%s' on channel %s and rebalanced the day: %s", slot.get("title"),
@@ -499,18 +478,18 @@ class Player:
 
     def _show_testcard(self, text: str, sub: str) -> None:
         try:
-            if self.playing_path != "testcard":
+            if self.playing_path != TESTCARD:
                 self.mpv.loadfile(str(self._testcard()))
-                self.playing_path = "testcard"
+                self.playing_path = TESTCARD
             self._overlay(OVERLAY_MESSAGE, self.renderer.message(text, sub), ttl=None)
-        except MpvError:
-            pass
+        except MpvError as exc:
+            log.warning("could not show the test card: %s", exc)
 
     def _on_mpv_event(self, ev: dict[str, Any]) -> None:
         name = ev.get("event")
         if name == "end-file":
             reason = ev.get("reason")
-            if reason == "eof" and self.playing_path not in (None, "testcard"):
+            if reason == "eof" and self.playing_path not in (None, TESTCARD):
                 log.info("end of file reached (%s)", self.playing_path)
                 self.actions.put(("eof", None))
             elif reason == "error":
@@ -607,12 +586,12 @@ class Player:
                 self.behind_live = True
             self.show_badge()
         elif act == "restart":
-            if self.slot and self.playing_path not in (None, "testcard"):
+            if self.slot and self.playing_path not in (None, TESTCARD):
                 self.behind_live = True
                 try:
                     self.mpv.command("seek", float(self.slot.get("offset") or 0), "absolute")
-                except MpvError:
-                    pass
+                except MpvError as exc:
+                    log.warning("restart seek failed: %s", exc)
                 self.show_badge()
         elif act == "ok":
             self.show_badge()
@@ -764,15 +743,8 @@ class Player:
     def state(self) -> dict[str, Any]:
         now = self.clock()
         slot = self.slot
-        pos = None
-        try:
-            pos = self.mpv.get("time-pos") if self.mpv.alive and self.playing_path not in (None, "testcard") else None
-        except Exception:  # noqa: BLE001
-            pos = None
-        try:
-            self.hwdec_current = self.mpv.get("hwdec-current") if self.mpv.alive else None
-        except Exception:  # noqa: BLE001
-            pass
+        pos = self.mpv.get("time-pos") if self.mpv.alive and self.playing_path not in (None, TESTCARD) else None
+        self.hwdec_current = self.mpv.get("hwdec-current") if self.mpv.alive else None
         return {
             "online": True, "ts": now, "clock_offset": self.offset,
             "channel": {"id": self.channel["id"], "number": self.channel["number"], "name": self.channel["name"],
@@ -780,17 +752,18 @@ class Player:
             "slot": {k: slot.get(k) for k in ("id", "kind", "title", "subtitle", "start_ts", "end_ts", "media_id")} if slot else None,
             "position": pos, "paused": self.paused, "behind_live": self.behind_live,
             "volume": self.volume, "muted": self.muted, "guide_open": self.guide_open,
-            "playing": self.playing_path not in (None, "testcard"), "testcard": self.playing_path == "testcard",
+            "playing": self.playing_path not in (None, TESTCARD), "testcard": self.playing_path == TESTCARD,
             "hwdec": self.hwdec_current, "on_pi": self.on_pi, "last_key": self.last_key, "error": self.last_error,
             "cache": self.cache.usage(), "maintenance": self.maintenance.status,
-            "stream": self.stream_info, "file": self.playing_path if self.playing_path != "testcard" else None,
-            "input_devices": [getattr(d, "name", "?") for d in self.evdev.devices.values()],
+            "stream": self.stream_info, "file": self.playing_path if self.playing_path != TESTCARD else None,
+            "input_devices": self.evdev.device_names,
         }
 
     def _publish(self, force: bool = False) -> None:
         try:
             st = self.state()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - a broken state snapshot must not stop playback
+            log.exception("state snapshot failed")
             return
         key = json.dumps({k: v for k, v in st.items() if k not in ("ts", "position", "cache")}, sort_keys=True)
         if force or key != self._state_cache or st.get("playing"):

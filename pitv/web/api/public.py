@@ -10,54 +10,38 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
-from ...db import all_settings, now_ts, row_to_dict, set_setting, tx
+from ...db import all_settings, enabled_channels, now_ts, set_setting, tx
+from ...guide import SLOT_QUERY, block_entry, collapse_blocks, next_programmes, slot_at
 from ...scheduler.rules import broadcast_day_for, day_bounds, tz_of
 from .. import auth
 from ..events import format_sse
-from .deps import SLOT_QUERY, collapse_blocks, get_conn, slot_public
+from .deps import get_conn, slot_public
 
 router = APIRouter()
-
-
-def channel_public(row: sqlite3.Row) -> dict[str, Any]:
-    d = row_to_dict(row)
-    return d
 
 
 @router.get("/api/now")
 def api_now(request: Request, conn: sqlite3.Connection = Depends(get_conn), next: int = 3):
     now = now_ts()
-    channels = conn.execute("SELECT * FROM channels WHERE enabled = 1 ORDER BY number").fetchall()
     out = []
-    for ch in channels:
-        cur = conn.execute(SLOT_QUERY + " WHERE s.channel_id = ? AND s.start_ts <= ? AND s.end_ts > ?"
-                           " ORDER BY s.start_ts DESC LIMIT 1", (ch["id"], now, now)).fetchone()
+    for ch in enabled_channels(conn):
+        cur = slot_at(conn, ch["id"], now)
         current = slot_public(cur) if cur else None
-        if current and current.get("block"):
+        if cur and cur.get("block"):
             # Music channel: the "programme" is the whole block; keep the current video too.
-            blk = conn.execute(SLOT_QUERY + " WHERE s.channel_id = ? AND s.block = ? AND s.replay = ? AND s.end_ts > ?"
-                               " AND s.start_ts < ? ORDER BY s.start_ts", (ch["id"], current["block"], cur["replay"],
-                                                                          now - 12 * 3600, now + 12 * 3600)).fetchall()
-            merged = collapse_blocks([slot_public(r) for r in blk])
-            for m in merged:
-                if m["start_ts"] <= now < m["end_ts"]:
-                    m["video_title"] = current["title"]
-                    m["video_id"] = current["id"]
-                    current = m
-                    break
+            merged = block_entry(conn, cur, now)
+            if merged:
+                current = slot_public(merged)
         after = current["end_ts"] if current else now
-        nxt_rows = conn.execute(SLOT_QUERY + " WHERE s.channel_id = ? AND s.start_ts >= ? AND s.kind = 'programme'"
-                                " ORDER BY s.start_ts LIMIT ?", (ch["id"], after, next * 40)).fetchall()
-        nxt = collapse_blocks([slot_public(r) for r in nxt_rows])[:next]
+        nxt = [slot_public(s) for s in next_programmes(conn, ch["id"], after, next)]
         if current and cur["kind"] != "programme":
             # During an ad break, show the programme that follows as "now".
             prog = conn.execute(SLOT_QUERY + " WHERE s.channel_id = ? AND s.start_ts <= ? AND s.kind = 'programme'"
                                 " ORDER BY s.start_ts DESC LIMIT 1", (ch["id"], now)).fetchone()
             current["break"] = True
             current["previous_programme"] = slot_public(prog) if prog else None
-        out.append({"channel": channel_public(ch), "now": current, "next": nxt})
-    player = request.app.state.player_state
-    return {"ts": now, "channels": out, "player": player}
+        out.append({"channel": ch, "now": current, "next": nxt})
+    return {"ts": now, "channels": out, "player": request.app.state.player_state}
 
 
 @router.get("/api/schedule")
@@ -76,12 +60,10 @@ def api_schedule(conn: sqlite3.Connection = Depends(get_conn), start: int | None
     if not replay:
         q += " AND s.replay = 0"
     q += " ORDER BY s.channel_id, s.start_ts"
-    rows = conn.execute(q, params).fetchall()
-    channels = [channel_public(r) for r in conn.execute("SELECT * FROM channels WHERE enabled = 1 ORDER BY number")]
-    slots = [slot_public(r) for r in rows]
+    slots = [slot_public(r) for r in conn.execute(q, params)]
     if not ads:
         slots = collapse_blocks(slots)
-    return {"ts": now, "start": start, "end": end, "channels": channels, "slots": slots}
+    return {"ts": now, "start": start, "end": end, "channels": enabled_channels(conn), "slots": slots}
 
 
 @router.get("/api/schedule/day/{day}")
@@ -97,21 +79,18 @@ def api_schedule_day(day: str, conn: sqlite3.Connection = Depends(get_conn), ads
     if not ads:
         q += " AND s.kind IN ('programme', 'filler')"
     q += " ORDER BY s.channel_id, s.start_ts"
-    rows = conn.execute(q, (day,)).fetchall()
-    channels = [channel_public(r) for r in conn.execute("SELECT * FROM channels WHERE enabled = 1 ORDER BY number")]
-    slots = [slot_public(r) for r in rows]
+    slots = [slot_public(r) for r in conn.execute(q, (day,))]
     if not ads:
         slots = collapse_blocks(slots)
     return {"day": day, "day_start": day_start, "day_end": day_end, "next_day_start": next_start,
-            "channels": channels, "slots": slots}
+            "channels": enabled_channels(conn), "slots": slots}
 
 
 @router.get("/api/schedule/days")
 def api_schedule_days(conn: sqlite3.Connection = Depends(get_conn)):
     settings = all_settings(conn)
     tz = tz_of(conn)
-    now = now_ts()
-    today = broadcast_day_for(now, settings, tz)
+    today = broadcast_day_for(now_ts(), settings, tz)
     rows = conn.execute("SELECT day, COUNT(*) AS n, MIN(start_ts) AS s, MAX(end_ts) AS e FROM schedule"
                         " WHERE replay = 0 GROUP BY day ORDER BY day").fetchall()
     return {"today": today.isoformat(), "days": [dict(r) for r in rows],
@@ -122,9 +101,7 @@ def api_schedule_days(conn: sqlite3.Connection = Depends(get_conn)):
 
 @router.get("/api/player")
 def api_player(request: Request):
-    client = request.app.state.player
-    state = client.state()
-    return state
+    return request.app.state.player.state()
 
 
 @router.post("/api/player/key")

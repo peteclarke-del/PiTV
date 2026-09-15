@@ -77,6 +77,9 @@ class EvdevInput:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.devices: dict[str, Any] = {}
+        # Snapshot for other threads (the player state): rebuilt whenever `devices` changes so
+        # readers never iterate the dict the input thread is mutating.
+        self.device_names: list[str] = []
         self.available = False
 
     def set_keymap(self, keymap: dict[str, list[str]] | None) -> None:
@@ -94,6 +97,11 @@ class EvdevInput:
 
     def stop(self) -> None:
         self._stop.set()
+        for dev in list(self.devices.values()):
+            try:
+                dev.close()
+            except OSError:
+                pass
 
     def _rescan(self) -> None:
         import evdev
@@ -110,6 +118,7 @@ class EvdevInput:
                     dev.close()
                     continue
                 self.devices[path] = dev
+                self.device_names = [d.name for d in self.devices.values()]
                 log.info("input device: %s (%s)", dev.name, path)
             except OSError:
                 continue
@@ -153,6 +162,7 @@ class EvdevInput:
                 except OSError:
                     log.info("input device gone: %s", path)
                     self.devices.pop(path, None)
+                    self.device_names = [d.name for d in self.devices.values()]
 
     def _action_for(self, names: list[str]) -> str | None:
         for n in names:

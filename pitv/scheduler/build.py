@@ -24,10 +24,10 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
-from ..db import (all_settings, effective, now_ts, row_to_dict, rows_to_dicts,
+from ..db import (all_settings, effective, enabled_channels, now_ts, rows_to_dicts,
                   run_log_finish, run_log_start, tx)
 from .rules import (allowed_at, broadcast_day_for, day_bounds, daypart_end_minutes, daypart_for,
-                    dayparts_for_weekday, era_weight,
+                    dayparts_for_weekday, era_weight, hhmm_to_minutes,
                     is_kids, local_ts, minutes_of_day, parse_pattern, tz_of)
 
 Progress = Callable[[str], None] | None
@@ -78,7 +78,6 @@ class Show:
     end_year: int | None = None          # premiere year + seasons - 1 (approximation)
     category: str = "general"
     next_index: int = 0
-    last_placed_ts: int | None = None
     resting_until: int | None = None
 
     @property
@@ -92,7 +91,6 @@ class Show:
 
     def advance(self, ts: int, rest_seconds: int) -> None:
         self.next_index += 1
-        self.last_placed_ts = ts
         if self.next_index >= len(self.episodes):
             self.next_index = 0
             self.resting_until = ts + rest_seconds
@@ -108,8 +106,33 @@ def episode_subtitle(item: dict[str, Any]) -> str:
     return ""
 
 
+def slot_titles(item: dict[str, Any], show_title: str | None = None) -> tuple[str, str]:
+    """Guide title and subtitle for a programme. Episodes: the series name over the episode
+    title (never the SxxEyy code). Films: '(year) certificate'. Music videos: '(year) genres'."""
+    year = f"({item['year']})" if item.get("year") else ""
+    if item.get("kind") == "episode":
+        return show_title or item["title"], episode_subtitle(item)
+    if item.get("kind") == "music":
+        detail = ", ".join(_json_field(item.get("genres")) or [])
+    else:
+        detail = item.get("certificate") or ""
+    return item["title"], " ".join(x for x in (year, detail) if x)
+
+
 def parse_day(value: str) -> date:
     return datetime.strptime(value, "%Y-%m-%d").date()
+
+
+def _json_field(value: Any) -> Any:
+    """A column stored as JSON text (or already decoded by row_to_dict); unreadable -> None."""
+    if isinstance(value, str):
+        if not value:
+            return None
+        try:
+            return json.loads(value)
+        except ValueError:
+            return None
+    return value
 
 
 class Builder:
@@ -124,14 +147,16 @@ class Builder:
         self.seed = seed if seed is not None else 0
         self.progress = progress or (lambda _m: None)
         self.log: list[str] = []
-        self.channels = [row_to_dict(r) for r in conn.execute(
-            "SELECT * FROM channels WHERE enabled = 1 ORDER BY number")]
+        self.channels = enabled_channels(conn)
+        # Minute of day the broadcast day starts (08:00 = 480); minutes before it belong to the
+        # previous day and are counted past 1440 so comparisons stay monotonic.
+        self.day_start_min = hhmm_to_minutes(self.settings.get("day_start", "08:00"))
         self.movie_placements: dict[int, list[int]] = {}  # media_id -> every placement time known
         self._load_library()
         self._load_history()
-        self.placed_movies: dict[int, int] = {}        # media_id -> ts placed in this build
         self.ad_last: dict[tuple[int, int], int] = {}  # (channel, media) -> ts
         self.day_programmes: dict[tuple[int, str], list[Slot]] = {}
+        self._cut: int | None = None                   # set by _keep_slots; save() deletes from here
 
     # --- loading -------------------------------------------------------------------
 
@@ -163,12 +188,7 @@ class Builder:
                 e["kids"] = bool(s.get("kids")) or is_kids(e)
                 e["show_title"] = s["title"]
                 e["category"] = s.get("category") or "general"
-            days = s.get("anchor_days")
-            if isinstance(days, str):
-                try:
-                    days = json.loads(days)
-                except ValueError:
-                    days = None
+            days = _json_field(s.get("anchor_days"))
             if not days:
                 days = [0, 1, 2, 3, 4] if s.get("mode") == "strip" else [0]
             self.shows[s["id"]] = Show(
@@ -221,6 +241,11 @@ class Builder:
         n = self.era_pool.get((kind, self._era_band(year, end_year)), 1)
         return 1.0 / (max(1, n) ** norm)
 
+    def _bday_minutes(self, ts: int) -> int:
+        """Minutes into the broadcast day's clock: local minute of day, or +1440 after midnight."""
+        m = minutes_of_day(ts, self.tz)
+        return m if m >= self.day_start_min else m + 1440
+
     def _load_history(self) -> None:
         """Last time each media item was placed (history or already-scheduled), and each
         show's latest placed episode so the cursor can continue from it."""
@@ -244,7 +269,6 @@ class Builder:
                 if ts is not None and (latest_ts is None or ts > latest_ts):
                     latest_ts, latest_idx = ts, idx
             if latest_idx is not None:
-                show.last_placed_ts = latest_ts
                 show.next_index = latest_idx + 1
                 if show.next_index >= len(show.episodes):
                     show.next_index = 0
@@ -264,24 +288,11 @@ class Builder:
         return random.Random(int.from_bytes(hashlib.sha256(key).digest()[:8], "big"))
 
     def _channel_setting(self, channel: dict[str, Any], key: str) -> Any:
-        value = channel.get(key)
-        if isinstance(value, str) and value:
-            try:
-                value = json.loads(value)
-            except ValueError:
-                value = None
-        if value:
-            return value
-        return self.settings.get({"era_weights": "era_weights", "kind_weights": "kind_weights",
-                                  "daypart_profile": "dayparts"}[key])
+        """A channel's own era/kind weights, falling back to the global setting."""
+        return _json_field(channel.get(key)) or self.settings.get(key)
 
     def _genre_weight(self, channel: dict[str, Any], genres: list[str]) -> float:
-        gw = channel.get("genre_weights")
-        if isinstance(gw, str):
-            try:
-                gw = json.loads(gw)
-            except ValueError:
-                gw = None
+        gw = _json_field(channel.get("genre_weights"))
         if not gw or not genres:
             return 1.0
         weights = [float(gw.get(g, gw.get(g.lower(), 1.0))) for g in genres]
@@ -295,12 +306,7 @@ class Builder:
             (channel_id, day)).fetchall()
         out = []
         for r in rows:
-            genres = []
-            if r["mgenres"]:
-                try:
-                    genres = json.loads(r["mgenres"])
-                except ValueError:
-                    genres = []
+            genres = _json_field(r["mgenres"]) or []
             out.append(Slot(channel_id=r["channel_id"], day=r["day"], start_ts=r["start_ts"],
                             end_ts=r["end_ts"], media_id=r["media_id"], offset=r["offset"],
                             kind=r["kind"], title=r["title"], subtitle=r["subtitle"],
@@ -330,16 +336,10 @@ class Builder:
         relax=2 additionally allow movies that aired recently. Certificates are never relaxed."""
         start_min = minutes_of_day(t, self.tz)
         weekday_n = datetime.fromtimestamp(t, self.tz).weekday()
-        profile = channel.get("daypart_profile")
-        if isinstance(profile, str) and profile:
-            try:
-                profile = json.loads(profile)
-            except ValueError:
-                profile = None
-        dayparts = dayparts_for_weekday(weekday_n, self.settings, profile)
+        dayparts = dayparts_for_weekday(weekday_n, self.settings, _json_field(channel.get("daypart_profile")))
         dp = daypart_for(start_min, dayparts)
-        sport_block = float(dp.get("sport", 1.0)) >= 3.0
-        dp_end = daypart_end_minutes(start_min if start_min >= 480 else start_min + 1440, dayparts, 1440)
+        sport_block = float(dp.get("sport", 1.0)) >= 3.0   # docs/PLAN.md §4.5: above 3 sport forms a block
+        dp_end = daypart_end_minutes(self._bday_minutes(t), dayparts, 1440)
         era_weights = self._channel_setting(channel, "era_weights")
         kind_weights = self._channel_setting(channel, "kind_weights")
         tol = int(self.settings.get("duration_tolerance_minutes", 5)) * 60
@@ -518,30 +518,45 @@ class Builder:
         out.sort(key=lambda x: x[0])
         return out
 
-    def build_channel_day(self, channel: dict[str, Any], day: date, force: bool,
-                          from_ts: int | None = None) -> list[Slot]:
-        """Build (or complete) one channel-day. Returns the new slots, or [] if nothing to do.
+    def _keep_slots(self, existing: list[Slot], day_end: int, force: bool, from_ts: int | None) -> list[Slot] | None:
+        """The day's slots that survive this build, sorted, or None when the day is already
+        complete and nothing was asked to be rebuilt. Records the cut point `save()` deletes from.
 
         force: rebuild everything that has not started and is not locked.
         from_ts: rebuild from this time onwards only (implies force for that part)."""
+        if force or from_ts is not None:
+            self._cut = max(self.now, from_ts) if from_ts is not None else self.now
+            keep = [s for s in existing if s.locked or s.start_ts < self._cut]
+        else:
+            self._cut = None
+            if existing and max(s.end_ts for s in existing) >= day_end - 60:
+                return None
+            keep = list(existing)
+        keep.sort(key=lambda s: s.start_ts)
+        return keep
+
+    def _show_airing_at(self, channel_id: int, boundary: str, ts: int) -> int | None:
+        """show_id of the programme that ends (`end_ts`) or starts (`start_ts`) exactly at ts."""
+        assert boundary in ("start_ts", "end_ts")
+        row = self.conn.execute(
+            f"SELECT m.show_id FROM schedule s JOIN media m ON m.id = s.media_id WHERE s.channel_id = ?"
+            f" AND s.{boundary} = ? AND s.kind = 'programme'", (channel_id, ts)).fetchone()
+        return row["show_id"] if row else None
+
+    def build_channel_day(self, channel: dict[str, Any], day: date, force: bool,
+                          from_ts: int | None = None) -> list[Slot]:
+        """Build (or complete) one channel-day. Returns the new slots, or [] if nothing to do
+        (see `_keep_slots` for `force` and `from_ts`)."""
         if channel.get("content") == "music":
             return self.build_music_day(channel, day, force, from_ts)
         day_str = day.isoformat()
         day_start, day_end, next_day_start = day_bounds(day, self.settings, self.tz)
-        existing = self._existing_slots(channel["id"], day_str)
         rng = self._rng(channel["id"], day)
         rest_seconds = 7 * 86400
 
-        # Keep what must stay; everything else is rebuilt.
-        if force or from_ts is not None:
-            cut = max(self.now, from_ts) if from_ts is not None else self.now
-            keep = [s for s in existing if s.locked or s.start_ts < cut]
-        else:
-            if existing and max(s.end_ts for s in existing) >= day_end - 60:
-                return []  # already complete
-            keep = list(existing)
-        self._cut = (cut if (force or from_ts is not None) else None)
-        keep.sort(key=lambda s: s.start_ts)
+        keep = self._keep_slots(self._existing_slots(channel["id"], day_str), day_end, force, from_ts)
+        if keep is None:
+            return []
         placed_today: dict[int, int] = {}
         for s in keep:
             if s.show_id:
@@ -582,10 +597,7 @@ class Builder:
         last_programme_year: int | None = None
         # What precedes 08:00 is the tail of yesterday's overnight replay; kept slots update this
         # as the walk passes them (they are in fixed_queue), so do not pre-seed from `keep`.
-        row = self.conn.execute(
-            "SELECT m.show_id FROM schedule s JOIN media m ON m.id = s.media_id WHERE s.channel_id = ?"
-            " AND s.end_ts = ? AND s.kind = 'programme'", (channel["id"], day_start)).fetchone()
-        last_show_id: int | None = row["show_id"] if row else None
+        last_show_id = self._show_airing_at(channel["id"], "end_ts", day_start)
         iterations = 0
         fixed_queue = [f for f in fixed if f[0] >= t]
 
@@ -685,7 +697,6 @@ class Builder:
                 last_show_id = show.id
             else:
                 last_show_id = None
-                self.placed_movies[item["id"]] = t
                 self.movie_placements.setdefault(item["id"], []).append(t)
             self.last_placed[item["id"]] = t
             last_programme_year = item.get("year")
@@ -703,16 +714,9 @@ class Builder:
         the block name so guides show one entry per block."""
         day_str = day.isoformat()
         day_start, day_end, next_day_start = day_bounds(day, self.settings, self.tz)
-        existing = self._existing_slots(channel["id"], day_str)
-        if force or from_ts is not None:
-            cut = max(self.now, from_ts) if from_ts is not None else self.now
-            keep = [s for s in existing if s.locked or s.start_ts < cut]
-        else:
-            if existing and max(s.end_ts for s in existing) >= day_end - 60:
-                return []
-            keep = list(existing)
-        self._cut = (cut if (force or from_ts is not None) else None)
-        keep.sort(key=lambda s: s.start_ts)
+        keep = self._keep_slots(self._existing_slots(channel["id"], day_str), day_end, force, from_ts)
+        if keep is None:
+            return []
         rng = self._rng(channel["id"], day)
         blocks = self.settings.get("music_blocks") or []
         video_repeat = int(self.settings.get("music_video_repeat_hours", 36)) * 3600
@@ -731,30 +735,21 @@ class Builder:
                                   offset=0, kind="filler", title="No music videos"))
             return new_slots + self._overnight(channel, day_str, day_end, next_day_start, all_slots + new_slots)
 
+        def block_start(b: dict[str, Any]) -> int:
+            bm = hhmm_to_minutes(b["start"])
+            return bm if bm >= self.day_start_min else bm + 1440
+
         def block_for(ts: int) -> dict[str, Any]:
-            mins = minutes_of_day(ts, self.tz)
-            if mins < 480:
-                mins += 1440
+            mins = self._bday_minutes(ts)
             current = blocks[0] if blocks else {"name": "Music", "genres": [], "decades": []}
             for b in blocks:
-                bm = int(b["start"][:2]) * 60 + int(b["start"][3:5])
-                if bm < 480:
-                    bm += 1440
-                if mins >= bm:
+                if mins >= block_start(b):
                     current = b
             return current
 
         def block_end(ts: int) -> int:
-            mins = minutes_of_day(ts, self.tz)
-            if mins < 480:
-                mins += 1440
-            ends = []
-            for b in blocks:
-                bm = int(b["start"][:2]) * 60 + int(b["start"][3:5])
-                if bm < 480:
-                    bm += 1440
-                if bm > mins:
-                    ends.append(bm)
+            mins = self._bday_minutes(ts)
+            ends = [block_start(b) for b in blocks if block_start(b) > mins]
             if not ends:
                 return day_end
             return ts + (min(ends) - mins) * 60
@@ -816,11 +811,10 @@ class Builder:
                 t = b_end
                 continue
             duration = max(1, int(round(float(item["duration"]))))
-            year = item.get("year")
-            sub = " ".join(x for x in ((f"({year})" if year else ""), ", ".join(item.get("genres") or [])) if x)
+            title, sub = slot_titles(item)
             slot = Slot(channel_id=channel["id"], day=day_str, start_ts=t, end_ts=t + duration, media_id=item["id"],
-                        offset=0, kind="programme", title=item["title"], subtitle=sub, block=b.get("name", "Music"),
-                        genres=item.get("genres") or [], year=year)
+                        offset=0, kind="programme", title=title, subtitle=sub, block=b.get("name", "Music"),
+                        genres=item.get("genres") or [], year=item.get("year"))
             new_slots.append(slot)
             all_slots.append(slot)
             used_today.add(item["id"])
@@ -829,7 +823,8 @@ class Builder:
             t = slot.end_ts
         return new_slots + self._overnight(channel, day_str, day_end, next_day_start, all_slots)
 
-    def _pad(self, channel, rng, day_str, t, target, near_year, emit, limit) -> int:
+    def _pad(self, channel: dict[str, Any], rng: random.Random, day_str: str, t: int, target: int,
+             near_year: int | None, emit: Callable[[Slot], None], limit: int) -> int:
         """Fill t..target with adverts (ad channels) or idents; returns the new t."""
         guard = 0
         while t < target and guard < 20:
@@ -851,28 +846,26 @@ class Builder:
             t = slot.end_ts
         return t
 
-    def _programme_slot(self, channel, day_str, start, item, show: Show | None) -> Slot:
+    def _programme_slot(self, channel: dict[str, Any], day_str: str, start: int, item: dict[str, Any],
+                        show: Show | None) -> Slot:
         duration = int(round(float(item["duration"])))
-        if show is not None:
-            title = show.title
-            subtitle = episode_subtitle(item)
-        else:
-            title = item["title"]
-            year = item.get("year")
-            cert = item.get("certificate") or ""
-            subtitle = " ".join(x for x in (f"({year})" if year else "", cert) if x)
+        title, subtitle = slot_titles(item, show.title if show else None)
         return Slot(channel_id=channel["id"], day=day_str, start_ts=start, end_ts=start + duration,
                     media_id=item["id"], offset=0, kind="programme", title=title, subtitle=subtitle,
                     show_id=show.id if show else None, genres=item.get("genres") or [],
                     year=item.get("year"))
 
-    def _media_slot(self, channel, day_str, start, item, kind) -> Slot:
+    def _media_slot(self, channel: dict[str, Any], day_str: str, start: int, item: dict[str, Any], kind: str) -> Slot:
+        """An advert or ident slot; the subtitle is just the year."""
         duration = max(1, int(round(float(item["duration"]))))
         return Slot(channel_id=channel["id"], day=day_str, start_ts=start, end_ts=start + duration,
                     media_id=item["id"], offset=0, kind=kind, title=item["title"],
                     subtitle=str(item.get("year") or ""), year=item.get("year"))
 
-    def _overnight(self, channel, day_str, day_end, next_day_start, day_slots: list[Slot]) -> list[Slot]:
+    def _overnight(self, channel: dict[str, Any], day_str: str, day_end: int, next_day_start: int,
+                   day_slots: list[Slot]) -> list[Slot]:
+        """00:00 to 08:00: replay the day from the channel's `overnight_replay_from`, looping a
+        short day, without butting the same series against the day's end or tomorrow's start."""
         replay_from = channel.get("overnight_replay_from") or self.settings.get("day_start", "08:00")
         day = parse_day(day_str)
         from_ts = local_ts(day, replay_from, self.tz)
@@ -889,10 +882,7 @@ class Builder:
                     break
                 source.pop(0)
         # If tomorrow is already built, the replay must not end with tomorrow's opening series.
-        row = self.conn.execute(
-            "SELECT m.show_id FROM schedule s JOIN media m ON m.id = s.media_id WHERE s.channel_id = ?"
-            " AND s.start_ts = ? AND s.kind = 'programme'", (channel["id"], next_day_start)).fetchone()
-        tomorrow_first = row["show_id"] if row else None
+        tomorrow_first = self._show_airing_at(channel["id"], "start_ts", next_day_start)
         out: list[Slot] = []
         t = max(day_end, max((s.end_ts for s in day_slots), default=day_end))
         queue = list(source)
@@ -928,17 +918,17 @@ class Builder:
 
     # --- persistence ---------------------------------------------------------------------
 
-    def save(self, channel_id: int, day: date, slots: list[Slot], force: bool) -> None:
+    def save(self, channel_id: int, day: date, slots: list[Slot]) -> None:
+        """Persist a channel-day built by `build_channel_day` (which set the cut point)."""
         day_str = day.isoformat()
         conn = self.conn
-        cut = getattr(self, "_cut", None)
         with tx(conn):
             # Remove replaced slots: unlocked, not started, plus all old replay slots for the day.
             conn.execute("DELETE FROM schedule WHERE channel_id = ? AND day = ? AND replay = 1",
                          (channel_id, day_str))
-            if cut is not None:
+            if self._cut is not None:
                 conn.execute("DELETE FROM schedule WHERE channel_id = ? AND day = ? AND locked = 0"
-                             " AND start_ts >= ? AND replay = 0", (channel_id, day_str, cut))
+                             " AND start_ts >= ? AND replay = 0", (channel_id, day_str, self._cut))
             conn.executemany(
                 "INSERT INTO schedule(channel_id, day, start_ts, end_ts, media_id, offset, kind, part,"
                 " replay, locked, title, subtitle, block) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -971,7 +961,7 @@ def build_horizon(conn: sqlite3.Connection, *, start_day: date | None = None,
             slots = builder.build_channel_day(channel, day, force)
             if not slots:
                 continue
-            builder.save(channel["id"], day, slots, force)
+            builder.save(channel["id"], day, slots)
             builder.day_programmes[(channel["id"], day.isoformat())] = [
                 s for s in slots if s.kind == "programme" and not s.replay]
             n = sum(1 for s in slots if s.kind == "programme" and not s.replay)
@@ -1025,7 +1015,7 @@ def rebuild_from(conn: sqlite3.Connection, channel_id: int, from_ts: int, *,
     if channel is None:
         return {"status": "error", "summary": "channel not found or disabled"}
     slots = builder.build_channel_day(channel, day, force=True, from_ts=from_ts)
-    builder.save(channel_id, day, slots, True)
+    builder.save(channel_id, day, slots)
     return {"status": "ok" if not builder.log else "warning",
             "summary": f"{sum(1 for s in slots if s.kind == 'programme' and not s.replay)} programmes",
             "notes": builder.log}

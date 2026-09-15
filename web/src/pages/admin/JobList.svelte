@@ -1,6 +1,7 @@
 <script>
   import { jobs } from '../../lib/stores.svelte.js';
   import ProgressBar from '../../components/ProgressBar.svelte';
+  import StatusBadge from '../../components/StatusBadge.svelte';
 
   let { limit = 8, kind = null } = $props();
   let list = $derived([...jobs.list].filter((j) => !kind || j.kind === kind).reverse().slice(0, limit));
@@ -14,7 +15,7 @@
     {#each list as j (j.id)}
       <li>
         <div class="row">
-          <span class="badge {j.status === 'done' ? 'ok' : j.status === 'failed' ? 'danger' : j.status === 'running' ? 'info' : ''}">{j.status}</span>
+          <StatusBadge status={j.status} />
           <b>{j.label}</b>
           <span class="muted small truncate" style="flex:1">{j.message}{j.total ? ` (${j.done}/${j.total})` : ''}</span>
           {#if j.notes?.length || j.result?.notes?.length || j.error}

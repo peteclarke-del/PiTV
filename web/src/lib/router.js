@@ -1,4 +1,5 @@
-// Tiny hash router: "#/guide?day=2026-09-14" -> { path: '/guide', parts: ['guide'], query: {day: ...} }
+// Tiny hash router: "#/guide?day=2026-09-14" -> route store { path: '/guide', parts: ['guide'], query: {day} }.
+// Pages read `route.parts` to pick what to render; navigate()/setQuery() are the only writers.
 import { route } from './stores.svelte.js';
 
 function parse() {
@@ -8,11 +9,11 @@ function parse() {
   const parts = path.split('/').filter(Boolean);
   const query = {};
   for (const [k, v] of new URLSearchParams(queryPart)) query[k] = v;
-  return { path, parts, query, hash };
+  return { path, parts, query };
 }
 
 export function startRouter() {
-  // A plain path such as /admin/acquire (bookmark or typed URL) is served by the SPA fallback; turn it into a hash route.
+  // A plain path such as /admin/wanted (bookmark or typed URL) is served by the SPA fallback; turn it into a hash route.
   if (!location.hash && location.pathname !== '/' && location.pathname !== '/index.html') {
     history.replaceState(null, '', `/#${location.pathname}${location.search}`);
   }
@@ -21,7 +22,6 @@ export function startRouter() {
     route.path = r.path;
     route.parts = r.parts;
     route.query = r.query;
-    route.hash = r.hash;
   };
   apply();
   window.addEventListener('hashchange', apply);

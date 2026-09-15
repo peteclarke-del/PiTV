@@ -11,30 +11,26 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
+from .content import manifest_window
 from .db import all_settings, now_ts, run_log_finish, run_log_start
 from .player.cache import MediaCache
 from .scheduler.build import rebuild_from
-from .scheduler.rules import broadcast_day_for, day_bounds, tz_of
+from .scheduler.rules import tz_of
 
 log = logging.getLogger("pitv.readiness")
-
-
-def resolvable(cache: MediaCache, media: dict[str, Any]) -> str | None:
-    return cache.resolve({"id": media["id"], "path": media["path"], "transcoded_path": media.get("transcoded_path")})
 
 
 def check(conn: sqlite3.Connection, *, now: int | None = None, days: int = 1, substitute: bool = True) -> dict[str, Any]:
     settings = all_settings(conn)
     tz = tz_of(conn)
     now = now or now_ts()
-    cache_dir = settings.get("cache_dir") or ""
-    cache = MediaCache(Path(cache_dir) if cache_dir else None, int(float(settings.get("cache_max_gb", 0)) * 1024 ** 3))
-    day = broadcast_day_for(now, settings, tz)
-    _, _, horizon = day_bounds(day + timedelta(days=max(1, days)), settings, tz)
+    cache = MediaCache.from_settings(settings)
+    horizon = manifest_window(settings, tz, now, days)
     sources = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM sources")}
     share_up = {sid: Path(src["path"]).is_dir() for sid, src in sources.items()}
     rows = conn.execute(
@@ -47,12 +43,12 @@ def check(conn: sqlite3.Connection, *, now: int | None = None, days: int = 1, su
     missing: dict[int, list[dict[str, Any]]] = {}   # channel_id -> slots
     down_shares: set[int] = set()
     notes: list[str] = []
-    seen: dict[int, bool] = {}
+    seen: dict[int, bool] = {}                       # media_id -> resolvable (a file airs on several channels)
     for r in rows:
         checked += 1
         ok = seen.get(r["id"])
         if ok is None:
-            ok = resolvable(cache, dict(r)) is not None
+            ok = cache.resolve(dict(r)) is not None
             seen[r["id"]] = ok
         if ok:
             continue
@@ -76,7 +72,7 @@ def check(conn: sqlite3.Connection, *, now: int | None = None, days: int = 1, su
             log.warning("rebalanced %s from %s replacing %d programme(s): %s", slots[0]["channel_name"],
                         _hhmm(first, tz), len(slots), result.get("summary"))
             notes.append(f"REBALANCED {slots[0]['channel_name']} from {_hhmm(first, tz)}: {result.get('summary')}")
-    outstanding = conn.execute("SELECT COUNT(*) FROM wanted WHERE status IN ('queued', 'searching', 'downloading', 'transcoding')").fetchone()[0]
+    outstanding = conn.execute("SELECT COUNT(*) FROM wanted WHERE status = 'queued'").fetchone()[0]
     if outstanding:
         notes.append(f"{outstanding} wanted item(s) still outstanding for pitv_content")
     status = "ok" if not missing and not down_shares else ("error" if missing else "warning")
@@ -87,6 +83,5 @@ def check(conn: sqlite3.Connection, *, now: int | None = None, days: int = 1, su
             "substituted": substituted, "checked": checked}
 
 
-def _hhmm(ts: int, tz) -> str:
-    from datetime import datetime
+def _hhmm(ts: int, tz: ZoneInfo) -> str:
     return datetime.fromtimestamp(ts, tz).strftime("%a %H:%M")

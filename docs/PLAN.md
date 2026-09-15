@@ -302,18 +302,12 @@ hardware deinterlacer. Audio passes through untouched.
 The admin library page shows each file's codec and whether it will hardware-decode, and
 the "needs attention" list flags anything the Pi may struggle with (e.g. 1080p MPEG-2).
 
-**Using the hardware encoder.** The same block encodes H.264 up to 1080p30
-(`h264_v4l2m2m` in ffmpeg). Two optional uses, neither needed for basic playback:
-
-- *Transcode queue*: files the Pi cannot hardware-decode (MPEG-2, VC-1, MPEG-4 ASP) can
-  be re-encoded to H.264 overnight, on the Pi itself, into a local cache or a writable
-  NAS folder, so that everything on air takes the hardware decode path. Queued from the
-  library page, one file at a time in idle hours, with progress in the admin dashboard.
-  The scheduler prefers the transcoded copy once it exists.
-- *Live preview*: a low-bitrate H.264 stream of what is currently on air, shown in the
-  web UI's Now & Next page. Deferred to Phase 8 because it competes with the decoder for
-  the same hardware and the phone would then show a stream of the TV you are sitting in
-  front of.
+**Transcoding is not PiTV's job.** Files the Pi cannot hardware-decode (MPEG-2, VC-1,
+MPEG-4 ASP) or that are far above 576 lines are marked `action: transcode` in the content
+manifest (§7) and re-encoded to the CRT profile by pitv_content into the cache; the player
+prefers that copy, so everything on air takes the hardware decode path. A live preview
+stream of what is on air was considered and dropped: it competes with the decoder for the
+same hardware and the phone would show a stream of the TV you are sitting in front of.
 
 ### 5.3 Remote control
 
@@ -418,19 +412,18 @@ docs are served automatically by FastAPI at `/api/docs`.
 
 ---
 
-## 7. Local cache, prefetch and acquiring missing programmes
+## 7. Local cache and acquiring missing programmes
 
-### 7.1 Prefetch cache on the attached drive
+### 7.1 The cache on the attached drive
 
 A 1 TB USB hard drive on the Pi holds a cache (`cache_dir`, capped by `cache_max_gb`, default
-600 GB). A worker inside the player copies everything scheduled through the end of the next
-broadcast day (`prefetch_days`, default 1) on every channel, current channel and soonest first,
-so tomorrow's television is local before it starts at 08:00, and always at least
-`prefetch_hours` ahead; a day of four channels is roughly 60–150 GB depending on bitrates; playback always
-prefers the cached copy, then a transcoded copy, then the NAS original. A NAS hiccup at
-19:59 therefore never interrupts the 20:00 film. Least-recently-used files are evicted when
-the cap is reached; files scheduled within the window are protected. Copies can be
-rate-limited (`cache_copy_mbps`) so they never starve playback.
+600 GB). PiTV publishes a manifest of everything scheduled through the end of the next
+broadcast day on every channel, soonest first; pitv_content copies (or transcodes) those files
+into the cache so tomorrow's television is local before it starts at 08:00. A day of four
+channels is roughly 60–150 GB depending on bitrates. Playback always prefers the cached copy,
+then a transcoded copy, then the NAS original, so a NAS hiccup at 19:59 never interrupts the
+20:00 film. The player's maintenance thread evicts least-recently-used files when the cap is
+reached; files in the current manifest are protected (`pitv/player/cache.py`).
 
 ### 7.2 Division of responsibilities: PiTV and pitv_content
 
@@ -485,14 +478,27 @@ tab reads its status file, service and timer state, log and reports, and can sta
 - Disable: bluetooth, hciuart, avahi, triggerhappy, ModemManager, apt timers,
   rpi-eeprom-update, man-db, dphys-swapfile.
 - Services: `pitv-splash` (test card within seconds), `pitv-player` (after CIFS
-  automounts and time sync), `pitv-web` (starts in parallel, does not delay the picture),
-  `pitv-scan.timer`, `pitv-schedule.timer`. Expected: ~10–12 s to test card, ~15 s to
-  programme.
+  automounts and time sync), `pitv-web` (starts in parallel, does not delay the picture).
+  The nightly scan, schedule top-up, readiness checks and cache eviction run from a
+  maintenance thread inside the player (`pitv/player/maintenance.py`), so there are no
+  timers. Expected: ~10–12 s to test card, ~15 s to programme.
 - Data lives in `/var/lib/pitv/pitv.db`; logs to journald with a size cap.
 - Optional later: read-only root overlay so pulling the plug never corrupts the SD card
   (the database moves to a small writable partition).
 
 ---
+
+## 8.0 Installing: the SD-card installer
+
+The image is DietPi (smaller and faster to boot than Pi OS Lite) with both apps' sources
+baked in; `installer/` holds the image build, the first-boot provisioning script and a Go
+installer for Linux and Windows. The card is split into a fixed-size system partition and a
+work partition (logs, databases, state) so nothing that grows can fill the system. Modes:
+clean (card and USB drive wiped), normal (card only), upgrade (new code over SSH, everything
+else kept). First boot sizes partitions, prepares the USB drive without touching existing
+content, creates the maintenance SSH user, configures Wi-Fi if asked, installs and primes both
+apps and writes `/work/install/install.log`, which the admin shows under Logs. See
+`installer/README.md`.
 
 ## 8.1 Resilience: 24/7 operation and recovery
 
@@ -523,21 +529,25 @@ tab reads its status file, service and timer state, log and reports, and can sta
 
 ```
 PiTV/
-├── pitv/                      Python package (3.11+): FastAPI, uvicorn, aiosqlite, evdev, Pillow, PyYAML
-│   ├── config.py              bootstrap settings only (db path, sockets, web port); everything else lives in the DB
-│   ├── db.py                  SQLite schema, migrations, helpers
+├── pitv/                      Python package (3.11+): FastAPI, uvicorn, sqlite3, evdev, Pillow
+│   ├── config.py              bootstrap settings only (paths, sockets, web port); everything else lives in the DB
+│   ├── db.py                  SQLite schema, migrations, default settings/channels, helpers
+│   ├── guide.py               "what's on" lookups shared by the OSD guide and the web API
+│   ├── content.py             the pitv_content contract: manifest, reports (§7)
+│   ├── readiness.py           are tomorrow's files playable; substitute and rebalance
+│   ├── wanted.py              the wanted list (gap detection)
 │   ├── library/               scanner.py, naming.py (regexes), nfo.py, probe.py (ffprobe cache: duration, codec, interlace)
-│   ├── scheduler/             build.py (week builder), patterns.py, anchors.py, fill.py, rules.py (era/cert/daypart), overnight.py, edit.py
+│   ├── scheduler/             build.py (week builder, anchors, gap fill, overnight, rebuild), rules.py (era/cert/daypart), listing.py
 │   ├── player/                controller.py, mpv_ipc.py, hwdec.py, input.py, control_socket.py, osd.py, cache.py, maintenance.py
-│   ├── acquire/               providers.py (archive.org, URL/yt-dlp), transcode.py, worker.py
-│   ├── web/                   app.py (FastAPI), api/ (now, schedule, player, sources, library, channels, settings, system), events.py (SSE), auth.py, static/ (built frontend)
-│   └── cli.py                 `pitv scan | schedule | listing | play | web | simulate`
+│   ├── web/                   app.py (FastAPI), api/ (public, admin, wanted, content), events.py (SSE), auth.py, tasks.py, static/ (built frontend)
+│   ├── logsetup.py, sdnotify.py, splash.py, devtools.py (fake library)
+│   └── cli.py                 `pitv scan | schedule | listing | play | web | readiness | content-manifest | ...`
 ├── web/                       Svelte + Vite source; `npm run build` writes to pitv/web/static/
-├── assets/                    testcard.png, static.mp4, fonts/ (a free teletext-style bitmap font), logo
-├── systemd/                   pitv-player.service, pitv-web.service, pitv-splash.service, timers, mount unit templates
-├── setup/                     install.sh (Pi provisioning), boot-trim.sh, ir-keytable setup, add-source-mount.sh
+├── assets/                    testcard.png (generated on first run when absent)
+├── systemd/                   pitv-player.service, pitv-web.service, pitv-splash.service, mount unit templates
+├── setup/                     install.sh (Pi provisioning), boot-trim.sh, dev.sh (desktop helper)
 ├── tests/                     unit tests; a fake-library generator makes tiny ffmpeg clips so everything runs on a desktop
-└── docs/PLAN.md               this file
+└── docs/                      PLAN.md (this file), REQUIREMENTS.md (checklist)
 ```
 
 Development happens on the desktop (mpv, ffprobe and Python 3.12 are already here) with a
@@ -545,9 +555,9 @@ generated fake library and a `--now` clock override so a week can be built and i
 without the NAS. `pitv listing` prints a Radio Times style listing, and the web UI runs
 locally against the same database.
 
-Database tables: `settings`, `sources`, `channels`, `media`, `shows`, `episodes`,
-`overrides`, `show_cursor`, `schedule`, `schedule_locks`, `history`, `probe_cache`,
-`run_log`.
+Database tables: `settings`, `sources`, `channels`, `media` (episodes, films, adverts,
+idents and music videos; overrides in a JSON column), `shows`, `show_cursor`, `schedule`
+(locks are a column), `history`, `probe_cache`, `wanted`, `run_log`.
 
 ---
 

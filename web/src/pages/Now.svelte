@@ -27,7 +27,7 @@
   }
 
   $effect(() => {
-    changes.schedule; // eslint-disable-line no-unused-expressions
+    changes.schedule;
     untrack(load);
   });
 

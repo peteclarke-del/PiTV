@@ -12,8 +12,9 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..db import KIDS_GENRES
+
 _CERT_RE = re.compile(r"(?:UK|GB|Rated)?\s*:?\s*(U|PG|12A|12|15|18|R18)\b", re.IGNORECASE)
-_KIDS_GENRES = {"animation", "children", "children's", "kids", "family", "cartoon"}
 
 
 @dataclass
@@ -33,7 +34,7 @@ class NfoInfo:
 
     @property
     def kids(self) -> bool:
-        return any(g.lower() in _KIDS_GENRES for g in self.genres)
+        return any(g.lower() in KIDS_GENRES for g in self.genres)
 
 
 def _text(root: ET.Element, tag: str) -> str | None:

@@ -106,8 +106,8 @@ with dbm.tx(conn):
 print("sources:", [dict(r) for r in conn.execute("SELECT type, path FROM sources")])
 PY
 
-log "Boot tuning (DISPLAY_MODE=${DISPLAY_MODE:-composite}: composite | hdmi43 | hdmi)"
-DISPLAY_MODE="${DISPLAY_MODE:-composite}" "$SRC_DIR/setup/boot-trim.sh" || true
+log "Boot tuning (DISPLAY_MODE=${DISPLAY_MODE:-hdmi576}: hdmi576 | composite | hdmi43 | hdmi)"
+DISPLAY_MODE="${DISPLAY_MODE:-hdmi576}" "$SRC_DIR/setup/boot-trim.sh" || true
 
 log "Done. Start with: systemctl start pitv-player pitv-web   (web UI on http://$(hostname -I | awk '{print $1}')/ )"
 echo "First run: open the web UI, set the admin password, check Sources, run Scan, then Build schedule."

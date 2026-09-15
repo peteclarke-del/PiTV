@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 import socket
 import threading
 import time
@@ -15,12 +17,16 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import db as dbm
+from .. import sdnotify
 from ..config import Config
+from ..logsetup import setup_logging
 from .api import admin, content, public, wanted
 from .events import EventBus
 from .player_client import PlayerClient
 from .tasks import JobRunner
 
+log = logging.getLogger("pitv.web")
+WEB_MEMORY_LIMIT_MB = 400   # exit for a clean restart above this (systemd caps it harder)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 PLACEHOLDER = """<!doctype html><meta charset=utf-8><title>PiTV</title>
@@ -56,8 +62,8 @@ def _player_subscriber(app: FastAPI, stop: threading.Event) -> None:
                             continue
                         app.state.player_state = state
                         app.state.bus.publish_threadsafe("player", state)
-        except (OSError, socket.timeout):
-            pass
+        except (OSError, socket.timeout) as exc:
+            log.debug("player socket: %s", exc)  # normal while the player is down; retried below
         if app.state.player_state.get("online", False):
             app.state.player_state = {"online": False}
             app.state.bus.publish_threadsafe("player", app.state.player_state)
@@ -65,7 +71,6 @@ def _player_subscriber(app: FastAPI, stop: threading.Event) -> None:
 
 
 def create_app(cfg: Config) -> FastAPI:
-    from ..logsetup import setup_logging
     cfg.ensure_dirs()
     setup_logging(cfg, "web")
     conn = dbm.connect(cfg.db_path)
@@ -77,7 +82,6 @@ def create_app(cfg: Config) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        from .. import sdnotify
         bus.attach(asyncio.get_running_loop())
         t = threading.Thread(target=_player_subscriber, args=(app, stop), name="pitv-player-sub", daemon=True)
         t.start()
@@ -88,10 +92,8 @@ def create_app(cfg: Config) -> FastAPI:
             while True:
                 sdnotify.watchdog()
                 rss = sdnotify.rss_mb()
-                if rss and rss > 400:
-                    import logging
-                    logging.getLogger("pitv.web").error("web process at %.0f MB; exiting for a clean restart", rss)
-                    import os
+                if rss and rss > WEB_MEMORY_LIMIT_MB:
+                    log.error("web process at %.0f MB; exiting for a clean restart", rss)
                     os._exit(3)
                 await asyncio.sleep(interval)
 
@@ -116,6 +118,7 @@ def create_app(cfg: Config) -> FastAPI:
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception):
+        log.error("unhandled error in %s %s", request.method, request.url.path, exc_info=exc)
         return JSONResponse(status_code=500, content={"detail": f"{exc!r}"})
 
     index = STATIC_DIR / "index.html"

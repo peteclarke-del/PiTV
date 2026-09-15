@@ -1,7 +1,8 @@
 <script>
   // Search shows (pick an episode) or movies for the schedule editor. onpick({media_id, label, duration}).
   import { get, tryApi } from '../../lib/api.js';
-  import { fmtDuration } from '../../lib/format.js';
+  import { fmtDuration, fmtEpisode } from '../../lib/format.js';
+  import { debounce } from '../../lib/util.js';
   import Modal from '../../components/Modal.svelte';
 
   let { open = false, onclose, onpick } = $props();
@@ -9,22 +10,22 @@
   let kind = $state('programme');
   let results = $state([]);
   let loading = $state(false);
-  let episodeChoice = $state({});
-  let timer;
+  let episodeChoice = $state({}); // show id -> chosen episode id
 
   async function search() {
     loading = true;
     results = (await tryApi(get('/api/library/search', { q, kind, limit: 30 }))) ?? [];
     loading = false;
   }
-  function input(v) { q = v; clearTimeout(timer); timer = setTimeout(search, 250); }
+  const searchSoon = debounce(search, 250);
+  function input(v) { q = v; searchSoon(); }
   $effect(() => { if (open) { q = ''; results = []; search(); } });
 
   function pickEpisode(show) {
     const id = Number(episodeChoice[show.id] ?? show.episodes[0]?.id);
     const ep = show.episodes.find((e) => e.id === id);
     if (!ep) return;
-    onpick?.({ media_id: ep.id, label: `${show.title} · S${String(ep.season ?? 0).padStart(2, '0')}E${String(ep.episode ?? 0).padStart(2, '0')} ${ep.title}`, duration: ep.duration });
+    onpick?.({ media_id: ep.id, label: `${show.title} · ${fmtEpisode(ep.season, ep.episode)} ${ep.title}`, duration: ep.duration });
   }
 </script>
 
@@ -42,9 +43,9 @@
               <span class="badge info">Show</span><b class="truncate">{r.title}</b><span class="muted small">{r.year ?? ''}</span>
             </div>
             <div class="line">
-              <select value={episodeChoice[r.id] ?? r.episodes[0]?.id} onchange={(e) => (episodeChoice[r.id] = e.currentTarget.value)} style="flex:1;min-width:0">
+              <select value={episodeChoice[r.id] ?? r.episodes[0]?.id} aria-label="Episode" onchange={(e) => (episodeChoice[r.id] = e.currentTarget.value)} style="flex:1;min-width:0">
                 {#each r.episodes as e (e.id)}
-                  <option value={e.id}>S{String(e.season ?? 0).padStart(2, '0')}E{String(e.episode ?? 0).padStart(2, '0')} {e.title} ({fmtDuration(e.duration)})</option>
+                  <option value={e.id}>{fmtEpisode(e.season, e.episode)} {e.title} ({fmtDuration(e.duration)})</option>
                 {/each}
               </select>
               <button class="small primary" onclick={() => pickEpisode(r)} disabled={!r.episodes.length}>Pick</button>

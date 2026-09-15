@@ -16,11 +16,17 @@ set_cfg disable_overscan 1
 add_overlay disable-bt
 grep -q "^max_framebuffers" "$CONFIG" || echo "max_framebuffers=2" >> "$CONFIG"
 
-# Display: DISPLAY_MODE=composite (PAL 4:3 on the Pi 4's 3.5 mm AV jack, the default for a
-# 1980s 14" set), hdmi43 (HDMI forced to a 4:3 mode, e.g. through an HDMI-to-SCART box) or hdmi.
-DISPLAY_MODE="${DISPLAY_MODE:-composite}"
-sed -i '/^dtoverlay=vc4-kms-v3d/d; /^enable_tvout/d; /^sdtv_mode/d; /^sdtv_aspect/d; /^hdmi_group/d; /^hdmi_mode/d' "$CONFIG"
+# Display: DISPLAY_MODE=hdmi576 (default: HDMI 720x576p 50 Hz 4:3 into an HDMI-to-SCART converter),
+# composite (PAL 4:3 on the Pi 4's 3.5 mm AV jack), hdmi43 (1024x768 for a 4:3 monitor) or hdmi.
+DISPLAY_MODE="${DISPLAY_MODE:-hdmi576}"
+sed -i '/^dtoverlay=vc4-kms-v3d/d; /^enable_tvout/d; /^sdtv_mode/d; /^sdtv_aspect/d; /^hdmi_group/d; /^hdmi_mode/d; /^hdmi_aspect/d' "$CONFIG"
 case "$DISPLAY_MODE" in
+  hdmi576)
+    echo "hdmi_group=1" >> "$CONFIG"
+    echo "hdmi_mode=17" >> "$CONFIG"         # CEA 17: 720x576p 50 Hz, 4:3 (PAL)
+    echo "hdmi_drive=2" >> "$CONFIG"
+    echo "dtoverlay=vc4-kms-v3d" >> "$CONFIG"
+    ;;
   composite)
     echo "enable_tvout=1" >> "$CONFIG"
     echo "sdtv_mode=2" >> "$CONFIG"          # PAL

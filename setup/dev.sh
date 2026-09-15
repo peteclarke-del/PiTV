@@ -4,7 +4,7 @@
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 export PITV_DATA="$ROOT/.dev" PITV_RUN="$ROOT/.dev/run" PITV_WINDOWED=1
-export PITV_MPV_ARGS="${PITV_MPV_ARGS:---geometry=768x576}"   # 4:3 window like the real set
+export PITV_MPV_ARGS="${PITV_MPV_ARGS:-}"   # the windowed player already mimics the Pi: 768x576, 4:3 PAL
 PORT="${PORT:-8080}"
 mkdir -p "$PITV_RUN"
 

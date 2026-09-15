@@ -4,17 +4,13 @@
 
   let { channels = [] } = $props();
   let online = $derived(player.state.online);
-  let busy = $state('');
+  let busy = $state(null); // channel number while a tune request is in flight
 
-  async function key(k) {
-    busy = k;
-    await tryApi(post('/api/player/key', { key: k }));
-    busy = '';
-  }
+  const key = (k) => tryApi(post('/api/player/key', { key: k }));
   async function tune(n) {
-    busy = `ch${n}`;
+    busy = n;
     await tryApi(post('/api/player/channel', { number: n }));
-    busy = '';
+    busy = null;
   }
 </script>
 
@@ -22,7 +18,7 @@
   <div class="channels">
     {#each channels.filter((c) => c.enabled) as ch (ch.id)}
       <button class="ch" disabled={!online} onclick={() => tune(ch.number)} title={ch.name}
-              style="--c:{ch.colour}" class:busy={busy === `ch${ch.number}`}>
+              style="--c:{ch.colour}" class:busy={busy === ch.number}>
         <b>{ch.number}</b><span class="truncate">{ch.short_name}</span>
       </button>
     {/each}

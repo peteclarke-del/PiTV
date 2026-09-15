@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-PI_HW_CODECS = {"h264", "hevc"}
+PI_HW_CODECS = {"h264", "hevc"}  # what the Pi 4's V4L2 decoder handles; everything else is software
 
 
 def decode_options(media: dict[str, Any] | None, on_pi: bool, settings: dict[str, Any]) -> dict[str, Any]:

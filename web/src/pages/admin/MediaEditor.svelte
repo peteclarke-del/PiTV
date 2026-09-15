@@ -1,4 +1,5 @@
 <script>
+  import { untrack } from 'svelte';
   import { get, put, tryApi } from '../../lib/api.js';
   import { fmtDuration, fmtBytes, fmtDateTime, CERTIFICATES } from '../../lib/format.js';
   import Drawer from '../../components/Drawer.svelte';
@@ -15,7 +16,7 @@
     form = { title: m.title ?? '', year: m.year ?? '', certificate: m.certificate ?? '', genres: (m.genres ?? []).join(', '),
              plot: m.plot ?? '', excluded: !!m.excluded, channel_hint: m.channel_hint ?? '', artist: m.artist ?? '', concert: !!m.concert, family_safe: m.family_safe !== 0 };
   }
-  $effect(() => { id; load(); }); // eslint-disable-line no-unused-expressions
+  $effect(() => { id; untrack(load); });
 
   async function save() {
     saving = true;
@@ -85,11 +86,11 @@
       </div>
       {#if item.upcoming?.length}
         <h3>Upcoming</h3>
-        <ul class="small" style="margin:0;padding-left:1.1rem">{#each item.upcoming as u (u.id)}<li>{fmtDateTime(u.start_ts)}{u.locked ? ' 🔒' : ''}{u.replay ? ' (replay)' : ''}</li>{/each}</ul>
+        <ul class="plain small">{#each item.upcoming as u (u.id)}<li>{fmtDateTime(u.start_ts)}{u.locked ? ' 🔒' : ''}{u.replay ? ' (replay)' : ''}</li>{/each}</ul>
       {/if}
       {#if item.history?.length}
         <h3>Recently aired</h3>
-        <ul class="small" style="margin:0;padding-left:1.1rem">{#each item.history as h (h.id)}<li>{fmtDateTime(h.started_at)}</li>{/each}</ul>
+        <ul class="plain small">{#each item.history as h (h.id)}<li>{fmtDateTime(h.started_at)}</li>{/each}</ul>
       {/if}
     </div>
   {:else}

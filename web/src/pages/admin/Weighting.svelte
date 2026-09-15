@@ -1,7 +1,8 @@
 <script>
   import { onMount } from 'svelte';
-  import { get, put, post, tryApi } from '../../lib/api.js';
-  import { confirm, toast } from '../../lib/stores.svelte.js';
+  import { get, put, post, tryApi, confirmApi } from '../../lib/api.js';
+  import { buildSchedule } from '../../lib/actions.js';
+  import { toast } from '../../lib/stores.svelte.js';
   import { CERTIFICATES } from '../../lib/format.js';
   import WeightRows from './WeightRows.svelte';
   import DaypartTable from './DaypartTable.svelte';
@@ -22,22 +23,18 @@
   function toggleDecade(b, d) { b.decades = (b.decades ?? []).includes(d) ? b.decades.filter((x) => x !== d) : [...(b.decades ?? []), d].sort(); }
   async function load() {
     s = await tryApi(get('/api/settings'));
-    if (s) { s.dayparts_saturday ??= []; s.dayparts_sunday ??= []; s.music_blocks ??= []; s.music_genres ??= []; s.cartoon_genres ??= []; s.music_decades ??= []; s.adult_advert_keywords ??= []; }
+    if (s) for (const k of ['dayparts_saturday', 'dayparts_sunday', 'music_blocks', 'music_genres', 'cartoon_genres', 'music_decades', 'adult_advert_keywords', 'readiness_hours']) s[k] ??= [];
     tryApi(get('/api/music/facets')).then((f) => (facets = f ?? null));
-    if (s) s.readiness_hours ??= [];
   }
   onMount(load);
 
   async function save() {
     saving = true;
     const body = { ...s };
-    for (const k of ['horizon_days', 'rebuild_when_days_left', 'show_daily_limit', 'movie_repeat_days', 'episode_recency_days',
+    for (const k of ['horizon_days', 'rebuild_when_days_left', 'show_daily_limit', 'movie_repeat_days',
                      'duration_tolerance_minutes', 'start_rounding_minutes', 'end_of_day_overrun_minutes', 'advert_year_window',
                      'advert_repeat_penalty_hours', 'series_rest_weeks', 'badge_seconds', 'cache_max_gb', 'scan_hour', 'history_keep_days']) body[k] = parseInt(body[k], 10) || 0;
     body.readiness_hours = [...new Set((s.readiness_hours ?? []).map((h) => parseInt(h, 10)).filter((h) => h >= 0 && h <= 23))].sort((a, b) => a - b);
-    // Fetching and transcoding live in the separate pitv_content app now; never send its retired keys.
-    for (const k of ['content_provider', 'acquire_enabled', 'acquire_providers', 'acquire_hours', 'transcode_enabled', 'transcode_hours',
-                     'transcode_max_height', 'transcode_bitrate_kbps', 'cache_copy_mbps', 'prefetch_hours', 'prefetch_days']) delete body[k];
     for (const k of ['show_repeat_penalty', 'same_slot_bonus', 'genre_repeat_penalty', 'unknown_year_weight', 'osd_safe_margin', 'osd_scale']) body[k] = Number(body[k]) || 0;
     body.kind_weights = { tv: Number(s.kind_weights.tv), movie: Number(s.kind_weights.movie) };
     const cleanDp = (rows) => (rows ?? []).map((d) => {
@@ -59,14 +56,14 @@
     body.adult_advert_keywords = (s.adult_advert_keywords ?? []).map((k) => String(k).toLowerCase());
     const r = await tryApi(put('/api/settings', body), { success: 'Settings saved' });
     saving = false;
-    if (r) { s = r; savedOnce = true; s.readiness_hours ??= []; }
-  }
-  async function reset() {
-    if (!(await confirm('Reset every weighting setting to its default?', { title: 'Reset to defaults', okLabel: 'Reset', danger: true }))) return;
-    const r = await tryApi(post('/api/settings/reset', {}), { success: 'Settings reset' });
     if (r) { s = r; savedOnce = true; }
   }
-  const build = () => tryApi(post('/api/schedule/build', {}), { success: 'Schedule build started' }).then(() => toast.info('Changes apply to newly built days; use "Rebuild week" on the dashboard to redo existing days.'));
+  async function reset() {
+    const r = await confirmApi('Reset every weighting setting to its default?', { title: 'Reset to defaults', okLabel: 'Reset', danger: true },
+      () => post('/api/settings/reset', {}), { success: 'Settings reset' });
+    if (r) { s = r; savedOnce = true; }
+  }
+  const build = () => buildSchedule().then((r) => { if (r) toast.info('Changes apply to newly built days; use "Rebuild week" on the dashboard to redo existing days.'); });
 </script>
 
 {#if s}
@@ -133,7 +130,6 @@
         <div class="card-title"><h3>Variety and repeats</h3></div>
         <div class="stack">
           <label class="field">Movie repeat days<input type="number" min="0" bind:value={s.movie_repeat_days} /><span class="help">Minimum days before a film is shown again.</span></label>
-          <label class="field">Episode recency days<input type="number" min="0" bind:value={s.episode_recency_days} /><span class="help">Episodes aired within this many days are avoided.</span></label>
           <label class="field">Show daily limit<input type="number" min="1" bind:value={s.show_daily_limit} /><span class="help">Maximum episodes of one show per channel per day.</span></label>
           <label class="field">Show repeat penalty<input type="number" step="0.05" min="0" max="1" bind:value={s.show_repeat_penalty} /><span class="help">Weight multiplier for each earlier airing of the same show that day.</span></label>
           <label class="field">Same slot bonus<input type="number" step="0.5" min="0" bind:value={s.same_slot_bonus} /><span class="help">Multiplier favouring a show at the time it aired yesterday, so regulars keep their slot.</span></label>
@@ -178,6 +174,7 @@
           <label class="field">Cache directory<input class="mono" bind:value={s.cache_dir} placeholder="/mnt/cache/pitv" /><span class="help">Folder on the attached drive where pitv_content puts local copies of upcoming programmes; empty disables the cache.</span></label>
           <label class="field">Maximum size (GB)<input type="number" min="0" bind:value={s.cache_max_gb} /><span class="help">pitv_content fills the cache; PiTV only evicts under this cap.</span></label>
           <label class="field">Download directory<input class="mono" bind:value={s.acquire_dir} placeholder="(cache dir)/acquired" /><span class="help">Where pitv_content stores fetched wanted items, scanned as a library source; empty uses the cache directory.</span></label>
+          <label class="field">pitv_content API URL<input class="mono" bind:value={s.content_tool_url} placeholder="http://127.0.0.1:8081" /><span class="help">Where pitv_content's local API listens.</span></label>
           <label class="check"><input type="checkbox" bind:checked={s.acquire_fill_gaps} /> Queue missing episodes automatically<span class="help">Looks for gaps between the episodes already on disk and adds them to the wanted list.</span></label>
           {#if s.content_profile}
             <div class="note small">Content profile: {s.content_profile.width}×{s.content_profile.height} {s.content_profile.vcodec}{s.content_profile.acodec ? `/${s.content_profile.acodec}` : ''}{s.content_profile.max_bitrate_kbps ? ` · ≤${s.content_profile.max_bitrate_kbps} kbit/s` : ''}{s.content_profile.deinterlace ? ` · deinterlace: ${s.content_profile.deinterlace}` : ''} <span class="muted">(what pitv_content transcodes to; read-only)</span></div>

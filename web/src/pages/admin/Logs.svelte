@@ -1,13 +1,15 @@
 <script>
-  import { onMount, untrack } from 'svelte';
-  import { get, tryApi } from '../../lib/api.js';
+  import { untrack } from 'svelte';
+  import { get } from '../../lib/api.js';
   import { toast, clock } from '../../lib/stores.svelte.js';
   import { fmtBytes, fmtAgo } from '../../lib/format.js';
+  import { debounce } from '../../lib/util.js';
+  import { poll } from '../../lib/poll.svelte.js';
 
   /** fixed: show only this source and hide the selector (e.g. 'pitv-content' on the Content tab). */
-  let { fixed = null, height = 'calc(100vh - 260px)' } = $props();
+  let { fixed = null, height = 'calc(100vh - 260px)', liveTool = false } = $props();
   const SOURCES = [
-    ['player', 'Player log'], ['web', 'Web log'], ['scan', 'Scan log'], ['schedule', 'Schedule log'],
+    ['player', 'Player log'], ['web', 'Web log'], ['scan', 'Scan log'], ['schedule', 'Schedule log'], ['install', 'Install log'],
     ['pitv-content', 'pitv_content log'],
     ['journal:pitv-player', 'Journal: pitv-player'], ['journal:pitv-web', 'Journal: pitv-web'],
   ];
@@ -25,7 +27,6 @@
   let loading = $state(false);
   let box = $state(null);
   let atEnd = $state(true);
-  let timer, debounce;
 
   let isJournal = $derived(source.startsWith('journal:'));
   let fileInfo = $derived(files.find((f) => f.name === source));
@@ -43,8 +44,15 @@
         journal = await get(`/api/logs/journal/${source.slice(8)}`, { lines });
         entries = null; exists = true;
       } else {
-        const r = await get(source === 'pitv-content' ? '/api/content/tool/log' : `/api/logs/${source}`, { lines, q, level });
-        entries = r.lines; exists = r.exists; journal = null; logPath = r.path ?? '';
+        let r = null;
+        if (source === 'pitv-content') {
+          // Prefer pitv_content's own API when it answers; otherwise read the log file through PiTV.
+          if (liveTool) { try { r = await get('/api/content/tool/api/log', { lines, q, level }); r.exists = true; } catch { r = null; } }
+          if (!r) r = await get('/api/content/tool/log', { lines, q, level });
+        } else {
+          r = await get(`/api/logs/${source}`, { lines, q, level });
+        }
+        entries = r.lines ?? []; exists = r.exists ?? true; journal = null; logPath = r.path ?? '';
       }
       files = await get('/api/logs');
     } catch (e) {
@@ -55,14 +63,10 @@
   }
   function jumpToEnd() { if (box) { box.scrollTop = box.scrollHeight; atEnd = true; } }
   function onScroll() { if (box) atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 40; }
-  $effect(() => { source; lines; level; load(); }); // eslint-disable-line no-unused-expressions
-  function onQuery(v) { q = v; clearTimeout(debounce); debounce = setTimeout(load, 300); }
-  $effect(() => {
-    clearInterval(timer);
-    if (auto) timer = setInterval(load, 5000);
-    return () => clearInterval(timer);
-  });
-  onMount(() => () => { clearInterval(timer); clearTimeout(debounce); });
+  $effect(() => { source; lines; level; liveTool; untrack(load); });
+  const reload = debounce(load, 300);
+  function onQuery(v) { q = v; reload(); }
+  poll(load, 5000, () => auto);
 
   function asText() {
     if (isJournal) return journalLines.join('\n');
@@ -83,7 +87,7 @@
     {#if !isJournal}
       <select bind:value={level} aria-label="Minimum level">{#each LEVELS as l (l)}<option value={l}>{l || 'All levels'}</option>{/each}</select>
     {/if}
-    <input type="search" placeholder="Filter…" value={q} oninput={(e) => onQuery(e.currentTarget.value)} style="width:200px" />
+    <input type="search" placeholder="Filter…" aria-label="Filter" value={q} oninput={(e) => onQuery(e.currentTarget.value)} style="width:200px" />
     <label class="check small"><input type="checkbox" bind:checked={auto} /> Auto-refresh (5 s)</label>
     <span class="spacer"></span>
     <button class="small" onclick={load} disabled={loading}>Refresh</button>

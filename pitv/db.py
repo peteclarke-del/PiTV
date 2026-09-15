@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS sources (
     name TEXT NOT NULL,
     path TEXT NOT NULL,            -- local mount path
     remote TEXT,                   -- e.g. smb://synologynas/tvshows/ (informational)
-    category TEXT NOT NULL DEFAULT 'general',   -- general | sport | kids ; shows inherit it
+    category TEXT NOT NULL DEFAULT 'general',   -- general | sport | kids; shows inherit it
     enabled INTEGER NOT NULL DEFAULT 1,
     last_scanned_at INTEGER,
     last_scan_summary TEXT
@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS shows (
     genres TEXT,                   -- JSON list
     plot TEXT,
     kids INTEGER NOT NULL DEFAULT 0,
-    category TEXT NOT NULL DEFAULT 'general',   -- general | sport | kids
+    category TEXT NOT NULL DEFAULT 'general',   -- general | sport | kids | cartoon
     home_channel_id INTEGER REFERENCES channels(id) ON DELETE SET NULL,
     mode TEXT NOT NULL DEFAULT 'auto' CHECK (mode IN ('auto', 'strip', 'weekly')),
     anchor_time TEXT,              -- 'HH:MM' for strip/weekly
@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS media (
     missing INTEGER NOT NULL DEFAULT 0,
     attention TEXT,                -- reason this item needs a look, or NULL
     overrides TEXT NOT NULL DEFAULT '{}',
-    transcoded_path TEXT,          -- H.264 copy made by the transcode queue
+    transcoded_path TEXT,          -- CRT-profile copy made by pitv_content (see content.py)
     updated_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS media_show ON media(show_id, season, episode);
@@ -177,11 +177,11 @@ CREATE TABLE IF NOT EXISTS wanted (
     season INTEGER,
     episode INTEGER,
     show_id INTEGER REFERENCES shows(id) ON DELETE SET NULL,
-    provider TEXT NOT NULL DEFAULT 'auto',     -- auto | archive | url
-    ref TEXT,                                  -- archive.org identifier[/file] or a URL
+    provider TEXT NOT NULL DEFAULT 'auto',     -- auto | url (a URL in ref pins the source)
+    ref TEXT,                                  -- URL of a specific page or file for pitv_content
     genre TEXT,                                -- music: destination genre folder
     artist TEXT,
-    status TEXT NOT NULL DEFAULT 'queued',     -- queued | searching | downloading | transcoding | done | failed
+    status TEXT NOT NULL DEFAULT 'queued',     -- queued | done | failed (set from pitv_content reports)
     progress REAL NOT NULL DEFAULT 0,
     message TEXT,
     dest_path TEXT,
@@ -194,7 +194,7 @@ CREATE TABLE IF NOT EXISTS wanted (
 
 CREATE TABLE IF NOT EXISTS run_log (
     id INTEGER PRIMARY KEY,
-    kind TEXT NOT NULL,            -- scan | schedule | transcode
+    kind TEXT NOT NULL,            -- scan | schedule | readiness | content
     started_at INTEGER NOT NULL,
     finished_at INTEGER,
     status TEXT NOT NULL DEFAULT 'running',
@@ -260,6 +260,8 @@ MUSIC_GENRES = ["pop", "rock", "metal", "hard rock", "heavy metal", "disco", "fu
                 "synth", "indie", "dance", "electronic", "hip hop", "rap", "reggae", "ska", "jazz", "blues",
                 "country", "folk", "classical", "r&b", "motown", "glam"]
 CARTOON_GENRES = ["animation", "cartoon", "anime", "animated"]
+# Genres that mark children's programming (kids cutoff at 21:00, kids-friendly dayparts).
+KIDS_GENRES = {"animation", "children", "children's", "kids", "family", "cartoon"}
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "timezone": "Europe/London",
@@ -297,7 +299,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "music_genres": MUSIC_GENRES,
     "cartoon_genres": CARTOON_GENRES,
     "movie_repeat_days": 21,
-    "episode_recency_days": 7,
     "same_slot_bonus": 3.0,
     "genre_repeat_penalty": 0.4,
     "duration_tolerance_minutes": 5,
@@ -317,6 +318,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "osd_safe_margin": 0.07,           # fraction of the screen kept clear on every edge (CRT overscan)
     "osd_scale": 1.25,                 # text size multiplier; 1.25 suits a small 4:3 CRT at 576 lines
     "drm_connector": "",               # e.g. "Composite-1" or "HDMI-A-1"; empty = mpv default
+    "display_aspect": "4:3",           # the physical screen shape; 720x576 PAL has non-square pixels, mpv needs to know
     "pi_hwdec": "drm-prime,v4l2m2m-copy",
     "audio_device": "auto",
     # local cache on the attached drive
@@ -363,6 +365,10 @@ def connect(path: Path | str) -> sqlite3.Connection:
     path = Path(path)
     if str(path) != ":memory:":
         path.parent.mkdir(parents=True, exist_ok=True)
+    # check_same_thread=False: FastAPI runs a sync dependency and its endpoint on whatever
+    # threadpool threads are free, so one request's connection legitimately crosses threads.
+    # A connection must still never be used by two threads at once; the player keeps its own
+    # on the main thread and every background thread opens its own.
     conn = sqlite3.connect(str(path), timeout=30, check_same_thread=False, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -535,12 +541,16 @@ def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
             try:
                 d[key] = json.loads(d[key])
             except ValueError:
-                pass
+                pass  # not JSON after all: hand the raw text back rather than lose it
     return d
 
 
 def rows_to_dicts(rows) -> list[dict[str, Any]]:
     return [row_to_dict(r) for r in rows]  # type: ignore[misc]
+
+
+def enabled_channels(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    return rows_to_dicts(conn.execute("SELECT * FROM channels WHERE enabled = 1 ORDER BY number"))
 
 
 def effective(row: dict[str, Any]) -> dict[str, Any]:

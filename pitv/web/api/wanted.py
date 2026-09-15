@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from ...db import now_ts, row_to_dict, rows_to_dicts, tx
+from ...wanted import queue_gaps
 from .deps import admin_conn
 
 router = APIRouter(prefix="/api", dependencies=[Depends(admin_conn)])
@@ -16,8 +17,8 @@ router = APIRouter(prefix="/api", dependencies=[Depends(admin_conn)])
 @router.get("/wanted")
 def list_wanted(conn: sqlite3.Connection = Depends(admin_conn)):
     rows = conn.execute("SELECT w.*, s.title AS show_title FROM wanted w LEFT JOIN shows s ON s.id = w.show_id"
-                        " ORDER BY CASE w.status WHEN 'downloading' THEN 0 WHEN 'transcoding' THEN 0 WHEN 'searching' THEN 0"
-                        " WHEN 'queued' THEN 1 WHEN 'failed' THEN 2 ELSE 3 END, w.id DESC LIMIT 300").fetchall()
+                        " ORDER BY CASE w.status WHEN 'queued' THEN 0 WHEN 'failed' THEN 1 ELSE 2 END, w.id DESC"
+                        " LIMIT 300").fetchall()
     return rows_to_dicts(rows)
 
 
@@ -56,5 +57,4 @@ def delete_wanted(wid: int, conn: sqlite3.Connection = Depends(admin_conn)):
 
 @router.post("/wanted/scan-gaps")
 def scan_gaps(conn: sqlite3.Connection = Depends(admin_conn)):
-    from ...wanted import queue_gaps
     return {"added": queue_gaps(conn)}

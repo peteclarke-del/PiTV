@@ -1,15 +1,17 @@
-"""Shared FastAPI dependencies and small serialisers."""
+"""Shared FastAPI dependencies, serialisers and small helpers for the API modules."""
 
 from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 from typing import Any, Iterator
 
 from fastapi import Depends, Request
 
 from ... import db as dbm
 from ...db import effective, row_to_dict
+from ..auth import require_admin
 
 
 def get_conn(request: Request) -> Iterator[sqlite3.Connection]:
@@ -21,9 +23,18 @@ def get_conn(request: Request) -> Iterator[sqlite3.Connection]:
 
 
 def admin_conn(request: Request, conn: sqlite3.Connection = Depends(get_conn)) -> sqlite3.Connection:
-    from ..auth import require_admin
     require_admin(request, conn)
     return conn
+
+
+def run_cmd(args: list[str], timeout: float = 5) -> tuple[int, str, str]:
+    """Run a command; (returncode, stdout, stderr) stripped. A missing binary or a timeout
+    counts as a failure (returncode 1, the error in stderr) rather than an exception."""
+    try:
+        out = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+        return out.returncode, out.stdout.strip(), out.stderr.strip()
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 1, "", str(exc)
 
 
 MEDIA_PUBLIC = ("id", "kind", "show_id", "season", "episode", "title", "year", "duration", "artist", "concert", "family_safe",
@@ -60,11 +71,13 @@ def show_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def slot_public(row: sqlite3.Row) -> dict[str, Any]:
+def slot_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    """A schedule slot (or a merged guide entry from `pitv.guide`) without file paths."""
     d = dict(row)
     out = {k: d.get(k) for k in ("id", "channel_id", "day", "start_ts", "end_ts", "media_id",
                                  "offset", "kind", "part", "replay", "locked", "title", "subtitle", "block")}
-    for k in ("year", "certificate", "duration", "plot", "show_id", "season", "episode", "hwdec", "media_kind"):
+    for k in ("year", "certificate", "duration", "plot", "show_id", "season", "episode", "hwdec", "media_kind",
+              "items", "video_title", "video_id"):
         if k in d:
             out[k] = d[k]
     if "genres" in d and isinstance(d["genres"], str):
@@ -72,31 +85,4 @@ def slot_public(row: sqlite3.Row) -> dict[str, Any]:
             out["genres"] = json.loads(d["genres"])
         except ValueError:
             out["genres"] = []
-    return out
-
-
-SLOT_QUERY = ("SELECT s.*, m.year, m.certificate, m.duration, m.plot, m.show_id, m.season, m.episode,"
-              " m.hwdec, m.genres, m.kind AS media_kind FROM schedule s"
-              " LEFT JOIN media m ON m.id = s.media_id")
-
-
-def collapse_blocks(slots: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Merge consecutive slots that share a `block` (music channel) into one guide entry."""
-    out: list[dict[str, Any]] = []
-    for sl in slots:
-        prev = out[-1] if out else None
-        if (sl.get("block") and prev and prev.get("block") == sl["block"] and prev["channel_id"] == sl["channel_id"]
-                and prev["end_ts"] == sl["start_ts"] and prev.get("replay") == sl.get("replay")):
-            prev["end_ts"] = sl["end_ts"]
-            prev["items"] = prev.get("items", 1) + 1
-            continue
-        if sl.get("block"):
-            entry = dict(sl)
-            entry["video_title"] = sl["title"]
-            entry["title"] = sl["block"]
-            entry["subtitle"] = "Music videos"
-            entry["items"] = 1
-            out.append(entry)
-        else:
-            out.append(dict(sl))
     return out

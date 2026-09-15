@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { auth, route, toast } from '../lib/stores.svelte.js';
-  import { get, post } from '../lib/api.js';
+  import { post, refreshAuth } from '../lib/api.js';
   import Login from './admin/Login.svelte';
   import Dashboard from './admin/Dashboard.svelte';
   import Sources from './admin/Sources.svelte';
@@ -11,7 +11,7 @@
   import Schedule from './admin/Schedule.svelte';
   import PlayerPage from './admin/Player.svelte';
   import System from './admin/System.svelte';
-  import Acquire from './admin/Acquire.svelte';
+  import Wanted from './admin/Wanted.svelte';
   import Logs from './admin/Logs.svelte';
   import Content from './admin/Content.svelte';
 
@@ -23,15 +23,6 @@
   let skipSetup = $state(sessionStorage.getItem('pitv-skip-setup') === '1');
   let gate = $derived(!auth.checked ? 'loading' : auth.password_set && !auth.admin ? 'login' : !auth.password_set && !skipSetup ? 'setup' : 'ok');
 
-  async function refreshAuth() {
-    try {
-      const a = await get('/api/auth');
-      auth.password_set = a.password_set;
-      auth.admin = a.admin;
-      auth.needLogin = false;
-    } catch { /* keep previous */ }
-    auth.checked = true;
-  }
   onMount(refreshAuth);
 
   async function logout() {
@@ -72,7 +63,7 @@
     {:else if tab === 'channels'}<Channels />
     {:else if tab === 'weighting'}<Weighting />
     {:else if tab === 'schedule'}<Schedule />
-    {:else if tab === 'wanted' || tab === 'acquire'}<Acquire />
+    {:else if tab === 'wanted'}<Wanted />
     {:else if tab === 'player'}<PlayerPage />
     {:else if tab === 'content'}<Content />
     {:else if tab === 'logs'}<Logs />

@@ -2,21 +2,24 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ..db import get_setting
+from ..db import KIDS_GENRES, get_setting
 
-KIDS_GENRES = {"animation", "children", "children's", "kids", "family", "cartoon"}
 CERT_ORDER = ["U", "PG", "12", "12A", "15", "18"]
+log = logging.getLogger("pitv.rules")
 
 
 def tz_of(conn: sqlite3.Connection) -> ZoneInfo:
+    name = get_setting(conn, "timezone", "Europe/London")
     try:
-        return ZoneInfo(get_setting(conn, "timezone", "Europe/London"))
-    except Exception:  # noqa: BLE001
+        return ZoneInfo(name)
+    except (KeyError, ValueError, OSError):  # ZoneInfoNotFoundError is a KeyError
+        log.warning("unknown timezone %r; using Europe/London", name)
         return ZoneInfo("Europe/London")
 
 

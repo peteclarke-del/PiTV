@@ -167,6 +167,27 @@ def test_content_manifest_and_report(client):
     client.delete(f"/api/wanted/{w['id']}")
 
 
+def test_content_manifest_ignores_part_files(client, tmp_path):
+    """A half-written `<id>_*.part` from pitv_content must not count as cached (PLAN.md §7)."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    client.put("/api/settings", json={"cache_dir": str(cache)})
+    try:
+        item = client.get("/api/content/manifest").json()["items"][0]
+        target = cache / os.path.basename(item["target"])
+        assert item["already_cached"] is False and target.parent == cache
+        target.with_name(target.name + ".part").write_bytes(b"x")
+        item = [i for i in client.get("/api/content/manifest").json()["items"] if i["media_id"] == item["media_id"]][0]
+        assert item["already_cached"] is False
+        target.write_bytes(b"x")
+        item = [i for i in client.get("/api/content/manifest").json()["items"] if i["media_id"] == item["media_id"]][0]
+        assert item["already_cached"] is True
+        assert client.post("/api/content/make-room", json={"bytes": 1}).json()["ok"] is True
+        assert target.exists(), "files in the current manifest are protected from eviction"
+    finally:
+        client.put("/api/settings", json={"cache_dir": ""})
+
+
 def test_content_tool_status(client):
     t = client.get("/api/content/tool").json()
     assert "installed" in t and "reports" in t
@@ -179,3 +200,39 @@ def test_content_tool_proxy_offline(client):
     r = client.get("/api/content/tool/api/settings")
     assert r.status_code == 503 and r.json()["offline"] is True
     assert client.get("/api/content/tool/api/evil").status_code == 404
+
+
+def test_content_tool_proxy_non_json_and_log_shape(client):
+    """An unrelated service on the tool's port (HTML 404) means 'not installed', never a forwarded
+    HTML body; a real log reply is passed through in the /api/logs/{name} shape."""
+    import http.server
+    import json
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path.startswith("/api/log"):
+                body, ctype, code = json.dumps({"name": "pitv-content", "lines": []}).encode(), "application/json", 200
+            else:
+                body, ctype, code = b"<html><body><h1>Not Found</h1></body></html>", "text/html", 404
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        client.put("/api/settings", json={"content_tool_url": f"http://127.0.0.1:{srv.server_port}"})
+        r = client.get("/api/content/tool/api/settings")
+        assert r.status_code == 503, r.text
+        assert r.json()["offline"] is True and "non-JSON" in r.json()["error"] and "HTTP 404" in r.json()["error"]
+        r = client.get("/api/content/tool/api/log", params={"lines": 5})
+        assert r.status_code == 200 and r.json() == {"name": "pitv-content", "lines": [], "path": None, "exists": True}
+    finally:
+        srv.shutdown()
+        srv.server_close()

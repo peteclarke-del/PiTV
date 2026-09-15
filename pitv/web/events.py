@@ -42,7 +42,7 @@ class EventBus:
             try:
                 q.put_nowait(msg)
             except asyncio.QueueFull:
-                pass
+                pass  # a client that stopped reading; it loses events rather than blocking publishers
 
     def publish_threadsafe(self, event: str, data: Any) -> None:
         if self._loop is None or self._loop.is_closed():

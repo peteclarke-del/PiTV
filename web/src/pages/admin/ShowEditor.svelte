@@ -1,6 +1,7 @@
 <script>
+  import { untrack } from 'svelte';
   import { get, put, post, del, tryApi } from '../../lib/api.js';
-  import { fmtDuration, fmtDateTime, WEEKDAYS, CERTIFICATES } from '../../lib/format.js';
+  import { fmtDuration, fmtDateTime, fmtEpisode, WEEKDAYS, CERTIFICATES } from '../../lib/format.js';
   import Drawer from '../../components/Drawer.svelte';
 
   let { id, channels = [], onclose, onsaved } = $props();
@@ -20,7 +21,7 @@
     };
     if (s.cursor) cursorForm = { season: s.cursor.next_season, episode: s.cursor.next_episode };
   }
-  $effect(() => { id; load(); }); // eslint-disable-line no-unused-expressions
+  $effect(() => { id; untrack(load); });
 
   function body() {
     const genres = form.genres.split(',').map((g) => g.trim()).filter(Boolean);
@@ -77,8 +78,8 @@
       <hr />
       <div class="form-grid">
         <label class="field">Category
-          <select bind:value={form.category}><option value="general">General</option><option value="sport">Sport</option><option value="kids">Children's</option></select>
-          <span class="help">Sport gets weekend afternoon and midweek late slots.</span>
+          <select bind:value={form.category}><option value="general">General</option><option value="sport">Sport</option><option value="kids">Children's</option><option value="cartoon">Cartoon</option></select>
+          <span class="help">Sport gets weekend afternoon and midweek late slots; cartoons are routed to a cartoons channel (set automatically from the genres).</span>
         </label>
         <label class="field">Home channel
           <select bind:value={form.home_channel_id}><option value="">(unassigned)</option>{#each channels as c (c.id)}<option value={c.id}>{c.number} {c.name}</option>{/each}</select>
@@ -124,7 +125,7 @@
           <tbody>
             {#each show.episodes as e (e.id)}
               <tr class:dim={e.missing || e.excluded}>
-                <td class="nowrap mono small">S{String(e.season ?? 0).padStart(2, '0')}E{String(e.episode ?? 0).padStart(2, '0')}</td>
+                <td class="nowrap mono small">{fmtEpisode(e.season, e.episode)}</td>
                 <td>{e.title}{#if e.attention}<span class="badge warn" title={e.attention}>!</span>{/if}{#if e.missing}<span class="badge danger">missing</span>{/if}</td>
                 <td class="small">{fmtDuration(e.duration)}</td>
                 <td class="small"><span class="mono">{e.vcodec ?? '?'}</span> {#if e.hwdec}<span class="badge ok">HW</span>{:else}<span class="badge warn">SW</span>{/if}</td>
@@ -145,6 +146,5 @@
 </Drawer>
 
 <style>
-  .plain { margin: 0; padding-left: 1.1rem; }
   .dim td { opacity: .55; }
 </style>

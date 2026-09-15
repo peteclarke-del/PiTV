@@ -5,6 +5,7 @@ const dayFmt = new Intl.DateTimeFormat(undefined, { weekday: 'short', day: 'nume
 const longDayFmt = new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
 const dateTimeFmt = new Intl.DateTimeFormat(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false });
 
+// Some engines print midnight as "24:00" with hour12:false.
 export function fmtTime(ts) {
   if (ts === null || ts === undefined) return '';
   return timeFmt.format(new Date(ts * 1000)).replace(/^24:/, '00:');
@@ -53,9 +54,9 @@ export function fmtAgo(ts, now = Math.floor(Date.now() / 1000)) {
   return `${Math.floor(d / 86400)} d ago`;
 }
 
-export function todayLocal() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+/** (1, 3) -> 'S01E03'; missing numbers count as 0. */
+export function fmtEpisode(season, episode) {
+  return `S${String(season ?? 0).padStart(2, '0')}E${String(episode ?? 0).padStart(2, '0')}`;
 }
 
 /** Local 'YYYY-MM-DD' + 'HH:MM' -> unix seconds */
@@ -73,6 +74,17 @@ export function tsToLocalDay(ts) {
 export function tsToLocalTime(ts) {
   const d = new Date(ts * 1000);
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+/** Badge modifier class for a job / run / wanted status ('' = neutral, e.g. queued or idle). */
+export function statusClass(status) {
+  switch (status) {
+    case 'ok': case 'done': return 'ok';
+    case 'running': case 'searching': case 'downloading': case 'transcoding': return 'info';
+    case 'warning': case 'cancelled': return 'warn';
+    case 'error': case 'failed': return 'danger';
+    default: return '';
+  }
 }
 
 export const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];

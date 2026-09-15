@@ -57,6 +57,7 @@ class Mpv:
             else:
                 time.sleep(0.1)
         if self.sock is None:
+            self.proc.kill()  # do not leave a headless mpv behind
             raise MpvError("mpv IPC socket did not appear")
         self.alive = True
         self._reader = threading.Thread(target=self._read_loop, name="mpv-reader", daemon=True)
@@ -67,8 +68,8 @@ class Mpv:
         try:
             if self.sock:
                 self.command("quit")
-        except Exception:  # noqa: BLE001
-            pass
+        except MpvError:
+            pass  # already gone; the wait/kill below tidies up
         if self.proc:
             try:
                 self.proc.wait(timeout=3)
@@ -150,9 +151,6 @@ class Mpv:
     def set(self, prop: str, value: Any) -> None:
         self.command("set_property", prop, value)
 
-    def observe(self, prop: str, observe_id: int) -> None:
-        self.command("observe_property", observe_id, prop)
-
     def loadfile(self, path: str, start: float = 0.0, extra: dict[str, Any] | None = None) -> None:
         opts = {"start": f"{max(0.0, start):.3f}"}
         if extra:
@@ -166,8 +164,8 @@ class Mpv:
     def keybind(self, key: str, message: str) -> None:
         try:
             self.command("keybind", key, f"script-message {message}")
-        except MpvError:
-            pass
+        except MpvError as exc:
+            log.debug("keybind %s: %s", key, exc)  # only matters for the desktop window
 
     # --- overlays ---------------------------------------------------------------------------
 
@@ -178,7 +176,7 @@ class Mpv:
         try:
             self.command("overlay-remove", overlay_id)
         except MpvError:
-            pass
+            pass  # removing an overlay that is not shown is an mpv error and a no-op for us
 
 
 def default_args(windowed: bool, osd_socket_dir: Path) -> list[str]:
@@ -190,9 +188,13 @@ def default_args(windowed: bool, osd_socket_dir: Path) -> list[str]:
         "--audio-pitch-correction=no", "--volume-max=100", "--sub=no", "--no-config",
     ]
     if windowed:
-        return common + ["--geometry=1024x576", "--title=PiTV", "--hwdec=auto-safe"]
+        # Desktop preview: a 4:3 window the size of the PAL frame (768x576 square pixels shows
+        # exactly what a 720x576 anamorphic frame looks like on the set), same scaler and
+        # deinterlacer as the Pi, so transcodes from pitv_content can be judged on screen.
+        return common + ["--geometry=768x576", "--title=PiTV (Pi display preview 4:3 PAL)", "--hwdec=auto-safe",
+                         "--keepaspect-window=yes", "--scale=bilinear", "--cscale=bilinear", "--dscale=bilinear"]
     return common + [
         "--vo=gpu", "--gpu-context=drm", "--fullscreen", "--ao=alsa",
         "--hwdec=drm-prime,v4l2m2m-copy", "--gpu-api=opengl", "--profile=fast",
-        "--video-sync=audio",
+        "--video-sync=audio", "--scale=bilinear", "--cscale=bilinear", "--dscale=bilinear",
     ]

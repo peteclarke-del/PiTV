@@ -1,7 +1,7 @@
 <script>
   import { untrack } from 'svelte';
-  import { get, put, tryApi } from '../../lib/api.js';
-  import { player, toast, confirm } from '../../lib/stores.svelte.js';
+  import { get, put, tryApi, confirmApi } from '../../lib/api.js';
+  import { player, toast } from '../../lib/stores.svelte.js';
   import { ACTIONS, ACTION_LABELS, DEFAULT_KEYMAP, mergedKeymap } from '../../lib/keymap.js';
 
   let map = $state(null);          // {action: [keys]}
@@ -38,6 +38,7 @@
     learnTimer = setTimeout(() => { if (learning) { toast.info('No key received; still listening? Press a button on the remote or cancel.'); } }, 15000);
   }
   function stopLearning() { learning = null; clearTimeout(learnTimer); }
+  $effect(() => () => clearTimeout(learnTimer));
   $effect(() => {
     const lk = player.state.last_key;
     const action = untrack(() => learning);
@@ -55,8 +56,8 @@
     if (r) { custom = true; dirty = false; }
   }
   async function reset() {
-    if (!(await confirm('Forget the custom keymap and use the built-in defaults?', { title: 'Reset keymap', okLabel: 'Reset' }))) return;
-    const r = await tryApi(put('/api/settings', { keymap: {} }), { success: 'Keymap reset to defaults' });
+    const r = await confirmApi('Forget the custom keymap and use the built-in defaults?', { title: 'Reset keymap', okLabel: 'Reset' },
+      () => put('/api/settings', { keymap: {} }), { success: 'Keymap reset to defaults' });
     if (r) { map = mergedKeymap({}); custom = false; dirty = false; }
   }
   const isDefault = (a) => JSON.stringify(map[a]) === JSON.stringify(DEFAULT_KEYMAP[a]);

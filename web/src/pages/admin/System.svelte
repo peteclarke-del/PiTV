@@ -3,6 +3,7 @@
   import { get, post, tryApi } from '../../lib/api.js';
   import { auth, toast } from '../../lib/stores.svelte.js';
   import { fmtBytes, fmtDateTime } from '../../lib/format.js';
+  import { downloadJson } from '../../lib/util.js';
   import JobList from './JobList.svelte';
 
   let info = $state(null);
@@ -17,16 +18,7 @@
 
   async function exportJson() {
     const data = await tryApi(get('/api/export'));
-    if (!data) return;
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `pitv-export-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    if (data) downloadJson(data, `pitv-export-${new Date().toISOString().slice(0, 10)}.json`);
   }
 
   async function changePassword(e) {
