@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,26 @@ log = logging.getLogger("pitv.lineup")
 PROGRAMME_CONTENT = ("general", "cartoons")   # channel content types that carry a line-up
 MIRROR = "lineups.json"
 EXTERNAL_SOURCES = ("catalogue", "manual")  # entries not generated from the catalogue (source 'library')
+_MATCH_SOURCE = re.compile(r"^[a-z0-9_-]{1,40}$")
+_IMDB = re.compile(r"^tt\d{5,10}$")
+
+
+def clean_match(value: Any) -> dict[str, str] | None:
+    """The identity a title was confirmed as online (pitv_content's lookup, contract section 8):
+    {source, id, url?, imdb?}. Anything else in the document is dropped; None when unusable."""
+    if not isinstance(value, dict):
+        return None
+    source, ident = as_text(value.get("source")), as_text(value.get("id"))
+    if not source or not _MATCH_SOURCE.match(source) or not ident or len(ident) > 100:
+        return None
+    out = {"source": source, "id": ident}
+    url = as_text(value.get("url"))
+    if url and len(url) <= 500 and url.startswith(("https://", "http://")):
+        out["url"] = url
+    imdb = as_text(value.get("imdb"))
+    if imdb and _IMDB.match(imdb):
+        out["imdb"] = imdb
+    return out
 
 
 def _genre_set(value: Any) -> set[str]:
@@ -120,14 +141,14 @@ def best_channel(conn: sqlite3.Connection, genres: list[str] | None, hours: floa
 def _insert(conn: sqlite3.Connection, channel_id: int, kind: str, key: str, title: str, year: int | None, *,
             show_id: int | None = None, media_id: int | None = None, genres: list[str] | None = None,
             source: str = "library", transient: int = 0, episode_minutes: int | None = None,
-            pinned: int = 0) -> int:
+            pinned: int = 0, match: dict[str, str] | None = None) -> int:
     conn.execute(
         "INSERT INTO lineup(channel_id, kind, show_id, media_id, key, title, year, genres, source, transient,"
-        " episode_minutes, pinned, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        " episode_minutes, pinned, match, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
         " ON CONFLICT(key) DO UPDATE SET channel_id = excluded.channel_id, pinned = excluded.pinned,"
-        " updated_at = excluded.created_at",
+        " match = COALESCE(excluded.match, lineup.match), updated_at = excluded.created_at",
         (channel_id, kind, show_id, media_id, key, title, year, json.dumps(genres or []), source, transient,
-         episode_minutes, pinned, now_ts()))
+         episode_minutes, pinned, json.dumps(match) if match else None, now_ts()))
     return int(conn.execute("SELECT id FROM lineup WHERE key = ?", (key,)).fetchone()["id"])   # inserted or updated
 
 
@@ -202,7 +223,8 @@ def sync_home_channels(conn: sqlite3.Connection) -> None:
 
 def add(conn: sqlite3.Connection, channel_id: int | None, *, show_id: int | None = None, media_id: int | None = None,
         title: str | None = None, year: int | None = None, kind: str | None = None, genres: list[str] | None = None,
-        transient: bool | None = None, episode_minutes: int | None = None, source: str = "manual") -> dict[str, Any]:
+        transient: bool | None = None, episode_minutes: int | None = None, source: str = "manual",
+        match: Any = None) -> dict[str, Any]:
     """Add (or move) an entry. Library items are identified by show_id/media_id; anything else
     is an external entry that pitv_content will be asked to fetch. Without a channel, an
     external entry goes where the generator would put it by its genres."""
@@ -230,7 +252,8 @@ def add(conn: sqlite3.Connection, channel_id: int | None, *, show_id: int | None
                 raise ValueError("title and kind are required for an external entry")
             key = f"ext:{kind}:{title.strip().lower()}:{year or ''}"
             lid = _insert(conn, channel_id, kind, key, title.strip(), year, genres=genres or [], source=source,
-                          transient=1 if transient is None else int(transient), episode_minutes=episode_minutes, pinned=1)
+                          transient=1 if transient is None else int(transient), episode_minutes=episode_minutes, pinned=1,
+                          match=clean_match(match))
         sync_home_channels(conn)
     write_mirror(conn)
     return entry(conn, lid)
@@ -314,6 +337,7 @@ def entries(conn: sqlite3.Connection, channel_id: int | None = None, lineup_id: 
         # External entries were added by hand or from pitv_content's catalogue; a series keeps
         # asking for its next episode even once some have arrived.
         r["external"] = r["source"] != "library"
+        r["match"] = clean_match(json.loads(r["match"])) if isinstance(r.get("match"), str) else None
     return out
 
 
@@ -352,7 +376,7 @@ def genre_facets(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
 # --- JSON mirror --------------------------------------------------------------------------------
 
 _EXPORTED = ("kind", "title", "year", "source", "transient", "remove_after_airing", "episode_minutes", "next_episode",
-             "enabled", "pinned", "notes", "genres")
+             "enabled", "pinned", "notes", "genres", "match")
 
 
 def export(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -396,7 +420,7 @@ def _import_entry(conn: sqlite3.Connection, channel_id: int, e: Any) -> bool:
         lid = _insert(conn, channel_id, kind, f"ext:{kind}:{title.lower()}:{year or ''}", title, year,
                       genres=genre_list(e.get("genres")), source=source,
                       transient=int(as_bool(e.get("transient"), True)), episode_minutes=as_int(e.get("episode_minutes")),
-                      pinned=1)
+                      pinned=1, match=clean_match(e.get("match")))
     update_row(conn, "lineup", lid, {
         "enabled": int(as_bool(e.get("enabled"), True)), "remove_after_airing": int(as_bool(e.get("remove_after_airing"))),
         "next_episode": as_int(e.get("next_episode")) or 1, "notes": as_text(e.get("notes")) or ""})

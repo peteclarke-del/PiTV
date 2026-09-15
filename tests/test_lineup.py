@@ -85,7 +85,10 @@ def test_move_and_remove_entries(conn, data_dir):
 
 def test_external_entry_scheduled_ahead_and_requested(conn):
     ch = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
-    entry = lineup.add(conn, ch, title="The Tripods", year=1984, kind="show", genres=["Science Fiction"], episode_minutes=25)
+    confirmed = {"source": "tvmaze", "id": "2203", "url": "https://www.tvmaze.com/shows/2203/the-tripods", "imdb": "tt0086817"}
+    entry = lineup.add(conn, ch, title="The Tripods", year=1984, kind="show", genres=["Science Fiction"], episode_minutes=25,
+                       match={**confirmed, "poster": "ignored"})
+    assert entry["match"] == confirmed
     now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(conn))
     # NAS-only (default): nothing not on disk is scheduled.
     build_horizon(conn, start_day=parse_day("2026-09-14"), days=4, now=now, seed=9, force=True)
@@ -114,6 +117,7 @@ def test_external_entry_scheduled_ahead_and_requested(conn):
     ids = {w["id"] for w in wanted}
     mine = [i for i in m["items"] if i["wanted_id"] in ids]
     assert mine and all(i["action"] == "fetch" and i["request_id"] == f"w:{i['wanted_id']}" for i in mine)
+    assert all(i["match"] == confirmed for i in mine), "the confirmed identity goes to pitv_content with every request"
     assert mine[0]["show_title"] == "The Tripods" and mine[0]["transient"] is True
     assert "The Tripods" in mine[0]["search"]["phrase"] and mine[0]["dest_dir"]
     with dbm.tx(conn):
@@ -353,3 +357,22 @@ def test_added_title_without_a_channel_goes_where_its_genres_fit(tmp_path):
         lineup.add(conn, None, title="Jamie and the Magic Torch", kind="show", genres=["Animation"])
     with pytest.raises(ValueError):
         lineup.add(conn, None, show_id=1)       # moving a library title needs a destination
+
+
+def test_confirmed_identity_is_cleaned_and_survives_the_mirror(tmp_path):
+    """Only a well-formed identity is kept, never a script URL, and it travels with the line-up
+    document so a rebuilt database still fetches the confirmed title."""
+    assert lineup.clean_match({"source": "tvmaze", "id": 7, "url": "javascript:alert(1)", "imdb": "nope"}) == \
+        {"source": "tvmaze", "id": "7"}
+    assert lineup.clean_match({"source": "Bad Source!", "id": "1"}) is None
+    assert lineup.clean_match("tvmaze:1") is None
+    ctx = make_library(tmp_path, max_episodes=1)
+    conn = ctx["conn"]
+    match = {"source": "tmdb", "id": "11", "url": "https://www.themoviedb.org/movie/11"}
+    lineup.add(conn, None, title="A Film Not On The NAS", year=1983, kind="movie", genres=["Comedy"], match=match)
+    doc = lineup.export(conn)
+    with dbm.tx(conn):
+        conn.execute("DELETE FROM lineup")
+    lineup.import_doc(conn, doc)
+    restored = next(e for e in lineup.entries(conn) if e["title"] == "A Film Not On The NAS")
+    assert restored["match"] == match

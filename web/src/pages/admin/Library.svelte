@@ -6,7 +6,7 @@
   import { del, get, put, tryApi, confirmApi } from '../../lib/api.js';
   import { changes, clock, route, toast } from '../../lib/stores.svelte.js';
   import { navigate } from '../../lib/router.js';
-  import { fmtDuration, fmtAgo, fmtEpisode, lineupState, CERTIFICATES, WEEKDAYS } from '../../lib/format.js';
+  import { fmtDuration, fmtAgo, fmtEpisode, lineupState, safeUrl, CERTIFICATES, WEEKDAYS } from '../../lib/format.js';
   import { num } from '../../lib/util.js';
   import { guard } from '../../lib/guard.svelte.js';
   import ChannelBadge from '../../components/ChannelBadge.svelte';
@@ -138,7 +138,7 @@
 {#snippet lineupChannelCell(e)}{@render badgeFor(e.channel_id)}{/snippet}
 {#snippet identChannelCell(m)}{#if chById.get(m.home_channel_id)}<ChannelBadge channel={chById.get(m.home_channel_id)} size="sm" />{:else}<span class="muted">any</span>{/if}{/snippet}
 {#snippet familySafeCell(m)}<span role="presentation" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}><label class="check small" title={m.family_safe ? 'May air on family-safe channels' : 'Never airs on family-safe channels'}><input type="checkbox" checked={!!m.family_safe} onchange={(e) => setFamilySafe(m, e.currentTarget.checked)} />{m.family_safe ? 'yes' : 'no'}</label></span>{/snippet}
-{#snippet customTitleCell(e)}<b>{e.title}</b>{#if e.genres?.length}<div class="tiny muted">{e.genres.join(', ')}</div>{/if}{/snippet}
+{#snippet customTitleCell(e)}<b>{e.title}</b>{#if e.match}{@const link = safeUrl(e.match.url)}<span class="badge ok" title="Confirmed online; pitv_content fetches this title">{#if link}<a href={link} target="_blank" rel="noopener noreferrer">{e.match.source} ↗</a>{:else}{e.match.source}{/if}</span>{:else}<span class="badge warn" title="Added without an online match; pitv_content searches by title">unmatched</span>{/if}{#if e.genres?.length}<div class="tiny muted">{e.genres.join(', ')}</div>{/if}{/snippet}
 {#snippet stateCell(e)}{@const [cls, text] = lineupState(e)}<span class="badge {cls}">{text}</span>{/snippet}
 {#snippet removeCell(e)}<button class="small ghost" onclick={() => removeCustom(e)}>Remove</button>{/snippet}
 {#snippet attentionItemCell(item)}<button class="ghost small" onclick={() => (mediaId = item.id)}><b>{item.show_title ? `${item.show_title} · ` : ''}{item.title}</b></button>

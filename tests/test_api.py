@@ -464,6 +464,7 @@ def test_system_reports_host_in_the_contract_shape(client):
     assert "mpv" in host["tools"]
     from pitv.web.api.content import _proxy_path
     assert _proxy_path("system") == "system"      # pitv_content's host document is reachable through the proxy
+    assert _proxy_path("lookup") == "lookup"      # and so is its online lookup for the add dialog
 
 
 def test_spa_never_serves_outside_the_bundle(client):

@@ -220,6 +220,7 @@ CREATE TABLE IF NOT EXISTS lineup (
     enabled INTEGER NOT NULL DEFAULT 1,
     pinned INTEGER NOT NULL DEFAULT 0,        -- set by hand; rebalance leaves it alone
     notes TEXT NOT NULL DEFAULT '',
+    match TEXT,                    -- externals: the title as confirmed online in the admin (JSON; lineup.clean_match)
     created_at INTEGER NOT NULL,
     updated_at INTEGER
 );
@@ -473,6 +474,7 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("media", "cache_path", "TEXT"),
     ("media", "cache_vcodec", "TEXT"),
     ("media", "cache_interlaced", "INTEGER"),
+    ("lineup", "match", "TEXT"),
 ]
 
 

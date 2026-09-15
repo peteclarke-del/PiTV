@@ -151,6 +151,13 @@ service is down. Schema 2.
   `dest_dir` in the Kodi layout and its path is reported.
 - `wanted` lists requests that are not scheduled yet (adverts or music videos added by hand,
   gaps in a series); same shape as a `fetch` item without air times.
+- A `fetch` item for a title added in PiTV's admin carries `match`, the identity the admin
+  confirmed from a lookup (section 8): `{"source": "tvmaze", "id": "1234", "url": "...",
+  "imdb": "tt0086666"}`, with `url` and `imdb` when known. pitv_content fetches that title
+  rather than whatever the search phrase finds first: for a series it may use the source's
+  episode list for titles and running times, for a film the IMDb id to confirm a hit. Items
+  without a confirmed identity have `"match": null`. A `ref` URL, when present, is a specific
+  video to fetch and wins over both.
 
 ## 3. Delivery report (pitv_content to PiTV)
 
@@ -252,3 +259,37 @@ the platform is `null`.
 - `uptime_s` is the machine's uptime from `/proc/uptime`; `temperature_c` is
   `thermal_zone0`; `memory` comes from `MemTotal` and `MemAvailable` in `/proc/meminfo`, in
   bytes.
+
+## 8. Lookup (PiTV's admin asks, pitv_content answers)
+
+`GET {content_tool_url}/api/lookup?kind=show|movie|advert|music&title=...&year=1988&artist=...&limit=8`
+searches the internet for what the admin is about to add, so the right title is added and
+later fetched. PiTV's admin calls it through PiTV's proxy (`/api/content/tool/api/lookup`);
+PiTV never contacts the sources itself, as all online access is pitv_content's.
+
+```json
+{"candidates": [
+  {"match": {"source": "tvmaze", "id": "1234", "url": "https://www.tvmaze.com/shows/1234/count-duckula",
+             "imdb": "tt0086690"},
+   "kind": "show", "title": "Count Duckula", "year": 1988, "end_year": 1993,
+   "genres": ["Animation", "Comedy", "Children"], "runtime_minutes": 22, "episodes": 65,
+   "network": "ITV", "country": "GB", "certificate": null,
+   "summary": "Plain text, at most 600 characters.", "image": "https://.../poster.jpg"}
+ ],
+ "sources": ["tvmaze"], "errors": {}}
+```
+
+- Series come from a source with episode lists (TVmaze needs no key); films from a film
+  database. Adverts and music videos are candidates for the video itself: `match.source` is the
+  video site, `match.url` the video, and `duration_seconds`, `uploader` and a thumbnail as
+  `image` replace the series fields. A music candidate may carry `artist` and the release
+  `year` from a music database.
+- Candidates are ordered best first. Every field but `match`, `kind` and `title` may be
+  missing or null. `summary` is plain text; `image` is an https URL the admin may show.
+- `sources` names what was asked; `errors` maps a source that failed to its message, so
+  partial answers are still usable. With no source reachable the answer is 502
+  `{"error": ...}`.
+- PiTV keeps the chosen `match` with the line-up entry (`lineups.json` included) and sends it
+  on every fetch request for that title (section 2). For an advert or music video the chosen
+  video's URL is kept as the wanted request's `ref`.
+

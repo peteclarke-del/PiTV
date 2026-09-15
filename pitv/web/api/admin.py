@@ -948,7 +948,7 @@ def lineup_add(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depe
         return lineup_mod.add(conn, optional_int(body.get("channel_id"), "channel_id"), show_id=body.get("show_id"), media_id=body.get("media_id"),
                               title=body.get("title"), year=body.get("year"), kind=body.get("kind"), genres=body.get("genres"),
                               transient=body.get("transient"), episode_minutes=body.get("episode_minutes"),
-                              source="catalogue" if body.get("catalogue") else "manual")
+                              source="catalogue" if body.get("catalogue") else "manual", match=body.get("match"))
     except (KeyError, ValueError, TypeError) as exc:
         raise HTTPException(400, str(exc)) from exc
 

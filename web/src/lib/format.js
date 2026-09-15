@@ -121,3 +121,14 @@ export function lineupState(e) {
   if (e.on_disk) return ['ok', e.kind === 'show' && e.episodes_on_disk ? `on disk (${e.episodes_on_disk} eps)` : 'on disk'];
   return ['', 'not on disk'];
 }
+
+/** `url` if it is an http(s) address (https only when `secure`), else null: links and images
+ *  from outside sources must never become javascript: or data: URLs. */
+export function safeUrl(url, secure = false) {
+  try {
+    const u = new URL(String(url ?? ''));
+    return u.protocol === 'https:' || (!secure && u.protocol === 'http:') ? u.href : null;
+  } catch {
+    return null;
+  }
+}

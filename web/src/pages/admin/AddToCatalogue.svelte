@@ -1,32 +1,70 @@
 <script>
-  // Custom programming: a title that is not on the NAS joins the catalogue here. A series or film
-  // becomes a line-up entry on a channel (chosen by its genres unless one is picked); pitv_content
-  // fetches it ahead of the day it is scheduled. An advert or music video joins the wanted list.
+  // Custom programming: a title that is not on the NAS joins the catalogue here, in two steps.
+  // First pitv_content looks it up online (contract section 8) so the admin can confirm the
+  // right one; then it is placed. A series or film becomes a line-up entry carrying that
+  // identity, on a chosen channel or the one its genres fit, and pitv_content fetches it before
+  // it airs. An advert or music video joins the wanted list, pinned to the chosen video.
   import { get, post, tryApi } from '../../lib/api.js';
+  import { isOffline, toolGet } from '../../lib/toolapi.js';
   import { num, splitList } from '../../lib/util.js';
+  import { safeUrl } from '../../lib/format.js';
   import { guard } from '../../lib/guard.svelte.js';
   import { noteChange } from '../../lib/stores.svelte.js';
   import Modal from '../../components/Modal.svelte';
   import AppBadge from '../../components/AppBadge.svelte';
+  import LookupResults from './LookupResults.svelte';
 
   let { open = false, channels = [], onclose, onadded } = $props();
   const KINDS = [['show', 'Series'], ['movie', 'Film'], ['advert', 'Advert'], ['music', 'Music video']];
   const blankForm = () => ({ kind: 'show', title: '', year: '', genres: '', channel: '', transient: true, minutes: '', artist: '', url: '' });
   let f = $state(blankForm());
+  let step = $state('search');        // search | place
+  let found = $state(null);           // candidates, once looked up
+  let lookupNote = $state('');        // why there are none to show, when the lookup could not run
+  let chosen = $state(null);          // the candidate confirmed, or null for "without a match"
   let options = $state([]);
-  $effect(() => { if (open) { f = blankForm(); tryApi(get('/api/lineup/options')).then((o) => (options = o ?? [])); } });
+  $effect(() => {
+    if (!open) return;
+    f = blankForm(); step = 'search'; found = null; lookupNote = ''; chosen = null;
+    tryApi(get('/api/lineup/options')).then((o) => (options = o ?? []));
+  });
 
   let programme = $derived(f.kind === 'show' || f.kind === 'movie');
   // pitv_content's fetchable titles as suggestions; a title already on disk is flagged, not duplicated.
   let suggestions = $derived(options.filter((o) => !o.on_disk && o.type === f.kind));
   let existing = $derived(options.find((o) => o.on_disk && o.type === f.kind && o.title.toLowerCase() === f.title.trim().toLowerCase()));
 
+  const search = guard(async () => {
+    found = null; lookupNote = '';
+    try {
+      const r = await toolGet('lookup', { kind: f.kind, title: f.title.trim(), year: num(f.year, { int: true }) ?? undefined,
+                                          artist: f.artist.trim() || undefined, limit: 8 });
+      found = Array.isArray(r?.candidates) ? r.candidates : [];
+      const failed = Object.entries(r?.errors ?? {});
+      if (failed.length) lookupNote = `Not every source answered: ${failed.map(([s, m]) => `${s}: ${m}`).join('; ')}`;
+    } catch (e) {
+      lookupNote = isOffline(e) ? 'pitv_content is not reachable, so nothing can be looked up.'
+        : e.status === 404 ? 'This version of pitv_content cannot look titles up.' : (e.detail || e.message);
+    }
+  });
+  function pick(c) {
+    chosen = c;
+    f.title = c.title ?? f.title;
+    if (c.year) f.year = c.year;
+    if (c.genres?.length) f.genres = c.genres.join(', ');
+    if (c.runtime_minutes) f.minutes = c.runtime_minutes;
+    if (c.artist) f.artist = c.artist;
+    if (!programme) f.url = safeUrl(c.match?.url) ?? '';
+    step = 'place';
+  }
+  function withoutMatch() { chosen = null; step = 'place'; }
+
   const add = guard(async () => {
     const year = num(f.year, { min: 1900, max: 2100, int: true });
     const r = programme
       ? await tryApi(post('/api/lineup', {
           kind: f.kind, title: f.title.trim(), year, genres: splitList(f.genres), transient: f.transient,
-          channel_id: f.channel === '' ? null : Number(f.channel),
+          channel_id: f.channel === '' ? null : Number(f.channel), match: chosen?.match ?? null,
           episode_minutes: f.kind === 'show' ? num(f.minutes, { min: 1, max: 240, int: true }) : null }))
       : await tryApi(post('/api/wanted', { kind: f.kind, title: f.title.trim(), year, artist: f.artist.trim() || null, ref: f.url.trim() || null }));
     if (!r) return;
@@ -36,33 +74,56 @@
   });
 </script>
 
-<Modal {open} title="Add to the catalogue" {onclose} width="560px">
+<Modal {open} title="Add to the catalogue" {onclose} width="640px">
   <div class="stack">
-    <p class="scope" style="margin:0"><AppBadge app="pitv" /> For titles that are not on the NAS. pitv_content finds and fetches them into the cache; nothing is written to the NAS.</p>
-    <div class="row">
-      {#each KINDS as [id, label] (id)}<label class="check"><input type="radio" name="kind" value={id} bind:group={f.kind} /> {label}</label>{/each}
-    </div>
-    <div class="form-grid">
-      <label class="field wide">Title<input bind:value={f.title} list="catalogue-suggestions" placeholder={f.kind === 'music' ? 'Song title' : 'As it was broadcast'} />
-        {#if existing}<span class="help">Already in the catalogue{existing.channel_number ? ` on channel ${existing.channel_number}` : ''}; move it from the channel's line-up instead.</span>{/if}
-      </label>
-      <datalist id="catalogue-suggestions">{#each suggestions as o (o.title + (o.year ?? ''))}<option value={o.title}>{o.year ?? ''}</option>{/each}</datalist>
-      <label class="field">Year<input type="number" class="narrow" min="1900" max="2100" bind:value={f.year} /><span class="help">Helps pitv_content find the right one.</span></label>
-      {#if programme}
-        <label class="field">Genres<input bind:value={f.genres} placeholder="Comedy, Drama" /><span class="help">Decide the channel when none is picked.</span></label>
-        <label class="field">Channel
-          <select bind:value={f.channel}><option value="">Choose by genres</option>{#each channels as c (c.id)}<option value={c.id}>{c.number} {c.name}</option>{/each}</select>
+    <p class="scope" style="margin:0"><AppBadge app="pitv" /> For titles that are not on the NAS. pitv_content looks the title up online so the right one is added, then fetches it into the cache; nothing is written to the NAS.</p>
+    {#if step === 'search'}
+      <div class="row">
+        {#each KINDS as [id, label] (id)}<label class="check"><input type="radio" name="kind" value={id} bind:group={f.kind} onchange={() => (found = null)} /> {label}</label>{/each}
+      </div>
+      <div class="form-grid">
+        <label class="field wide">Title<input bind:value={f.title} list="catalogue-suggestions" placeholder={f.kind === 'music' ? 'Song title' : 'As it was broadcast'}
+          onkeydown={(e) => { if (e.key === 'Enter' && f.title.trim()) search(); }} />
+          {#if existing}<span class="help">Already in the catalogue{existing.channel_number ? ` on channel ${existing.channel_number}` : ''}; move it from the channel's line-up instead.</span>{/if}
         </label>
-        {#if f.kind === 'show'}<label class="field">Episode length (minutes)<input type="number" class="narrow" min="1" max="240" bind:value={f.minutes} placeholder="default" /></label>{/if}
-        <label class="check wide"><input type="checkbox" bind:checked={f.transient} /> Remove after it airs<span class="help">Keep fetched files only in the cache and delete them once shown.</span></label>
-      {:else}
+        <datalist id="catalogue-suggestions">{#each suggestions as o (o.title + (o.year ?? ''))}<option value={o.title}>{o.year ?? ''}</option>{/each}</datalist>
+        <label class="field">Year (optional)<input type="number" class="narrow" min="1900" max="2100" bind:value={f.year} /></label>
         {#if f.kind === 'music'}<label class="field">Artist<input bind:value={f.artist} /></label>{/if}
-        <label class="field wide">Link (optional)<input bind:value={f.url} placeholder="https://…" /><span class="help">A specific page or file for pitv_content to use instead of searching.</span></label>
+      </div>
+      {#if lookupNote}<div class="note small">{lookupNote}</div>{/if}
+      {#if found}<LookupResults candidates={found} onpick={pick} />{/if}
+    {:else}
+      {#if chosen}
+        <div class="note small">Matched: <b>{chosen.title}</b>{chosen.year ? ` (${chosen.year})` : ''} from {chosen.match?.source}. pitv_content fetches this one.
+          <button class="small ghost" onclick={() => (step = 'search')}>Change</button></div>
+      {:else}
+        <div class="warn-box small">No online match: pitv_content will search by title{f.year ? ' and year' : ''} alone and may find a different {f.kind === 'movie' ? 'film' : f.kind === 'show' ? 'series' : 'video'}.
+          <button class="small ghost" onclick={() => (step = 'search')}>Search again</button></div>
       {/if}
-    </div>
+      <div class="form-grid">
+        <label class="field wide">Title<input bind:value={f.title} /></label>
+        <label class="field">Year<input type="number" class="narrow" min="1900" max="2100" bind:value={f.year} /></label>
+        {#if programme}
+          <label class="field">Genres<input bind:value={f.genres} placeholder="Comedy, Drama" /><span class="help">Decide the channel when none is picked.</span></label>
+          <label class="field">Channel
+            <select bind:value={f.channel}><option value="">Choose by genres</option>{#each channels as c (c.id)}<option value={c.id}>{c.number} {c.name}</option>{/each}</select>
+          </label>
+          {#if f.kind === 'show'}<label class="field">Episode length (minutes)<input type="number" class="narrow" min="1" max="240" bind:value={f.minutes} placeholder="default" /></label>{/if}
+          <label class="check wide"><input type="checkbox" bind:checked={f.transient} /> Remove after it airs<span class="help">Keep fetched files only in the cache and delete them once shown.</span></label>
+        {:else}
+          {#if f.kind === 'music'}<label class="field">Artist<input bind:value={f.artist} /></label>{/if}
+          <label class="field wide">Video{#if chosen} (from the match){/if}<input bind:value={f.url} placeholder="https://…" /><span class="help">A specific video for pitv_content to fetch instead of searching.</span></label>
+        {/if}
+      </div>
+    {/if}
   </div>
   {#snippet footer()}
     <button onclick={onclose}>Cancel</button>
-    <button class="primary" onclick={add} disabled={add.busy || !f.title.trim() || !!existing}>Add</button>
+    {#if step === 'search'}
+      <button onclick={withoutMatch} disabled={!f.title.trim() || !!existing} title="Skip the online check">Add without a match</button>
+      <button class="primary" onclick={search} disabled={search.busy || !f.title.trim() || !!existing}>{search.busy ? 'Searching…' : 'Search online'}</button>
+    {:else}
+      <button class="primary" onclick={add} disabled={add.busy || !f.title.trim() || !!existing}>Add</button>
+    {/if}
   {/snippet}
 </Modal>

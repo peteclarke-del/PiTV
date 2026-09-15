@@ -34,7 +34,7 @@ from .db import (
     tx,
     update_row,
 )
-from .lineup import attach_delivery
+from .lineup import attach_delivery, clean_match
 from .player.cache import MediaCache
 from .player.hwdec import PI_HW_CODECS, is_raspberry_pi
 from .scheduler.build import rebuild_from
@@ -103,10 +103,19 @@ def _media_request(m: dict[str, Any], cache: MediaCache, acquire: str, max_heigh
     return {**base, "action": "fetch", "source": None, **_fetch_fields(m, m.get("show_title"), acquire)}
 
 
+def _match(raw: Any) -> dict[str, str] | None:
+    """A line-up entry's confirmed identity, as stored (JSON text) or already decoded."""
+    try:
+        return clean_match(json.loads(raw) if isinstance(raw, str) else raw)
+    except ValueError:
+        return None
+
+
 def _wanted_request(w: dict[str, Any], show_title: str | None, acquire: str) -> dict[str, Any]:
     """The request for a wanted row: find it online and file it under `dest_dir`."""
     return {"media_id": None, "wanted_id": w["id"], "uid": None, **_identity(w, show_title),
-            "genre": w.get("genre"), "ref": w.get("ref"), "action": "fetch", "source": None,
+            "genre": w.get("genre"), "ref": w.get("ref"), "match": _match(w.get("lineup_match")),
+            "action": "fetch", "source": None,
             "already_cached": False, "transient": bool(w.get("transient")), "attempts": w.get("attempts", 0),
             **_fetch_fields(w, show_title, acquire)}
 
@@ -145,7 +154,8 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
 
     # Placeholders: line-up material not on disk, requested by wanted row.
     for r in rows_to_dicts(conn.execute(
-            "SELECT s.start_ts, s.end_ts, c.number AS channel, w.*, l.title AS lineup_title FROM schedule s"
+            "SELECT s.start_ts, s.end_ts, c.number AS channel, w.*, l.title AS lineup_title, l.match AS lineup_match"
+            " FROM schedule s"
             " JOIN wanted w ON w.id = s.wanted_id JOIN channels c ON c.id = s.channel_id"
             " LEFT JOIN lineup l ON l.id = w.lineup_id"
             " WHERE s.media_id IS NULL AND s.end_ts > ? AND s.start_ts < ? AND w.status != 'done'"
@@ -158,7 +168,8 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
     scheduled = {it["wanted_id"] for it in items.values() if it.get("wanted_id")}
     wanted = [{"request_id": f"w:{w['id']}", **_wanted_request(w, w.get("show_title"), acquire)}
               for w in rows_to_dicts(conn.execute(
-                  "SELECT w.*, sh.title AS show_title FROM wanted w LEFT JOIN shows sh ON sh.id = w.show_id"
+                  "SELECT w.*, sh.title AS show_title, l.match AS lineup_match FROM wanted w"
+                  " LEFT JOIN shows sh ON sh.id = w.show_id LEFT JOIN lineup l ON l.id = w.lineup_id"
                   " WHERE w.status IN ('queued', 'failed') AND w.attempts < ? ORDER BY w.id", (MAX_WANTED_ATTEMPTS,)))
               if w["id"] not in scheduled]
     return {"schema": MANIFEST_SCHEMA, "generated_ts": now, "horizon_ts": horizon, "days": days,
