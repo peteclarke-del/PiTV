@@ -57,11 +57,11 @@
   // Credentials: the password is write-only. pitv_content says whether one is saved, never what it is;
   // a blank password keeps the saved one.
   const noCredentials = { username: '', password: '', workgroup: '', saved: false, clear: false };
-  function add() { errors = {}; tested = null; editing = { isNew: true, id: '', name: '', type: 'tv', category: 'general', root: '', remote: '', enabled: true, ...noCredentials }; }
+  function add() { errors = {}; tested = null; editing = { isNew: true, id: '', name: '', type: 'tv', category: 'general', root: '', mount: '', remote: '', enabled: true, ...noCredentials }; }
   function edit(s) {
     errors = {}; tested = null;
     const c = s.credentials ?? {};
-    editing = { isNew: false, id: s.id, name: s.name ?? '', type: s.type, category: s.category || 'general', root: s.root ?? '', remote: s.remote ?? '',
+    editing = { isNew: false, id: s.id, name: s.name ?? '', type: s.type, category: s.category || 'general', root: s.root ?? '', mount: s.mount ?? '', remote: s.remote ?? '',
                 enabled: s.enabled !== false, ...noCredentials, username: c.username ?? '', workgroup: c.workgroup ?? '', saved: !!c.set };
   }
   let smb = $derived(/^smb:\/\//i.test(editing?.remote?.trim() ?? ''));
@@ -103,7 +103,8 @@
   const save = guard(async () => {
     errors = {};
     const f = editing;
-    const body = { id: f.id.trim(), name: f.name.trim(), type: f.type, root: f.root.trim(), remote: f.remote.trim() || null, enabled: f.enabled, ...credentials(f) };
+    const body = { id: f.id.trim(), name: f.name.trim(), type: f.type, root: f.root.trim(), mount: f.mount.trim(),
+                   remote: f.remote.trim() || null, enabled: f.enabled, ...credentials(f) };
     if (f.type === 'tv') body.category = f.category || 'general';
     try {
       await put('/api/sources', body);
@@ -174,6 +175,11 @@
         <div class="row"><input class="mono" bind:value={editing.root} placeholder="/mnt/tvshows" style="flex:1" /><button type="button" onclick={() => (picking = true)}>Browse…</button></div>
         <span class="help">Folder as mounted on the Pi. pitv_content only indexes inside its allowed roots.</span>
         {#if errors.root}<span class="help err">{errors.root}</span>{/if}
+      </label>
+      <label class="field">Mounted here (optional)
+        <input class="mono" bind:value={editing.mount} placeholder="same as the root" />
+        <span class="help">Where this machine finds that folder, if it is somewhere else. Needed when PiTV and pitv_content do not share their mount points; PiTV plays from here.</span>
+        {#if errors.mount}<span class="help err">{errors.mount}</span>{/if}
       </label>
       <label class="field">Remote (optional)<input bind:value={editing.remote} placeholder="smb://synologynas/tvshows/" /><span class="help">The SMB share pitv_content mounts, read-only, at the root above.</span>{#if errors.remote}<span class="help err">{errors.remote}</span>{/if}</label>
       {#if smb}

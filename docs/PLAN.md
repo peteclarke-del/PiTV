@@ -213,9 +213,11 @@ day, a number of days, a channel subset and a force flag, as a background job wi
 
 A channel row holds: number, name, short name, colour, enabled, pattern, ads enabled, adverts
 per break, idents enabled, era weights, genre weights, kind (TV/movie) weights, daypart
-profile (weekday, Saturday, Sunday), overnight replay start, content type (`general`,
-`music`, `cartoons`), family-safe adverts flag, allowed and excluded genre lists, a NAS-only
-override (`inherit`, `yes`, `no`) and a description. Per-channel weights are optional and
+profile (weekday, Saturday, Sunday), overnight replay start, content label, family-safe
+adverts flag, children's programmes at any hour, allowed and excluded genre lists, the decades
+it plays (empty means any; a series that ran into one counts and an unknown year is still
+allowed), its own band repeat gaps, a NAS-only override (`inherit`, `yes`, `no`) and a
+description. Its bands are rows of their own (section 4.5). Per-channel weights are optional and
 fall back to the global settings. No rule in the code refers to a channel by name or
 number; the six channels below are seed data for a fresh install and every value is
 editable in the admin UI.
@@ -321,23 +323,61 @@ Real 80s scheduling is about regularity, and it also gives episode order for fre
 
 Anchors are pinned into the day first; the gaps are filled afterwards.
 
-### 4.5 Music and cartoon channels
+### 4.4b Short episodes
 
-- Music videos are catalogue items from pitv_content's `music` sources. The day is a
-  sequence of blocks by decade and genre with two full concerts (13:30 and 20:30), covering
-  the 1970s to the 2000s: Seventies
-  Breakfast, Eighties Pop, Nineties Morning, Disco & Soul, Concert, Noughties, Eighties Chart
-  Show, Rock & Metal, Concert, Nineties Indie & Dance, Late Soul (`music_blocks`,
-  `music_decades`, editable in Settings, Music). A block picks videos matching its genre and decade,
-  widening to decade only, then anything in the allowed decades, then repeats, so a thin
-  library never leaves gaps. Videos are not repeated within 36 hours nor concerts within 14
-  days unless nothing else fits. Guides show a block as one programme with the current video
-  beneath it.
-- Cartoons: the cartoon channel's genre list (Animation, Cartoon, Anime by default) draws
-  animated series into its line-up; the catalogue import also tags them with category
-  `cartoon`, which the dayparts and admin use. Children's programmes may run all evening
-  there. Its adverts are family-safe only: no alcohol, tobacco, adult or gambling brands,
-  decided in the order given in section 3.3 and editable per advert.
+A five minute cartoon on its own leaves the day in scraps and the guide unreadable, so an
+episode shorter than `short_episode_minutes` is followed straight away by the next ones of the
+same series, in order, until the run reaches `short_episode_run_minutes` (defaults 12 and 20).
+The run carries the series title as its block, so the guide shows one entry with the episodes
+beneath it, as it does for a band. A channel may set its own pair; empty follows Settings.
+
+### 4.4c Topping a band up
+
+A band is only as good as what the library holds for it. A "Disco Lunch" with no disco under
+fifteen minutes plays whatever fits, which is how a channel of concert films ends up billed as
+soul. So PiTV counts, for every band, the items of its genres and decades short enough to be one
+of its own (`band_item_max_minutes`, 15 by default), and where a band is short it asks
+pitv_content to go and find some: one band a night, the worst off first, in the catalogue's own
+hour, since each request is a fetch run and pitv_content runs one job at a time.
+
+What to ask for is configuration, not something the code knows. A channel says what pitv_content
+should fetch for it (`fetch_kind`: shows, cartoons, sport, music, whatever the tool offers, read
+from the tool itself), and a band may name a different one. A channel set to nothing is never
+topped up, however thin its bands. The request carries the band's genres, its decades as a year
+range and the length limit (contract section 2); results arrive in the next index like anything
+else. Admin, Channels, Bands has a button to ask at once rather than wait for the night.
+
+### 4.5 Bands
+
+A band is a stretch of a channel's day under one title, filled with several items: an hour of
+disco videos called "Disco Lunch", a Saturday cartoon morning, a double bill. It says when it
+starts, how long it runs (or "until the next band"), which days it runs on, and what may go in
+it: kinds (music videos, episodes, films), genres, decades, and whether it opens with a
+feature (a concert, a film, anything over 35 minutes). Bands are edited per channel in the
+admin, under Channels, Bands. The genres and decades on offer are the ones the library holds
+for the kinds the band draws on (`lineup.facets`), so a band of music videos is not offered
+Westerns and nobody can name a genre nothing carries and then wonder why the band is empty.
+The same list, counted over series and films, backs a channel's allowed and excluded genres.
+
+The scheduler places bands as fixed points in the day, like anchored series, and fills each
+one as it reaches it. An item must fit what is left of the band; the search widens step by
+step (the band's genres and decades, then decades alone, then anything of its kinds, then
+something already shown today) so a thin library never leaves a hole. Items a narrow band
+needs are held back from broader bands earlier in the day, or a lunchtime disco band finds its
+disco already played. Nothing is repeated within the channel's repeat gaps (its own, else
+`band_item_repeat_hours` and `band_feature_repeat_days`). Every slot of a band carries its
+title, so the guide shows one entry with whatever is playing beneath it.
+
+A channel whose pattern is empty is built from its bands alone and carries no line-up: that is
+what a music channel is, and a fresh install ships one with eleven music bands and two
+concerts. A channel with both a pattern and bands fills the rest of its day the usual way.
+Nothing in the scheduler knows what music is; `content` (general, music, cartoons,
+documentaries, films, sport, kids) is a label for people reading the admin.
+
+Cartoons are the same idea from the other side: a channel's genre list draws animated series
+into its line-up, the catalogue import tags them `cartoon` for the dayparts, and two channel
+switches carry what used to be special cases, "children's programmes at any hour" and
+"family-safe adverts only".
 
 ### 4.6 Sport and the weekend
 
@@ -663,6 +703,31 @@ first and waits for that job), `POST /api/catalogue/import` (a schema 2 index do
 media, `GET /api/content/manifest`, `POST /api/content/report`, `POST /api/content/readiness`,
 `GET /api/logs/{name}`. OpenAPI docs are at `/api/docs`. There is no scan endpoint and no
 source CRUD: PiTV has nothing to scan and no sources of its own.
+
+### 6.5 Streaming the channels
+
+Any channel can be watched over HTTP, so one Pi builds the schedule and anything else on the
+network can watch it: `/channel/3` opens a page with the picture, what is on and what is next;
+`/channel/3.m3u8` is the stream itself, which VLC, a phone or a smart TV opens directly. The
+page uses the browser's own player where there is one (Safari, iOS) and a bundled library
+elsewhere, loaded only on that page.
+
+`pitv/stream.py` runs one stream per channel. A request starts it; it stops once nothing has
+asked for it for `stream_idle_seconds`. Each programme is packaged into the channel's rolling
+playlist by its own ffmpeg, from the same file and offset the television would play, so the
+stream shows the same programme at the same moment, about fifteen seconds behind. A file that
+suits an MPEG-TS segment is copied rather than re-encoded, which every cache copy does, so
+several viewers cost almost nothing; anything else is re-encoded to the screen profile
+(`stream_encoder`, the Pi's hardware encoder by default). Slots with no file, and the gaps
+before a stream's first programme, show the test signal. Segments live under the run directory
+and are deleted as they roll off the playlist.
+
+`stream_max_streams` caps how many channels run at once, because a re-encode on a Pi 4 is
+expensive. The streams are public on the network, like the guide and the remote, and the whole
+feature can be turned off in Settings, Player. Admin, System lists the streams, what each is
+showing, and the addresses watching them; `pitv/logs/stream.log` records each stream starting
+and stopping, each programme change and each viewer arriving and leaving, and is readable in
+Logs.
 
 ## 7. Local cache and pitv_content
 

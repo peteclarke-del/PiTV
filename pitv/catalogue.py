@@ -48,6 +48,7 @@ from .db import (
 )
 from .lineup import generate, restore_if_empty
 from .player.hwdec import PI_HW_CODECS
+from .scheduler.build import refill_empty_days
 
 log = logging.getLogger("pitv.catalogue")
 
@@ -206,7 +207,12 @@ def import_index(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, Any
             row_id = find_id(conn, "sources", "uid", sid)
             if row_id is None:
                 row_id = find_id(conn, "sources", "path", root)
-            sources[sid] = {"id": _save(conn, "sources", row_id, fields), "category": category, "location": location}
+            # `mount` is PiTV's own: where this machine finds the share. pitv_content may index
+            # it from somewhere else entirely, so the import must not overwrite it.
+            mount = as_text(conn.execute("SELECT mount FROM sources WHERE id = ?", (row_id,)).fetchone()["mount"]) \
+                if row_id is not None else None
+            sources[sid] = {"id": _save(conn, "sources", row_id, fields), "category": category,
+                            "location": location, "root": root, "mount": mount}
             counts["sources"] += 1
         if complete:
             listed = {s["id"] for s in sources.values()}
@@ -252,6 +258,8 @@ def import_index(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, Any
             kind = it.get("kind")
             src = sources.get(as_text(it.get("source")) or "")
             path = it["path"] if isinstance(it.get("path"), str) else None
+            if path and src is not None:
+                path = local_path(path, src["root"], src["mount"])
             show_id = show_ids.get(as_text(it.get("show_uid")) or "") if kind == "episode" else None
             if kind not in KINDS or src is None or not path or (kind == "episode" and show_id is None):
                 reject("item", uid, "unknown kind, source or series, or no path")
@@ -308,6 +316,17 @@ def import_index(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, Any
     return {**counts, "rejects": rejects}
 
 
+def local_path(path: str, root: str, mount: str | None) -> str:
+    """An indexed path as this machine sees it.
+
+    pitv_content publishes the path it indexed. PiTV may mount the same share somewhere else
+    (a desktop without /mnt, or the two running on different machines), so a source may carry
+    its own mount point and the items under it are filed beneath it."""
+    if not mount or not root or not path.startswith(root):
+        return path
+    return mount.rstrip("/") + path[len(root.rstrip("/")):]
+
+
 def import_and_place(conn: sqlite3.Connection, doc: dict[str, Any], origin: str = "") -> dict[str, Any]:
     """Import, then place new series and films into line-ups and refresh the JSON mirror.
     Logged as a `catalogue` run; a failed import is logged as an error and re-raised."""
@@ -320,13 +339,17 @@ def import_and_place(conn: sqlite3.Connection, doc: dict[str, Any], origin: str 
         run_log_finish(conn, run_id, "error", str(exc), [str(exc)])
         raise
     write_mirror(conn)
+    # A day built before this material arrived is a day of filler, and a built day is never
+    # revisited, so the new items would sit unscheduled until the horizon moved past it.
+    refill = refill_empty_days(conn)
     summary = (f"{counts['items']} items ({counts['new']} new, {counts['missing']} now missing,"
                f" {counts['rejected']} rejected) from {counts['sources']} sources; line-ups: {placed['assigned']} placed,"
-               f" {placed['unmatched']} matched no channel")
+               f" {placed['unmatched']} matched no channel; {refill['summary']}")
     details = ([f"source: {origin}"] if origin else []) + [f"rejected {r}" for r in counts["rejects"]]
     run_log_finish(conn, run_id, "warning" if counts["rejected"] or placed["unmatched"] else "ok", summary, details)
     log.info("catalogue import: %s", summary)
-    return {**counts, **{f"lineup_{k}": v for k, v in placed.items()}, "summary": summary, "run_id": run_id}
+    return {**counts, **{f"lineup_{k}": v for k, v in placed.items()}, "refilled_days": refill["days"],
+            "summary": summary, "run_id": run_id}
 
 
 def refresh(conn: sqlite3.Connection, reindex: bool = False) -> dict[str, Any]:

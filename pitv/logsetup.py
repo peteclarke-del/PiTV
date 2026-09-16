@@ -15,7 +15,8 @@ _LINE = re.compile(r"^(?P<ts>\S+ \S+) (?P<level>[A-Z]+)\s+(?P<logger>\S+): (?P<m
 LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
 # Catalogue imports and schedule builds run in the player, the web service and the CLI, so
 # every process also writes those loggers to a shared per-topic file the admin can show.
-TOPIC_LOGS = {"catalogue": ("pitv.catalogue",), "schedule": ("pitv.scheduler", "pitv.readiness")}
+TOPIC_LOGS = {"catalogue": ("pitv.catalogue",), "schedule": ("pitv.scheduler", "pitv.readiness"),
+              "stream": ("pitv.stream",)}
 TAIL_BYTES = 1_000_000   # how much of a log `tail` reads: a few thousand lines
 
 

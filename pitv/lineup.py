@@ -34,10 +34,11 @@ from .db import (
     update_row,
     write_data_file,
 )
+from .scheduler.rules import parse_pattern
 
 log = logging.getLogger("pitv.lineup")
 
-PROGRAMME_CONTENT = ("general", "cartoons")   # channel content types that carry a line-up
+PROGRAMME_TOKENS = {"show", "tv", "movie"}   # a channel carrying one of these has a line-up
 MIRROR = "lineups.json"
 EXTERNAL_SOURCES = ("catalogue", "manual")  # entries not generated from the catalogue (source 'library')
 _MATCH_SOURCE = re.compile(r"^[a-z0-9_-]{1,40}$")
@@ -60,6 +61,9 @@ def clean_match(value: Any) -> dict[str, str] | None:
     if imdb and _IMDB.match(imdb):
         out["imdb"] = imdb
     return out
+
+
+FACET_KINDS = ("episode", "movie", "music")   # the kinds a band can draw on; see facets()
 
 
 def _genre_set(value: Any) -> set[str]:
@@ -87,9 +91,16 @@ def channel_fit(channel: dict[str, Any], genres: set[str]) -> float | None:
     return matched / len(allowed) if matched else None
 
 
+def carries_programmes(channel: dict[str, Any]) -> bool:
+    """Whether a channel schedules programmes of its own, and so needs a line-up. A channel
+    whose pattern is empty is built from its bands alone (a music channel, say)."""
+    text = (channel.get("pattern") or "").strip()
+    return bool(text) and bool(PROGRAMME_TOKENS & set(parse_pattern(text)))
+
+
 def programme_channels(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [c for c in rows_to_dicts(conn.execute("SELECT * FROM channels WHERE enabled = 1 ORDER BY number"))
-            if c["content"] in PROGRAMME_CONTENT]
+            if carries_programmes(c)]
 
 
 def nas_only_for(channel: dict[str, Any], settings: dict[str, Any]) -> bool:
@@ -362,15 +373,28 @@ def options(conn: sqlite3.Connection, q: str = "", limit: int = 50) -> list[dict
     return out
 
 
-def genre_facets(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
-    """Genres present in the library with counts, for the channel editor's multi-select."""
-    facets: dict[str, dict[str, int]] = {}
-    for kind, sql in (("shows", "SELECT genres FROM shows WHERE missing = 0 AND excluded = 0"),
-                      ("movies", "SELECT genres FROM media WHERE kind = 'movie' AND missing = 0 AND excluded = 0")):
+def facets(conn: sqlite3.Connection) -> dict[str, Any]:
+    """What the library actually holds, by kind: which genres, which decades, how many concerts.
+
+    The admin offers these as the only choices for a channel's genres and a band's genres and
+    decades, so nobody can type a genre no item carries and then wonder why the band is empty.
+    Counts are per kind (`episode`, `movie`, `music`) because a band draws on the kinds it names:
+    a band of music videos should not be offered Westerns."""
+    genres: dict[str, dict[str, int]] = {}
+    decades: dict[str, dict[str, int]] = {}
+    concerts = 0
+    live = "missing = 0 AND excluded = 0"
+    for kind, sql in (("episode", f"SELECT genres, year, 0 AS concert FROM shows WHERE {live}"),
+                      ("movie", f"SELECT genres, year, 0 AS concert FROM media WHERE kind = 'movie' AND {live}"),
+                      ("music", f"SELECT genres, year, concert FROM media WHERE kind = 'music' AND {live}")):
         for r in conn.execute(sql):
             for g in genre_list(r["genres"]):
-                facets.setdefault(g, {"shows": 0, "movies": 0})[kind] += 1
-    return dict(sorted(facets.items()))
+                genres.setdefault(g, dict.fromkeys(FACET_KINDS, 0))[kind] += 1
+            if r["year"]:
+                decades.setdefault(str((r["year"] // 10) * 10), dict.fromkeys(FACET_KINDS, 0))[kind] += 1
+            concerts += int(r["concert"] or 0)
+    return {"genres": dict(sorted(genres.items())),
+            "decades": dict(sorted(decades.items(), key=lambda kv: int(kv[0]))), "concerts": concerts}
 
 
 # --- JSON mirror --------------------------------------------------------------------------------

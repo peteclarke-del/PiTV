@@ -7,7 +7,6 @@
   import OrderedChoices from './OrderedChoices.svelte';
   import WeightRows from '../pages/admin/WeightRows.svelte';
   import DaypartTable from '../pages/admin/DaypartTable.svelte';
-  import MusicBlocks from '../pages/admin/MusicBlocks.svelte';
   import { fmtProfile } from '../lib/format.js';
 
   let { field: f, value = $bindable(), error = '', changed = false, secretSet = false } = $props();
@@ -27,11 +26,10 @@
 
 {#if f.type === 'bool'}
   <label class="check" class:changed><input type="checkbox" bind:checked={value} /> {@render title()}{@render notes()}</label>
-{:else if f.type === 'dayparts' || f.type === 'music_blocks' || f.type === 'weights' || f.type === 'times'}
+{:else if f.type === 'dayparts' || f.type === 'weights' || f.type === 'times'}
   <div class="field wide" class:changed>
     <span>{@render title()}</span>
     {#if f.type === 'dayparts'}<DaypartTable bind:rows={value} />
-    {:else if f.type === 'music_blocks'}<MusicBlocks bind:value />
     {:else}<WeightRows {value} onchange={(v) => (value = v)} type={f.type === 'times' ? 'time' : 'number'} {...f.options ?? {}} />{/if}
     {@render notes()}
   </div>

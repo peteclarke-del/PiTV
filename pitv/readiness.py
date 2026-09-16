@@ -31,7 +31,8 @@ def playable_media(conn: sqlite3.Connection, cache: MediaCache, nas_fallback: bo
     over CIFS)."""
     mounted: dict[int, bool] = {}
     if nas_fallback:
-        mounted = {r["id"]: Path(r["path"]).is_dir() for r in conn.execute("SELECT id, path FROM sources WHERE location = 'nas'")}
+        mounted = {r["id"]: Path(r["path"]).is_dir() for r in conn.execute(
+            "SELECT id, COALESCE(NULLIF(mount, ''), path) AS path FROM sources WHERE location = 'nas'")}
     ids: set[int] = set()
     for m in rows_to_dicts(conn.execute("SELECT id, path, cache_path, origin, source_id FROM media WHERE missing = 0 AND excluded = 0")):
         if cache.cache_copy(m) is not None or (nas_fallback and m["origin"] == "nas" and mounted.get(m["source_id"])):

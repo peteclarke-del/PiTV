@@ -5,6 +5,7 @@ import sqlite3
 from pitv import db as dbm
 
 OLD_SCHEMA = """
+CREATE TABLE transcode_queue (id INTEGER PRIMARY KEY, media_id INTEGER);
 CREATE TABLE sources (id INTEGER PRIMARY KEY, type TEXT NOT NULL CHECK (type IN ('tv', 'movie', 'advert', 'ident')),
     name TEXT NOT NULL, path TEXT NOT NULL, remote TEXT, category TEXT NOT NULL DEFAULT 'general',
     enabled INTEGER NOT NULL DEFAULT 1, last_scanned_at INTEGER, last_scan_summary TEXT);
@@ -45,7 +46,8 @@ def test_old_database_is_upgraded_in_place(tmp_path):
     assert "source_id INTEGER NOT NULL" not in conn.execute("SELECT sql FROM sqlite_master WHERE name = 'shows'").fetchone()[0]
     src_cols = {r["name"] for r in conn.execute("PRAGMA table_info(sources)")}
     assert {"uid", "location", "last_indexed_at", "index_summary"} <= src_cols and "last_scan_summary" not in src_cols
-    assert not conn.execute("SELECT name FROM sqlite_master WHERE name = 'probe_cache'").fetchone()
+    for dropped in ('probe_cache', 'transcode_queue'):
+        assert not conn.execute("SELECT name FROM sqlite_master WHERE name = ?", (dropped,)).fetchone()
     assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'media_uid'").fetchone()
     assert conn.execute("SELECT name FROM sqlite_master WHERE name = 'schedule_wanted'").fetchone()
     assert conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0] == 6

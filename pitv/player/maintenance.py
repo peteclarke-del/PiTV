@@ -24,7 +24,7 @@ from ..lineup import remove_aired_transients
 from ..readiness import check as readiness_check
 from ..scheduler.build import build_horizon, needs_rebuild
 from ..scheduler.rules import tz_of
-from ..wanted import queue_gaps
+from ..wanted import queue_gaps, request_band_material
 from .cache import MediaCache
 
 log = logging.getLogger("pitv.maintenance")
@@ -49,7 +49,8 @@ class Maintenance:
         self._empty_build_at = 0
         self._index_mtime = 0.0                 # the index file version last imported
         self._pruned_on: str | None = None      # local date of the last history/schedule trim
-        self.status: dict[str, Any] = {"last_build": None, "last_import": None, "last_readiness": None, "error": None}
+        self._bands_asked: str | None = None    # local date material was last asked for
+        self.status: dict[str, Any] = {"last_build": None, "last_import": None, "last_readiness": None, "last_band_fetch": None, "error": None}
 
     def start(self) -> None:
         threading.Thread(target=self._loop, name="pitv-maintenance", daemon=True).start()
@@ -119,6 +120,8 @@ class Maintenance:
             self._empty_build_at = 0
             if needs_rebuild(conn, now):
                 self._build(conn, now)
+            if result.get("refilled_days"):   # the import rebuilt days that had held only filler
+                self.on_schedule_changed()
 
         remove_aired_transients(conn)
         if apply_report_files(conn, self.cache):
@@ -126,6 +129,11 @@ class Maintenance:
             self.on_schedule_changed()
         if settings["acquire_fill_gaps"]:
             queue_gaps(conn)
+        # Material for bands the library cannot fill: once a night, in the catalogue's own hour,
+        # because each request is a fetch run and pitv_content runs one job at a time.
+        if settings.get("band_fetch") and local.hour == int(settings["catalogue_hour"]) and self._bands_asked != today:
+            self._bands_asked = today
+            self.status["last_band_fetch"] = request_band_material(conn, settings)
         if self.cache.enabled and not self.cache.content_tool_running():
             protect_manifest(conn, self.cache, now=now)
             self.cache.make_room()

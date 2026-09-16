@@ -160,6 +160,16 @@ def daypart_for(start_minutes: int, dayparts: list[dict[str, Any]]) -> dict[str,
     return current
 
 
+def in_decades(year: int | None, decades: tuple[int, ...] | list[int], end_year: int | None = None) -> bool:
+    """Whether something belongs to one of a channel's decades. No decades means any; an unknown
+    year is allowed, as its era weight already decides how often it airs; a series that ran into
+    a listed decade counts."""
+    if not decades or year is None:
+        return True
+    last = end_year if end_year and end_year >= year else year
+    return any((y // 10) * 10 in decades for y in range(year, last + 1))
+
+
 def parse_pattern(pattern: str) -> list[str]:
     """A channel's pattern (``show, ad, ad``) as tokens; unknown tokens are dropped."""
     tokens = (t.strip().lower() for t in pattern.replace(";", ",").split(","))

@@ -24,7 +24,6 @@ PANES: tuple[tuple[str, str, str], ...] = (
     ("programming", "Programming", "What PiTV picks for a slot: the mix of eras, series and films, repeats and dayparts."),
     ("certificates", "Certificates", "When each certificate may air, and children's programming."),
     ("adverts", "Adverts", "Which adverts fill the breaks and which are kept off family channels."),
-    ("music", "Music", "How the music channel's day is built."),
     ("player", "Player", "How the set behaves: the remote, decoding and self-protection."),
     ("content", "Cache and pitv_content", "PiTV's side of the shared cache, and what it asks pitv_content for."),
     ("maintenance", "Maintenance", "PiTV's own daily housekeeping."),
@@ -127,21 +126,35 @@ FIELDS: tuple[dict[str, Any], ...] = (
        "Prefer adverts from within this many years of the programme.", min=0, max=30),
     _f("advert_repeat_penalty_hours", "adverts", "advanced", "Advert repeat gap (hours)", "int",
        "Avoid repeating an advert within this many hours.", min=0, max=168),
-    # --- music ---------------------------------------------------------------------------------
-    _f("music_decades", "music", "basic", "Decades played", "decades", "The music channel plays these decades only."),
-    _f("music_blocks", "music", "standard", "Blocks", "music_blocks",
-       "The music day in time order: each block plays videos matching any of its genres and decades "
-       "(empty means any); a concert block plays one full concert."),
-    _f("music_concert_repeat_days", "music", "advanced", "Concert repeat (days)", "int",
-       "Minimum days before the same concert is shown again.", min=0, max=365),
-    _f("music_video_repeat_hours", "music", "advanced", "Video repeat (hours)", "int",
-       "Minimum hours before the same video is played again.", min=0, max=720),
+    _f("short_episode_minutes", "programming", "standard", "Short episodes are under", "int",
+       "Episodes shorter than this are run together under the series title, so a five minute"
+       " cartoon does not take a slot of its own. 0 turns it off.", min=0, max=60),
+    _f("short_episode_run_minutes", "programming", "standard", "Run them together for", "int",
+       "How long a run of short episodes should last before the channel moves on.", min=5, max=120),
+    _f("band_item_repeat_hours", "programming", "advanced", "Band item repeat (hours)", "int",
+       "Minimum hours before a band plays the same short item (a music video, an episode) again.",
+       min=0, max=720),
+    _f("band_feature_repeat_days", "programming", "advanced", "Band feature repeat (days)", "int",
+       "Minimum days before a band plays the same long item (a concert, a film) again.", min=0, max=365),
     # --- player and screen ---------------------------------------------------------------------
     _f("nas_fallback", "player", "basic", "Play from the NAS when the cache lacks a file", "bool",
        "Otherwise the technical difficulties card is shown until the cache copy arrives."),
     _f("nav_keys_change_channel", "player", "basic", "Up and down change channel", "bool",
        "When the guide is closed; the OSMC remote has no channel keys."),
     _f("nav_keys_change_volume", "player", "basic", "Left and right change volume", "bool", "When the guide is closed."),
+    _f("streaming_enabled", "player", "basic", "Stream the channels over HTTP", "bool",
+       "Watch a channel on a phone, a browser or VLC at http://<this machine>/channel/1 (2, 3 and so on). "
+       "A stream starts when someone asks for it and stops when nobody is watching."),
+    _f("stream_max_streams", "player", "advanced", "Streams at once", "int",
+       "Channels that may stream at the same time. Copies cost little; a re-encode on a Pi 4 costs a lot.",
+       min=1, max=8),
+    _f("stream_segment_seconds", "player", "advanced", "Stream segment (seconds)", "int",
+       "Shorter segments start sooner and lag less; longer ones are steadier on a poor network.", min=2, max=10),
+    _f("stream_idle_seconds", "player", "advanced", "Stop a stream after (seconds)", "int",
+       "How long a stream keeps running once nothing has asked for it.", min=10, max=3600),
+    _f("stream_encoder", "player", "advanced", "Stream encoder", "text",
+       "ffmpeg encoder for material that cannot be streamed as it is; empty picks h264_v4l2m2m on the Pi "
+       "and libx264 elsewhere."),
     _f("badge_seconds", "player", "standard", "Channel badge seconds", "int",
        "How long the channel badge stays on screen after a change.", min=1, max=60),
     _f("channel_switch_static", "player", "standard", "Static between channels", "bool",
@@ -167,6 +180,12 @@ FIELDS: tuple[dict[str, Any], ...] = (
        "Where pitv_content's API listens: this machine or the local network."),
     _f("acquire_fill_gaps", "content", "standard", "Request missing episodes", "bool",
        "Gaps between the episodes on disk go to the wanted list for pitv_content to fetch."),
+    _f("band_fetch", "content", "standard", "Find material for bands", "bool",
+       "A band with too little of its own genres and decades in the library asks pitv_content to"
+       " fetch some. One band a night, in the small hours."),
+    _f("band_item_max_minutes", "content", "advanced", "Band items are under (minutes)", "int",
+       "What counts as an item a band can use, and the longest thing fetched for one. Long enough"
+       " for a long song, short enough to exclude a concert film.", min=1, max=600),
     _f("acquire_dir", "content", "advanced", "Download folder", "path",
        "Where pitv_content files what it fetches; empty uses the cache folder's acquired folder."),
     _f("external_lead_days", "content", "advanced", "Lead time for fetches (days)", "int",
@@ -191,7 +210,7 @@ FIELDS: tuple[dict[str, Any], ...] = (
 
 BY_KEY: dict[str, dict[str, Any]] = {f["key"]: f for f in FIELDS}
 # Settings with no field: edited elsewhere or never by hand.
-UNLISTED = frozenset({"keymap", "admin_password_hash"})
+UNLISTED = frozenset({"keymap", "admin_password_hash", "content_fetch_kinds"})
 # Fields shown but not stored: derived from other settings when the schema is served.
 COMPUTED = frozenset({"content_profile"})
 

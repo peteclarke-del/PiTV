@@ -486,8 +486,9 @@ def test_unhandled_errors_do_not_leak_details(client):
 
 
 def test_lineup_api(client):
-    genres = client.get("/api/library/genres").json()
-    assert "Comedy" in genres and genres["Comedy"]["shows"] > 0
+    facets = client.get("/api/library/facets").json()
+    assert facets["genres"]["Comedy"]["episode"] > 0
+    assert all(int(d) % 10 == 0 for d in facets["decades"])
     chans = client.get("/api/channels").json()
     general = [c for c in chans if c["content"] == "general"]
     assert general[0]["allowed_genres"]

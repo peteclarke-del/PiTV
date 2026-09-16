@@ -138,12 +138,15 @@ def test_no_same_show_back_to_back(conn):
     """Consecutive programmes on a channel (ads in between are fine, overnight replays count)
     are never episodes of the same series."""
     tz = tz_of(conn)
-    rows = conn.execute("SELECT s.channel_id, s.start_ts, s.replay, m.show_id, sh.category FROM schedule s JOIN media m ON m.id = s.media_id"
+    rows = conn.execute("SELECT s.channel_id, s.start_ts, s.replay, s.block, m.show_id, sh.category FROM schedule s"
+                        " JOIN media m ON m.id = s.media_id"
                         " LEFT JOIN shows sh ON sh.id = m.show_id WHERE s.kind = 'programme' ORDER BY s.channel_id, s.start_ts").fetchall()
     for a, b in pairwise(rows):
         if a["channel_id"] == b["channel_id"] and a["show_id"] is not None and not (a["replay"] and b["replay"]):
             if a["category"] == "sport" and datetime.fromtimestamp(b["start_ts"], tz).weekday() >= 5:
                 continue  # sport may run back to back at weekends
+            if a["block"] and a["block"] == b["block"]:
+                continue  # a run of short episodes is one programme in the guide, not two
             assert a["show_id"] != b["show_id"], f"same show back to back at {b['start_ts']} (replay={b['replay']})"
 
 
@@ -216,8 +219,11 @@ def test_music_channel_day(conn):
     assert all(r["block"] for r in rows)
     concerts = [r for r in rows if r["concert"]]
     assert len(concerts) == 2, [r["title"] for r in concerts]
-    # contiguous from 08:00 to closedown
-    for a, b in pairwise(rows):
+    # Contiguous from 08:00 to closedown. Every slot counts, not only those with a file: a band
+    # that runs out of videos it may use closes its own stretch with a caption.
+    day = conn.execute("SELECT start_ts, end_ts FROM schedule WHERE channel_id = ? AND day = '2026-09-16'"
+                       " AND replay = 0 ORDER BY start_ts", (music["id"],)).fetchall()
+    for a, b in pairwise(day):
         assert a["end_ts"] == b["start_ts"]
     # every eligible video is used before any repeats, and repeats are spread evenly
     ids = [r["media_id"] for r in rows]
@@ -521,3 +527,125 @@ def test_channel_without_idents_gets_the_stand_in(tmp_path):
               for cid in (toons, one)}
     assert idents[toons] and all(r["media_id"] is None for r in idents[toons])
     assert idents[one] and all(r["media_id"] is not None for r in idents[one])
+
+
+def _band_row(conn, channel_id, name, start, minutes, kinds, genres=(), decades=(), feature=False):
+    conn.execute("INSERT INTO band(channel_id, name, start, minutes, days, fill, enabled, created_at)"
+                 " VALUES (?,?,?,?,'[]',?,1,?)",
+                 (channel_id, name, start, minutes,
+                  json.dumps({"kinds": list(kinds), "genres": list(genres), "decades": list(decades), "feature": feature}),
+                  dbm.now_ts()))
+
+
+def test_a_band_is_a_titled_stretch_of_any_channels_day(tmp_path):
+    """Bands are not a music feature: one on an ordinary channel takes its stretch of the day,
+    carries its own title into the guide, and holds only what it asked for. The music channel is
+    the same thing with no pattern of its own, so its whole day comes from bands."""
+    ctx = make_library(tmp_path, max_episodes=6)
+    conn = ctx["conn"]
+    one, music = (conn.execute("SELECT id FROM channels WHERE number = ?", (n,)).fetchone()["id"] for n in (1, 5))
+    with dbm.tx(conn):
+        _band_row(conn, one, "Teatime Toons", "17:00", 60, ["episode"], genres=["animation"])
+    day = parse_day("2026-09-14")
+    build_horizon(conn, start_day=day, days=1, seed=4, force=True)
+    tz = tz_of(conn)
+    start, end = local_ts(day, "17:00", tz), local_ts(day, "18:00", tz)
+    banded = conn.execute("SELECT * FROM schedule WHERE channel_id = ? AND replay = 0 AND start_ts >= ? AND start_ts < ?"
+                          " ORDER BY start_ts", (one, start, end)).fetchall()
+    assert banded and all(s["block"] == "Teatime Toons" for s in banded), "the band names its stretch"
+    outside = conn.execute("SELECT COUNT(*) FROM schedule WHERE channel_id = ? AND replay = 0 AND block = 'Teatime Toons'"
+                           " AND (start_ts < ? OR start_ts >= ?)", (one, start, end)).fetchone()[0]
+    assert outside == 0, "a band stays inside its own stretch"
+    # The music channel: no pattern, so everything it shows comes from its bands.
+    music_slots = conn.execute("SELECT s.block, m.kind FROM schedule s LEFT JOIN media m ON m.id = s.media_id"
+                               " WHERE s.channel_id = ? AND s.replay = 0 AND s.kind = 'programme'", (music,)).fetchall()
+    assert music_slots and all(s["block"] for s in music_slots), "every music slot belongs to a band"
+    assert {s["kind"] for s in music_slots} == {"music"}
+    # Each band runs at its own time. Bands that run "to the next band" have no length of their
+    # own, so a day of them is where a band that swallowed the whole day would hide.
+    windows = [(local_ts(day, r["start"], tz), r["name"])
+               for r in conn.execute("SELECT name, start FROM band WHERE channel_id = ? ORDER BY start", (music,))
+               if local_ts(day, r["start"], tz) >= local_ts(day, "08:00", tz)]
+    placed = conn.execute("SELECT start_ts, block FROM schedule WHERE channel_id = ? AND replay = 0"
+                          " AND block IS NOT NULL ORDER BY start_ts", (music,)).fetchall()
+    assert len({s["block"] for s in placed}) > 1, "one band must not take the whole day"
+    for slot in placed:
+        due = [name for at, name in windows if at <= slot["start_ts"]]
+        assert due and slot["block"] == due[-1], f"{slot['block']} played in {due[-1] if due else 'no'} band's time"
+
+
+def test_short_episodes_run_together_under_the_series_title(tmp_path):
+    """A five minute cartoon takes no slot of its own: the next episodes follow it straight away
+    under the series title, so the guide shows one entry of an ordinary programme's length."""
+    ctx = make_library(tmp_path, max_episodes=8)
+    conn = ctx["conn"]
+    toons = conn.execute("SELECT id FROM channels WHERE content = 'cartoons'").fetchone()["id"]
+    with dbm.tx(conn):
+        conn.execute("UPDATE channels SET short_episode_minutes = 12, short_episode_run_minutes = 20"
+                     " WHERE id = ?", (toons,))
+    build_horizon(conn, start_day=parse_day("2026-09-14"), days=1, seed=7, force=True)
+    slots = conn.execute("SELECT title, block, start_ts, end_ts FROM schedule WHERE channel_id = ?"
+                         " AND replay = 0 AND kind = 'programme' ORDER BY start_ts", (toons,)).fetchall()
+    runs, current = [], []
+    for slot in slots:
+        if current and slot["block"] and slot["block"] == current[-1]["block"]:
+            current.append(slot)
+            continue
+        if len(current) > 1:
+            runs.append(current)
+        current = [slot]
+    if len(current) > 1:
+        runs.append(current)
+    assert runs, "short episodes should have been run together"
+    for run in runs:
+        assert all(s["title"] == run[0]["block"] for s in run), "a run is one series under its own title"
+        assert all(s["end_ts"] - s["start_ts"] < 12 * 60 for s in run), "only short episodes are run together"
+        assert run[-1]["end_ts"] - run[0]["start_ts"] >= 15 * 60, "a run lasts about as long as a programme"
+
+
+def test_a_band_short_of_material_asks_for_more(tmp_path, monkeypatch):
+    """A band with nothing of its own in the library has material fetched for it, of the kind its
+    channel asks for, carrying the band's genres and decades. Nothing about this is particular to
+    music: the kind is configuration, so a cartoons channel asks for cartoons."""
+    from pitv import tool_client, wanted
+    ctx = make_library(tmp_path, max_episodes=4)
+    conn = ctx["conn"]
+    toons = conn.execute("SELECT id FROM channels WHERE content = 'cartoons'").fetchone()["id"]
+    with dbm.tx(conn):
+        conn.execute("UPDATE channels SET fetch_kind = 'cartoons' WHERE id = ?", (toons,))
+        _band_row(conn, toons, "Saturday Morning", "09:00", 120, ["episode"],
+                  genres=["stop motion"], decades=[1980])
+    settings = dbm.all_settings(conn)
+    needs = wanted.band_needs(conn, settings)
+    assert [n["band"].name for n in needs if n["channel"]["id"] == toons] == ["Saturday Morning"]
+
+    sent = {}
+    def fake_request(base, method, path, query="", body=None, timeout=15):
+        sent.update({"path": path, "body": body})
+        return 200, {"ok": True, "job_id": "test"}
+    monkeypatch.setattr(tool_client, "request", fake_request)
+    result = wanted.request_band_material(conn, settings)
+    assert result["asked"] == 1 and sent["path"] == "run"
+    assert sent["body"]["mode"] == "catalogue" and sent["body"]["kind"] == "cartoons"
+    assert sent["body"]["genres"] == ["stop motion"] and sent["body"]["years"] == [1980, 1989]
+    assert sent["body"]["max_minutes"] == settings["band_item_max_minutes"]
+    # Asked once, then left alone, so one stubborn band cannot block the rest night after night.
+    assert wanted.request_band_material(conn, settings)["summary"] != result["summary"]
+
+
+def test_a_channels_decades_limit_what_it_shows(tmp_path):
+    """A channel may be held to certain decades; unknown years are still allowed, as their era
+    weight already decides how often they air."""
+    ctx = make_library(tmp_path, max_episodes=6)
+    conn = ctx["conn"]
+    one = conn.execute("SELECT id FROM channels WHERE number = 1").fetchone()["id"]
+    with dbm.tx(conn):
+        conn.execute("UPDATE channels SET decades = ? WHERE id = ?", (json.dumps([1980]), one))
+    build_horizon(conn, start_day=parse_day("2026-09-14"), days=1, seed=6, force=True)
+    years = conn.execute(
+        "SELECT DISTINCT COALESCE(m.year, sh.year) AS year FROM schedule s JOIN media m ON m.id = s.media_id"
+        " LEFT JOIN shows sh ON sh.id = m.show_id WHERE s.channel_id = ? AND s.kind = 'programme' AND s.replay = 0",
+        (one,)).fetchall()
+    placed = [r["year"] for r in years if r["year"] is not None]
+    assert placed, "the channel still has programmes"
+    assert all(1980 <= y <= 1989 for y in placed), f"outside the 1980s: {sorted(placed)}"

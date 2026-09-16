@@ -12,6 +12,7 @@
   import Guide from './pages/Guide.svelte';
   import RemotePage from './pages/RemotePage.svelte';
   import Admin from './pages/Admin.svelte';
+  import Channel from './pages/Channel.svelte';
 
   const links = [
     ['/', 'Now'],
@@ -47,6 +48,8 @@
     <RemotePage />
   {:else if section === 'admin'}
     <Admin />
+  {:else if section === 'channel'}
+    <Channel />
   {:else}
     <div class="page"><div class="empty">Page not found. <a href="#/">Go to Now &amp; Next</a></div></div>
   {/if}

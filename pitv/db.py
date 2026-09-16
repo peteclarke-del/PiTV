@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS sources (
     uid TEXT UNIQUE,               -- pitv_content's source id
     type TEXT NOT NULL CHECK (type IN ('tv', 'movie', 'advert', 'ident', 'music')),
     name TEXT NOT NULL,
-    path TEXT NOT NULL,            -- root on the Pi (NAS mount or cache folder)
+    path TEXT NOT NULL,            -- root as pitv_content indexes it (NAS mount or cache folder)
+    mount TEXT,                    -- where this machine finds that root, when it differs; PiTV's own
     remote TEXT,                   -- e.g. smb://synologynas/tvshows/
     location TEXT NOT NULL DEFAULT 'nas',        -- nas | cache
     category TEXT NOT NULL DEFAULT 'general',   -- general | sport | kids; series inherit it
@@ -67,7 +68,14 @@ CREATE TABLE IF NOT EXISTS channels (
     daypart_profile TEXT,                      -- JSON or NULL (use global)
     overnight_replay_from TEXT NOT NULL DEFAULT '08:00',
     idents_enabled INTEGER NOT NULL DEFAULT 1,
-    content TEXT NOT NULL DEFAULT 'general',   -- general | music | cartoons
+    content TEXT NOT NULL DEFAULT 'general',   -- what the channel is for; a label only
+    kids_any_time INTEGER NOT NULL DEFAULT 0,  -- children's programmes are not held to the kids cutoff
+    decades TEXT,                  -- JSON list of decade start years the channel plays; empty = any
+    band_item_repeat_hours INTEGER,    -- band repeat gaps; NULL follows the global settings
+    band_feature_repeat_days INTEGER,
+    short_episode_minutes INTEGER,     -- short-episode runs; NULL follows the global settings
+    short_episode_run_minutes INTEGER,
+    fetch_kind TEXT,                   -- what pitv_content should fetch for this channel's bands; NULL = nothing
     allowed_genres TEXT,                       -- JSON list; empty/NULL = any genre
     excluded_genres TEXT,                      -- JSON list
     nas_only TEXT NOT NULL DEFAULT 'inherit',  -- inherit | yes | no : may this channel schedule material not yet on disk
@@ -226,6 +234,23 @@ CREATE TABLE IF NOT EXISTS lineup (
 );
 CREATE INDEX IF NOT EXISTS lineup_channel ON lineup(channel_id);
 
+-- Bands: a stretch of a channel's day given one title and filled with several items, such as
+-- an hour of disco videos called "Disco Lunch" or a morning of cartoons. The guide shows the
+-- band as one programme; the scheduler chooses what goes in it (pitv/scheduler/bands.py).
+CREATE TABLE IF NOT EXISTS band (
+    id INTEGER PRIMARY KEY,
+    channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    start TEXT NOT NULL,           -- HH:MM in the broadcast day
+    minutes INTEGER,               -- length; NULL runs to the next band or the end of the day
+    days TEXT,                     -- JSON list of weekdays (0 = Monday); empty or NULL = every day
+    fill TEXT,                     -- JSON: what may go in it (kinds, genres, decades, category, feature)
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS band_channel ON band(channel_id);
+
 CREATE TABLE IF NOT EXISTS run_log (
     id INTEGER PRIMARY KEY,
     kind TEXT NOT NULL,            -- catalogue | schedule | readiness | content
@@ -277,18 +302,30 @@ DEFAULT_DAYPARTS_SUNDAY = [
 
 # A music channel's day: blocks by genre/decade with two full concerts. Genres match the
 # folder/file names in the music share (case-insensitive); empty lists mean "anything".
-DEFAULT_MUSIC_BLOCKS = [
-    {"start": "08:00", "name": "Seventies Breakfast", "genres": [], "decades": [1970]},
-    {"start": "09:30", "name": "Eighties Pop", "genres": ["pop", "new wave", "synth"], "decades": [1980]},
-    {"start": "11:00", "name": "Nineties Morning", "genres": [], "decades": [1990]},
-    {"start": "12:30", "name": "Disco & Soul", "genres": ["disco", "funk", "soul", "motown"], "decades": [1970, 1980]},
-    {"start": "13:30", "name": "Concert", "genres": [], "decades": [], "concert": True},
-    {"start": "15:30", "name": "Noughties", "genres": [], "decades": [2000]},
-    {"start": "17:00", "name": "Eighties Chart Show", "genres": [], "decades": [1980]},
-    {"start": "18:30", "name": "Rock & Metal", "genres": ["rock", "hard rock", "metal", "heavy metal", "punk", "glam"], "decades": []},
-    {"start": "20:30", "name": "Concert", "genres": [], "decades": [], "concert": True},
-    {"start": "22:30", "name": "Nineties Indie & Dance", "genres": ["indie", "dance", "electronic", "britpop"], "decades": [1990]},
-    {"start": "23:30", "name": "Late Soul", "genres": ["soul", "r&b", "reggae", "jazz", "blues"], "decades": []},
+# The music channel a fresh install ships with, as ordinary bands: nothing in the scheduler
+# knows about music, only about bands and what may fill them.
+def _band(start: str, name: str, genres: list[str] | None = None, decades: list[int] | None = None,
+          feature: bool = False) -> dict[str, Any]:
+    return {"start": start, "name": name,
+            "fill": {"kinds": ["music"], "genres": genres or [], "decades": decades or [], "feature": feature}}
+
+
+# What a channel is for. A label: the scheduler follows the channel's pattern, genres, decades
+# and bands, never this.
+CHANNEL_CONTENT = ("general", "music", "cartoons", "documentaries", "films", "sport", "kids")
+
+DEFAULT_MUSIC_BANDS = [
+    _band("08:00", "Seventies Breakfast", decades=[1970]),
+    _band("09:30", "Eighties Pop", ["pop", "new wave", "synth"], [1980]),
+    _band("11:00", "Nineties Morning", decades=[1990]),
+    _band("12:30", "Disco & Soul", ["disco", "funk", "soul", "motown"], [1970, 1980]),
+    _band("13:30", "Concert", feature=True),
+    _band("15:30", "Noughties", decades=[2000]),
+    _band("17:00", "Eighties Chart Show", decades=[1980]),
+    _band("18:30", "Rock & Metal", ["rock", "hard rock", "metal", "heavy metal", "punk", "glam"]),
+    _band("20:30", "Concert", feature=True),
+    _band("22:30", "Nineties Indie & Dance", ["indie", "dance", "electronic", "britpop"], [1990]),
+    _band("23:30", "Late Soul", ["soul", "r&b", "reggae", "jazz", "blues"]),
 ]
 CARTOON_GENRES = ["animation", "cartoon", "anime", "animated"]
 # Genres that mark children's programming (kids cutoff at 21:00, kids-friendly dayparts).
@@ -317,16 +354,20 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "dayparts_sunday": DEFAULT_DAYPARTS_SUNDAY,
     "era_pool_normalise": 0.5,         # 0 = weight per item; 1 = eras share airtime by weight regardless of library size
     "sport_back_to_back_weekends": True,
-    "music_blocks": DEFAULT_MUSIC_BLOCKS,
-    "music_decades": [1970, 1980, 1990, 2000],   # the music channel plays these decades only
     "adult_advert_keywords": ["beer", "lager", "ale", "cider", "wine", "whisky", "whiskey", "vodka", "gin", "rum",
                               "brandy", "cinzano", "martini", "guinness", "hofmeister", "carling", "heineken",
                               "stella", "fosters", "castlemaine", "skol", "harp", "tennents", "bacardi", "smirnoff",
                               "cigar", "cigarette", "tobacco", "hamlet", "benson", "silk cut", "marlboro", "rothmans",
                               "embassy", "condom", "durex", "lingerie", "adult", "18+", "xxx", "bookmaker", "betting",
                               "casino", "lottery"],
-    "music_concert_repeat_days": 14,
-    "music_video_repeat_hours": 36,
+    # Bands (a titled stretch of a day filled with several items, pitv/scheduler/bands.py)
+    "band_feature_repeat_days": 14,    # a long item (a concert, a film) is not repeated within this
+    "band_item_repeat_hours": 36,      # nor a short one (a video, an episode) within this
+    "short_episode_minutes": 12,       # an episode shorter than this is run with the next ones
+    "short_episode_run_minutes": 20,   # ... until the run reaches about this length
+    "band_fetch": True,                # ask pitv_content for material when a band has too little
+    "band_item_max_minutes": 15,       # the longest item a band counts as one of its own
+    "content_fetch_kinds": [],         # what pitv_content said it can fetch, kept for when it is down
     "cartoon_genres": CARTOON_GENRES,
     "movie_repeat_days": 21,
     "same_slot_bonus": 3.0,
@@ -340,6 +381,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "weekend_kids_breakfast": True,
     "admin_password_hash": None,
     "channel_switch_static": True,
+    # streaming the channels over HTTP (pitv/stream.py)
+    "streaming_enabled": True,
+    "stream_segment_seconds": 4,       # shorter starts sooner and drifts less; longer is steadier
+    "stream_idle_seconds": 60,         # a stream stops this long after the last request for it
+    "stream_max_streams": 2,           # at once; a Pi 4 re-encodes at most one comfortably
+    "stream_encoder": "",              # empty: h264_v4l2m2m on the Pi, libx264 elsewhere
     # player
     "keymap": {},                      # action -> [evdev key names]; empty = built-in defaults
     "nav_keys_change_channel": True,   # up/down = channel +/- when the guide is closed (OSMC remote has no channel keys)
@@ -383,26 +430,31 @@ DEFAULT_CHANNELS = [
     {"number": 1, "name": "PiTV One", "short_name": "One", "colour": "#e63946", "ads_enabled": 0,
      "pattern": "show", "description": "Mainstream: drama, sitcoms, light entertainment, afternoon films",
      "kind_weights": {"tv": 0.75, "movie": 0.25},
-     "allowed_genres": ["Drama", "Comedy", "Family", "Adventure", "Romance", "Game Show", "History"]},
+     "allowed_genres": ["Drama", "Comedy", "Family", "Adventure", "Romance", "Game Show", "History"],
+     "fetch_kind": "shows"},
     {"number": 2, "name": "PiTV Two", "short_name": "Two", "colour": "#457b9d", "ads_enabled": 0,
      "pattern": "show", "description": "Alternative: documentaries, cult, older films, comedy",
      "kind_weights": {"tv": 0.6, "movie": 0.4},
-     "allowed_genres": ["Documentary", "Science Fiction", "Fantasy", "Mystery", "Comedy", "Horror", "Thriller", "Sport"]},
+     "allowed_genres": ["Documentary", "Science Fiction", "Fantasy", "Mystery", "Comedy", "Horror", "Thriller", "Sport"],
+     "fetch_kind": "shows"},
     {"number": 3, "name": "PiTV Three", "short_name": "Three", "colour": "#f4a261", "ads_enabled": 1,
      "pattern": "show, ad, ad", "description": "Commercial: soaps, quiz, action drama, kids' teatime",
      "kind_weights": {"tv": 0.8, "movie": 0.2},
-     "allowed_genres": ["Soap", "Game Show", "Action", "Crime", "Drama", "Children", "Sport", "Comedy"]},
+     "allowed_genres": ["Soap", "Game Show", "Action", "Crime", "Drama", "Children", "Sport", "Comedy"],
+     "fetch_kind": "shows"},
     {"number": 4, "name": "PiTV Four", "short_name": "Four", "colour": "#2a9d8f", "ads_enabled": 1,
      "pattern": "show, ad, ad", "description": "Alternative commercial: comedy, imports, films, late night",
      "kind_weights": {"tv": 0.55, "movie": 0.45},
-     "allowed_genres": ["Comedy", "Science Fiction", "Thriller", "Horror", "Documentary", "Crime", "Action"]},
+     "allowed_genres": ["Comedy", "Science Fiction", "Thriller", "Horror", "Documentary", "Crime", "Action"],
+     "fetch_kind": "shows"},
     {"number": 5, "name": "PiTV Music", "short_name": "Music", "colour": "#b5179e", "ads_enabled": 0,
-     "pattern": "show", "description": "Music videos by genre and decade, with two full concerts a day",
-     "kind_weights": {"tv": 1.0, "movie": 0.0}, "content": "music"},
+     "pattern": "", "description": "Music videos by genre and decade, with two full concerts a day",
+     "kind_weights": {"tv": 1.0, "movie": 0.0}, "content": "music", "bands": DEFAULT_MUSIC_BANDS,
+     "decades": [1970, 1980, 1990, 2000], "fetch_kind": "music"},
     {"number": 6, "name": "PiTV Toons", "short_name": "Toons", "colour": "#ffb703", "ads_enabled": 1,
      "pattern": "show, show, ad, ad", "description": "Cartoons all day; child-friendly adverts only",
-     "kind_weights": {"tv": 1.0, "movie": 0.0}, "content": "cartoons", "family_safe_ads": 1,
-     "allowed_genres": ["Animation", "Cartoon", "Anime"]},
+     "kind_weights": {"tv": 1.0, "movie": 0.0}, "content": "cartoons", "family_safe_ads": 1, "kids_any_time": 1,
+     "allowed_genres": ["Animation", "Cartoon", "Anime"], "fetch_kind": "cartoons"},
 ]
 
 
@@ -429,6 +481,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     with tx(conn):
         _migrate_settings(conn)
         _seed_channel_genres(conn)
+        _seed_fetch_kinds(conn)
         assign_ident_channels(conn)
         conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
                      (str(SCHEMA_VERSION),))
@@ -436,12 +489,19 @@ def init_db(conn: sqlite3.Connection) -> None:
                          [(key, json.dumps(value)) for key, value in DEFAULT_SETTINGS.items()])
         if conn.execute("SELECT COUNT(*) FROM channels").fetchone()[0] == 0:
             for ch in DEFAULT_CHANNELS:
-                insert_row(conn, "channels", {
+                channel_id = insert_row(conn, "channels", {
                     "number": ch["number"], "name": ch["name"], "short_name": ch["short_name"],
                     "colour": ch["colour"], "ads_enabled": ch["ads_enabled"], "pattern": ch["pattern"],
                     "description": ch["description"], "kind_weights": json.dumps(ch["kind_weights"]),
                     "content": ch.get("content", "general"), "family_safe_ads": ch.get("family_safe_ads", 0),
-                    "allowed_genres": json.dumps(ch.get("allowed_genres") or [])})
+                    "kids_any_time": ch.get("kids_any_time", 0), "decades": json.dumps(ch.get("decades") or []),
+                    "allowed_genres": json.dumps(ch.get("allowed_genres") or []),
+                    "fetch_kind": ch.get("fetch_kind")})
+                for band in ch.get("bands") or []:
+                    conn.execute("INSERT INTO band(channel_id, name, start, minutes, days, fill, enabled, created_at)"
+                                 " VALUES (?,?,?,?,?,?,1,?)",
+                                 (channel_id, band["name"], band["start"], band.get("minutes"), "[]",
+                                  json.dumps(band["fill"]), now_ts()))
 
 
 # Columns added after the first release: (table, column, DDL). Applied when missing. Every name
@@ -467,6 +527,7 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("media", "transient", "INTEGER NOT NULL DEFAULT 0"),
     ("schedule", "wanted_id", "INTEGER"),
     ("sources", "uid", "TEXT"),
+    ("sources", "mount", "TEXT"),
     ("sources", "location", "TEXT NOT NULL DEFAULT 'nas'"),
     ("media", "uid", "TEXT"),
     ("media", "origin", "TEXT NOT NULL DEFAULT 'nas'"),
@@ -474,6 +535,14 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("media", "cache_vcodec", "TEXT"),
     ("media", "cache_interlaced", "INTEGER"),
     ("lineup", "match", "TEXT"),
+    ("channels", "kids_any_time", "INTEGER NOT NULL DEFAULT 0"),
+    ("channels", "decades", "TEXT"),
+    ("channels", "band_item_repeat_hours", "INTEGER"),
+    ("channels", "band_feature_repeat_days", "INTEGER"),
+    ("channels", "short_episode_minutes", "INTEGER"),
+    ("channels", "short_episode_run_minutes", "INTEGER"),
+    ("band", "last_fetch_at", "INTEGER"),
+    ("channels", "fetch_kind", "TEXT"),
 ]
 
 
@@ -578,7 +647,44 @@ def _migrate_steps(conn: sqlite3.Connection) -> None:
     # Placeholder slots are found by their request: binding a delivery, line-up progress and
     # withdrawing requests. Few slots have one, so the index holds only those.
     conn.execute("CREATE INDEX IF NOT EXISTS schedule_wanted ON schedule(wanted_id) WHERE wanted_id IS NOT NULL")
-    conn.execute("DROP TABLE IF EXISTS probe_cache")   # PiTV no longer probes files; pitv_content does
+    # Tables of work PiTV no longer does itself: pitv_content probes and transcodes.
+    conn.execute("DROP TABLE IF EXISTS probe_cache")
+    conn.execute("DROP TABLE IF EXISTS transcode_queue")
+    _migrate_music_blocks(conn)
+
+
+def _migrate_music_blocks(conn: sqlite3.Connection) -> None:
+    """The music channel's blocks become ordinary bands: the scheduler no longer knows what a
+    music channel is. Runs once, on a database that still has the old setting."""
+    row = conn.execute("SELECT value FROM settings WHERE key = 'music_blocks'").fetchone()
+    if row is None or conn.execute("SELECT COUNT(*) FROM band").fetchone()[0]:
+        return
+    try:
+        blocks = json.loads(row[0]) or []
+        decades_row = conn.execute("SELECT value FROM settings WHERE key = 'music_decades'").fetchone()
+        channel_decades = [int(d) for d in json.loads(decades_row[0])] if decades_row else []
+    except (TypeError, ValueError):
+        return
+    conn.execute("UPDATE channels SET kids_any_time = 1 WHERE content = 'cartoons'")
+    if channel_decades:      # the old music_decades setting becomes the channel's own
+        conn.execute("UPDATE channels SET decades = ? WHERE content = 'music' AND decades IS NULL",
+                     (json.dumps(channel_decades),))
+    channels = conn.execute("SELECT id FROM channels WHERE content = 'music'").fetchall()
+    for (channel_id,) in channels:
+        for b in blocks:
+            if not isinstance(b, dict) or not b.get("start"):
+                continue
+            fill = {"kinds": ["music"], "genres": [str(g).lower() for g in (b.get("genres") or [])],
+                    "decades": [int(d) for d in (b.get("decades") or [])] or channel_decades,
+                    "feature": bool(b.get("concert"))}
+            conn.execute("INSERT INTO band(channel_id, name, start, minutes, days, fill, enabled, created_at)"
+                         " VALUES (?,?,?,?,?,?,1,?)",
+                         (channel_id, str(b.get("name") or "Music"), str(b["start"]), None, "[]",
+                          json.dumps(fill), now_ts()))
+        # Its day is its bands; the pattern would otherwise try to place programmes it has none of.
+        conn.execute("UPDATE channels SET pattern = '' WHERE id = ?", (channel_id,))
+    if channels:
+        log.info("music blocks moved to bands on %d channel(s)", len(channels))
 
 
 def _seed_channel_genres(conn: sqlite3.Connection) -> None:
@@ -588,6 +694,21 @@ def _seed_channel_genres(conn: sqlite3.Connection) -> None:
     conn.executemany("UPDATE channels SET allowed_genres = ? WHERE number = ? AND name = ? AND allowed_genres IS NULL",
                      [(json.dumps(ch["allowed_genres"]), ch["number"], ch["name"])
                       for ch in DEFAULT_CHANNELS if ch.get("allowed_genres")])
+
+
+# What a channel of each content label would ask pitv_content to fetch for its bands. A seed for
+# channels that predate the column, and for new ones; every channel can be set by hand afterwards.
+FETCH_KIND_FOR_CONTENT = {"music": "music", "cartoons": "cartoons", "kids": "cartoons", "sport": "sport",
+                          "general": "shows", "documentaries": "shows", "films": ""}
+
+
+def _seed_fetch_kinds(conn: sqlite3.Connection) -> None:
+    """Channels created before bands could ask for material have nothing in `fetch_kind`. Fill it
+    in from what each channel says it carries; a channel set to nothing asks for nothing."""
+    for content, kind in FETCH_KIND_FOR_CONTENT.items():
+        if kind:
+            conn.execute("UPDATE channels SET fetch_kind = ? WHERE content = ? AND fetch_kind IS NULL",
+                         (kind, content))
 
 
 def _migrate_settings(conn: sqlite3.Connection) -> None:
@@ -658,7 +779,8 @@ def all_settings(conn: sqlite3.Connection) -> dict[str, Any]:
 # --- rows ----------------------------------------------------------------------------------
 
 _JSON_COLUMNS = ("genres", "overrides", "anchor_days", "era_weights", "genre_weights",
-                 "kind_weights", "daypart_profile", "details", "allowed_genres", "excluded_genres")
+                 "kind_weights", "daypart_profile", "details", "allowed_genres", "excluded_genres",
+                 "decades")
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:

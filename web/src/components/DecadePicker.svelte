@@ -1,12 +1,20 @@
 <script>
-  // Toggle chips for decades; `value` is a sorted list of decade start years.
-  let { value = $bindable([]), decades = [1930, 1940, 1950, 1960, 1970, 1980, 1990, 2000, 2010, 2020], label = 'Decades' } = $props();
-  const toggle = (d) => (value = value.includes(d) ? value.filter((x) => x !== d) : [...value, d].sort((a, b) => a - b));
+  // Toggle chips for decades; `value` is a sorted list of decade start years. `decades` is what the
+  // library holds; with none known yet (an empty catalogue) the usual span is offered instead.
+  const SPAN = [1930, 1940, 1950, 1960, 1970, 1980, 1990, 2000, 2010, 2020];
+  let { value = $bindable([]), decades = [], label = 'Decades' } = $props();
+  // Whatever the caller hands over, work in numbers: a list held as JSON text would otherwise
+  // spread into single characters and fill the row with nonsense.
+  const years = (v) => (Array.isArray(v) ? v : []).map(Number).filter((n) => Number.isFinite(n));
+  // Anything already chosen stays listed even if nothing carries it now, so it can be cleared.
+  let chosen = $derived(years(value));
+  let shown = $derived([...new Set([...(years(decades).length ? years(decades) : SPAN), ...chosen])].sort((a, b) => a - b));
+  const toggle = (d) => (value = chosen.includes(d) ? chosen.filter((x) => x !== d) : [...chosen, d].sort((a, b) => a - b));
 </script>
 
 <div class="decades" role="group" aria-label={label}>
-  {#each decades as d (d)}
-    <label class="dec" class:on={value.includes(d)}><input type="checkbox" checked={value.includes(d)} onchange={() => toggle(d)} />{d}s</label>
+  {#each shown as d (d)}
+    <label class="dec" class:on={chosen.includes(d)}><input type="checkbox" checked={chosen.includes(d)} onchange={() => toggle(d)} />{d}s</label>
   {/each}
 </div>
 

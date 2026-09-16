@@ -10,6 +10,8 @@
   import DaypartTable from './DaypartTable.svelte';
   import GenrePicker from '../../components/GenrePicker.svelte';
   import Tabs from '../../components/Tabs.svelte';
+  import BandTable from './BandTable.svelte';
+  import DecadePicker from '../../components/DecadePicker.svelte';
   import { shown } from '../../lib/prefs.svelte.js';
 
   let { channel = {}, onclose, onsaved } = $props();
@@ -40,18 +42,32 @@
     overnight_replay_from: c.overnight_replay_from ?? '08:00', idents_enabled: !!(c.idents_enabled ?? 1),
     description: c.description ?? '', content: c.content ?? 'general',
     allowed_genres: c.allowed_genres ?? [], excluded_genres: c.excluded_genres ?? [], nas_only: c.nas_only ?? 'inherit',
+    short_episode_minutes: c.short_episode_minutes ?? '', short_episode_run_minutes: c.short_episode_run_minutes ?? '',
+    fetch_kind: c.fetch_kind ?? '',
+    decades: c.decades ?? [], kids_any_time: !!c.kids_any_time, bands: (c.bands ?? []).map((b) => ({ ...b, fill: { ...b.fill } })),
+    band_item_repeat_hours: c.band_item_repeat_hours ?? '', band_feature_repeat_days: c.band_feature_repeat_days ?? '',
   });
+  const CONTENT = [['general', 'General (shows and films)'], ['music', 'Music videos'], ['cartoons', 'Cartoons'],
+                   ['documentaries', 'Documentaries'], ['films', 'Films'], ['sport', 'Sport'], ['kids', "Children's"]];
   // Everything is one form: switching sections keeps edits, and Save sends them all.
   const SECTIONS = [
     { id: 'channel', label: 'Channel', level: 'basic' },
     { id: 'programmes', label: 'Programmes', level: 'basic' },
+    { id: 'bands', label: 'Bands', level: 'basic', title: 'Stretches of the day under one title, filled by the scheduler' },
     { id: 'breaks', label: 'Breaks', level: 'basic' },
     { id: 'mix', label: 'Mix', level: 'standard', title: 'TV and film balance, era and genre weights' },
     { id: 'dayparts', label: 'Dayparts', level: 'advanced', title: 'Time-of-day weights and the overnight replay' },
   ];
   let section = $state('channel');
-  let genreOptions = $state({});
-  onMount(async () => { genreOptions = (await tryApi(get('/api/library/genres'))) ?? {}; });
+  const PROGRAMME_KINDS = ['episode', 'movie'];   // a channel's own genres are about series and films
+  let facets = $state(null);
+  let fetchKinds = $state([]);
+  let genreOptions = $derived(facets?.genres ?? {});
+  let decadeOptions = $derived(Object.keys(facets?.decades ?? {}).map(Number));
+  onMount(async () => {
+    facets = (await tryApi(get('/api/library/facets'))) ?? null;
+    fetchKinds = (await tryApi(get('/api/bands/fetch-kinds'))) ?? [];
+  });
 
   async function loadDefaultDayparts(part) {
     const s = await tryApi(get('/api/settings'));
@@ -69,6 +85,12 @@
       genre_weights: f.genreUse ? f.genre : null, daypart_profile: joinProfile(f.dp),
       overnight_replay_from: f.overnight_replay_from, idents_enabled: f.idents_enabled, description: f.description, content: f.content,
       allowed_genres: f.allowed_genres, excluded_genres: f.excluded_genres, nas_only: f.nas_only,
+      short_episode_minutes: f.short_episode_minutes === '' ? null : Number(f.short_episode_minutes),
+      short_episode_run_minutes: f.short_episode_run_minutes === '' ? null : Number(f.short_episode_run_minutes),
+      fetch_kind: f.fetch_kind || null,
+      decades: f.decades, kids_any_time: f.kids_any_time, bands: f.bands,
+      band_item_repeat_hours: num(f.band_item_repeat_hours, { min: 0, max: 8760, int: true }),
+      band_feature_repeat_days: num(f.band_feature_repeat_days, { min: 0, max: 8760, int: true }),
     };
     const number = num(f.number, { min: 1, int: true });
     if (number !== null) body.number = number;
@@ -89,21 +111,37 @@
         <label class="field">Short name<input bind:value={f.short_name} placeholder="One" /><span class="help">Used on the badge and remote.</span></label>
         <label class="field">Colour<span class="row"><input type="color" bind:value={f.colour} /><input class="narrow mono" bind:value={f.colour} aria-label="Colour as hex" pattern={'#[0-9a-fA-F]{6}'} /></span></label>
         <label class="field wide">Description<input bind:value={f.description} placeholder="Mainstream: drama, sitcoms…" /></label>
-        <label class="field wide">Content
-          <select bind:value={f.content}><option value="general">General (shows and films)</option><option value="music">Music videos</option><option value="cartoons">Cartoons</option></select>
-          <span class="help">Music: the day is built from genre and decade blocks and two concerts (Settings, Music). Cartoons: animated series are routed here automatically and may run all evening.</span>
+        <label class="field wide">What it carries
+          <select bind:value={f.content}>{#each CONTENT as [v, label] (v)}<option value={v}>{label}</option>{/each}</select>
+          <span class="help">A label, for people reading the admin. What the channel actually shows comes from its genres, decades, pattern and bands.</span>
         </label>
         <label class="check"><input type="checkbox" bind:checked={f.enabled} /> Enabled</label>
       </div>
     {:else if section === 'programmes'}
       <div class="form-grid">
         <div class="field wide genres">
-          <span>Allowed genres</span><GenrePicker value={f.allowed_genres} options={genreOptions} onchange={(v) => (f.allowed_genres = v)} label="Allowed genres" />
+          <span>Allowed genres</span><GenrePicker value={f.allowed_genres} options={genreOptions} kinds={PROGRAMME_KINDS} onchange={(v) => (f.allowed_genres = v)} label="Allowed genres" />
           <span class="help">Which series and films the line-up generator places on this channel; empty means any.</span>
         </div>
         <div class="field wide genres">
-          <span>Excluded genres</span><GenrePicker value={f.excluded_genres} options={genreOptions} onchange={(v) => (f.excluded_genres = v)} empty="None" label="Excluded genres" />
+          <span>Excluded genres</span><GenrePicker value={f.excluded_genres} options={genreOptions} kinds={PROGRAMME_KINDS} onchange={(v) => (f.excluded_genres = v)} empty="None" label="Excluded genres" />
         </div>
+        <div class="field wide">
+          <span>Decades</span><DecadePicker bind:value={f.decades} decades={decadeOptions} label="Channel decades" />
+          <span class="help">Only programmes from these decades; empty means any. A series that ran into one of them counts, and a programme with no year is still allowed.</span>
+        </div>
+        {#if shown('standard')}
+          <label class="field">Short episodes are under (minutes)<input type="number" class="narrow" min="0" max="60" bind:value={f.short_episode_minutes} placeholder="as Settings says" /><span class="help">Episodes shorter than this run together under the series title, so a five minute cartoon does not take a slot of its own.</span></label>
+          <label class="field">Run them together for (minutes)<input type="number" class="narrow" min="5" max="120" bind:value={f.short_episode_run_minutes} placeholder="as Settings says" /></label>
+        {/if}
+        <label class="field wide">Fetch more material as
+          <select bind:value={f.fetch_kind}>
+            <option value="">nothing; this channel is not topped up</option>
+            {#each fetchKinds as k (k)}<option value={k}>{k}</option>{/each}
+          </select>
+          <span class="help">When a band on this channel has too little of its own genres and decades, pitv_content is asked to fetch this kind of material. A band may ask for a different one.</span>
+        </label>
+        <label class="check wide"><input type="checkbox" bind:checked={f.kids_any_time} /> Children's programmes at any hour<span class="help">Ignores the children's cutoff in Settings, Certificates. Suits a channel that shows cartoons all evening.</span></label>
         {#if shown('standard')}
           <label class="field">Only schedule what is on disk
             <select bind:value={f.nas_only}><option value="inherit">as Settings says</option><option value="yes">yes</option><option value="no">no</option></select>
@@ -112,6 +150,15 @@
         {/if}
       </div>
       <p class="small muted">The titles themselves are in the channel's line-up: Line-up, on the channel's row.</p>
+    {:else if section === 'bands'}
+      <p class="small muted">A band is a stretch of the day under one title, such as "Disco Lunch" or "Saturday Morning Cartoons". The scheduler fills it with items that match, and the guide shows the band as one programme. A channel with no pattern is built from its bands alone.</p>
+      <BandTable bind:value={f.bands} {facets} {fetchKinds} channelKind={f.fetch_kind} />
+      {#if shown('standard')}
+        <div class="form-grid mt">
+          <label class="field">Repeat an item after (hours)<input type="number" class="narrow" min="0" max="8760" bind:value={f.band_item_repeat_hours} placeholder="as Settings says" /><span class="help">How long before this channel's bands may play the same short item again.</span></label>
+          <label class="field">Repeat a feature after (days)<input type="number" class="narrow" min="0" max="8760" bind:value={f.band_feature_repeat_days} placeholder="as Settings says" /><span class="help">The same, for concerts and films.</span></label>
+        </div>
+      {/if}
     {:else if section === 'breaks'}
       <div class="form-grid">
         <label class="check"><input type="checkbox" bind:checked={f.ads_enabled} /> Ad breaks on this channel</label>

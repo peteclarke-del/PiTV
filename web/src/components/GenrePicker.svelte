@@ -1,12 +1,17 @@
 <script>
   // Compact multi-select: a button ("Any genre" / "3 selected") opening a popover with a filter and checkboxes.
-  let { value = [], options = {}, onchange, empty = 'Any genre', label = 'Genres' } = $props();
+  // The choices are the genres the library actually holds, counted over `kinds` (episode, movie, music), so a
+  // band of music videos is not offered Westerns and nobody can name a genre nothing carries.
+  let { value = [], options = {}, kinds = ['episode', 'movie', 'music'], onchange, empty = 'Any genre', label = 'Genres' } = $props();
   let open = $state(false);
   let filter = $state('');
   let root = $state(null);
-  let names = $derived(Object.keys(options).sort((a, b) => a.localeCompare(b)));
-  let shown = $derived(names.filter((n) => !filter || n.toLowerCase().includes(filter.toLowerCase())));
+  const count = (name) => kinds.reduce((n, k) => n + (options[name]?.[k] ?? 0), 0);
   let selected = $derived(new Set((value ?? []).map((v) => String(v).toLowerCase())));
+  // Anything already chosen stays listed even if nothing carries it now, so it can be cleared.
+  let names = $derived([...new Set([...Object.keys(options).filter((n) => count(n) > 0),
+                                    ...(value ?? []).map(String)])].sort((a, b) => a.localeCompare(b)));
+  let shown = $derived(names.filter((n) => !filter || n.toLowerCase().includes(filter.toLowerCase())));
   function toggle(name) {
     const key = name.toLowerCase();
     const next = (value ?? []).filter((v) => String(v).toLowerCase() !== key);
@@ -29,7 +34,7 @@
       <input type="search" placeholder="Filter…" bind:value={filter} />
       <div class="list">
         {#each shown as n (n)}
-          <label class="opt"><input type="checkbox" checked={selected.has(n.toLowerCase())} onchange={() => toggle(n)} /><span class="truncate">{n}</span><span class="cnt">{options[n]?.shows ?? 0}s · {options[n]?.movies ?? 0}f</span></label>
+          <label class="opt"><input type="checkbox" checked={selected.has(n.toLowerCase())} onchange={() => toggle(n)} /><span class="truncate">{n}</span><span class="cnt">{count(n)}</span></label>
         {:else}
           <div class="muted small" style="padding:.3rem">{names.length ? 'No genre matches.' : 'No genres in the library yet.'}</div>
         {/each}

@@ -17,10 +17,11 @@ from fastapi.responses import JSONResponse
 from ... import __version__, catalogue, display, settings_schema, tool_client
 from ... import db as dbm
 from ... import lineup as lineup_mod
+from ... import wanted as wanted_mod
 from ...db import (
+    CHANNEL_CONTENT,
     DEFAULT_SETTINGS,
     all_settings,
-    genre_list,
     get_setting,
     now_ts,
     row_to_dict,
@@ -31,6 +32,7 @@ from ...db import (
 from ...guide import SLOT_QUERY
 from ...hostinfo import host_info
 from ...logsetup import log_dir
+from ...scheduler import bands as band_rules
 from ...scheduler.build import build_horizon, parse_day, rebuild_from, slot_titles
 from ...scheduler.rules import broadcast_day_for, parse_pattern, tz_of
 from .content import tool_catalogue
@@ -60,8 +62,11 @@ MEDIA_DIRECT_FIELDS = {"excluded", "concert", "family_safe", "home_channel_id"}
 CHANNEL_FIELDS = {"number", "name", "short_name", "colour", "enabled", "ads_enabled", "ads_per_break",
                   "pattern", "era_weights", "genre_weights", "kind_weights", "daypart_profile",
                   "overnight_replay_from", "idents_enabled", "description", "content", "family_safe_ads",
-                  "allowed_genres", "excluded_genres", "nas_only"}
-JSON_CHANNEL_FIELDS = {"era_weights", "genre_weights", "kind_weights", "daypart_profile", "allowed_genres", "excluded_genres"}
+                  "allowed_genres", "excluded_genres", "nas_only", "kids_any_time", "decades", "bands",
+                  "band_item_repeat_hours", "band_feature_repeat_days",
+                  "short_episode_minutes", "short_episode_run_minutes", "fetch_kind"}
+JSON_CHANNEL_FIELDS = {"era_weights", "genre_weights", "kind_weights", "daypart_profile", "allowed_genres",
+                       "excluded_genres", "decades"}
 _COLOUR = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
@@ -102,8 +107,9 @@ def _mirror_sources(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute("SELECT s.*, (SELECT COUNT(*) FROM media m WHERE m.source_id = s.id AND m.missing = 0) AS items"
                         " FROM sources s ORDER BY s.location, s.name")
     return [{"id": r["uid"], "name": r["name"], "type": r["type"], "category": r["category"], "root": r["path"],
-             "remote": r["remote"], "location": r["location"], "enabled": bool(r["enabled"]),
-             "health": {"mounted": Path(r["path"]).is_dir(), "items": r["items"], "last_indexed_ts": r["last_indexed_at"]}}
+             "mount": r["mount"], "remote": r["remote"], "location": r["location"], "enabled": bool(r["enabled"]),
+             "health": {"mounted": Path(r["mount"] or r["path"]).is_dir(), "items": r["items"],
+                        "last_indexed_ts": r["last_indexed_at"]}}
             for r in rows]
 
 
@@ -114,6 +120,10 @@ def list_sources(conn: sqlite3.Connection = Depends(admin_conn)):
     status, payload = tool_client.request(tool_url(conn), "GET", "sources", timeout=10)
     if status == 200 and isinstance(payload, (list, dict)):
         items = payload if isinstance(payload, list) else payload.get("sources", [])
+        mounts = {r["uid"]: r["mount"] for r in conn.execute("SELECT uid, mount FROM sources WHERE uid IS NOT NULL")}
+        for item in items:      # the mount is PiTV's, so pitv_content's answer does not carry it
+            if isinstance(item, dict):
+                item["mount"] = mounts.get(item.get("id")) or None
         return {"owner": "pitv_content", "offline": False, "sources": items}
     return {"owner": "pitv_content", "offline": True, "sources": _mirror_sources(conn),
             "error": payload.get("error") if isinstance(payload, dict) else f"HTTP {status}"}
@@ -131,6 +141,13 @@ def put_source(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depe
             raise HTTPException(400, "category must be general, sport or kids")
         if body.get("root"):
             body["root"] = str(allowed_dir(str(body["root"]), browse_roots(all_settings(conn))))
+    # Where this machine mounts the share is PiTV's own business, not pitv_content's.
+    if "mount" in body:
+        mount = str(body.pop("mount") or "").strip()
+        if mount:
+            mount = str(allowed_dir(mount, browse_roots(all_settings(conn))))
+        with tx(conn):
+            conn.execute("UPDATE sources SET mount = ? WHERE uid = ?", (mount or None, body["id"]))
     # Credentials (username, password, workgroup) pass straight through: pitv_content keeps them
     # and never returns the password, and PiTV neither stores nor logs them.
     return _relay_source(conn, "PUT", "sources", body, timeout=15)
@@ -403,22 +420,6 @@ def list_media(conn: sqlite3.Connection = Depends(admin_conn), kind: str | None 
     return {"total": total, "items": [media_public(r) for r in rows]}
 
 
-@router.get("/music/facets")
-def music_facets(conn: sqlite3.Connection = Depends(admin_conn)):
-    """Counts of music videos by genre and decade, for the music channel editor."""
-    genres: dict[str, int] = {}
-    decades: dict[str, int] = {}
-    concerts = 0
-    for r in conn.execute("SELECT genres, year, concert FROM media WHERE kind = 'music' AND missing = 0 AND excluded = 0"):
-        for g in genre_list(r["genres"]):
-            genres[g] = genres.get(g, 0) + 1
-        if r["year"]:
-            d = f"{(r['year'] // 10) * 10}s"
-            decades[d] = decades.get(d, 0) + 1
-        concerts += int(r["concert"] or 0)
-    return {"genres": dict(sorted(genres.items())), "decades": dict(sorted(decades.items())), "concerts": concerts}
-
-
 @router.get("/media/{mid}")
 def get_media(mid: int, conn: sqlite3.Connection = Depends(admin_conn)):
     row = conn.execute("SELECT * FROM media WHERE id = ?", (mid,)).fetchone()
@@ -508,7 +509,8 @@ def _channel(conn: sqlite3.Connection, cid: int) -> dict[str, Any]:
         raise HTTPException(404, "channel not found")
     d = row_to_dict(row)
     d["show_count"] = conn.execute("SELECT COUNT(*) FROM shows WHERE home_channel_id = ? AND missing = 0", (cid,)).fetchone()[0]
-    d["pattern_tokens"] = parse_pattern(d["pattern"])
+    d["pattern_tokens"] = parse_pattern(d["pattern"]) if (d["pattern"] or "").strip() else []
+    d["bands"] = band_rules.export(conn, cid)
     return d
 
 
@@ -517,17 +519,36 @@ def list_channels(conn: sqlite3.Connection = Depends(admin_conn)):
     return [_channel(conn, r["id"]) for r in conn.execute("SELECT id FROM channels ORDER BY number")]
 
 
+def _clean_bands(body: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """The channel's bands, checked, or None when the request does not mention them."""
+    if "bands" not in body:
+        return None
+    if not isinstance(body["bands"], list):
+        raise HTTPException(400, "bands must be a list")
+    try:
+        return [band_rules.clean(b) for b in body["bands"]]
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 def _clean_channel_fields(body: dict[str, Any]) -> dict[str, Any]:
     fields: dict[str, Any] = {}
     for k, v in body.items():
+        if k in ("bands",):
+            continue          # its own table, written by _clean_bands
         if k not in CHANNEL_FIELDS:
             continue
         if k in JSON_CHANNEL_FIELDS:
             if v not in (None, "", {}, []) and not isinstance(v, (dict, list)):
                 raise HTTPException(400, f"{k} must be an object or list")
             fields[k] = json.dumps(v) if v not in (None, "", {}, []) else None
-        elif k in ("enabled", "ads_enabled", "idents_enabled", "family_safe_ads"):
+        elif k in ("enabled", "ads_enabled", "idents_enabled", "family_safe_ads", "kids_any_time"):
             fields[k] = int(bool(v))
+        elif k in ("band_item_repeat_hours", "band_feature_repeat_days",
+                   "short_episode_minutes", "short_episode_run_minutes"):
+            fields[k] = optional_int(v, k)      # empty follows the global setting
+            if fields[k] is not None and not 0 <= fields[k] <= 8760:
+                raise HTTPException(400, f"{k} out of range")
         elif k in ("number", "ads_per_break"):
             try:
                 fields[k] = int(v)
@@ -536,10 +557,11 @@ def _clean_channel_fields(body: dict[str, Any]) -> dict[str, Any]:
             if fields[k] < 1 or (k == "number" and fields[k] > 999) or (k == "ads_per_break" and fields[k] > 10):
                 raise HTTPException(400, f"{k} out of range")
         elif k == "pattern":
-            fields[k] = ", ".join(parse_pattern(str(v)))
+            # Empty means the channel places no programmes of its own: its day is its bands.
+            fields[k] = ", ".join(parse_pattern(str(v))) if str(v).strip() else ""
         elif k == "content":
-            if v not in ("general", "music", "cartoons"):
-                raise HTTPException(400, "content must be general, music or cartoons")
+            if v not in CHANNEL_CONTENT:
+                raise HTTPException(400, f"content must be one of {', '.join(CHANNEL_CONTENT)}")
             fields[k] = v
         elif k == "nas_only":
             if v not in ("inherit", "yes", "no"):
@@ -568,9 +590,12 @@ def create_channel(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = 
         fields["number"] = nxt
     fields.setdefault("name", f"PiTV {fields['number']}")
     fields.setdefault("short_name", str(fields["number"]))
+    new_bands = _clean_bands(body)
     try:
         with tx(conn):
             cid = dbm.insert_row(conn, "channels", fields)
+            if new_bands is not None:
+                band_rules.save(conn, cid, new_bands, now_ts())
     except sqlite3.IntegrityError as exc:
         raise HTTPException(409, f"channel number {fields['number']} is already used") from exc
     return _channel(conn, cid)
@@ -580,8 +605,12 @@ def create_channel(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = 
 def update_channel(cid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
     _channel(conn, cid)
     fields = _clean_channel_fields(body)
+    new_bands = _clean_bands(body)
     try:
-        _update_row(conn, "channels", cid, fields)
+        with tx(conn):
+            dbm.update_row(conn, "channels", cid, fields)
+            if new_bands is not None:
+                band_rules.save(conn, cid, new_bands, now_ts())
     except sqlite3.IntegrityError as exc:
         raise HTTPException(409, f"channel number {fields.get('number')} is already used") from exc
     return _channel(conn, cid)
@@ -901,7 +930,7 @@ def export_overrides(conn: sqlite3.Connection = Depends(admin_conn)):
 
 # --- logs ---------------------------------------------------------------------------------------------
 
-LOG_NAMES = ("player", "web", "catalogue", "schedule", "install")
+LOG_NAMES = ("player", "web", "catalogue", "schedule", "stream", "install")
 INSTALL_LOG = Path("/work/install/install.log")   # written by the SD-card installer and first boot
 
 
@@ -950,9 +979,41 @@ def read_journal(unit: str, lines: int = 300):
 
 # --- line-ups ------------------------------------------------------------------------------------------
 
-@router.get("/library/genres")
-def library_genres(conn: sqlite3.Connection = Depends(admin_conn)):
-    return lineup_mod.genre_facets(conn)
+@router.get("/bands/fetch-kinds")
+def bands_fetch_kinds(conn: sqlite3.Connection = Depends(admin_conn)):
+    """What pitv_content can go and fetch, for the channel and band editors. Asked of the tool
+    itself so the list follows what it actually supports; its last answer is remembered for when
+    it is not running."""
+    status, payload = tool_client.request(tool_url(conn), "GET", "settings", timeout=10)
+    kinds = []
+    if status == 200 and isinstance(payload, dict):
+        for field in payload.get("schema") or []:
+            if isinstance(field, dict) and field.get("key") == "catalogue_kinds":
+                kinds = [k for k in (field.get("choices") or []) if isinstance(k, str)]
+    if kinds:
+        dbm.set_setting(conn, "content_fetch_kinds", json.dumps(kinds))
+        return kinds
+    return get_setting(conn, "content_fetch_kinds") or []
+
+
+@router.post("/bands/material")
+def bands_material(conn: sqlite3.Connection = Depends(admin_conn)):
+    """Ask pitv_content now for material for the band that has least, rather than waiting for
+    the nightly pass. The answer says which band was asked for, and what."""
+    return wanted_mod.request_band_material(conn, all_settings(conn))
+
+
+@router.get("/bands/needs")
+def bands_needs(conn: sqlite3.Connection = Depends(admin_conn)):
+    """What each band is short of, for the channel editor."""
+    settings = all_settings(conn)
+    return [{"channel_id": n["band"].channel_id, "name": n["band"].name, "have": n["have"], "want": n["want"]}
+            for n in wanted_mod.band_needs(conn, settings)]
+
+
+@router.get("/library/facets")
+def library_facets(conn: sqlite3.Connection = Depends(admin_conn)):
+    return lineup_mod.facets(conn)
 
 
 @router.get("/lineup")

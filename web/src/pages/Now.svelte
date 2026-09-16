@@ -2,6 +2,7 @@
   import { untrack } from 'svelte';
   import { get, normalisePlayer } from '../lib/api.js';
   import { tuneChannel } from '../lib/actions.js';
+  import { navigate } from '../lib/router.js';
   import { changes, clock, player, toast } from '../lib/stores.svelte.js';
   import { fmtRange, fmtTime, fmtDuration, plural, safeColour } from '../lib/format.js';
   import ChannelBadge from '../components/ChannelBadge.svelte';
@@ -72,7 +73,8 @@
           <div class="chhead">
             <ChannelBadge channel={c.channel} size="lg" />
             <button class="primary small" onclick={() => tuneChannel(c.channel.number)}
-                    disabled={!player.state.online} title={player.state.online ? 'Tune the TV to this channel' : 'Player offline'}>Watch</button>
+                    disabled={!player.state.online} title={player.state.online ? 'Tune the TV to this channel' : 'Player offline'}>On the TV</button>
+            <button class="small" onclick={() => navigate(`/channel/${c.channel.number}`)} title="Watch this channel in this browser">In the browser</button>
           </div>
           {#if s}
             {#if s.break}

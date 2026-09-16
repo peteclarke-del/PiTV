@@ -23,7 +23,8 @@ from .. import db as dbm
 from .. import sdnotify
 from ..config import Config
 from ..logsetup import setup_logging
-from .api import admin, content, public, wanted
+from ..stream import Streams
+from .api import admin, content, public, stream, wanted
 from .auth import content_token
 from .events import EventBus
 from .player_client import PlayerClient
@@ -191,6 +192,7 @@ def create_app(cfg: Config) -> FastAPI:
         yield
         hb.cancel()
         stop.set()
+        app.state.streams.shutdown()
 
     app = FastAPI(title="PiTV", version="0.1", docs_url="/api/docs", openapi_url="/api/openapi.json",
                   redoc_url=None, lifespan=lifespan)
@@ -201,9 +203,11 @@ def create_app(cfg: Config) -> FastAPI:
     app.state.player_state = {"online": False}
     app.state.started = time.time()
     app.state.content_token = content_token(cfg.data_dir)
+    app.state.streams = Streams(cfg)
 
     app.add_middleware(RequestGuard)
     app.include_router(public.router)
+    app.include_router(stream.router)
     app.include_router(admin.router)
     app.include_router(wanted.router)
     app.include_router(content.exchange)

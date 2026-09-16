@@ -39,6 +39,7 @@ from ..db import (
     tx,
 )
 from ..lineup import nas_only_for
+from . import bands
 from .rules import (
     EraSpans,
     allowed_at,
@@ -50,6 +51,7 @@ from .rules import (
     era_spans,
     era_weight_spans,
     hhmm_to_minutes,
+    in_decades,
     is_kids,
     local_ts,
     minutes_of_day,
@@ -290,6 +292,9 @@ class Builder:
         self._era_pools()
         self.music = self._playable("music")
         self.adverts = self._playable("advert")
+        self.bands = bands.load(self.conn)
+        self._pools: dict[str, list[dict[str, Any]]] = {"music": self.music}
+        self._decades: dict[int, tuple[int, ...]] = {}
         self.idents = self._playable("ident")
         self._load_externals()
         # Line-ups are exclusive, so each channel's candidates are indexed once rather than
@@ -542,13 +547,17 @@ class Builder:
         max_minutes = dp.get("max_minutes")
         weekend = weekday_n >= 5
         relaxed = relax >= 1
-        kids_rule = channel.get("content") != "cartoons"
+        kids_rule = not channel.get("kids_any_time")
         kids_breakfast = weekend and bool(self.settings.get("weekend_kids_breakfast")) and dp.get("name") == "Breakfast"
         unknown_w = float(self.settings.get("unknown_year_weight", 0.0))
         prev_genres = ({g.lower() for g in prev.genres}
                        if prev is not None and prev.kind == "programme" and prev.genres else set())
 
+        decades = self._channel_decades(channel)
+
         def common_weight(item: dict[str, Any], kind: str, end_year: int | None = None) -> float:
+            if not in_decades(item.get("year"), decades, end_year):
+                return 0.0
             w = era_weight_spans(item.get("year"), spans, end_year, unknown_w)
             if w <= 0:
                 return 0.0
@@ -780,8 +789,6 @@ class Builder:
                           from_ts: int | None = None) -> list[Slot]:
         """Build (or complete) one channel-day. Returns the new slots, or [] if nothing to do
         (see `_keep_slots` for `force` and `from_ts`)."""
-        if channel.get("content") == "music":
-            return self.build_music_day(channel, day, force, from_ts)
         day_str = day.isoformat()
         day_start, day_end, next_day_start = day_bounds(day, self.settings, self.tz)
         rng = self._rng(channel["id"], day)
@@ -807,12 +814,22 @@ class Builder:
                 continue
             fixed.append((ts, end, ("anchor", show, ep)))
             placed_today[show.id] = placed_today.get(show.id, 0) + 1
+        day_bands = self._bands_for(channel, day, day_start, day_end)
+        filler = self._band_filler(channel, day, [b for _, _, b in day_bands], rng) if day_bands else None
+        for ts, end, band in day_bands:
+            if any(not (end <= fs or ts >= fe) for fs, fe, _ in fixed):
+                self.log.append(f"{channel['name']} {day_str}: band {band.name} at {band.start} clashes with a kept slot")
+                continue
+            fixed.append((ts, end, ("band", band)))
         fixed.sort(key=lambda x: x[0])
 
-        pattern = parse_pattern(channel.get("pattern") or "show")
+        # An empty pattern means the channel places no programmes of its own: its day is its
+        # bands, and anything they leave is padded.
+        pattern_text = (channel.get("pattern") or "").strip()
+        pattern = parse_pattern(pattern_text) if pattern_text else []
         ads_on = bool(channel.get("ads_enabled"))
         ads_per_break = int(channel.get("ads_per_break") or 2)
-        if not ads_on:
+        if not ads_on and pattern:
             pattern = [tok for tok in pattern if tok not in ("ad", "break")] or ["show"]
         rounding = int(self.settings.get("start_rounding_minutes", 5)) * 60
         tol = int(self.settings.get("duration_tolerance_minutes", 5)) * 60
@@ -865,6 +882,9 @@ class Builder:
                     elif payload.kind == "advert" and payload.media_id:
                         self.ad_last[(channel["id"], payload.media_id)] = payload.start_ts
                     continue
+                if payload[0] == "band":
+                    t = self._fill_band(channel, day_str, payload[1], max(t, fs), fe, filler, emit)
+                    continue
                 _, show, ep = payload
                 start = max(t, fs)
                 slot = self._programme_slot(channel, day_str, start, ep, show)
@@ -879,6 +899,9 @@ class Builder:
             gap = boundary - t
             if gap <= 0:
                 t = boundary
+                continue
+            if not pattern:
+                fill_to(boundary)      # a bands-only channel: pad whatever the bands leave
                 continue
             token = pattern[pat_idx % len(pattern)]
             pat_idx += 1
@@ -947,6 +970,8 @@ class Builder:
             self.last_placed[item["id"]] = t
             last_programme_year = item.get("year")
             t = slot.end_ts
+            if show is not None:
+                t = self._short_episode_run(channel, day_str, show, slot, gap - slot.duration, emit, placed_today)
 
         if t < day_end:
             self.log.append(f"{channel['name']} {day_str}: gave up after {MAX_STEPS_PER_DAY} steps at"
@@ -962,145 +987,91 @@ class Builder:
             sorted((s for s in all_slots if s.kind == "programme"), key=lambda s: s.start_ts), self.tz)
         return new_slots + self._overnight(channel, day, day_end, next_day_start, all_slots)
 
-    # --- music channel ------------------------------------------------------------------
+    # --- bands ---------------------------------------------------------------------------
 
-    def build_music_day(self, channel: dict[str, Any], day: date, force: bool, from_ts: int | None) -> list[Slot]:
-        """A music channel's day is a sequence of blocks (genre/decade filters, two of them
-        concerts). Each block is filled with videos not played recently; consecutive slots share
-        the block name so guides show one entry per block."""
-        day_str = day.isoformat()
-        day_start, day_end, next_day_start = day_bounds(day, self.settings, self.tz)
-        keep = self._keep_slots(channel["id"], day_str, day_end, force, from_ts)
-        if keep is None:
-            return []
-        rng = self._rng(channel["id"], day)
-        blocks = self.settings.get("music_blocks") or [
-            {"name": "Music", "start": self.settings.get("day_start", "08:00"), "genres": [], "decades": []}]
-        video_repeat = int(self.settings.get("music_video_repeat_hours", 36)) * 3600
-        concert_repeat = int(self.settings.get("music_concert_repeat_days", 14)) * 86400
-        allowed_decades = [int(d) for d in (self.settings.get("music_decades") or [])]
-        library = [m for m in self.music if not allowed_decades or m.get("year") is None
-                   or (m["year"] // 10) * 10 in allowed_decades]
-        pools = {c: [m for m in library if bool(m.get("concert")) == c] for c in (False, True)}
-        used_today: set[int] = {s.media_id for s in keep if s.media_id}
-        played_today: dict[int, int] = {}
-        new_slots: list[Slot] = []
-        if not library:
-            self.log.append(f"{channel['name']} {day_str}: no music videos in the library for decades {allowed_decades}")
+    def _channel_decades(self, channel: dict[str, Any]) -> tuple[int, ...]:
+        """The decades a channel plays; empty means any. Held as JSON on the channel row."""
+        cached = self._decades.get(channel["id"])
+        if cached is None:
+            raw = _json_field(channel.get("decades")) or []
+            cached = self._decades[channel["id"]] = tuple(int(d) for d in raw if isinstance(d, (int, float, str))
+                                                          and str(d).isdigit())
+        return cached
 
-        starts = [self._bday(hhmm_to_minutes(b["start"])) for b in blocks]
+    def _bands_for(self, channel: dict[str, Any], day: date, day_start: int, day_end: int
+                   ) -> list[tuple[int, int, bands.Band]]:
+        """This channel's bands for this day as (start, end, band). A band without a length runs
+        to the next one, or to the end of the day."""
+        todays = [b for b in self.bands.get(channel["id"], ()) if b.on(day.weekday())]
+        out: list[tuple[int, int, bands.Band]] = []
+        starts = [self._band_start(day, b.start) for b in todays]
+        for i, band in enumerate(todays):
+            start = starts[i]
+            later = [s for s in starts[i + 1:] if s > start]
+            end = start + band.minutes * 60 if band.minutes else (later[0] if later else day_end)
+            if later:
+                end = min(end, later[0])
+            start, end = max(start, day_start), min(end, day_end)
+            if end - start >= 60:
+                out.append((start, end, band))
+        return sorted(out, key=lambda x: x[0])
 
-        def block_at(ts: int) -> int:
-            """Index of the block on air at `ts`: the last one started (the first before any has)."""
-            mins = self._bday_minutes(ts)
-            current = 0
-            for i, bm in enumerate(starts):
-                if mins >= bm:
-                    current = i
-            return current
+    def _band_start(self, day: date, hhmm: str) -> int:
+        """A band's start time on this broadcast day. A time earlier than the day's own start
+        belongs to the small hours at its end, so "00:30" on a day that opens at 08:00 is
+        tomorrow morning, not twenty-four hours ago."""
+        minute = hhmm_to_minutes(hhmm)
+        at = day + timedelta(days=1) if minute < self.day_start_min else day
+        return local_ts(at, hhmm, self.tz)
 
-        def block_end(ts: int) -> int:
-            mins = self._bday_minutes(ts)
-            later = [bm for bm in starts if bm > mins]
-            return ts + (min(later) - mins) * 60 if later else day_end
+    def _band_filler(self, channel: dict[str, Any], day: date, todays: list[bands.Band],
+                     rng: random.Random) -> bands.Filler:
+        kinds = {k for b in todays for k in b.kinds}
+        decades = self._channel_decades(channel)
+        pool = [m for kind in sorted(kinds) for m in self._band_pool(kind)
+                if in_decades(m.get("year"), decades)]
+        if not pool:
+            self.log.append(f"{channel['name']} {day.isoformat()}: nothing in the library for its bands ({', '.join(sorted(kinds))})")
+        # A channel may keep its own repeat gaps; empty follows the global settings.
+        item_hours = channel.get("band_item_repeat_hours")
+        feature_days = channel.get("band_feature_repeat_days")
+        return bands.Filler(todays, pool, rng=rng, last_placed=self.last_placed,
+                            item_repeat=int(item_hours if item_hours is not None
+                                            else self.settings.get("band_item_repeat_hours", 36)) * 3600,
+                            feature_repeat=int(feature_days if feature_days is not None
+                                               else self.settings.get("band_feature_repeat_days", 14)) * 86400)
 
-        # Which videos satisfy each block at the two strict levels: 0 genre and decade, 1 decade
-        # only (level 2 is anything within the channel's decades).
-        def matching(b: dict[str, Any], level: int) -> set[int]:
-            want_g = {g.lower() for g in (b.get("genres") or [])}
-            want_d = {int(d) for d in (b.get("decades") or [])}
-            out = set()
-            for m in library:
-                if level == 0 and want_g and want_g.isdisjoint(g.lower() for g in (m.get("genres") or [])):
-                    continue
-                if want_d and (m.get("year") is None or (m["year"] // 10) * 10 not in want_d):
-                    continue
-                out.add(m["id"])
-            return out
+    def _band_pool(self, kind: str) -> list[dict[str, Any]]:
+        """Every item of a kind a band may use, loaded once per build."""
+        if kind not in self._pools:
+            self._pools[kind] = self.music if kind == "music" else self._playable(kind)
+        return self._pools[kind]
 
-        levels = [(matching(b, 0), matching(b, 1)) for b in blocks]
-        # Videos a genre block needs (Disco & Soul, Rock & Metal) are held back from the other
-        # blocks, otherwise a broad block earlier in the day (Seventies Breakfast) uses them up
-        # and the genre block is left with none of its genre.
-        claimed = [levels[i][0] if b.get("genres") else set() for i, b in enumerate(blocks)]
-        reserved = [set().union(*(c for j, c in enumerate(claimed) if j != i)) - claimed[i]
-                    for i in range(len(blocks))]
-
-        def pick(bi: int, at: int, gap: int, concert: bool) -> dict[str, Any] | None:
-            repeat = concert_repeat if concert else video_repeat
-            # Widen step by step: exact block -> decade only -> anything -> already played today.
-            for level, allow_recent, allow_today in ((0, False, False), (1, False, False), (2, False, False),
-                                                     (0, True, False), (2, True, False), (2, True, True)):
-                wanted = levels[bi][level] if level < 2 else None
-                cands: list[tuple[float, dict[str, Any]]] = []
-                for m in pools[concert]:
-                    if m["id"] in used_today and not allow_today:
-                        continue
-                    if float(m["duration"]) > gap or (wanted is not None and m["id"] not in wanted):
-                        continue
-                    last = self.last_placed.get(m["id"])
-                    age = (at - last) if last is not None else None
-                    if age is not None and age < repeat and not allow_recent:
-                        continue
-                    w = 2.0 if age is None else min(2.0, max(0.02, age / repeat))
-                    if allow_today:
-                        # Repeating within the day: everything is fair game, least-played first.
-                        w *= 1.0 / (1 + played_today.get(m["id"], 0)) ** 2
-                    elif m["id"] in reserved[bi]:
-                        w *= 0.1
-                    cands.append((w, m))
-                if cands:
-                    return rng.choices(cands, weights=[c[0] for c in cands], k=1)[0][1]
-            return None
-
+    def _fill_band(self, channel: dict[str, Any], day_str: str, band: bands.Band, start: int, end: int,
+                   filler: bands.Filler | None, emit: Callable[[Slot], None]) -> int:
+        """Fill one band with items under its name; the guide shows them as one programme."""
+        t = start
+        if filler is None:
+            emit(self._filler(channel, day_str, t, end, title=band.name, block=band.name))
+            return end
+        want_feature = band.feature
         steps = 0
-        concert_done: int | None = None   # index of the concert block already given its concert
-
-        def fill(t: int, end: int, open_end: bool) -> None:
-            """Videos from t to `end`. Only at closedown (`open_end`) may one run past `end`;
-            before a kept slot the gap is a hard limit."""
-            nonlocal steps, concert_done
-            if not library:
-                new_slots.append(self._filler(channel, day_str, t, end, title="No music videos"))
-                return
-            while t < end and steps < MAX_STEPS_PER_DAY:
-                steps += 1
-                bi = block_at(t)
-                b = blocks[bi]
-                b_end = min(block_end(t), end)
-                gap = b_end - t
-                room = None if open_end else end - t
-                item = None
-                if b.get("concert") and concert_done != bi:
-                    item = pick(bi, t, _cap(gap + 20 * 60, room), True)   # a concert may overrun its block a little
-                    concert_done = bi
-                if item is None:
-                    item = pick(bi, t, _cap(max(gap, 60), room), False)
-                if item is None and open_end:
-                    item = pick(bi, t, 24 * 3600, False)   # anything at all
-                if item is None:
-                    new_slots.append(self._filler(channel, day_str, t, b_end, title=b.get("name", "Music"),
-                                                  block=b.get("name")))
-                    t = b_end
-                    continue
-                slot = self._programme_slot(channel, day_str, t, item, None, block=b.get("name", "Music"))
-                new_slots.append(slot)
-                used_today.add(item["id"])
-                played_today[item["id"]] = played_today.get(item["id"], 0) + 1
-                self.last_placed[item["id"]] = t
-                t = slot.end_ts
-            if t < end:
-                self.log.append(f"{channel['name']} {day_str}: gave up after {MAX_STEPS_PER_DAY} steps at {self._hhmm(t)}")
-                new_slots.append(self._filler(channel, day_str, t, end))
-
-        t = day_start
-        for s in keep:   # fill around kept slots, which may include locked ones later in the day
-            if s.start_ts > t:
-                fill(t, s.start_ts, open_end=False)
-            t = max(t, s.end_ts)
-        if t < day_end:
-            fill(t, day_end, open_end=True)
-        return new_slots + self._overnight(channel, day, day_end, next_day_start, keep + new_slots)
+        while t < end and steps < MAX_STEPS_PER_DAY:
+            steps += 1
+            # A feature may run a little past its band rather than be dropped for being long.
+            gap = (end - t + 20 * 60) if want_feature else (end - t)
+            item = filler.pick(band, t, gap, feature=want_feature)
+            if item is None and want_feature:
+                item = filler.pick(band, t, end - t, feature=False)
+            want_feature = False
+            if item is None:
+                emit(self._filler(channel, day_str, t, end, title=band.name, block=band.name))
+                return end
+            slot = self._programme_slot(channel, day_str, t, item, None, block=band.name)
+            emit(slot)
+            filler.note(item, t)
+            t = slot.end_ts
+        return t
 
     def _pad(self, channel: dict[str, Any], rng: random.Random, day_str: str, t: int, target: int,
              near_year: int | None, emit: Callable[[Slot], None]) -> int:
@@ -1160,6 +1131,48 @@ class Builder:
                     offset=0, kind="programme", title=e["title"], subtitle=subtitle, show_id=None,
                     genres=e.get("genres") or [], year=e.get("year"), wanted_spec=spec)
 
+    def _next_day_slots(self, channel_id: int, next_day_start: int) -> list[Slot]:
+        """Tomorrow's own slots, if tomorrow has been built: the overnight's last resort."""
+        row = self.conn.execute("SELECT day FROM schedule WHERE channel_id = ? AND start_ts >= ? AND replay = 0"
+                                " AND kind = 'programme' ORDER BY start_ts LIMIT 1",
+                                (channel_id, next_day_start)).fetchone()
+        return self._existing_slots(channel_id, row["day"]) if row else []
+
+    def _short_episode_run(self, channel: dict[str, Any], day_str: str, show: Show, first: Slot, room: int,
+                           emit: Callable[[Slot], None], placed_today: dict[int, int]) -> int:
+        """Run several short episodes of one series together, and return where the run ends.
+
+        A five minute cartoon on its own leaves the day in scraps and the guide unreadable, so
+        episodes under `short_episode_minutes` are followed straight away by the next ones, in
+        order, until the run reaches `short_episode_run_minutes`. They share the series title as
+        their block, so the guide shows one entry, as it does for a band."""
+        threshold = 60 * self._channel_minutes(channel, "short_episode_minutes")
+        target = 60 * self._channel_minutes(channel, "short_episode_run_minutes")
+        if not threshold or not target or first.duration >= threshold:
+            return first.end_ts
+        first.block = first.block or show.title
+        t = first.end_ts
+        while t - first.start_ts < target:
+            episode = show.next_episode()
+            if episode is None:
+                break
+            seconds = _seconds(episode)
+            if seconds > room or seconds >= threshold:
+                break
+            slot = self._programme_slot(channel, day_str, t, episode, show, block=first.block)
+            emit(slot)
+            show.advance(t)
+            placed_today[show.id] = placed_today.get(show.id, 0) + 1
+            self.last_placed[episode["id"]] = t
+            room -= seconds
+            t = slot.end_ts
+        return t
+
+    def _channel_minutes(self, channel: dict[str, Any], key: str) -> int:
+        """A channel's own value for a minutes setting, or the global one when it has none."""
+        own = channel.get(key)
+        return int(own if own is not None else self.settings.get(key, 0) or 0)
+
     def _media_slot(self, channel: dict[str, Any], day_str: str, start: int, item: dict[str, Any], kind: str) -> Slot:
         """An advert or ident slot; the subtitle is just the year."""
         return Slot(channel_id=channel["id"], day=day_str, start_ts=start, end_ts=start + _seconds(item),
@@ -1176,6 +1189,11 @@ class Builder:
         from_ts = local_ts(from_day, replay_from, self.tz)
         ordered = sorted(day_slots, key=lambda s: s.start_ts)
         source = [s for s in ordered if s.start_ts >= from_ts and s.kind != "filler"]
+        if not source:
+            # A day with nothing to replay is a day built before the library had anything in it.
+            # Showing a caption until morning is worse than opening tomorrow early, so the
+            # overnight takes the next day's programmes when they are already built.
+            source = self._next_day_slots(channel["id"], next_day_start)
         # The replay follows straight on from the day's last programme: never start it with
         # another episode of that same series.
         last_prog = next((s for s in reversed(ordered) if s.kind == "programme"), None)
@@ -1335,6 +1353,34 @@ def needs_rebuild(conn: sqlite3.Connection, now: int | None = None) -> bool:
     end = horizon_end(conn)
     threshold = int(all_settings(conn).get("rebuild_when_days_left", 2)) * 86400
     return end is None or end - now < threshold
+
+
+def refill_empty_days(conn: sqlite3.Connection, now: int | None = None) -> dict[str, Any]:
+    """Build again the days that were built when there was nothing to schedule.
+
+    A day built from an empty library is a full day of filler, which still counts as a built
+    day: the horizon looks complete and nothing rebuilds it when the material finally arrives.
+    So after a catalogue import, any channel-day with no programme left to come is built again
+    from now on. Days that already carry programmes are left alone, so a viewer's evening does
+    not reshuffle because a few adverts were indexed."""
+    now = now or now_ts()
+    rows = conn.execute(
+        "SELECT channel_id, day, MIN(start_ts) AS first_ts,"
+        " SUM(CASE WHEN kind = 'programme' THEN 1 ELSE 0 END) AS programmes"
+        " FROM schedule WHERE end_ts > ? GROUP BY channel_id, day ORDER BY day", (now,)).fetchall()
+    days = programmes = 0
+    for row in rows:
+        if row["programmes"]:
+            continue
+        result = rebuild_from(conn, row["channel_id"], max(int(row["first_ts"]), now), now=now)
+        if result["status"] == "error":
+            continue
+        days += 1
+        programmes += int(result["summary"].split(" ", 1)[0])
+    summary = f"{days} empty channel-days rebuilt, {programmes} programmes"
+    if days:
+        log.info("refill: %s", summary)
+    return {"status": "ok", "days": days, "programmes": programmes, "summary": summary}
 
 
 def rebuild_from(conn: sqlite3.Connection, channel_id: int, from_ts: int, *,
