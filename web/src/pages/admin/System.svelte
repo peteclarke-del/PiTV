@@ -19,8 +19,13 @@
 
   async function load() {
     loadContent();
+    streams = (await tryApi(get('/api/streams'))) ?? streams;
     try { info = await get('/api/system'); error = ''; } catch (e) { error = e.detail || e.message; }
   }
+
+  // Who is watching a channel over HTTP, and what they are getting. Streams start on request and
+  // stop when nobody asks, so an empty table is the normal state, not a fault.
+  let streams = $state(null);
 
   // pitv_content's host comes from its own API, not from this machine, so the card stays right
   // when the two apps run on separate boxes.
@@ -54,6 +59,13 @@
   }
   const HEALTH = { ok: 'ok', idle: 'info', warn: 'warn', down: 'danger' };
   const HEALTH_ORDER = { down: 0, warn: 1, absent: 2, idle: 3, ok: 4 };
+  const streamColumns = [
+    { key: 'channel', label: 'Channel', class: 'num' },
+    { key: 'address', label: 'Watching from', class: 'mono small' },
+    { key: 'playing', label: 'Showing' },
+    { key: 'idle_seconds', label: 'Last asked', class: 'small num', get: (r) => r.idle_seconds, cell: idleCell },
+  ];
+
   const serviceColumns = [
     { key: 'unit', label: 'Service', cell: unitCell },
     { key: 'app', label: 'App', cell: appCell },
@@ -128,6 +140,18 @@
   </div>
 
   <div class="card pad-0">
+    <div class="card-title" style="padding:.8rem 1rem 0"><h3>Streams</h3><AppBadge app="pitv" />
+      {#if streams?.total_streams}<span class="badge ok">{streams.total_streams} running</span>{/if}
+      {#if streams?.total_viewers}<span class="badge info">{streams.total_viewers} watching</span>{/if}
+    </div>
+    <p class="scope" style="padding:0 1rem;margin:.2rem 0 .4rem">Channels being watched over HTTP (/channel/3 in a browser, /channel/3.m3u8 in VLC). A stream starts when someone asks for it and stops when nobody has for a while; the log is in Logs, stream.</p>
+    <DataTable id="system-streams" columns={streamColumns} rows={streams?.viewers ?? null} key={(r) => `${r.channel}:${r.address}`} card={false} empty="Nobody is watching a stream." />
+    {#each (streams?.streams ?? []).filter((s) => s.error) as s (s.channel)}
+      <p class="scope" style="padding:0 1rem;color:var(--danger)">Channel {s.channel}: {s.error}</p>
+    {/each}
+  </div>
+
+  <div class="card pad-0">
     <div class="card-title" style="padding:.8rem 1rem 0"><h3>NAS mounts</h3><AppBadge app="content" /></div>
     <p class="scope" style="padding:0 1rem;margin:.2rem 0 .4rem">pitv_content's sources as mounted on the Pi. pitv_content indexes them; PiTV reads them only for NAS fallback playback.</p>
     <DataTable id="system-mounts" columns={mountColumns} rows={info?.mounts ?? null} key={(r) => r.path} card={false} empty="No NAS sources configured." />
@@ -161,6 +185,8 @@
 {#snippet answersCell(s)}{#if s.responding === true}<span class="badge ok">yes</span>{:else if s.responding === false}<span class="badge danger">no</span>{:else}<span class="muted">–</span>{/if}{/snippet}
 {#snippet actionsCell(s)}{#each s.actions as a (a)}<button class="small ghost" onclick={() => serviceAction(s.unit, a)} disabled={acting === s.unit}>{a}</button>{/each}{/snippet}
 {#snippet mountStatus(m)}{#if m.available}<span class="badge ok">mounted</span>{:else}<span class="badge danger">missing</span>{/if}{/snippet}
+{#snippet idleCell(r)}{r.idle_seconds < 5 ? 'now' : `${r.idle_seconds}s ago`}{/snippet}
+
 {#snippet sinceCell(s)}{s.since_ts ? fmtDateTime(s.since_ts) : '–'}{/snippet}
 {#snippet memoryCell(s)}{s.memory != null ? fmtBytes(s.memory) : '–'}{/snippet}
 {#snippet boldName(m)}<b>{m.name}</b>{/snippet}
