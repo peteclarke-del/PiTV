@@ -53,7 +53,7 @@
   }
 </script>
 
-<div class="page">
+<div class="page admin-page">
   {#if gate === 'loading'}
     <div class="skeleton" style="height:200px"></div>
   {:else if gate === 'login'}
@@ -100,6 +100,8 @@
 </div>
 
 <style>
+  /* Admin tables, forms and the schedule benefit from the whole browser width. */
+  .admin-page { width: 100%; max-width: none; padding-inline: clamp(12px, 2vw, 32px); }
   .admin-nav { display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border); }
   .navgroup { display: flex; align-items: center; gap: .5rem; min-width: 0; max-width: 100%; }
   .navgroup .tabs { border-bottom: 0; margin-bottom: 0; }
