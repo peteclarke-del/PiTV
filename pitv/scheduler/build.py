@@ -1185,7 +1185,10 @@ class Builder:
         # Overnight is a replay on every channel, including one whose daytime is entirely made
         # from bands. Rebuilding it from the band's combined media pool loses every genre/year
         # boundary and turns the guide into scores of unrelated, unlabelled short clips.
-        overnight = self._overnight(channel, day, day_end, next_day_start, all_slots)
+        overnight = self._overnight(
+            channel, day, day_end, next_day_start, all_slots,
+            labelled_only=bool(not pattern and day_bands),
+        )
         return new_slots + overnight
 
     # --- bands ---------------------------------------------------------------------------
@@ -1489,7 +1492,7 @@ class Builder:
                     subtitle=str(item.get("year") or ""), year=item.get("year"))
 
     def _overnight(self, channel: dict[str, Any], day: date, day_end: int, next_day_start: int,
-                   day_slots: list[Slot]) -> list[Slot]:
+                   day_slots: list[Slot], *, labelled_only: bool = False) -> list[Slot]:
         """00:00 to 08:00: replay the day from the channel's `overnight_replay_from`, looping a
         short day, without butting the same series against the day's end or tomorrow's start."""
         day_str = day.isoformat()
@@ -1497,12 +1500,15 @@ class Builder:
         from_day = day + timedelta(days=1) if hhmm_to_minutes(replay_from) < self.day_start_min else day
         from_ts = local_ts(from_day, replay_from, self.tz)
         ordered = sorted(day_slots, key=lambda s: s.start_ts)
-        source = [s for s in ordered if s.start_ts >= from_ts and s.kind != "filler"]
+        source = [s for s in ordered if s.start_ts >= from_ts and s.kind != "filler"
+                  and (not labelled_only or bool(s.block))]
         if not source:
             # A day with nothing to replay is a day built before the library had anything in it.
             # Showing a caption until morning is worse than opening tomorrow early, so the
             # overnight takes the next day's programmes when they are already built.
             source = self._next_day_slots(channel["id"], next_day_start)
+            if labelled_only:
+                source = [s for s in source if s.block]
         # The replay follows straight on from the day's last programme: never start it with
         # another episode of that same series.
         last_prog = next((s for s in reversed(ordered) if s.kind == "programme"), None)

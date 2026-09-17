@@ -681,11 +681,11 @@ def test_a_band_is_a_titled_stretch_of_any_channels_day(tmp_path):
     assert music_slots and all(s["block"] for s in music_slots), "every music slot belongs to a band"
     assert {s["kind"] for s in music_slots} == {"music"}
     overnight = conn.execute(
-        "SELECT block FROM schedule WHERE channel_id = ? AND replay = 1 AND kind = 'programme'",
+        "SELECT block FROM schedule WHERE channel_id = ? AND replay = 1 AND kind != 'filler'",
         (music,),
     ).fetchall()
     assert overnight and all(s["block"] for s in overnight), (
-        "overnight must replay labelled bands, not flatten their media into an unlabelled pool"
+        "overnight must replay only labelled bands, not old free material between them"
     )
     # Each ordinary band runs at its own time. A band after a feature may begin early when the
     # feature ends; otherwise a day of bands must not collapse into one all-day block.
