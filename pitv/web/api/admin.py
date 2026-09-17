@@ -14,8 +14,9 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from ... import __version__, catalogue, display, genres as genre_rules, settings_schema, tool_client
+from ... import __version__, catalogue, display, settings_schema, tool_client
 from ... import db as dbm
+from ... import genres as genre_rules
 from ... import lineup as lineup_mod
 from ... import wanted as wanted_mod
 from ...db import (
@@ -54,7 +55,14 @@ from .deps import (
     slot_public,
     tool_url,
 )
-from .services import CONTENT_RUN, CONTENT_TIMER, DEV_UNITS, SERVICE_ACTIONS, services, systemd_state
+from .services import (
+    CONTENT_RUN,
+    CONTENT_TIMER,
+    DEV_UNITS,
+    SERVICE_ACTIONS,
+    services,
+    systemd_state,
+)
 from .settings_rules import HHMM, SECRET_SETTINGS, SettingError, check_setting
 
 log = logging.getLogger("pitv.web")
@@ -548,6 +556,9 @@ def _channel(conn: sqlite3.Connection, cid: int) -> dict[str, Any]:
     d = row_to_dict(row)
     d["show_count"] = conn.execute("SELECT COUNT(*) FROM shows WHERE home_channel_id = ? AND missing = 0", (cid,)).fetchone()[0]
     d["pattern_tokens"] = parse_pattern(d["pattern"]) if (d["pattern"] or "").strip() else []
+    # A line-up belongs to any channel whose pattern schedules programmes.  Content is only a
+    # descriptive label, so using it here would hide valid line-ups on new/specialist channels.
+    d["has_lineup"] = lineup_mod.carries_programmes(d)
     d["bands"] = band_rules.export(conn, cid)
     return d
 

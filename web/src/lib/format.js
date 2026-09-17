@@ -107,8 +107,8 @@ export const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 export const CERTIFICATES = ['U', 'PG', '12', '12A', '15', '18'];
 export const PATTERN_TOKENS = ['show', 'tv', 'movie', 'ad', 'ident', 'break'];
 
-/** Whether a channel is filled from a line-up; music channels are built from blocks instead. */
-export const hasLineup = (channel) => ['general', 'cartoons'].includes(channel?.content ?? 'general');
+/** Whether the backend says this channel's scheduling pattern draws from a line-up. */
+export const hasLineup = (channel) => channel?.has_lineup === true;
 
 export function plural(n, word) {
   return `${n} ${word}${n === 1 ? '' : 's'}`;

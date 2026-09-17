@@ -69,8 +69,11 @@ def test_channels_and_settings(client):
     chans = client.get("/api/channels").json()
     assert [c["number"] for c in chans] == [1, 2, 3, 4, 5, 6]
     assert [c["content"] for c in chans][-2:] == ["music", "cartoons"]
-    c5 = client.post("/api/channels", json={"name": "PiTV Seven", "short_name": "Seven", "pattern": "show, break"}).json()
-    assert c5["number"] == 7 and c5["pattern"] == "show, break"
+    assert next(c for c in chans if c["content"] == "music")["has_lineup"] is False
+    assert next(c for c in chans if c["content"] == "cartoons")["has_lineup"] is True
+    c5 = client.post("/api/channels", json={"name": "PiTV Seven", "short_name": "Seven",
+                                            "content": "documentaries", "pattern": "show, break"}).json()
+    assert c5["number"] == 7 and c5["pattern"] == "show, break" and c5["has_lineup"] is True
     assert client.put(f"/api/channels/{c5['id']}", json={"content": "bogus"}).status_code == 400
     off = client.put(f"/api/channels/{c5['id']}", json={"enabled": False}).json()
     assert off["enabled"] == 0
