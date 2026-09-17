@@ -12,7 +12,8 @@ share the cache drive. Changes to it are agreed by both projects before either s
 | Writes | its database and JSON mirrors (`catalogue.json`, `lineups.json`); deletes cache files by LRU and transient expiry | the library index, files in the cache, delivery reports, its status file and log |
 
 PiTV never indexes the NAS and never downloads or encodes. pitv_content never decides what is
-scheduled and never deletes from the cache. The scheduled services never write to the NAS;
+scheduled and deletes derived cache/acquisition state only when PiTV explicitly requests a
+Fresh rebuild. The scheduled services never write to the NAS;
 pitv_content's `--dest nas` catalogue option is a manual operator action outside this
 contract, and anything it files reaches PiTV through the index like any other NAS file.
 
@@ -26,7 +27,8 @@ contract, and anything it files reaches PiTV through the index like any other NA
    broadcast day.
 4. pitv_content works the manifest by priority and deadline: items with a NAS source are
    copied or transcoded into the cache; items without one are searched for online, fetched,
-   encoded and cached.
+   encoded and cached. Remote-dependent scheduled items receive a 24-hour preparation boost;
+   urgent band-collection jobs run ahead of ordinary queued cache/index work.
 5. pitv_content reports each delivery with the file's path and properties. PiTV records the
    cache path, corrects slot lengths where the real duration differs, and creates catalogue
    entries for material fetched online.
@@ -61,6 +63,11 @@ entry with that `job_id` has `finished_ts`) before it imports, so a re-index sta
 admin is imported as soon as it is done. A job that wrote an index ends `ok` even when the index
 is incomplete (that is carried by `"complete": false`); `failed` means no index was produced,
 and PiTV logs it and imports the index it already had.
+
+A successful catalogue fetch (`POST /api/run` with `mode: "catalogue"`) performs this index
+publication before the job completes. PiTV can therefore import newly acquired band material,
+rebuild days that are still mostly filler, and request the next deficient band without waiting
+for the nightly index run.
 
 ```json
 {
@@ -133,8 +140,8 @@ service is down. Schema 2.
     {"request_id": "w:77", "media_id": null, "wanted_id": 77, "uid": null,
      "kind": "episode", "show_title": "The Tripods", "season": 1, "episode": 3,
      "title": "Episode 3", "year": 1984, "duration": 1500,
-     "channels": [2], "first_air_ts": 1789549200, "deadline_ts": 1789548300, "priority": 6,
-     "source": null, "action": "fetch",
+     "channels": [2], "first_air_ts": 1789549200, "deadline_ts": 1789548300, "priority": 0,
+     "source": null, "action": "fetch", "remote_required": true,
      "search": {"phrase": "The Tripods S01E03 1984 full episode", "hints": ["BBC"],
                 "duration_minutes": [20, 60], "year_tolerance": 2},
      "dest_dir": "/mnt/cache/pitv/acquired/tvshows/The Tripods (1984)/Season 01",
@@ -253,10 +260,18 @@ pitv_content's API owns the source configuration; PiTV's admin Sources page is a
 
 ## 5. Shared cache rules
 
-Unchanged from schema 1: pitv_content writes `.part` files and renames atomically, never
+In normal operation pitv_content writes `.part` files and renames atomically, never
 deletes, touches `running_marker` while working, and calls `POST /api/content/make-room`
 before a large job. PiTV ignores `.part` files, never evicts a file in the current manifest or
 younger than two hours, and does not evict while the marker is fresh.
+
+`POST {content_tool_url}/api/reset` is the explicit exception for PiTV's Fresh rebuild. It first
+stops the active job (forcing an encoder down if necessary), then removes partial work,
+acquired/cache files, reports, indexes, source health/status
+and pipeline fingerprint databases. It preserves NAS/local source media, logs, job history,
+sources, provider configuration, catalogue choices and settings. PiTV clears its schedule,
+history, wanted rows and cache references only after this call succeeds, then requests a fresh
+index and rebuilds from the retained inputs.
 
 ## 6. Timing
 
@@ -325,4 +340,3 @@ PiTV never contacts the sources itself, as all online access is pitv_content's.
 - PiTV keeps the chosen `match` with the line-up entry (`lineups.json` included) and sends it
   on every fetch request for that title (section 2). For an advert or music video the chosen
   video's URL is kept as the wanted request's `ref`.
-

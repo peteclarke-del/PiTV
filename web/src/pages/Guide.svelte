@@ -50,7 +50,7 @@
         {#if isCurrent}<span class="badge ok">On now</span>{/if}
         {#if selected.replay}<span class="badge">Replay</span>{/if}
         {#if selected.kind === 'filler'}<span class="badge">Filler</span>{/if}
-        {#if selected.block}<span class="badge info">{plural(selected.items ?? 1, 'video')}</span>{/if}
+        {#if selected.block && (selected.items ?? 1) > 1}<span class="badge info">{plural(selected.items, 'programme')}</span>{/if}
       </div>
       <dl class="kv">
         {#if selected.block && selected.video_title && selected.kind !== 'filler' && selected.video_title !== selected.block}<dt>Now playing</dt><dd>{selected.video_title}</dd>{/if}

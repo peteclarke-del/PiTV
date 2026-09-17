@@ -14,7 +14,7 @@
   import FolderPicker from './FolderPicker.svelte';
 
   const TYPES = [['tv', 'TV shows'], ['movie', 'Movies'], ['advert', 'Adverts'], ['ident', 'Idents'], ['music', 'Music videos']];
-  const CATEGORIES = [['general', 'General'], ['sport', 'Sport'], ['kids', 'Children\'s']];
+  const CATEGORIES = [['general', 'General programme'], ['sport', 'Sport']];
   const LOCATIONS = [['nas', 'NAS shares', 'Indexed read-only; pitv_content copies or transcodes from here into the cache before a programme airs.',
                       'No NAS shares. Add the folders where TV shows, films, adverts, idents and music videos live.'],
                      ['cache', 'Cache folders', 'Material pitv_content fetched online, filed under acquire_dir; it already plays from the cache.', 'Nothing fetched yet.']];
@@ -61,7 +61,7 @@
   function edit(s) {
     errors = {}; tested = null;
     const c = s.credentials ?? {};
-    editing = { isNew: false, id: s.id, name: s.name ?? '', type: s.type, category: s.category || 'general', root: s.root ?? '', mount: s.mount ?? '', remote: s.remote ?? '',
+    editing = { isNew: false, id: s.id, name: s.name ?? '', type: s.type, category: s.category === 'sport' ? 'sport' : 'general', root: s.root ?? '', mount: s.mount ?? '', remote: s.remote ?? '',
                 enabled: s.enabled !== false, ...noCredentials, username: c.username ?? '', workgroup: c.workgroup ?? '', saved: !!c.set };
   }
   let smb = $derived(/^smb:\/\//i.test(editing?.remote?.trim() ?? ''));
@@ -165,9 +165,9 @@
         {#if errors.type}<span class="help err">{errors.type}</span>{/if}
       </label>
       {#if editing.type === 'tv'}
-        <label class="field">Category
+        <label class="field">Default programme class
           <select bind:value={editing.category}>{#each CATEGORIES as [v, l] (v)}<option value={v}>{l}</option>{/each}</select>
-          <span class="help">Sport series get weekend afternoon and midweek late slots; kids marks children's series.</span>
+          <span class="help">Only scheduling treatment belongs here. Children’s and cartoon classification comes from the show’s canonical genres and audience flag.</span>
           {#if errors.category}<span class="help err">{errors.category}</span>{/if}
         </label>
       {/if}

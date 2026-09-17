@@ -11,6 +11,7 @@ from pitv.scheduler.rules import (
     era_spans,
     era_weight_spans,
     local_ts,
+    normalise_cert,
     parse_pattern,
 )
 
@@ -53,6 +54,16 @@ def test_watershed_movie_vs_tv():
 def test_unknown_movie_is_post_watershed():
     assert not allowed_at({"kind": "movie"}, 15 * 60, DEFAULT_SETTINGS)
     assert allowed_at({"kind": "movie"}, 21 * 60, DEFAULT_SETTINGS)
+
+
+def test_online_and_nfo_certificate_spellings_are_canonical():
+    assert normalise_cert("BBFC PG") == "PG"
+    assert normalise_cert("UK: 12A") == "12A"
+    assert normalise_cert("G") == "U"
+    assert normalise_cert("PG-13") == "12"
+    assert normalise_cert("R") == "15"
+    assert normalise_cert("TV-MA") == "18"
+    assert normalise_cert("not rated") is None
 
 
 def test_watershed_after_midnight_counts_as_late_night():

@@ -19,7 +19,7 @@ from typing import Any
 
 from ..db import as_bool, as_int, as_text, genre_list, rows_to_dicts
 
-FEATURE_MINUTES = 35          # an item at least this long counts as a feature (a concert, a film)
+ITEM_MINUTES = 15             # default longest item a band treats as one of its own; see is_feature
 KINDS = ("music", "episode", "movie")
 MAX_BAND_MINUTES = 12 * 60
 
@@ -37,6 +37,8 @@ class Band:
     decades: tuple[int, ...]
     feature: bool              # open with one long item, then fill the rest
     fetch: str = ""            # what to ask pitv_content for; empty follows the channel
+    only_matching: bool | None = None  # None follows the channel; True: only labelled matches
+    max_minutes: int | None = None     # longest item this band treats as one of its own
     last_fetch_at: int | None = None   # when material was last asked for (wanted.request_band_material)
 
     def on(self, weekday: int) -> bool:
@@ -48,15 +50,29 @@ class Band:
         if strict and self.genres and {g.lower() for g in self.genres}.isdisjoint(
                 g.lower() for g in (item.get("genres") or [])):
             return False
-        if self.decades:
-            year = item.get("year")
-            return year is not None and (year // 10) * 10 in self.decades
-        return True
+        return self.dated(item) is not False
+
+    def dated(self, item: dict[str, Any]) -> bool | None:
+        """Whether the item falls in this band's decades: True, False, or None when its year is
+        unknown. A "Sixties & Seventies" must never play something from 2004, so a known year
+        outside the band's decades is refused at every step of the search; an unknown year is
+        allowed only once the search has widened, when the alternative is dead air."""
+        if not self.decades:
+            return True
+        year = item.get("year")
+        if year is None:
+            return None
+        return (int(year) // 10) * 10 in self.decades
 
 
-def is_feature(item: dict[str, Any]) -> bool:
-    """A concert, a film or anything else long enough to stand on its own in a band."""
-    return bool(item.get("concert")) or float(item.get("duration") or 0) >= FEATURE_MINUTES * 60
+def is_feature(item: dict[str, Any], minutes: int = ITEM_MINUTES) -> bool:
+    """A concert, a film or anything else too long to be one item among several.
+
+    A band is a run of short things under one title, so the length that divides them is what the
+    band says it wants (`fill.max_minutes`, else the channel's or the global setting). Anything
+    at or above it, and anything the index calls a concert, can only appear as a band's opening
+    feature."""
+    return bool(item.get("concert")) or float(item.get("duration") or 0) >= minutes * 60
 
 
 def clean(doc: Any) -> dict[str, Any]:
@@ -77,10 +93,23 @@ def clean(doc: Any) -> dict[str, Any]:
     kinds = [k for k in (as_text(x) for x in (fill.get("kinds") or [])) if k in KINDS]
     decades = sorted({d for d in (as_int(x) for x in (fill.get("decades") or [])) if d and 1900 <= d <= 2100})
     return {"name": name[:80], "start": start, "minutes": minutes, "days": days,
-            "fill": {"kinds": kinds or ["music"], "genres": [g.lower() for g in genre_list(fill.get("genres"))],
+            "fill": {"kinds": kinds or ["music"], "genres": genre_list(fill.get("genres")),
                      "decades": decades, "feature": bool(as_bool(fill.get("feature"))),
-                     "fetch": (as_text(fill.get("fetch")) or "")[:40]},
+                     "fetch": (as_text(fill.get("fetch")) or "")[:40],
+                     "only_matching": _tri(fill.get("only_matching")),
+                     "max_minutes": _item_minutes(fill.get("max_minutes"))},
             "enabled": bool(as_bool(doc.get("enabled"), True))}
+
+
+def _tri(value: Any) -> bool | None:
+    """A band's yes, no, or "as the channel says"."""
+    return None if value in (None, "", "inherit") else bool(as_bool(value))
+
+
+def _item_minutes(value: Any) -> int | None:
+    """A band's own item length, or None to follow the channel and the settings."""
+    minutes = as_int(value)
+    return minutes if minutes is not None and 1 <= minutes <= MAX_BAND_MINUTES else None
 
 
 def _is_hhmm(value: str) -> bool:
@@ -96,9 +125,10 @@ def _row_to_band(row: dict[str, Any]) -> Band:
     return Band(id=row["id"], channel_id=row["channel_id"], name=row["name"], start=row["start"],
                 minutes=as_int(row.get("minutes")), days=tuple(int(d) for d in days),
                 kinds=tuple(k for k in (fill.get("kinds") or ["music"]) if k in KINDS) or ("music",),
-                genres=tuple(str(g).lower() for g in (fill.get("genres") or [])),
+                genres=tuple(genre_list(fill.get("genres"))),
                 decades=tuple(int(d) for d in (fill.get("decades") or [])),
                 feature=bool(fill.get("feature")), fetch=as_text(fill.get("fetch")) or "",
+                only_matching=_tri(fill.get("only_matching")), max_minutes=as_int(fill.get("max_minutes")),
                 last_fetch_at=as_int(row.get("last_fetch_at")))
 
 
@@ -129,9 +159,10 @@ def export(conn: sqlite3.Connection, channel_id: int) -> list[dict[str, Any]]:
     for row in rows:
         b = _row_to_band(row)
         out.append({"name": b.name, "start": b.start, "minutes": b.minutes, "days": list(b.days),
-                    "enabled": bool(row["enabled"]),
+                    "enabled": bool(row["enabled"]), "last_fetch_at": b.last_fetch_at,
                     "fill": {"kinds": list(b.kinds), "genres": list(b.genres), "decades": list(b.decades),
-                             "feature": b.feature, "fetch": b.fetch}})
+                             "feature": b.feature, "fetch": b.fetch, "only_matching": b.only_matching,
+                             "max_minutes": b.max_minutes}})
     return out
 
 
@@ -144,8 +175,11 @@ class Filler:
     then something already played today."""
 
     def __init__(self, bands: list[Band], pool: list[dict[str, Any]], *, item_repeat: int, feature_repeat: int,
-                 rng: random.Random, last_placed: dict[int, int]) -> None:
+                 rng: random.Random, last_placed: dict[int, int], item_minutes: int = ITEM_MINUTES,
+                 strict: bool = False) -> None:
         self.pool = pool
+        self.item_minutes = item_minutes
+        self.strict = strict
         self.rng = rng
         self.last_placed = last_placed
         self.item_repeat = item_repeat
@@ -157,25 +191,63 @@ class Filler:
         self.reserved = {b.id: set().union(*(c for i, c in claimed.items() if i != b.id), set()) - claimed[b.id]
                          for b in bands}
 
+    def short_items(self, band: Band) -> int:
+        """How many items a band could use as one of several: what decides whether a channel has
+        enough short material to carry itself, or must lean on its long items."""
+        limit = band.max_minutes or self.item_minutes
+        return sum(1 for m in self.pool if not is_feature(m, limit) and band.dated(m) is not False)
+
     def note(self, item: dict[str, Any], at: int) -> None:
         self.used_today.add(item["id"])
         self.played_today[item["id"]] = self.played_today.get(item["id"], 0) + 1
         self.last_placed[item["id"]] = at
 
     def pick(self, band: Band, at: int, gap: float, feature: bool) -> dict[str, Any] | None:
+        """One item for a band, searched for in widening steps.
+
+        The steps are (its genres and decades), (any genre it has no word on), (a genre it did
+        not ask for), then the same three again allowing something played recently, and finally
+        something already shown today. An item whose genre is known and is not the band's is
+        held back until the last two steps: an untagged file might be disco, a file tagged metal
+        is not, so a "Disco Lunch" takes the untagged one first.
+
+        A channel (or a single band) set to take only labelled matches keeps the first step
+        alone: the item must carry a genre and a year, both of which the band asked for. Such a
+        band shows its own title card when the library has nothing, and that shortfall is what
+        asks pitv_content for more."""
         repeat = self.feature_repeat if feature else self.item_repeat
         reserved = self.reserved.get(band.id, set())
-        for strict, decades_only, allow_recent, allow_today in (
-                (True, False, False, False), (False, True, False, False), (False, False, False, False),
-                (True, False, True, False), (False, False, True, False), (False, False, True, True)):
+        wanted = {g.lower() for g in band.genres}
+        strict = self.strict if band.only_matching is None else band.only_matching
+        steps = (("match", False, False), ("unknown", False, False), ("any", False, False),
+                 ("match", True, False), ("unknown", True, False), ("any", True, True))
+        if strict:
+            # A strict band may repeat a correctly classified item as its final fallback; it may
+            # never fill the remainder with an unknown or wrong genre merely to avoid a card.
+            steps = (("match", False, False), ("match", True, False), ("match", True, True))
+        for genres, allow_recent, allow_today in steps:
             candidates: list[tuple[float, dict[str, Any]]] = []
             for m in self.pool:
-                if is_feature(m) != feature or float(m["duration"]) > gap:
+                if is_feature(m, band.max_minutes or self.item_minutes) != feature or float(m["duration"]) > gap:
+                    continue
+                # A feature band made solely from music is a concert slot, not merely a slot for
+                # any unusually long music file. The index's concert classification is the
+                # authority; otherwise an unclassified compilation can masquerade as a concert.
+                if feature and band.kinds == ("music",) and not m.get("concert"):
                     continue
                 if m["id"] in self.used_today and not allow_today:
                     continue
-                if (strict or decades_only) and not band.wants(m, strict=strict):
-                    continue
+                dated = band.dated(m)
+                if dated is False or (dated is None and (genres == "match" or strict)):
+                    continue      # the wrong decade, ever; an unknown year only once widened
+                if strict and not (m.get("genres") and m.get("year")):
+                    continue      # this channel takes only what the index has labelled
+                if wanted:
+                    theirs = {str(g).lower() for g in (m.get("genres") or [])}
+                    if genres == "match" and wanted.isdisjoint(theirs):
+                        continue
+                    if genres == "unknown" and theirs and wanted.isdisjoint(theirs):
+                        continue    # tagged as something else: not this band's, unless nothing else is left
                 last = self.last_placed.get(m["id"])
                 age = (at - last) if last is not None else None
                 if age is not None and age < repeat and not allow_recent:

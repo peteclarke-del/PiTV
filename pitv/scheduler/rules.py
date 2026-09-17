@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from datetime import date, datetime, timedelta
 from functools import lru_cache
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ..db import KIDS_GENRES, get_setting
+from .. import genres as genre_rules
+from ..db import get_setting
 
 CERTIFICATES = frozenset({"U", "PG", "12", "12A", "15", "18"})
+_CERTIFICATE_ALIASES = {
+    "G": "U", "TV-Y": "U", "TV-Y7": "U", "TV-G": "U",
+    "PG": "PG", "TV-PG": "PG", "APPROVED": "PG", "PASSED": "PG",
+    "PG-13": "12", "TV-14": "12", "12": "12", "12A": "12A",
+    "R": "15", "15": "15", "TV-MA": "18", "NC-17": "18", "18": "18",
+}
 PATTERN_TOKENS = frozenset({"show", "tv", "movie", "ad", "ident", "break"})
 log = logging.getLogger("pitv.rules")
 
@@ -104,7 +112,9 @@ def normalise_cert(cert: str | None) -> str | None:
     if not cert:
         return None
     c = cert.strip().upper()
-    return c if c in CERTIFICATES else None
+    # NFOs commonly use ``UK:PG`` or ``BBFC PG``; online sources often return US ratings.
+    c = re.sub(r"^(?:UK|GB|BBFC)\s*[:/-]?\s*", "", c)
+    return _CERTIFICATE_ALIASES.get(c)
 
 
 def effective_cert(item: dict[str, Any], settings: dict[str, Any]) -> str:
@@ -128,8 +138,7 @@ def cert_earliest_minutes(cert: str, settings: dict[str, Any], kind: str = "movi
 def is_kids(item: dict[str, Any]) -> bool:
     if item.get("kids"):
         return True
-    genres = item.get("genres") or []
-    return any(str(g).lower() in KIDS_GENRES for g in genres)
+    return genre_rules.is_childrens(item.get("genres") or [])
 
 
 def allowed_at(item: dict[str, Any], start_minutes: int, settings: dict[str, Any], kids_rule: bool = True) -> bool:
@@ -160,12 +169,15 @@ def daypart_for(start_minutes: int, dayparts: list[dict[str, Any]]) -> dict[str,
     return current
 
 
-def in_decades(year: int | None, decades: tuple[int, ...] | list[int], end_year: int | None = None) -> bool:
-    """Whether something belongs to one of a channel's decades. No decades means any; an unknown
-    year is allowed, as its era weight already decides how often it airs; a series that ran into
-    a listed decade counts."""
-    if not decades or year is None:
+def in_decades(year: int | None, decades: tuple[int, ...] | list[int], end_year: int | None = None,
+               unknown_ok: bool = True) -> bool:
+    """Whether something belongs to one of a channel's decades. No decades means any; a series
+    that ran into a listed decade counts. An unknown year is allowed, as its era weight already
+    decides how often it airs, unless the channel takes only what it knows the date of."""
+    if not decades:
         return True
+    if year is None:
+        return unknown_ok
     last = end_year if end_year and end_year >= year else year
     return any((y // 10) * 10 in decades for y in range(year, last + 1))
 

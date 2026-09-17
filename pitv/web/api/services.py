@@ -20,24 +20,31 @@ class Unit:
     actions: tuple[str, ...] = ()   # what the admin may do to it; setup/install.sh grants exactly these
 
 
+CONTROL_ACTIONS = ("start", "stop", "restart")
 CONTENT_RUN = "pitv-content.service"
 CONTENT_TIMER = "pitv-content.timer"
 UNITS = (
-    Unit("pitv-web.service", "pitv", "Web interface, admin, and the API pitv_content reports to", "daemon", ("restart",)),
+    Unit("pitv-web.service", "pitv", "Web interface, admin, and the API pitv_content reports to", "daemon", CONTROL_ACTIONS),
     Unit("pitv-player.service", "pitv", "Playback, on-screen graphics, the remote, schedule upkeep", "daemon",
-         ("restart", "stop", "start")),
-    Unit("pitv-splash.service", "pitv", "Test card on the screen early in boot", "boot"),
-    Unit("pitv-content-api.service", "content", "pitv_content's API: sources, index, jobs, settings, log", "daemon", ("restart",)),
-    Unit(CONTENT_RUN, "content", "A pitv_content run: works PiTV's manifest into the cache", "run", ("start",)),
-    Unit(CONTENT_TIMER, "content", "Hourly tick that starts pitv_content runs at their configured hours", "timer"),
+         CONTROL_ACTIONS),
+    Unit("pitv-splash.service", "pitv", "Test card on the screen early in boot", "boot", CONTROL_ACTIONS),
+    Unit("pitv-content-api.service", "content", "pitv_content's coordinator: sources, queue, jobs, settings and log", "daemon", CONTROL_ACTIONS),
+    Unit(CONTENT_RUN, "content", "A queued pitv_content cache job", "run"),
+    Unit(CONTENT_TIMER, "content", "Hourly fallback that asks the coordinator for a cache run", "timer", CONTROL_ACTIONS),
 )
 SERVICE_ACTIONS = {u.unit: u.actions for u in UNITS if u.actions}
+DEV_UNITS = {
+    "pitv-web.service": "pitv-dev-web.service",
+    "pitv-player.service": "pitv-dev-player.service",
+    "pitv-content-api.service": "pitv-dev-content.service",
+}
 _PROPS = "Id,LoadState,ActiveState,SubState,Result,UnitFileState,ActiveEnterTimestamp,NRestarts,MemoryCurrent"
 
 
-def systemd_state(units: list[str]) -> dict[str, dict[str, str]]:
+def systemd_state(units: list[str], *, user: bool = False) -> dict[str, dict[str, str]]:
     """systemd's properties per unit id, from one call; empty where systemctl is unavailable."""
-    _, out, _ = run_cmd(["systemctl", "show", "--timestamp=unix", "-p", _PROPS, *units])
+    args = ["systemctl"] + (["--user"] if user else []) + ["show", "--timestamp=unix", "-p", _PROPS, *units]
+    _, out, _ = run_cmd(args)
     states = {}
     for block in out.split("\n\n"):
         props = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
@@ -88,9 +95,14 @@ def assess(u: Unit, props: dict[str, str] | None, responding: bool | None, on_pi
 def services(live: dict[str, bool | None], on_pi: bool = True) -> list[dict[str, Any]]:
     """Every unit of both applications with its state. `live` maps unit ids to the live check."""
     states = systemd_state([u.unit for u in UNITS])
+    dev_states = systemd_state(list(DEV_UNITS.values()), user=True) if not on_pi else {}
     rows = []
     for u in UNITS:
         props = states.get(u.unit)
+        if (not props or props.get("LoadState") == "not-found") and u.unit in DEV_UNITS:
+            candidate = dev_states.get(DEV_UNITS[u.unit])
+            if candidate and candidate.get("LoadState") == "loaded":
+                props = candidate
         health, state = assess(u, props, live.get(u.unit), on_pi)
         known = props if (props or {}).get("LoadState") == "loaded" else {}   # systemd's numbers mean nothing otherwise
         since = known.get("ActiveEnterTimestamp", "")

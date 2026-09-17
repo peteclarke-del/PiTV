@@ -66,8 +66,9 @@ and PiTV decides what airs. PiTV no longer needs ffprobe.
 
 A source is one of pitv_content's NAS shares, or one of the folders under `acquire_dir` where
 it files what it has fetched. Each has an id, a type (`tv`, `movie`, `advert`, `ident`,
-`music`), a category that matters only for `tv` sources (`general`, `sport` or `kids`; series
-inherit it), a root on the Pi, an informational SMB URL and an enabled flag. The installer
+`music`), a scheduling class that matters only for `tv` sources (`general` or `sport`; series
+inherit it), a root on the Pi, an informational SMB URL and an enabled flag. Children’s audience
+and cartoon status come from canonical genres rather than this field. The installer
 seeds pitv_content's sources from its share list (section 9). After that they are edited on
 the Sources page in the pitv_content section of PiTV's admin, which writes through
 pitv_content's API (`PUT {content_tool_url}/api/sources`), because pitv_content has no
@@ -157,8 +158,8 @@ pitv_content supplies the facts; PiTV applies admin overrides and its own schedu
 | Year | index, then override | scheduled at `unknown_year_weight` (0.2) and listed under "needs attention" |
 | Certificate | index, then override | films treated as 15 (post-watershed), TV as PG |
 | Genres | index, then override | none |
-| Kids | category `kids`, or a genre in animation, children, children's, kids, family, cartoon, or override | no |
-| Category | source category (general, sport, kids); a series that is not sport and has a genre in `cartoon_genres` becomes `cartoon`; editable per show | general |
+| Kids | canonical Children, Family, Animation or Anime genre, or admin override | no |
+| Scheduling class | source/show class (`general` or `sport`); editable per show | general |
 | Family-safe (adverts) | pitv_content's `family_safe` flag; else its tags (alcohol, tobacco, adult, gambling or 18 make an advert unsafe); else `adult_advert_keywords` matched as whole words against the title and file name; editable per advert | safe |
 | Concert (music) | the index's `concert` flag, else any music item of 35 minutes or more | no |
 
@@ -169,6 +170,21 @@ sees names. It matches whole words so that "ale" does not catch "sale" or "gin" 
 The "needs attention" note flags items with no duration, no year, films with no certificate,
 and files of 720 lines or more that the Pi can only decode in software (pitv_content
 transcodes those when they are scheduled).
+
+Genres have one spelling, PiTV wide (`pitv/genres.py`). Every genre read from anywhere, the
+index, a title added by hand, an override, a channel's allowed list, a band's fill, goes through
+`db.genre_list`, which folds the synonyms: Kids, Children's and Childrens are Children;
+cartoon, cartoons and animated are Animation; Sci-Fi is Science Fiction. A tag holding several
+("Action/Adventure") becomes several, and a name the table has never seen keeps its own words in
+title case rather than being dropped. The table mirrors pitv_content's own, which it publishes
+at `GET /api/genres`; each catalogue import compares the two and logs anything that differs.
+Rows written before the vocabulary existed are rewritten once, on the next start. So a channel
+that allows Children cannot miss a series a provider tagged Kids, which is the whole point.
+
+A channel may be told to schedule only material the index has labelled, in its bands and in its
+ordinary programmes alike: no genre or no year, no airing. It plays less, but nothing it cannot
+vouch for, which suits a channel built around genres when the library is a mix of tagged and
+untagged files.
 
 Overrides (title, year, certificate, genres, plot, kids, season, episode, artist) are stored
 in a JSON column on the row and applied on top of indexed values, so a re-import never undoes
@@ -273,7 +289,8 @@ programmes and stay shared by rule.
 NAS-only. A global switch (`nas_only`, on by default), overridable per channel, limits
 scheduling to material already in the catalogue (on the NAS or in the cache). When it is off
 for a channel, its external entries may be placed like any other programme, but only on
-broadcast days at least `external_lead_days` (2) after today's date, at `external_weight`
+slots more than `external_lead_hours` (23) ahead, at equal footing with local material so variety
+wins when there is time to collect it. Nearer slots use local/NAS material.
 (0.7) relative to catalogue programmes, using `episode_minutes` or `external_episode_minutes`
 (30) as the length. Each placement is a placeholder slot plus a wanted item for pitv_content
 (section 7.2): a series asks for its next episode number, a film for itself. When
@@ -333,12 +350,19 @@ beneath it, as it does for a band. A channel may set its own pair; empty follows
 
 ### 4.4c Topping a band up
 
-A band is only as good as what the library holds for it. A "Disco Lunch" with no disco under
-fifteen minutes plays whatever fits, which is how a channel of concert films ends up billed as
-soul. So PiTV counts, for every band, the items of its genres and decades short enough to be one
-of its own (`band_item_max_minutes`, 15 by default), and where a band is short it asks
-pitv_content to go and find some: one band a night, the worst off first, in the catalogue's own
-hour, since each request is a fetch run and pitv_content runs one job at a time.
+A band is only as good as what the library holds for it. A "Disco Lunch" must not fall back to
+an unrelated concert or unlabelled clip merely because it fits the clock. PiTV therefore counts,
+for every band, the items of its genres and decades short enough to be one
+of its own (`band_item_max_minutes`, 15 by default, set per channel or per band), and where a
+band is short it declares every known shortfall to pitv_content up front. The content coordinator
+queues those requests and runs them one at a time, with schedule cache work taking priority.
+A band with nothing may be queued at any hour; other shortfalls use the configured catalogue
+hours. Each successful
+fetch publishes a fresh library index before its job completes. PiTV imports it on its next
+maintenance pass and rebuilds future band gaps immediately. Until matching material arrives,
+the band retains its own holding card rather than admitting mismatched content. Candidates
+retained from an earlier run are rechecked against the current
+band's genres and decades, so an eighties video cannot satisfy a sixties request.
 
 What to ask for is configuration, not something the code knows. A channel says what pitv_content
 should fetch for it (`fetch_kind`: shows, cartoons, sport, music, whatever the tool offers, read
@@ -353,7 +377,7 @@ A band is a stretch of a channel's day under one title, filled with several item
 disco videos called "Disco Lunch", a Saturday cartoon morning, a double bill. It says when it
 starts, how long it runs (or "until the next band"), which days it runs on, and what may go in
 it: kinds (music videos, episodes, films), genres, decades, and whether it opens with a
-feature (a concert, a film, anything over 35 minutes). Bands are edited per channel in the
+feature (a concert, a film, anything at or over the band's item length; see 4.4c). Bands are edited per channel in the
 admin, under Channels, Bands. The genres and decades on offer are the ones the library holds
 for the kinds the band draws on (`lineup.facets`), so a band of music videos is not offered
 Westerns and nobody can name a genre nothing carries and then wonder why the band is empty.
@@ -362,7 +386,16 @@ The same list, counted over series and films, backs a channel's allowed and excl
 The scheduler places bands as fixed points in the day, like anchored series, and fills each
 one as it reaches it. An item must fit what is left of the band; the search widens step by
 step (the band's genres and decades, then decades alone, then anything of its kinds, then
-something already shown today) so a thin library never leaves a hole. Items a narrow band
+something already shown today) so a thin library never leaves a hole. The decades are the one
+thing the search never gives up: a "Sixties & Seventies" will not play something from 2004
+whatever else is missing, though an item whose year is unknown is allowed once the search has
+widened, where the alternative is dead air. An item whose genre is known and is not the band's is held back behind
+items the index has no genre for: an untagged file might be disco, a file tagged metal is not.
+A channel set to take only labelled matches (or a single band set the same way) keeps the first
+step alone, so the item must carry a genre and a year and both must be what the band asked for.
+Such a band shows its own title card
+instead of the rest, which is what a "Disco Lunch" wants: a caption is better than a metal set,
+and the shortfall is what asks for more disco. Items a narrow band
 needs are held back from broader bands earlier in the day, or a lunchtime disco band finds its
 disco already played. Nothing is repeated within the channel's repeat gaps (its own, else
 `band_item_repeat_hours` and `band_feature_repeat_days`). Every slot of a band carries its
@@ -432,8 +465,8 @@ For each channel and day, walk from 08:00 to 00:00 following the pattern:
    `era_pool_normalise`, 0.5, so eras with few titles are not drowned out), multiplied by the
    daypart weight for its kind, kids and sport factors, the channel's genre weights, a
    penalty (`genre_repeat_penalty`, 0.4) when it shares a genre with the previous programme,
-   a bonus (`same_slot_bonus`, 3.0) when the show aired within half an hour of this time
-   yesterday, and a bonus for filling the gap within ten minutes. Certificate rules, duration
+   a bonus (`series_cadence_bonus`, 4.0) when an ordinary series' following episode is close to
+   the same slot `series_cadence_days` (7) later, and a bonus for filling the gap within ten minutes. Certificate rules, duration
    (gap plus `duration_tolerance_minutes`, 5) and the same series back to back are hard
    limits. A show may air at most `show_daily_limit` (2) times a day per channel, each
    repeat weighted by `show_repeat_penalty` (0.3).
@@ -446,7 +479,10 @@ For each channel and day, walk from 08:00 to 00:00 following the pattern:
    fits. Idents prefer the channel's own folder.
 5. On advert channels a programme's start is padded with adverts up to the next
    `start_rounding_minutes` (5) boundary, because "19:35" reads right in a listing.
-6. The last programme of the day may run `end_of_day_overrun_minutes` (30) past midnight.
+6. Midnight is when the channel stops starting things, not when it stops. Anything under way at
+   closedown finishes: a film, a programme, a band item, and a band itself, which keeps the
+   length it was given (a two hour band at 23:30 runs two hours). The overnight begins when the
+   last of it ends, and nothing runs into the next 08:00 broadcast day.
 
 Selection is seeded per channel-day from the build's start day, so rebuilding the same week
 reproduces it.
@@ -678,7 +714,7 @@ PiTV:
 | Catalogue | The last import (when, from where, counts) with import, re-index and import, and upload an index file; Add to the catalogue, in two steps: pitv_content first looks the title up online (series from TVmaze, films from OMDb with a key, adverts and music videos as candidate videos; contract section 8) and the admin picks the right one from posters, years, network, genres, running time and summary, or adds without a match with a warning; then a series or film (year, genres, channel or "choose by genres", episode length, remove after airing, prefilled from the match) becomes a line-up entry carrying the confirmed identity (`match`), which every fetch request for it passes on that pitv_content fetches before it airs, and an advert or music video (optionally with a link) joins the wanted list; lists of series, films, titles added here (with their state), music, adverts, idents and items needing attention, each with where it comes from and whether it is cached; per-show editor (overrides, channel, strip or weekly anchor, rest weeks, category, next-episode cursor, upcoming airings); per-item editor (overrides, channel for films and idents, exclude, family-safe, concert, cache status, recent and upcoming airings); "needs attention" list with inline year and certificate fixes, including items no channel accepts |
 | Channels | Add, edit, delete channels. The editor has five sections: Channel (number, name, colour, enabled, description, content type), Programmes (allowed and excluded genres with catalogue counts; NAS-only override at Standard), Breaks (adverts on or off and per break, family-safe adverts, idents; the pattern editor at Standard), Mix (Standard: TV and film balance, era and genre weights) and Dayparts (Advanced: weekday, Saturday and Sunday tables, overnight replay start). Each channel's line-up in a drawer: add from a searchable list or by title, remove, move, enable, transient and remove-after-airing toggles, state per entry (on disk, not on disk, fetching, scheduled). Generate, rebalance, export and import line-ups |
 | Settings | PiTV's settings in nine panes: Screen and quality (the screen profile, what it asks of pitv_content, text size, and at Advanced shape, margin and output), Broadcast day, Programming, Certificates, Adverts, Music, Player, Cache and pitv_content, Maintenance. The Content page's manifest card shows the quality in force with a link to change it. Drawn from `GET /api/settings/schema` (`pitv/settings_schema.py`), which gives each setting its pane, level, label, help and range; validation takes its ranges from the same table. Edits in several panes are saved together, only the changed keys are sent, values are cleaned for their type and clamped to their range, and a pane's fields can be put back to their defaults before saving. The old `#/admin/weighting` address opens it |
-| Schedule | The EPG grid, editable: lock, remove, replace, insert at a time or before a slot, rebuild from here; build jobs and notes from the last edit |
+| Schedule | The EPG grid, editable: lock, remove, replace, insert at a time or before a slot, rebuild from here; "Rebuild this day" for one channel or all of them, so a change to a band or a setting reaches a day already built; "Fresh rebuild" stops pitv_content and discards the whole generated schedule, locks, history, run log, every wanted request, cache/acquired files, reports, indexes and pipeline fingerprints. It keeps configuration and source material (channels, bands, settings, NAS/local sources, provider and catalogue choices, and line-up entries), publishes/imports a fresh index, rebuilds the horizon and starts filling deficient bands; build jobs and notes from the last edit |
 | Wanted | The wanted list for pitv_content: requests raised by line-up placeholders (marked with their channel and as transient) and items added by hand (film, episode, advert or music video, optionally with a URL); retry, delete, queue missing episodes |
 | Player | Now playing and whether from the cache or the NAS, stream details, virtual remote, cache usage, maintenance status, restart the player; remote keymap editor with press-to-learn |
 | Logs | Player, web, catalogue, schedule and install logs, pitv_content's log, and the journal of both units; level and text filters, auto-refresh, copy |
@@ -699,7 +735,7 @@ same: `GET /api/now`, `GET /api/schedule?start=&end=&channel=`, `GET /api/schedu
 `POST /api/catalogue/refresh` (body `{"reindex": true}` asks pitv_content to re-index
 first and waits for that job), `POST /api/catalogue/import` (a schema 2 index document), `GET /api/catalogue/export`,
 `GET` and `PUT /api/sources` (a view of pitv_content's sources; edits go through its API),
-`POST /api/schedule/build`, CRUD for channels and wanted items, read and edit for shows and
+`POST /api/schedule/build`, `POST /api/schedule/fresh-rebuild`, CRUD for channels and wanted items, read and edit for shows and
 media, `GET /api/content/manifest`, `POST /api/content/report`, `POST /api/content/readiness`,
 `GET /api/logs/{name}`. OpenAPI docs are at `/api/docs`. There is no scan endpoint and no
 source CRUD: PiTV has nothing to scan and no sources of its own.

@@ -135,7 +135,7 @@ install -m 644 "$SRC_DIR"/systemd/pitv-{player,web,splash}.service /etc/systemd/
 # the maintenance user included. sudo ignores the temporary file: its name contains a dot.
 sudoers="$(mktemp /etc/sudoers.d/pitv.XXXXXX)"
 cat > "$sudoers" <<'SUDO'
-pitv ALL=(root) NOPASSWD: /usr/bin/systemctl restart pitv-web.service, /usr/bin/systemctl restart pitv-player.service, /usr/bin/systemctl stop pitv-player.service, /usr/bin/systemctl start pitv-player.service, /usr/bin/systemctl restart pitv-content-api.service, /usr/bin/systemctl start pitv-content.service
+pitv ALL=(root) NOPASSWD: /usr/bin/systemctl start pitv-web.service, /usr/bin/systemctl stop pitv-web.service, /usr/bin/systemctl restart pitv-web.service, /usr/bin/systemctl start pitv-player.service, /usr/bin/systemctl stop pitv-player.service, /usr/bin/systemctl restart pitv-player.service, /usr/bin/systemctl start pitv-splash.service, /usr/bin/systemctl stop pitv-splash.service, /usr/bin/systemctl restart pitv-splash.service, /usr/bin/systemctl start pitv-content-api.service, /usr/bin/systemctl stop pitv-content-api.service, /usr/bin/systemctl restart pitv-content-api.service, /usr/bin/systemctl start pitv-content.timer, /usr/bin/systemctl stop pitv-content.timer, /usr/bin/systemctl restart pitv-content.timer
 SUDO
 chmod 440 "$sudoers"
 visudo -cqf "$sudoers" || { rm -f "$sudoers"; die "the sudoers rule does not parse"; }

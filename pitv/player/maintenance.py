@@ -17,14 +17,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .. import catalogue
+from .. import catalogue, tool_client
 from ..content import apply_report_files, protect_manifest
 from ..db import all_settings, connect, now_ts, tx
 from ..lineup import remove_aired_transients
 from ..readiness import check as readiness_check
 from ..scheduler.build import build_horizon, needs_rebuild
 from ..scheduler.rules import tz_of
-from ..wanted import queue_gaps, request_band_material
+from ..wanted import band_needs, queue_gaps, request_all_band_material
 from .cache import MediaCache
 
 log = logging.getLogger("pitv.maintenance")
@@ -47,10 +47,11 @@ class Maintenance:
         self._readiness_done: set[str] = set()   # "YYYY-MM-DD:hour" stamps already checked today
         self._first_pass = True
         self._empty_build_at = 0
+        self._wanted_requested_at = 0
         self._index_mtime = 0.0                 # the index file version last imported
         self._pruned_on: str | None = None      # local date of the last history/schedule trim
-        self._bands_asked: str | None = None    # local date material was last asked for
-        self.status: dict[str, Any] = {"last_build": None, "last_import": None, "last_readiness": None, "last_band_fetch": None, "error": None}
+        self.status: dict[str, Any] = {"last_build": None, "last_import": None, "last_readiness": None,
+                                      "last_wanted_run": None, "last_band_fetch": None, "error": None}
 
     def start(self) -> None:
         threading.Thread(target=self._loop, name="pitv-maintenance", daemon=True).start()
@@ -114,6 +115,10 @@ class Maintenance:
         changed = catalogue.index_changed_since(settings, self._index_mtime)
         if changed or (local.hour == int(settings["catalogue_hour"]) and last_day != today):
             result = catalogue.refresh(conn)
+            if result.get("status") != "error":
+                enriched = catalogue.enrich_missing_metadata(conn, limit=25)
+                if enriched["found"]:
+                    log.info("catalogue metadata: %s", enriched["summary"])
             if changed:
                 self._index_mtime = changed
             self.status["last_import"] = {"at": now_ts(), "status": result["status"], "summary": result["summary"]}
@@ -129,11 +134,30 @@ class Maintenance:
             self.on_schedule_changed()
         if settings["acquire_fill_gaps"]:
             queue_gaps(conn)
-        # Material for bands the library cannot fill: once a night, in the catalogue's own hour,
-        # because each request is a fetch run and pitv_content runs one job at a time.
-        if settings.get("band_fetch") and local.hour == int(settings["catalogue_hour"]) and self._bands_asked != today:
-            self._bands_asked = today
-            self.status["last_band_fetch"] = request_band_material(conn, settings)
+        # A band with no local pool depends on collection before its individual scheduled files
+        # can even enter the cache manifest. Declare those top-ups first; pitv_content gives these
+        # urgent catalogue jobs queue priority, while still running only one downloader at a time.
+        starving = settings.get("band_fetch") and any(n["have"] == 0 for n in band_needs(conn, settings))
+        if settings.get("band_fetch") and (local.hour in (settings.get("band_fetch_hours") or []) or starving):
+            result = request_all_band_material(conn, settings)
+            if result["asked"] or self.status["last_band_fetch"] is None:
+                self.status["last_band_fetch"] = {"at": now_ts(), **result}
+        # Wanted items are schedule commitments. A busy coordinator retains the request; older
+        # versions return 409 and are tried again on the next maintenance pass.
+        queued = conn.execute("SELECT COUNT(*) FROM wanted WHERE status = 'queued'").fetchone()[0]
+        if queued and now - self._wanted_requested_at >= PASS_INTERVAL:
+            status, payload = tool_client.request(tool_client.base_url(settings), "POST", "run",
+                                                  body={"mode": "cache"}, timeout=15)
+            if status < 400 and isinstance(payload, dict) and payload.get("ok"):
+                self._wanted_requested_at = now
+                self.status["last_wanted_run"] = {"at": now_ts(), "status": "queued", "queued": queued,
+                                                   "job_id": payload.get("job_id")}
+                log.info("wanted: queued pitv_content cache run for %d item(s)", queued)
+            elif status not in (409, 503):
+                reason = payload.get("error") if isinstance(payload, dict) else f"HTTP {status}"
+                self.status["last_wanted_run"] = {"at": now_ts(), "status": "error", "queued": queued,
+                                                   "error": reason}
+                log.warning("wanted: pitv_content did not accept a cache run: %s", reason)
         if self.cache.enabled and not self.cache.content_tool_running():
             protect_manifest(conn, self.cache, now=now)
             self.cache.make_room()

@@ -91,9 +91,9 @@
       </div>
       <hr />
       <div class="form-grid">
-        <label class="field">Category
-          <select bind:value={form.category}><option value="general">General</option><option value="sport">Sport</option><option value="kids">Children's</option><option value="cartoon">Cartoon</option></select>
-          <span class="help">Sport gets weekend afternoon and midweek late slots; cartoons are routed to a cartoons channel (set automatically from the genres).</span>
+        <label class="field">Scheduling class
+          <select bind:value={form.category}><option value="general">General programme</option><option value="sport">Sport</option></select>
+          <span class="help">Sport receives sport-friendly dayparts. Children's audience and cartoons are classified separately above from the checkbox and genres.</span>
         </label>
         <label class="field">Home channel
           <select bind:value={form.home_channel_id}><option value="">(unassigned)</option>{#each channels as c (c.id)}<option value={c.id}>{c.number} {c.name}</option>{/each}</select>

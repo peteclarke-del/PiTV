@@ -57,7 +57,7 @@
     return c.join(' ');
   }
   const slotTitle = (s) => s.kind === 'filler' ? (s.title || 'Filler') : s.kind === 'advert' ? (s.title || 'Advert') : s.kind === 'ident' ? 'Ident' : s.title;
-  const slotSub = (s) => s.block && s.items ? ` · ${plural(s.items, 'video')}` : s.block ? ` · ${s.block}` : s.subtitle ? ` · ${s.subtitle}` : '';
+  const slotSub = (s) => (s.block && s.items > 1 ? ` · ${plural(s.items, 'programme')}` : s.subtitle ? ` · ${s.subtitle}` : s.block ? ` · ${s.block}` : '');
 </script>
 
 <div class="epg" bind:this={el} class:loading class:hasnow={nowX !== null} style="--chw:{CH_W}px;--nowx:{nowX ?? 0}px;{gridStyle}">

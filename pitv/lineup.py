@@ -73,6 +73,10 @@ def _genre_set(value: Any) -> set[str]:
 def channel_fit(channel: dict[str, Any], genres: set[str]) -> float | None:
     """How well an item suits a channel, or None when the channel must not carry it.
 
+    Both sides are read in PiTV's own genre spelling, so a series a provider tagged Kids reaches
+    a channel that lists Children, and one tagged cartoons reaches a channel that lists
+    Animation. Nothing is missed for being called by another name.
+
     The score is the share of the channel's allowed genres the item matches, so a narrowly
     defined channel attracts what it specialises in: an Animation/Children series fits a
     channel allowing only cartoon genres (1 of 3) better than a general channel that also
@@ -158,7 +162,7 @@ def _insert(conn: sqlite3.Connection, channel_id: int, kind: str, key: str, titl
         " episode_minutes, pinned, match, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
         " ON CONFLICT(key) DO UPDATE SET channel_id = excluded.channel_id, pinned = excluded.pinned,"
         " match = COALESCE(excluded.match, lineup.match), updated_at = excluded.created_at",
-        (channel_id, kind, show_id, media_id, key, title, year, json.dumps(genres or []), source, transient,
+        (channel_id, kind, show_id, media_id, key, title, year, json.dumps(genre_list(genres or [])), source, transient,
          episode_minutes, pinned, json.dumps(match) if match else None, now_ts()))
     return int(conn.execute("SELECT id FROM lineup WHERE key = ?", (key,)).fetchone()["id"])   # inserted or updated
 
@@ -374,7 +378,7 @@ def options(conn: sqlite3.Connection, q: str = "", limit: int = 50) -> list[dict
 
 
 def facets(conn: sqlite3.Connection) -> dict[str, Any]:
-    """What the library actually holds, by kind: which genres, which decades, how many concerts.
+    """What the library and added catalogue entries hold, by kind and classification.
 
     The admin offers these as the only choices for a channel's genres and a band's genres and
     decades, so nobody can type a genre no item carries and then wonder why the band is empty.
@@ -393,6 +397,16 @@ def facets(conn: sqlite3.Connection) -> dict[str, Any]:
             if r["year"]:
                 decades.setdefault(str((r["year"] // 10) * 10), dict.fromkeys(FACET_KINDS, 0))[kind] += 1
             concerts += int(r["concert"] or 0)
+    # Added titles are part of the programme catalogue too. Including them here makes the same
+    # genre names available in their editor and the channel editor; previously `Children` could
+    # be saved on an entry but was invisible in the channel's genre picker.
+    for r in conn.execute("SELECT kind, genres, year FROM lineup"
+                          " WHERE source != 'library' AND enabled = 1 AND kind IN ('show', 'movie')"):
+        kind = "episode" if r["kind"] == "show" else "movie"
+        for g in genre_list(r["genres"]):
+            genres.setdefault(g, dict.fromkeys(FACET_KINDS, 0))[kind] += 1
+        if r["year"]:
+            decades.setdefault(str((r["year"] // 10) * 10), dict.fromkeys(FACET_KINDS, 0))[kind] += 1
     return {"genres": dict(sorted(genres.items())),
             "decades": dict(sorted(decades.items(), key=lambda kv: int(kv[0]))), "concerts": concerts}
 

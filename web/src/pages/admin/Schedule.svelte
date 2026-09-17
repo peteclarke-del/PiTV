@@ -59,6 +59,30 @@
     insert = { channel_id: slot?.channel_id ?? view.data?.channels[0]?.id, day: tsToLocalDay(ts), time: tsToLocalTime(ts), media_id: null, label: '' };
     selected = null;
   }
+  // Settings and channel changes only reach a day that is built again: the build leaves days
+  // that already have programmes alone, so this is how an edit is put into effect today.
+  let rebuildChannel = $state('');
+  async function rebuildDay() {
+    const where = rebuildChannel ? `channel ${rebuildChannel}` : 'every channel';
+    busy = true;
+    const r = await confirmApi(`Rebuild ${fmtDay(view.day)} for ${where}? Slots already started and locked slots are kept.`,
+      { title: 'Rebuild this day', okLabel: 'Rebuild' },
+      () => post('/api/schedule/build', { start_day: view.day, days: 1, force: true,
+                                          channels: rebuildChannel ? [Number(rebuildChannel)] : [] }));
+    busy = false;
+    if (r) { toast.success('Rebuilding; the day updates as it goes'); noteChange('schedule'); }
+  }
+
+  async function freshRebuild() {
+    busy = true;
+    const r = await confirmApi(
+      'Stop pitv_content and have it publish a fresh index, then delete the whole generated schedule (past and locked slots included), the viewing history and every wanted request, and rebuild the full horizon from the current settings? Channels, settings, sources, line-ups and every file, fetched or cached, are kept.',
+      { title: 'Fresh rebuild schedule', okLabel: 'Delete & rebuild', danger: true },
+      () => post('/api/schedule/fresh-rebuild'));
+    busy = false;
+    if (r) { toast.success('Fresh rebuild started; the schedule will repopulate as it runs'); noteChange('schedule'); }
+  }
+
   async function doInsert() {
     const start_ts = localToTs(insert.day, insert.time);
     busy = true;
@@ -75,6 +99,12 @@
     <button class="small" onclick={view.goNow}>Now</button>
     <label class="check small"><input type="checkbox" bind:checked={ads} /> Show ads &amp; idents</label>
     <span class="spacer"></span>
+    <select class="small" bind:value={rebuildChannel} disabled={!view.data} aria-label="Channel to rebuild">
+      <option value="">every channel</option>
+      {#each view.data?.channels ?? [] as c (c.id)}<option value={c.number}>{c.number} {c.name}</option>{/each}
+    </select>
+    <button class="small" onclick={rebuildDay} disabled={busy || !view.day}>Rebuild this day</button>
+    <button class="small danger" onclick={freshRebuild} disabled={busy}>Fresh rebuild…</button>
     <button class="small primary" onclick={() => openInsert(null)} disabled={!view.data}>Insert programme…</button>
   </div>
 

@@ -21,19 +21,20 @@ import logging
 import re
 import sqlite3
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
+from . import genres as genre_rules
 from . import tool_client
 from .db import (
-    CARTOON_GENRES,
-    KIDS_GENRES,
     all_settings,
     as_bool,
     as_float,
     as_int,
     as_text,
     assign_ident_channels,
+    effective,
     find_id,
     genre_list,
     insert_row,
@@ -49,18 +50,20 @@ from .db import (
 from .lineup import generate, restore_if_empty
 from .player.hwdec import PI_HW_CODECS
 from .scheduler.build import refill_empty_days
+from .scheduler.rules import normalise_cert
 
 log = logging.getLogger("pitv.catalogue")
 
 SCHEMA = 2
 SOURCE_TYPES = ("tv", "movie", "advert", "ident", "music")
 KINDS = ("episode", "movie", "advert", "ident", "music")
-CATEGORIES = ("general", "sport", "kids")
+SOURCE_CATEGORIES = ("general", "sport", "kids")
 REINDEX_TIMEOUT = 1800        # seconds to wait for a NAS re-index before importing what is there
 REINDEX_POLL = 3
 CONCERT_MINUTES = 35          # a music item this long is a concert even when not tagged
 UNSAFE_TAGS = {"alcohol", "tobacco", "adult", "gambling", "18"}
 REJECTS_KEPT = 50             # rejected records described in the run log; the rest are only counted
+METADATA_RECHECK_DAYS = 30
 MIRROR = "catalogue.json"
 
 
@@ -152,6 +155,12 @@ def _attention(fields: dict[str, Any]) -> str | None:
     return "; ".join(notes) or None
 
 
+def _refresh_attention(conn: sqlite3.Connection, media_id: int) -> None:
+    row = row_to_dict(conn.execute("SELECT * FROM media WHERE id = ?", (media_id,)).fetchone())
+    if row:
+        conn.execute("UPDATE media SET attention = ? WHERE id = ?", (_attention(effective(row)), media_id))
+
+
 def _save(conn: sqlite3.Connection, table: str, row_id: int | None, fields: dict[str, Any]) -> int:
     """Update row `row_id`, or insert when there is none. Returns the row id."""
     if row_id is None:
@@ -178,7 +187,6 @@ def import_index(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, Any
     sources_in, shows_in, items_in = (_records(doc, k) for k in ("sources", "shows", "items"))
     settings = all_settings(conn)
     unsafe = keyword_pattern(settings.get("adult_advert_keywords"))
-    cartoon = {g.lower() for g in genre_list(settings.get("cartoon_genres") or CARTOON_GENRES)}
     complete = bool(doc.get("complete", True))
     now = now_ts()
     counts: dict[str, Any] = {"sources": 0, "shows": 0, "items": 0, "new": 0, "missing": 0, "rejected": 0}
@@ -198,7 +206,7 @@ def import_index(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, Any
             if not sid or src.get("type") not in SOURCE_TYPES:
                 reject("source", sid, "no id or an unknown type")
                 continue
-            category = src.get("category") if src.get("category") in CATEGORIES else "general"
+            category = src.get("category") if src.get("category") in SOURCE_CATEGORIES else "general"
             location = "cache" if src.get("location") == "cache" else "nas"
             root = as_text(src.get("root")) or ""
             fields = {"uid": sid, "type": src["type"], "name": as_text(src.get("name")) or sid, "path": root,
@@ -227,13 +235,12 @@ def import_index(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, Any
                 reject("show", uid, "no uid or an unknown source")
                 continue
             genres = genre_list(sh.get("genres"))
-            category = sh.get("category") if sh.get("category") in CATEGORIES else src["category"]
-            kids = int(category == "kids" or any(g.lower() in KIDS_GENRES for g in genres))
-            if category != "sport" and any(g.lower() in cartoon for g in genres):
-                category = "cartoon"   # informational (dayparts, the admin); pitv_content may send it as kids
+            raw_category = sh.get("category") if sh.get("category") in SOURCE_CATEGORIES else src["category"]
+            kids = int(raw_category == "kids" or as_bool(sh.get("kids")) or genre_rules.is_childrens(genres))
+            category = genre_rules.scheduling_class(raw_category, genres)
             year = as_int(sh.get("year"))
             fields = {"source_id": src["id"], "path": uid, "title": as_text(sh.get("title")) or uid,
-                      "year": year, "certificate": as_text(sh.get("certificate")), "genres": json.dumps(genres),
+                      "year": year, "certificate": normalise_cert(as_text(sh.get("certificate"))), "genres": json.dumps(genres),
                       "plot": as_text(sh.get("plot")), "kids": kids, "category": category, "missing": 0,
                       "updated_at": now}
             row_id = find_id(conn, "shows", "path", uid)
@@ -275,7 +282,7 @@ def import_index(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, Any
                 "duration": duration, "vcodec": vcodec, "acodec": as_text(it.get("acodec")),
                 "width": as_int(it.get("width")), "height": as_int(it.get("height")),
                 "interlaced": int(as_bool(it.get("interlaced"))), "hwdec": int((vcodec or "") in PI_HW_CODECS),
-                "certificate": as_text(it.get("certificate")), "genres": json.dumps(genre_list(it.get("genres"))),
+                "certificate": normalise_cert(as_text(it.get("certificate"))), "genres": json.dumps(genre_list(it.get("genres"))),
                 "plot": as_text(it.get("plot")), "channel_hint": as_int(it.get("channel_hint")),
                 "artist": as_text(it.get("artist")),
                 "concert": int(as_bool(concert) if concert is not None
@@ -290,7 +297,8 @@ def import_index(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, Any
             if row_id is None:
                 row_id = find_id(conn, "media", "path", path)
             try:
-                _save(conn, "media", row_id, fields)
+                saved_id = _save(conn, "media", row_id, fields)
+                _refresh_attention(conn, saved_id)
             except sqlite3.IntegrityError as exc:   # e.g. its path already belongs to another uid
                 reject("item", uid, str(exc))
                 continue
@@ -339,8 +347,9 @@ def import_and_place(conn: sqlite3.Connection, doc: dict[str, Any], origin: str 
         run_log_finish(conn, run_id, "error", str(exc), [str(exc)])
         raise
     write_mirror(conn)
-    # A day built before this material arrived is a day of filler, and a built day is never
-    # revisited, so the new items would sit unscheduled until the horizon moved past it.
+    # A day built before this material arrived may contain whole-day filler or holding cards
+    # inside strict bands. Revisit those gaps now so fetched material is on the schedule before
+    # airtime rather than merely present in the catalogue.
     refill = refill_empty_days(conn)
     summary = (f"{counts['items']} items ({counts['new']} new, {counts['missing']} now missing,"
                f" {counts['rejected']} rejected) from {counts['sources']} sources; line-ups: {placed['assigned']} placed,"
@@ -350,6 +359,104 @@ def import_and_place(conn: sqlite3.Connection, doc: dict[str, Any], origin: str 
     log.info("catalogue import: %s", summary)
     return {**counts, **{f"lineup_{k}": v for k, v in placed.items()}, "refilled_days": refill["days"],
             "summary": summary, "run_id": run_id}
+
+
+def _title_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+
+
+def _compatible_candidate(kind: str, title: str, year: int | None,
+                          candidate: dict[str, Any]) -> bool:
+    """Conservative automatic identity check: never enrich a merely fuzzy search result."""
+    if _title_key(candidate.get("title")) != _title_key(title):
+        return False
+    found = as_int(candidate.get("year"))
+    if not year or not found:
+        return True
+    if kind == "movie":
+        return abs(found - year) <= 1
+    end = as_int(candidate.get("end_year")) or found
+    return found - 1 <= year <= end + 1
+
+
+def _lookup_metadata(settings: dict[str, Any], kind: str, title: str,
+                     year: int | None) -> tuple[dict[str, Any] | None, str]:
+    query = urllib.parse.urlencode({"kind": kind, "title": title, "year": year or "", "limit": 8})
+    status, payload = tool_client.request(tool_client.base_url(settings), "GET", "lookup", query=query, timeout=75)
+    if status != 200 or not isinstance(payload, dict):
+        reason = payload.get("error") if isinstance(payload, dict) else f"HTTP {status}"
+        return None, str(reason or f"HTTP {status}")
+    for candidate in payload.get("candidates") or []:
+        if not isinstance(candidate, dict) or not _compatible_candidate(kind, title, year, candidate):
+            continue
+        cert = normalise_cert(as_text(candidate.get("certificate")))
+        if cert:
+            return {**candidate, "certificate": cert}, ""
+    errors = payload.get("errors") or {}
+    return None, "; ".join(f"{k}: {v}" for k, v in errors.items()) or "no unambiguous rated match"
+
+
+def enrich_missing_metadata(conn: sqlite3.Connection, *, limit: int = 50, force: bool = False,
+                            progress: Any = None) -> dict[str, Any]:
+    """Look up missing certificates through pitv_content and retain trusted matches.
+
+    Shows are checked once (episodes inherit their series certificate); films are checked
+    individually.  Failed/ambiguous checks are dated so routine imports do not hammer providers,
+    while an explicit force run may retry them.
+    """
+    cutoff = now_ts() - METADATA_RECHECK_DAYS * 86400
+    items: list[dict[str, Any]] = []
+    for table, kind in (("shows", "show"), ("media", "movie")):
+        where = "missing = 0" if table == "shows" else "missing = 0 AND kind = 'movie'"
+        for row in conn.execute(f"SELECT * FROM {table} WHERE {where} ORDER BY title").fetchall():
+            raw = row_to_dict(row) or {}
+            if normalise_cert(as_text(effective(raw).get("certificate"))):
+                continue
+            checked = as_int(raw.get("metadata_checked_at")) or 0
+            if not force and checked >= cutoff:
+                continue
+            items.append({"table": table, "kind": kind, "row": raw})
+    # Family material first: it suffers most from the conservative unknown-film fallback.
+    items.sort(key=lambda i: (not (i["row"].get("kids") or genre_rules.is_childrens(i["row"].get("genres") or [])),
+                              i["kind"] != "movie", str(i["row"].get("title") or "").casefold()))
+    total = len(items)
+    items = items[:max(0, limit)]
+    settings = all_settings(conn)
+    found = checked = 0
+    notes: list[str] = []
+    for i, item in enumerate(items, 1):
+        row, table, kind = item["row"], item["table"], item["kind"]
+        if progress:
+            progress(f"checking ratings: {row['title']}", i - 1, len(items))
+        candidate, reason = _lookup_metadata(settings, kind, row["title"], as_int(row.get("year")))
+        checked += 1
+        now = now_ts()
+        if candidate:
+            enriched = row.get("enriched") if isinstance(row.get("enriched"), dict) else {}
+            genres = genre_list([*(effective(row).get("genres") or []), *(candidate.get("genres") or [])])
+            enriched = {**enriched, "certificate": candidate["certificate"]}
+            if genres:
+                enriched["genres"] = genres
+            if not effective(row).get("plot") and candidate.get("summary"):
+                enriched["plot"] = str(candidate["summary"])
+            if table == "shows":
+                enriched["kids"] = int(bool(effective(row).get("kids")) or genre_rules.is_childrens(genres))
+            source = str((candidate.get("match") or {}).get("source") or "online")
+            with tx(conn):
+                conn.execute(f"UPDATE {table} SET enriched = ?, metadata_checked_at = ?, metadata_source = ? WHERE id = ?",
+                             (json.dumps(enriched), now, source, row["id"]))
+                if table == "media":
+                    _refresh_attention(conn, row["id"])
+            found += 1
+        else:
+            conn.execute(f"UPDATE {table} SET metadata_checked_at = ?, metadata_source = NULL WHERE id = ?",
+                         (now, row["id"]))
+            if len(notes) < REJECTS_KEPT:
+                notes.append(f"{row['title']}: {reason}")
+    if progress:
+        progress(f"ratings: {found} found from {checked} checked", checked, len(items))
+    return {"checked": checked, "found": found, "remaining": max(0, total - checked), "notes": notes,
+            "summary": f"Found {found} missing certificate{'s' if found != 1 else ''} from {checked} online check{'s' if checked != 1 else ''}."}
 
 
 def refresh(conn: sqlite3.Connection, reindex: bool = False) -> dict[str, Any]:

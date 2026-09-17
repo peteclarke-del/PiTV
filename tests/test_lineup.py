@@ -86,7 +86,9 @@ def test_move_and_remove_entries(conn, data_dir):
 def test_external_entry_scheduled_ahead_and_requested(conn):
     ch = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
     confirmed = {"source": "tvmaze", "id": "2203", "url": "https://www.tvmaze.com/shows/2203/the-tripods", "imdb": "tt0086817"}
-    entry = lineup.add(conn, ch, title="The Tripods", year=1984, kind="show", genres=["Science Fiction"], episode_minutes=25,
+    # A title explicitly pinned to this channel remains eligible even when its year lies
+    # outside the automatic global era mix (the fixture defaults to the 1980s/1990s).
+    entry = lineup.add(conn, ch, title="The Tripods", year=1974, kind="show", genres=["Science Fiction"], episode_minutes=25,
                        match={**confirmed, "poster": "ignored"})
     assert entry["match"] == confirmed
     now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(conn))
@@ -100,8 +102,8 @@ def test_external_entry_scheduled_ahead_and_requested(conn):
     slots = conn.execute("SELECT s.*, w.episode, w.transient FROM schedule s JOIN wanted w ON w.id = s.wanted_id"
                          " WHERE s.replay = 0 ORDER BY s.start_ts").fetchall()
     assert slots, "external entry never placed"
-    lead = local_ts(parse_day("2026-09-16"), "08:00", tz_of(conn))
-    assert all(sl["start_ts"] >= lead for sl in slots), "placed sooner than external_lead_days"
+    lead = now + 23 * 3600
+    assert all(sl["start_ts"] > lead for sl in slots), "placed inside the 23-hour local-first window"
     assert all(sl["media_id"] is None and sl["title"] == "The Tripods" and sl["transient"] == 1 for sl in slots)
     episodes = [sl["episode"] for sl in slots]
     assert episodes == sorted(episodes) and len(set(episodes)) == len(episodes)
@@ -119,10 +121,31 @@ def test_external_entry_scheduled_ahead_and_requested(conn):
     assert mine and all(i["action"] == "fetch" and i["request_id"] == f"w:{i['wanted_id']}" for i in mine)
     assert all(i["match"] == confirmed for i in mine), "the confirmed identity goes to pitv_content with every request"
     assert mine[0]["show_title"] == "The Tripods" and mine[0]["transient"] is True
+    assert mine[0]["remote_required"] is True
+    assert min(i["priority"] for i in mine) < 0, "remote-only material must outrank playable NAS fallbacks"
     assert "The Tripods" in mine[0]["search"]["phrase"] and mine[0]["dest_dir"]
     with dbm.tx(conn):
         dbm.set_setting(conn, "nas_only", True)
-        dbm.set_setting(conn, "external_weight", 0.7)
+        dbm.set_setting(conn, "external_weight", 1.0)
+
+
+def test_every_unseen_remote_title_gets_a_variety_slot(conn):
+    """A healthy local library must not starve configured remote catalogue entries."""
+    ch = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
+    titles = ("Remote History One", "Remote History Two", "Remote History Three")
+    for n, title in enumerate(titles, 1):
+        lineup.add(conn, ch, title=title, year=1985, kind="show", genres=["Documentary"],
+                   episode_minutes=25, match={"source": "manual", "id": f"remote-{n}"})
+    with dbm.tx(conn):
+        dbm.set_setting(conn, "nas_only", False)
+        dbm.set_setting(conn, "external_weight", 1.0)
+
+    now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(conn))
+    build_horizon(conn, start_day=parse_day("2026-09-14"), days=3, now=now, seed=17, force=True)
+    scheduled = {r["title"] for r in conn.execute(
+        "SELECT DISTINCT s.title FROM schedule s JOIN wanted w ON w.id = s.wanted_id"
+        " WHERE s.channel_id = ? AND s.replay = 0", (ch,))}
+    assert set(titles) <= scheduled
 
 
 def test_readiness_substitutes_unfetched_placeholders(conn):
@@ -357,6 +380,34 @@ def test_added_title_without_a_channel_goes_where_its_genres_fit(tmp_path):
         lineup.add(conn, None, title="Jamie and the Magic Torch", kind="show", genres=["Animation"])
     with pytest.raises(ValueError):
         lineup.add(conn, None, show_id=1)       # moving a library title needs a destination
+    toons = conn.execute("SELECT id FROM channels WHERE content = 'cartoons'").fetchone()[0]
+    child = lineup.add(conn, toons, title="Bod", kind="show", year=1975, genres=["Children"])
+    assert lineup.facets(conn)["genres"]["Children"]["episode"] >= 1
+    changed = lineup.update(conn, child["id"], {"genres": ["Children", "Animation"], "episode_minutes": 5})
+    assert changed["genres"] == ["Children", "Animation"] and changed["episode_minutes"] == 5
+
+
+def test_genres_are_one_spelling_everywhere(tmp_path):
+    """Kids, Children's and cartoons are not three genres. Whatever a title is tagged with, it
+    reaches the channel that allows that genre; a channel's own list is stored the same way, and
+    rows written before the vocabulary existed are brought into line on the next start."""
+    from pitv import genres
+    from pitv.db import genre_list
+    assert genre_list(["Sci-Fi", "kids", "cartoons", "Action/Adventure"]) == [
+        "Science Fiction", "Children", "Animation", "Action", "Adventure"]
+    assert genres.matches(["Kids"], genres.CHILDRENS) and not genres.matches(["Crime"], genres.CHILDRENS)
+
+    ctx = make_library(tmp_path, max_episodes=2)
+    conn = ctx["conn"]
+    toons = conn.execute("SELECT id FROM channels WHERE content = 'cartoons'").fetchone()["id"]
+    with dbm.tx(conn):     # a channel list as an older PiTV stored it
+        conn.execute("UPDATE channels SET allowed_genres = ? WHERE id = ?",
+                     (json.dumps(["animation", "cartoon", "kids"]), toons))
+    dbm.init_db(conn)
+    assert dbm.row_to_dict(conn.execute("SELECT allowed_genres FROM channels WHERE id = ?",
+                                        (toons,)).fetchone())["allowed_genres"] == ["Animation", "Children"]
+    added = lineup.add(conn, None, title="Jamie and the Magic Torch", kind="show", genres=["Kids"])
+    assert added["channel_id"] == toons and added["genres"] == ["Children"]
 
 
 def test_confirmed_identity_is_cleaned_and_survives_the_mirror(tmp_path):

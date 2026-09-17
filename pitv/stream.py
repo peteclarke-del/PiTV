@@ -43,13 +43,6 @@ LIST_SIZE = 6                  # segments kept in the playlist; the rest are del
 MAX_PROGRAMME_SECONDS = 4 * 3600
 CARD_SECONDS = 60              # how long the test signal runs before the schedule is looked at again
 TICK_SECONDS = 1.0
-# Codecs an MPEG-TS segment can carry as they are; anything else is re-encoded.
-COPY_VIDEO = {"h264", "hevc", "mpeg2video"}
-ANNEXB = {"h264": "h264_mp4toannexb", "hevc": "hevc_mp4toannexb"}
-TS_SUFFIXES = {".ts", ".m2ts", ".mts", ".mpg", ".mpeg", ".vob"}   # already Annex B
-COPY_AUDIO = {"aac", "mp3", "ac3", "mp2"}
-
-
 @dataclass
 class _Channel:
     number: int
@@ -79,28 +72,21 @@ def has_initial_burst() -> bool:
 
 def _codec_args(media: dict[str, Any] | None, where: str, profile: dict[str, Any], encoder: str,
                 segment_seconds: int, source: Path | None = None) -> list[str]:
-    """Copy what MPEG-TS can carry; re-encode the rest to the screen's profile.
+    """Encode a browser-safe H.264/AAC rendition at the screen's profile.
 
     An encode is given a keyframe every segment, because the packager can only cut there: the
     test signal, one frame a second, would otherwise become a single segment minutes long.
 
-    A copy out of MP4 or Matroska needs the Annex B filter: those containers keep the picture
-    and sequence headers beside the stream, and a segment without them decodes to nothing but
-    "non-existing PPS" in every player."""
-    vcodec = (media or {}).get("cache_vcodec" if where == "cache" else "vcodec") or ""
-    acodec = (media or {}).get("acodec") or ""
-    args = []
-    if vcodec.lower() in COPY_VIDEO:
-        args += ["-c:v", "copy"]
-        bsf = ANNEXB.get(vcodec.lower())
-        if bsf and (source is None or source.suffix.lower() not in TS_SUFFIXES):
-            args += ["-bsf:v", bsf]
-    else:
-        fit = (f"scale={profile['width']}:{profile['height']}:force_original_aspect_ratio=decrease,"
-               f"pad={profile['width']}:{profile['height']}:-1:-1")
-        args += ["-c:v", encoder, "-b:v", f"{profile['max_bitrate_kbps']}k", "-vf", fit,
-                 "-force_key_frames", f"expr:gte(t,n_forced*{segment_seconds})"]
-    args += ["-c:a", "copy"] if acodec.lower() in COPY_AUDIO else ["-c:a", "aac", "-b:a", "128k", "-ac", "2"]
+    MPEG-TS itself accepts HEVC, MPEG-2 and AC-3, but that does not make them safe in Chrome,
+    Firefox or Safari. Even copied H.264 can carry a profile/pixel format a browser's hardware
+    decoder refuses. The web rendition therefore never inherits source codecs."""
+    fit = (f"scale={profile['width']}:{profile['height']}:force_original_aspect_ratio=decrease,"
+           f"pad={profile['width']}:{profile['height']}:-1:-1")
+    args = ["-c:v", encoder, "-b:v", f"{profile['max_bitrate_kbps']}k", "-vf", fit,
+            "-pix_fmt", "yuv420p", "-force_key_frames", f"expr:gte(t,n_forced*{segment_seconds})"]
+    if encoder == "libx264":
+        args += ["-profile:v", "main"]
+    args += ["-c:a", "aac", "-b:a", "128k", "-ac", "2"]
     return args
 
 
@@ -159,8 +145,26 @@ class Streams:
         if not client:
             return
         if client not in ch.viewers:
-            log.info("stream ch%s: %s started watching", ch.number, client)
+            log.info("stream ch%s: %s started watching", ch.number, client.split("#", 1)[0])
         ch.viewers[client] = ch.last_request
+
+    def _make_room(self, number: int, client: str | None, max_streams: int) -> bool:
+        """Replace this viewer's least-recent channel when the stream limit is full.
+
+        Called with ``_lock`` held. A browser cannot explicitly close an HLS GET when it
+        changes channel, so its previous stream otherwise occupies a slot until the idle sweep.
+        """
+        if len(self._channels) < max_streams:
+            return True
+        previous = [old for old in self._channels.values()
+                    if old.number != number and client and client in old.viewers]
+        if not previous:
+            return False
+        old = min(previous, key=lambda item: item.last_request)
+        log.info("stream ch%s stopped (viewer %s changed to ch%s)", old.number, client, number)
+        self._stop_channel(old)
+        self._channels.pop(old.number, None)
+        return len(self._channels) < max_streams
 
     def open(self, number: int, client: str | None = None) -> _Channel | None:
         """Start the channel's stream if it is not running, and mark it as wanted. None when
@@ -178,7 +182,8 @@ class Streams:
         with self._lock:
             ch = self._channels.get(number)
             if ch is None:
-                if len(self._channels) >= int(settings.get("stream_max_streams", 2)):
+                max_streams = int(settings.get("stream_max_streams", 2))
+                if not self._make_room(number, client, max_streams):
                     log.warning("stream for channel %s refused: %s already running", number, len(self._channels))
                     return None
                 ch = self._channels[number] = _Channel(number=number, channel_id=channel["id"],
@@ -223,13 +228,28 @@ class Streams:
         path = ch.dir / name
         return path if path.is_file() else None
 
+    def close(self, number: int, client: str | None = None) -> None:
+        """Release one browser viewer and stop the encoder when nobody else uses it."""
+        if not client:
+            return
+        with self._lock:
+            ch = self._channels.get(number)
+            if ch is None or client not in ch.viewers:
+                return
+            ch.viewers.pop(client, None)
+            log.info("stream ch%s: %s changed channel", number, client.split("#", 1)[0])
+            if not ch.viewers:
+                self._stop_channel(ch)
+                self._channels.pop(number, None)
+                log.info("stream ch%s stopped (last viewer left)", number)
+
     def status(self, viewer_timeout: float = 30.0) -> dict[str, Any]:
         """What the admin's System page shows: every running stream, and who is watching it."""
         now, streams, viewers = time.monotonic(), [], []
         with self._lock:
             channels = sorted(self._channels.values(), key=lambda c: c.number)
         for ch in channels:
-            watching = [{"channel": ch.number, "address": ip, "playing": ch.playing,
+            watching = [{"channel": ch.number, "address": ip.split("#", 1)[0], "playing": ch.playing,
                          "idle_seconds": round(now - seen)}
                         for ip, seen in sorted(ch.viewers.items()) if now - seen <= viewer_timeout]
             viewers += watching

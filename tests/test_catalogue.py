@@ -26,7 +26,7 @@ def test_import_creates_catalogue_and_is_idempotent(ctx):
     sport = conn.execute("SELECT category FROM shows WHERE title = 'Pot Black'").fetchone()
     assert sport["category"] == "sport"
     toons = conn.execute("SELECT category, kids FROM shows WHERE title = 'Danger Mouse'").fetchone()
-    assert toons["category"] == "cartoon" and toons["kids"] == 1
+    assert toons["category"] == "general" and toons["kids"] == 1
 
 
 def test_complete_index_marks_absent_items_missing(ctx):
@@ -192,6 +192,35 @@ def test_refresh_reports_a_malformed_index_instead_of_raising(ctx, monkeypatch):
     result = catalogue.refresh(ctx["conn"])
     assert result["status"] == "error" and "schema 2" in result["summary"]
     assert catalogue.last_import(ctx["conn"])["status"] == "error"
+
+
+def test_missing_rating_enrichment_is_separate_and_below_admin_overrides(monkeypatch):
+    from pitv import catalogue
+
+    conn = dbm.connect(":memory:")
+    dbm.init_db(conn)
+    with dbm.tx(conn):
+        source = conn.execute("INSERT INTO sources(uid,type,name,path,enabled)"
+                              " VALUES ('tv','tv','TV','/tv',1)").lastrowid
+        show_id = conn.execute("INSERT INTO shows(source_id,path,title,year,genres,updated_at)"
+                               " VALUES (?, 'danger-mouse', 'Danger Mouse', 1981, '[]', ?)",
+                               (source, dbm.now_ts())).lastrowid
+    monkeypatch.setattr(catalogue, "_lookup_metadata", lambda *a, **k: ({
+        "title": "Danger Mouse", "year": 1981, "certificate": "U",
+        "genres": ["Animation", "Children's"], "match": {"source": "tmdb"},
+    }, ""))
+
+    result = catalogue.enrich_missing_metadata(conn, limit=1)
+    row = dbm.row_to_dict(conn.execute("SELECT * FROM shows WHERE id = ?", (show_id,)).fetchone())
+    assert result["found"] == 1 and row["certificate"] is None
+    assert dbm.effective(row)["certificate"] == "U"
+    assert row["metadata_source"] == "tmdb" and dbm.effective(row)["kids"] == 1
+
+    with dbm.tx(conn):
+        conn.execute("UPDATE shows SET overrides = ? WHERE id = ?", ('{"certificate":"PG"}', show_id))
+    row = dbm.row_to_dict(conn.execute("SELECT * FROM shows WHERE id = ?", (show_id,)).fetchone())
+    assert dbm.effective(row)["certificate"] == "PG", "an explicit edit must win over online metadata"
+    conn.close()
 
 
 def test_document_values_are_read_defensively():

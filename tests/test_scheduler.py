@@ -2,6 +2,7 @@
 import json
 import math
 import os
+import random
 from collections import Counter
 from dataclasses import replace
 from datetime import date, datetime, timedelta
@@ -11,7 +12,16 @@ import pytest
 from conftest import make_library
 
 from pitv import db as dbm
-from pitv.scheduler.build import Builder, Slot, build_horizon, parse_day, rebuild_from, slot_titles
+from pitv.scheduler import bands
+from pitv.scheduler.build import (
+    Builder,
+    Slot,
+    build_horizon,
+    fresh_rebuild_horizon,
+    parse_day,
+    rebuild_from,
+    slot_titles,
+)
 from pitv.scheduler.rules import (
     allowed_at,
     day_bounds,
@@ -20,6 +30,7 @@ from pitv.scheduler.rules import (
     minutes_of_day,
     tz_of,
 )
+from pitv.wanted import _band_duration
 
 
 @pytest.fixture(scope="module")
@@ -35,6 +46,84 @@ def _programmes(conn):
     return conn.execute("SELECT s.*, m.kind AS mkind, m.certificate, m.year, m.show_id, m.season, m.episode, m.genres, m.duration"
                         " FROM schedule s JOIN media m ON m.id = s.media_id WHERE s.replay = 0 AND s.kind = 'programme'"
                         " ORDER BY s.channel_id, s.start_ts").fetchall()
+
+
+def test_daily_show_limit_survives_preference_relaxation(tmp_path):
+    c = make_library(tmp_path / "daily-cap", max_episodes=3)["conn"]
+    now = local_ts(parse_day("2026-09-14"), "12:00", tz_of(c))
+    with dbm.tx(c):
+        c.execute("UPDATE channels SET enabled=0")
+        channel_id = c.execute("SELECT id FROM channels WHERE number=1").fetchone()[0]
+        c.execute("UPDATE channels SET enabled=1,kind_weights='{\"tv\":1,\"movie\":0}' WHERE id=?",
+                  (channel_id,))
+        keep = c.execute("SELECT id FROM shows WHERE home_channel_id=? LIMIT 1", (channel_id,)).fetchone()[0]
+        c.execute("UPDATE shows SET excluded=1 WHERE id!=?", (keep,))
+    builder = Builder(c, now=now)
+    channel = next(ch for ch in builder.channels if ch["id"] == channel_id)
+    show = builder._free_shows[channel_id][0]
+    choice = builder._choose_programme(channel, random.Random(1), now, 3600, "show",
+                                       {show.id: builder.settings["show_daily_limit"]}, None,
+                                       set(), relax=2)
+    assert choice is None
+    c.close()
+
+
+def test_music_feature_requires_concert_classification():
+    band = bands.Band(1, 5, "Concert", "20:30", None, (), ("music",), (), (), True)
+    long_clip = {"id": 1, "duration": 30 * 60, "concert": 0, "genres": [], "year": 1985}
+    concert = {"id": 2, "duration": 60 * 60, "concert": 1, "genres": [], "year": 1985}
+    filler = bands.Filler([band], [long_clip, concert], item_repeat=0, feature_repeat=0,
+                          rng=random.Random(1), last_placed={})
+    assert filler.pick(band, 0, 2 * 3600, feature=True) is concert
+    filler = bands.Filler([band], [long_clip], item_repeat=0, feature_repeat=0,
+                          rng=random.Random(1), last_placed={})
+    assert filler.pick(band, 0, 2 * 3600, feature=True) is None
+
+
+def test_band_shortfall_uses_its_real_timetable_window():
+    morning = bands.Band(1, 5, "Morning", "08:00", None, (), ("music",), (), (), False)
+    lunch = bands.Band(2, 5, "Lunch", "10:00", None, (), ("music",), (), (), False)
+    late = bands.Band(3, 5, "Late", "23:30", 120, (), ("music",), (), (), False)
+    timetable = [morning, lunch, late]
+    assert _band_duration(morning, timetable, "08:00") == 120
+    assert _band_duration(lunch, timetable, "08:00") == 13 * 60 + 30
+    assert _band_duration(late, timetable, "08:00") == 120
+
+
+def test_fresh_rebuild_discards_derived_state_but_keeps_inputs(tmp_path):
+    c = make_library(tmp_path / "fresh", max_episodes=6)["conn"]
+    day = parse_day("2026-09-14")
+    now = local_ts(day, "13:00", tz_of(c))
+    build_horizon(c, start_day=day, days=1, now=now, seed=3)
+    lineup_id = c.execute("SELECT id FROM lineup ORDER BY id LIMIT 1").fetchone()[0]
+    with dbm.tx(c):
+        c.execute("UPDATE schedule SET locked = 1")
+        c.execute("UPDATE band SET last_fetch_at = ?", (now,))
+        c.execute("INSERT INTO history(channel_id, media_id, schedule_id, started_at, title)"
+                  " SELECT channel_id, media_id, id, start_ts, title FROM schedule LIMIT 1")
+        old = c.execute("INSERT INTO wanted(kind,title,lineup_id,transient,status,created_at)"
+                        " VALUES ('episode','Old placeholder',?,1,'queued',?)", (lineup_id, now)).lastrowid
+        done = c.execute("INSERT INTO wanted(kind,title,lineup_id,transient,status,created_at)"
+                         " VALUES ('episode','Delivered placeholder',?,1,'done',?)", (lineup_id, now)).lastrowid
+        manual = c.execute("INSERT INTO wanted(kind,title,status,created_at)"
+                           " VALUES ('movie','Keep me','queued',?)", (now,)).lastrowid
+    inputs = {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+              for t in ("sources", "channels", "band", "shows", "media", "lineup")}
+
+    result = fresh_rebuild_horizon(c, start_day=day, days=2, now=now, seed=4)
+
+    assert result["built"] == 12 and result["cleared_slots"] > 0 and result["cleared_history"] == 1
+    assert c.execute("SELECT COUNT(*) FROM history").fetchone()[0] == 0
+    assert c.execute("SELECT COUNT(*) FROM schedule WHERE locked = 1").fetchone()[0] == 0
+    assert c.execute("SELECT COUNT(DISTINCT day || ':' || channel_id) FROM schedule").fetchone()[0] == 12
+    # Fresh means no queued, delivered or manually requested work survives into the new pipeline.
+    assert result["cleared_wanted"] >= 3 and result["kept_wanted"] == 0
+    assert not c.execute("SELECT 1 FROM wanted WHERE id IN (?, ?, ?)", (old, done, manual)).fetchone()
+    assert not c.execute("SELECT 1 FROM band WHERE last_fetch_at IS NOT NULL").fetchone()
+    assert c.execute("SELECT COUNT(*) FROM run_log").fetchone()[0] <= 1   # only this build's own row
+    assert inputs == {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                      for t in ("sources", "channels", "band", "shows", "media", "lineup")}
+    c.close()
 
 
 def test_every_channel_day_is_covered(conn):
@@ -195,19 +284,26 @@ def _channel(conn, number):
 def test_cartoons_routed_to_cartoon_channel(conn):
     toons = _channel(conn, 6)
     assert toons["content"] == "cartoons"
-    rows = conn.execute("SELECT title, category FROM shows WHERE home_channel_id = ? ORDER BY title", (toons["id"],)).fetchall()
+    assert json.loads(toons["kind_weights"])["movie"] == 0
+    rows = conn.execute("SELECT title, category, kids, genres FROM shows WHERE home_channel_id = ? ORDER BY title",
+                        (toons["id"],)).fetchall()
     titles = {r["title"] for r in rows}
     assert {"Danger Mouse", "Bananaman", "Thundercats", "Count Duckula"} <= titles
-    assert all(r["category"] == "cartoon" for r in rows)
+    # The channel allows Children as well as Animation, so a live-action children's series belongs
+    # here too; what must never land is something that is not for children at all.
+    assert all(r["kids"] for r in rows)
     # and no cartoon series on the general channels
     stray = conn.execute("SELECT s.title FROM shows s JOIN channels c ON c.id = s.home_channel_id"
-                         " WHERE c.content = 'general' AND s.category = 'cartoon'").fetchall()
+                         " WHERE c.content = 'general' AND (s.genres LIKE '%Animation%' OR s.genres LIKE '%Anime%')").fetchall()
     assert not stray
     # cartoons run all evening on their own channel (kids cutoff does not apply there)
     tz = tz_of(conn)
     starts = conn.execute("SELECT start_ts FROM schedule WHERE channel_id = ? AND kind = 'programme' AND replay = 0",
                           (toons["id"],)).fetchall()
     assert any(datetime.fromtimestamp(r["start_ts"], tz).hour >= 21 for r in starts)
+    films = conn.execute("SELECT COUNT(*) FROM schedule s JOIN media m ON m.id = s.media_id"
+                         " WHERE s.channel_id = ? AND s.replay = 0 AND m.kind = 'movie'", (toons["id"],)).fetchone()[0]
+    assert films == 0
 
 
 def test_music_channel_day(conn):
@@ -219,17 +315,40 @@ def test_music_channel_day(conn):
     assert all(r["block"] for r in rows)
     concerts = [r for r in rows if r["concert"]]
     assert len(concerts) == 2, [r["title"] for r in concerts]
+    # A feature is the introduction to its stretch, not a demand to pad the rest with unrelated
+    # short clips. When it ends early, the next band starts there and extends back to its nominal
+    # start time.
+    configured = conn.execute("SELECT name, start FROM band WHERE channel_id = ? ORDER BY start",
+                              (music["id"],)).fetchall()
+    tz = tz_of(conn)
+    for concert in concerts:
+        nominal = [(local_ts(parse_day("2026-09-16"), b["start"], tz), b["name"]) for b in configured]
+        current = max(i for i, (at, _) in enumerate(nominal) if at <= concert["start_ts"])
+        if current + 1 < len(nominal) and concert["end_ts"] < nominal[current + 1][0]:
+            following = next(r for r in rows if r["start_ts"] == concert["end_ts"])
+            assert following["block"] == nominal[current + 1][1]
     # Contiguous from 08:00 to closedown. Every slot counts, not only those with a file: a band
     # that runs out of videos it may use closes its own stretch with a caption.
     day = conn.execute("SELECT start_ts, end_ts FROM schedule WHERE channel_id = ? AND day = '2026-09-16'"
                        " AND replay = 0 ORDER BY start_ts", (music["id"],)).fetchall()
     for a, b in pairwise(day):
         assert a["end_ts"] == b["start_ts"]
-    # every eligible video is used before any repeats, and repeats are spread evenly
+    # Every eligible video is used before any repeats. Repeats are spread evenly within each
+    # band, which is as even as it can be: a band held to one decade can only play that decade,
+    # so the day as a whole repeats whatever the narrowest band is short of.
     ids = [r["media_id"] for r in rows]
     eligible = conn.execute("SELECT COUNT(*) FROM media WHERE kind = 'music' AND concert = 0 AND year BETWEEN 1970 AND 2009").fetchone()[0]
     assert len(set(ids)) >= min(eligible, len(ids)) - 2
-    assert max(Counter(ids).values()) <= math.ceil(len(ids) / eligible) + 2
+    for name in {r["block"] for r in rows}:
+        band = [r for r in rows if r["block"] == name and not r["concert"]]
+        if not band:
+            continue
+        decades = json.loads(conn.execute("SELECT fill FROM band WHERE channel_id = ? AND name = ?",
+                                          (music["id"], name)).fetchone()["fill"]).get("decades") or []
+        years = " OR ".join(f"year BETWEEN {d} AND {d + 9}" for d in decades) or "1"
+        pool = conn.execute(f"SELECT COUNT(*) FROM media WHERE kind = 'music' AND concert = 0 AND ({years})").fetchone()[0]
+        assert pool, f"{name} has no videos of its decades"
+        assert max(Counter(r["media_id"] for r in band).values()) <= math.ceil(len(band) / pool) + 2, name
     # A block prefers its genres: they are over-represented in it compared with the whole day.
     # (Counts depend on what aired in the last 36 hours, so the test asserts the preference.)
     def soulful(r):
@@ -561,17 +680,63 @@ def test_a_band_is_a_titled_stretch_of_any_channels_day(tmp_path):
                                " WHERE s.channel_id = ? AND s.replay = 0 AND s.kind = 'programme'", (music,)).fetchall()
     assert music_slots and all(s["block"] for s in music_slots), "every music slot belongs to a band"
     assert {s["kind"] for s in music_slots} == {"music"}
-    # Each band runs at its own time. Bands that run "to the next band" have no length of their
-    # own, so a day of them is where a band that swallowed the whole day would hide.
+    # Each ordinary band runs at its own time. A band after a feature may begin early when the
+    # feature ends; otherwise a day of bands must not collapse into one all-day block.
     windows = [(local_ts(day, r["start"], tz), r["name"])
                for r in conn.execute("SELECT name, start FROM band WHERE channel_id = ? ORDER BY start", (music,))
                if local_ts(day, r["start"], tz) >= local_ts(day, "08:00", tz)]
     placed = conn.execute("SELECT start_ts, block FROM schedule WHERE channel_id = ? AND replay = 0"
                           " AND block IS NOT NULL ORDER BY start_ts", (music,)).fetchall()
     assert len({s["block"] for s in placed}) > 1, "one band must not take the whole day"
+    handoffs = []
+    feature_slots = conn.execute("SELECT s.start_ts, s.end_ts, s.block FROM schedule s JOIN media m ON m.id=s.media_id"
+                                 " WHERE s.channel_id = ? AND s.replay = 0 AND m.concert = 1 ORDER BY s.start_ts",
+                                 (music,)).fetchall()
+    for feature in feature_slots:
+        current = max((i for i, (at, _) in enumerate(windows) if at <= feature["start_ts"]), default=-1)
+        if 0 <= current < len(windows) - 1 and feature["end_ts"] < windows[current + 1][0]:
+            handoffs.append((feature["end_ts"], windows[current + 1][0], windows[current + 1][1]))
     for slot in placed:
         due = [name for at, name in windows if at <= slot["start_ts"]]
-        assert due and slot["block"] == due[-1], f"{slot['block']} played in {due[-1] if due else 'no'} band's time"
+        early = [name for start, end, name in handoffs if start <= slot["start_ts"] < end]
+        expected = early[-1] if early else (due[-1] if due else None)
+        assert slot["block"] == expected, f"{slot['block']} played in {expected or 'no'} band's time"
+
+
+def test_final_band_item_finishes_before_overnight_replay(conn):
+    """Midnight is a closedown boundary, not a point where a band item is cut off."""
+    music = dbm.row_to_dict(_channel(conn, 5))     # the builder is given channels as dicts
+    builder = Builder(conn, seed=1)
+    band = next(b for b in builder.bands[music["id"]] if not b.feature)
+
+    class OneItem:
+        item_minutes = 15
+
+        def __init__(self):
+            self.used = False
+
+        def pick(self, _band, _at, gap, feature):
+            if self.used or feature or gap < 180:
+                return None
+            self.used = True
+            return {"id": 999999, "title": "Last song", "duration": 180, "year": 1985,
+                    "genres": ["pop"]}
+
+        def note(self, _item, _at):
+            pass
+
+    slots = []
+    end = 1_000
+    actual = builder._fill_band(music, "2026-09-16", band, end - 30, end, OneItem(), slots.append,
+                                hard_end=end + 8 * 3600)
+    assert actual == end + 150 and slots[-1].end_ts == actual
+
+    day = parse_day("2026-09-16")
+    _, day_end, next_start = day_bounds(day, builder.settings, tz_of(conn))
+    programme = replace(slots[-1], channel_id=music["id"], day=day.isoformat(),
+                        start_ts=day_end - 30, end_ts=day_end + 150)
+    overnight = builder._overnight(music, day, day_end, next_start, [programme])
+    assert overnight and overnight[0].start_ts == programme.end_ts
 
 
 def test_short_episodes_run_together_under_the_series_title(tmp_path):
@@ -583,7 +748,9 @@ def test_short_episodes_run_together_under_the_series_title(tmp_path):
     with dbm.tx(conn):
         conn.execute("UPDATE channels SET short_episode_minutes = 12, short_episode_run_minutes = 20"
                      " WHERE id = ?", (toons,))
-    build_horizon(conn, start_day=parse_day("2026-09-14"), days=1, seed=7, force=True)
+    # The second day exercises cadence repeats: they must replay the whole bundle rather than
+    # collapsing back to one short episode followed by adverts.
+    build_horizon(conn, start_day=parse_day("2026-09-14"), days=2, seed=7, force=True)
     slots = conn.execute("SELECT title, block, start_ts, end_ts FROM schedule WHERE channel_id = ?"
                          " AND replay = 0 AND kind = 'programme' ORDER BY start_ts", (toons,)).fetchall()
     runs, current = [], []
@@ -601,6 +768,123 @@ def test_short_episodes_run_together_under_the_series_title(tmp_path):
         assert all(s["title"] == run[0]["block"] for s in run), "a run is one series under its own title"
         assert all(s["end_ts"] - s["start_ts"] < 12 * 60 for s in run), "only short episodes are run together"
         assert run[-1]["end_ts"] - run[0]["start_ts"] >= 15 * 60, "a run lasts about as long as a programme"
+    assert not conn.execute(
+        "SELECT 1 FROM schedule WHERE channel_id = ? AND replay = 0 AND kind = 'programme'"
+        " AND end_ts - start_ts < 12 * 60 AND block IS NULL LIMIT 1", (toons,)
+    ).fetchone(), "short first-runs and cadence repeats must always belong to a bundle"
+
+
+def test_a_band_keeps_its_length_past_closedown(conn):
+    """Midnight does not cut a band short: one that starts at 23:30 for two hours runs two hours,
+    and the overnight starts when it ends."""
+    music = dbm.row_to_dict(_channel(conn, 5))
+    builder = Builder(conn, seed=2)
+    day = parse_day("2026-09-16")
+    day_start, day_end, next_start = day_bounds(day, builder.settings, tz_of(conn))
+    with dbm.tx(conn):
+        conn.execute("UPDATE band SET start = '23:30', minutes = 120 WHERE channel_id = ? AND id ="
+                     " (SELECT id FROM band WHERE channel_id = ? ORDER BY start DESC LIMIT 1)",
+                     (music["id"], music["id"]))
+    builder = Builder(conn, seed=2)
+    placed = builder._bands_for(music, day, day_start, day_end, next_start)
+    start, end, band = placed[-1]
+    assert start == local_ts(day, "23:30", tz_of(conn))
+    assert end == start + 120 * 60 > day_end, f"{band.name} was cut at closedown"
+    assert end <= next_start, "and never runs into tomorrow's broadcast day"
+
+
+def test_a_strict_channel_plays_only_labelled_material(tmp_path):
+    """A channel may refuse anything the index has not labelled. Its programmes and its bands
+    then carry a genre and a year, and a band with nothing left shows its own title card rather
+    than something untagged."""
+    ctx = make_library(tmp_path, max_episodes=6)
+    conn = ctx["conn"]
+    music = conn.execute("SELECT id FROM channels WHERE content = 'music'").fetchone()["id"]
+    one = conn.execute("SELECT id FROM channels WHERE number = 1").fetchone()["id"]
+    with dbm.tx(conn):
+        conn.execute("UPDATE channels SET strict_matching = 1 WHERE id IN (?, ?)", (music, one))
+        conn.execute("UPDATE media SET year = NULL, genres = '[]' WHERE kind = 'music' AND id IN"
+                     " (SELECT id FROM media WHERE kind = 'music' ORDER BY id LIMIT 20)")
+    day = parse_day("2026-09-14")
+    build_horizon(conn, start_day=day, days=1, seed=11, force=True)
+    # An episode's genres are the series', as they are when the scheduler weighs it up.
+    played = conn.execute("SELECT m.year, COALESCE(NULLIF(m.genres, '[]'), sh.genres) AS genres"
+                          " FROM schedule s JOIN media m ON m.id = s.media_id"
+                          " LEFT JOIN shows sh ON sh.id = m.show_id"
+                          " WHERE s.channel_id IN (?, ?) AND s.kind = 'programme' AND s.replay = 0",
+                          (music, one)).fetchall()
+    assert played
+    for row in played:
+        assert row["year"], "a strict channel plays nothing undated"
+        assert json.loads(row["genres"] or "[]"), "a strict channel plays nothing untagged"
+
+
+def test_explicit_channel_assignment_beats_automatic_year_and_metadata_filters():
+    """A direct line-up choice is an instruction, not a suggestion. Strict matching and the
+    channel's automatic era routing must not silently discard it."""
+    c = dbm.connect(":memory:")
+    dbm.init_db(c)
+    now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(c))
+    with dbm.tx(c):
+        c.execute("UPDATE channels SET enabled = 0")
+        channel = c.execute("SELECT id FROM channels WHERE number = 1").fetchone()[0]
+        c.execute("UPDATE channels SET enabled = 1, pattern = 'show', ads_enabled = 0,"
+                  " idents_enabled = 0, strict_matching = 1, decades = '[1980]',"
+                  " kind_weights = '{\"tv\":1,\"movie\":0}' WHERE id = ?", (channel,))
+        source = c.execute("INSERT INTO sources(uid,type,name,path) VALUES ('tv','tv','TV','/tv')").lastrowid
+        show = c.execute("INSERT INTO shows(source_id,path,title,year,certificate,genres,home_channel_id,updated_at)"
+                         " VALUES (?, 'modern-doc', 'Modern Documentary', 2025, 'U', '[]', ?, ?)",
+                         (source, channel, now)).lastrowid
+        media = c.execute("INSERT INTO media(source_id,kind,show_id,season,episode,title,year,path,duration,"
+                          " certificate,genres,updated_at) VALUES (?, 'episode', ?, 1, 1, 'Pilot', 2025,"
+                          " '/tv/modern-doc-s01e01.mp4', 1800, 'U', '[]', ?)",
+                          (source, show, now)).lastrowid
+        c.execute("INSERT INTO lineup(channel_id,kind,show_id,key,title,source,pinned,created_at,updated_at)"
+                  " VALUES (?, 'show', ?, ?, 'Modern Documentary', 'library', 1, ?, ?)",
+                  (channel, show, f"show:{show}", now, now))
+
+    result = build_horizon(c, start_day=parse_day("2026-09-14"), days=1, now=now, seed=1, force=True)
+    assert result["status"] in ("ok", "warning")
+    assert c.execute("SELECT 1 FROM schedule WHERE channel_id = ? AND media_id = ? AND replay = 0",
+                     (channel, media)).fetchone()
+    c.close()
+
+
+def test_remote_cutoff_and_weekly_series_cadence_are_hour_accurate():
+    c = dbm.connect(":memory:")
+    dbm.init_db(c)
+    now = local_ts(parse_day("2026-09-14"), "10:00", tz_of(c))
+    with dbm.tx(c):
+        dbm.set_setting(c, "nas_only", False)
+    builder = Builder(c, now=now)
+    channel = dbm.row_to_dict(c.execute("SELECT * FROM channels WHERE number = 1").fetchone())
+    assert not builder._external_allowed(channel, now + 23 * 3600)
+    assert builder._external_allowed(channel, now + 23 * 3600 + 1)
+    builder.started_channels.add(channel["id"])
+    assert builder._external_allowed(channel, now + 1)
+    assert builder._external_weight(now + 23 * 3600) < builder._external_weight(now + 23 * 3600 + 1)
+    assert builder._cadence_factor(now, now + 24 * 3600) < 0.1
+    assert builder._cadence_factor(now, now + 7 * 86400) == dbm.all_settings(c)["series_cadence_bonus"]
+    assert not builder._next_episode_due(now, now + 6 * 86400)
+    assert builder._next_episode_due(now, now + 7 * 86400 - 12 * 3600)
+    c.close()
+
+
+def test_external_repeat_reuses_request_without_advancing_episode():
+    c = dbm.connect(":memory:")
+    dbm.init_db(c)
+    builder = Builder(c, now=local_ts(parse_day("2026-09-14"), "10:00", tz_of(c)))
+    channel = dbm.row_to_dict(c.execute("SELECT * FROM channels WHERE number=1").fetchone())
+    entry = {"id": -99, "lineup_id": 99, "kind": "episode", "title": "Remote Docs",
+             "duration": 1800, "year": 1995, "genres": ["Documentary"], "next_number": 4,
+             "spare_wanted": []}
+    first = builder._external_slot(channel, "2026-09-14", builder.now, entry)
+    repeat = builder._external_slot(channel, "2026-09-14", builder.now + 3600,
+                                    {**entry, "_external_repeat": True})
+    assert first.wanted_spec["episode"] == repeat.wanted_spec["episode"] == 4
+    assert entry["next_number"] == 5
+    assert first.replay == 0 and repeat.replay == 1
+    c.close()
 
 
 def test_a_band_short_of_material_asks_for_more(tmp_path, monkeypatch):
@@ -627,7 +911,7 @@ def test_a_band_short_of_material_asks_for_more(tmp_path, monkeypatch):
     result = wanted.request_band_material(conn, settings)
     assert result["asked"] == 1 and sent["path"] == "run"
     assert sent["body"]["mode"] == "catalogue" and sent["body"]["kind"] == "cartoons"
-    assert sent["body"]["genres"] == ["stop motion"] and sent["body"]["years"] == [1980, 1989]
+    assert sent["body"]["genres"] == ["Stop Motion"] and sent["body"]["years"] == [1980, 1989]
     assert sent["body"]["max_minutes"] == settings["band_item_max_minutes"]
     # Asked once, then left alone, so one stubborn band cannot block the rest night after night.
     assert wanted.request_band_material(conn, settings)["summary"] != result["summary"]

@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from ... import settings_schema
-from ...db import DEFAULT_SETTINGS
+from ...db import DEFAULT_SETTINGS, genre_list
 from ...player.input import ACTIONS
 
 HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -85,6 +85,9 @@ def _check_number(key: str, value: Any, default: Any) -> None:
         raise SettingError(f"{key} must be a whole number")
 
 
+_GENRE_KEYS = {"cartoon_genres"}
+
+
 def check_setting(key: str, value: Any) -> Any:
     """Validate one setting; returns the value to store. Raises SettingError with a reason."""
     if key not in DEFAULT_SETTINGS or key in SECRET_SETTINGS:
@@ -140,6 +143,8 @@ def check_setting(key: str, value: Any) -> Any:
     elif isinstance(default, list):
         if not isinstance(value, list):
             raise SettingError(f"{key} must be a list")
+        if key in _GENRE_KEYS:
+            return genre_list(value)    # stored in PiTV's own spelling, like every other genre
     elif isinstance(default, dict) and not isinstance(value, dict):
         raise SettingError(f"{key} must be an object")
     return value

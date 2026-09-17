@@ -5,7 +5,7 @@
   import { post, tryApi } from '../../lib/api.js';
   import { guard } from '../../lib/guard.svelte.js';
   import { toast } from '../../lib/stores.svelte.js';
-  import { WEEKDAYS } from '../../lib/format.js';
+  import { WEEKDAYS, fmtDateTime } from '../../lib/format.js';
   import GenrePicker from '../../components/GenrePicker.svelte';
   import DecadePicker from '../../components/DecadePicker.svelte';
 
@@ -15,14 +15,14 @@
   function add() {
     const last = value.at(-1);
     value.push({ name: '', start: last ? last.start : '08:00', minutes: null, days: [], enabled: true,
-                 fill: { kinds: ['music'], genres: [], decades: [], feature: false, fetch: '' } });
+                 fill: { kinds: ['music'], genres: [], decades: [], feature: false, fetch: '', only_matching: null, max_minutes: null } });
   }
   let usesMusic = $derived(value.some((b) => (b.fill?.kinds ?? []).includes('music')));
   // A band's choices are what the library holds for the kinds it draws on, so nothing offered is empty.
   const genreOptions = $derived(facets?.genres ?? {});
   const decadesFor = (kinds) => Object.entries(facets?.decades ?? {})
     .filter(([, counts]) => kinds.some((k) => (counts[k] ?? 0) > 0)).map(([d]) => Number(d));
-  // Asks for the band with least, wherever it is: the nightly pass does the same thing.
+  // Declares every current band shortfall; pitv_content serialises the actual fetch jobs.
   const topUp = guard(async () => {
     const r = await tryApi(post('/api/bands/material', {}));
     if (r) toast[r.status === 'error' ? 'error' : 'success'](r.summary ?? 'Asked pitv_content');
@@ -47,6 +47,9 @@
         <button class="small ghost" onclick={() => value.splice(i, 1)} aria-label="Remove band">✕</button>
       </div>
       <div class="line">
+        {#if b.last_fetch_at}<span class="tiny muted">Material last asked for {fmtDateTime(b.last_fetch_at)}</span>{/if}
+      </div>
+      <div class="line">
         <span class="tiny muted lbl">Days</span>
         {#each WEEKDAYS as d, n (d)}<label class="pick" class:on={b.days.includes(n)}><input type="checkbox" checked={b.days.includes(n)} onchange={() => (b.days = toggle(b.days, n))} />{d}</label>{/each}
         {#if !b.days.length}<span class="tiny muted">every day</span>{/if}
@@ -55,7 +58,16 @@
         <span class="tiny muted lbl">From</span>
         {#each KINDS as [k, label] (k)}<label class="pick" class:on={b.fill.kinds.includes(k)}><input type="checkbox" checked={b.fill.kinds.includes(k)} onchange={() => toggleKind(b, k)} />{label}</label>{/each}
         <label class="pick feature" class:on={b.fill.feature}><input type="checkbox" checked={!!b.fill.feature} onchange={(e) => (b.fill.feature = e.currentTarget.checked)} />Open with a feature</label>
+        <label class="tiny">Fill with
+          <select class="small" value={b.fill.only_matching === null || b.fill.only_matching === undefined ? '' : String(b.fill.only_matching)}
+                  onchange={(e) => (b.fill.only_matching = e.currentTarget.value === '' ? null : e.currentTarget.value === 'true')}>
+            <option value="">as the channel says</option>
+            <option value="true">only labelled matches</option>
+            <option value="false">whatever fits</option>
+          </select>
+        </label>
         <label class="pick" class:on={b.enabled}><input type="checkbox" bind:checked={b.enabled} />On</label>
+        <label class="tiny">Items under (mins)<input type="number" class="xnarrow" min="1" max="600" placeholder="channel" value={b.fill.max_minutes ?? ''} onchange={(e) => (b.fill.max_minutes = e.currentTarget.value === '' ? null : Number(e.currentTarget.value))} /></label>
       </div>
       <div class="line"><span class="tiny muted lbl">Genres</span><GenrePicker value={b.fill.genres} options={genreOptions} kinds={b.fill.kinds} onchange={(v) => (b.fill.genres = v)} label="Band genres" /><span class="tiny muted">of what the band draws on</span></div>
       <div class="line"><span class="tiny muted lbl">Decades</span><DecadePicker bind:value={b.fill.decades} decades={decadesFor(b.fill.kinds)} label="Band decades" /></div>

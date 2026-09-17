@@ -48,7 +48,7 @@
     <RemotePage />
   {:else if section === 'admin'}
     <Admin />
-  {:else if section === 'channel'}
+  {:else if section === 'channel' || section === 'channels'}
     <Channel />
   {:else}
     <div class="page"><div class="empty">Page not found. <a href="#/">Go to Now &amp; Next</a></div></div>

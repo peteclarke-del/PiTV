@@ -83,6 +83,7 @@
     { key: 'free', label: 'Free', class: 'small', get: (m) => m.usage?.free, cell: freeCell },
   ];
   let acting = $state('');
+  let actingAll = $state(false);
   poll(load, 10000);
 
   // Stopping the player blanks the screen, and restarting the web service drops this page for a moment: ask first.
@@ -98,6 +99,16 @@
     }
     acting = '';
     setTimeout(load, 1500);
+  }
+
+  async function allServices(action) {
+    const verb = { restart: 'Restart', stop: 'Stop', start: 'Start' }[action] ?? action;
+    actingAll = true;
+    await confirmApi(`${verb} all controllable PiTV and pitv_content services in dependency order?`,
+      { title: `${verb} all services`, okLabel: `${verb} all`, danger: action === 'stop' },
+      () => post(`/api/system/services/${action}`), { success: `${verb} all services requested` });
+    actingAll = false;
+    setTimeout(load, 1800);
   }
 </script>
 
@@ -134,7 +145,12 @@
   </div>
 
   <div class="card pad-0">
-    <div class="card-title" style="padding:.8rem 1rem 0"><h3>Services</h3><AppBadge app="pitv" /><AppBadge app="content" /></div>
+    <div class="card-title" style="padding:.8rem 1rem 0"><h3>Services</h3><AppBadge app="pitv" /><AppBadge app="content" />
+      <span class="spacer"></span>
+      <button class="small ghost" onclick={() => allServices('start')} disabled={actingAll || !!acting}>Start all</button>
+      <button class="small ghost" onclick={() => allServices('restart')} disabled={actingAll || !!acting}>Restart all</button>
+      <button class="small danger" onclick={() => allServices('stop')} disabled={actingAll || !!acting}>Stop all</button>
+    </div>
     <p class="scope" style="padding:0 1rem;margin:.2rem 0 .4rem">The systemd units of both applications. "Answers" is a live check that the process responds, so a service run by hand on a desktop still shows as up.</p>
     <DataTable id="system-services" columns={serviceColumns} rows={info?.services ?? null} key={(r) => r.unit} card={false} empty="No services reported." />
   </div>
@@ -183,7 +199,7 @@
 {#snippet appCell(s)}<AppBadge app={s.app} />{/snippet}
 {#snippet stateCell(s)}<span class="badge {HEALTH[s.health] ?? ''}">{s.state}</span>{#if s.enabled && s.enabled !== 'enabled' && s.enabled !== 'static'}<div class="tiny muted">{s.enabled}</div>{/if}{/snippet}
 {#snippet answersCell(s)}{#if s.responding === true}<span class="badge ok">yes</span>{:else if s.responding === false}<span class="badge danger">no</span>{:else}<span class="muted">–</span>{/if}{/snippet}
-{#snippet actionsCell(s)}{#each s.actions as a (a)}<button class="small ghost" onclick={() => serviceAction(s.unit, a)} disabled={acting === s.unit}>{a}</button>{/each}{/snippet}
+{#snippet actionsCell(s)}{#each s.actions as a (a)}<button class="small ghost" class:danger={a === 'stop'} onclick={() => serviceAction(s.unit, a)} disabled={actingAll || acting === s.unit}>{a}</button>{/each}{/snippet}
 {#snippet mountStatus(m)}{#if m.available}<span class="badge ok">mounted</span>{:else}<span class="badge danger">missing</span>{/if}{/snippet}
 {#snippet idleCell(r)}{r.idle_seconds < 5 ? 'now' : `${r.idle_seconds}s ago`}{/snippet}
 

@@ -36,6 +36,7 @@ from .db import (
     update_row,
 )
 from .lineup import attach_delivery, clean_match
+from .scheduler.rules import normalise_cert
 from .player.cache import MediaCache
 from .player.hwdec import PI_HW_CODECS, is_raspberry_pi
 from .scheduler.build import rebuild_from
@@ -47,6 +48,7 @@ MAX_WANTED_ATTEMPTS = 3
 APPLIED_REPORT_DAYS = 7      # report files, once applied, are kept this long for reference
 UNAPPLIED_REPORT_DAYS = 30   # a report file that never applies is given up after this long
 DEADLINE_LEAD = 15 * 60  # a file is due this long before it first airs
+REMOTE_PRIORITY_HOURS = 24  # fetching is slower/less certain than copying, so begin one day earlier
 # Typical running times per kind, so pitv_content can reject obviously wrong search hits.
 WANTED_MINUTES = {"music": [2, 8], "advert": [0.1, 2], "episode": [20, 60], "movie": [70, 180]}
 log = logging.getLogger("pitv.content")
@@ -139,9 +141,18 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
         it = items.get(request_id)
         if it is None:
             first_air = slot["start_ts"]
-            it = items[request_id] = {**build(slot), "request_id": request_id, "channels": [],
+            request = build(slot)
+            priority = int(max(0.0, (first_air - now) / 3600) // 4)
+            remote = request.get("action") == "fetch"
+            if remote:
+                # A NAS item remains playable through nas_fallback while its cache copy is
+                # prepared; a remote-only item has no such escape hatch.  Keep the full lead
+                # adjustment (including negative values) so an imminent fetch sorts ahead of
+                # overdue NAS copies/transcodes instead of tying them at priority zero.
+                priority -= REMOTE_PRIORITY_HOURS // 4
+            it = items[request_id] = {**request, "request_id": request_id, "channels": [],
                                       "first_air_ts": first_air, "deadline_ts": first_air - DEADLINE_LEAD,
-                                      "priority": int(max(0.0, (first_air - now) / 3600) // 4)}
+                                      "priority": priority, "remote_required": remote}
         if slot["channel"] not in it["channels"]:
             it["channels"].append(slot["channel"])
 
@@ -257,7 +268,7 @@ def _fetched_show(conn: sqlite3.Connection, w: dict[str, Any], meta: dict[str, A
     if row is not None:
         return int(row["id"])
     return insert_row(conn, "shows", {
-        "source_id": None, "path": key, "title": title, "year": year, "certificate": as_text(meta.get("certificate")),
+        "source_id": None, "path": key, "title": title, "year": year, "certificate": normalise_cert(as_text(meta.get("certificate"))),
         "genres": json.dumps(genre_list(meta.get("genres"))), "plot": as_text(meta.get("plot")),
         "category": "general", "updated_at": now_ts()})
 
@@ -284,7 +295,7 @@ def _deliver_fetched(conn: sqlite3.Connection, wid: int, file: dict[str, Any], m
         "duration": as_float(file.get("duration")), "vcodec": vcodec, "acodec": as_text(file.get("acodec")),
         "width": as_int(file.get("width")), "height": as_int(file.get("height")),
         "interlaced": int(as_bool(file.get("interlaced"))), "hwdec": int((vcodec or "") in PI_HW_CODECS),
-        "certificate": as_text(meta.get("certificate")), "genres": json.dumps(genre_list(meta.get("genres"))),
+        "certificate": normalise_cert(as_text(meta.get("certificate"))), "genres": json.dumps(genre_list(meta.get("genres"))),
         "plot": as_text(meta.get("plot")), "artist": as_text(meta.get("artist")) or w.get("artist"),
         "concert": int(as_bool(meta.get("concert"))),
         "family_safe": family_safe({**meta, "title": title, "path": path},

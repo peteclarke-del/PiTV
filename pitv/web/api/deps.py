@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import Depends, HTTPException, Request
 
 from ... import db as dbm
+from ... import genres as genre_rules
 from ...db import DEFAULT_SETTINGS, effective, genre_list, get_setting, row_to_dict
 from ...logsetup import tail
 from ..auth import is_content_client, require_admin
@@ -130,6 +131,8 @@ def media_public(row: sqlite3.Row | dict[str, Any] | None, with_path: bool = Fal
     eff = effective(d)
     out = {k: eff.get(k) for k in MEDIA_PUBLIC if k in eff}
     out["indexed"] = {k: d.get(k) for k in ("title", "year", "certificate", "genres", "plot")}
+    out["enriched"] = d.get("enriched") or {}
+    out["metadata_source"] = d.get("metadata_source")
     out["cached"] = bool(d.get("cache_path")) or d.get("origin") in ("cache", "online")
     out["filename"] = d.get("path", "").rsplit("/", 1)[-1]
     if with_path:
@@ -144,7 +147,10 @@ def show_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
             "mode", "anchor_time", "anchor_days", "rest_weeks", "excluded", "missing", "overrides",
             "source_id")
     out = {k: eff.get(k) for k in keys}
+    out["cartoon"] = genre_rules.is_cartoon(eff.get("genres") or [])
     out["indexed"] = {k: d.get(k) for k in ("title", "year", "certificate", "genres", "plot", "kids")}
+    out["enriched"] = d.get("enriched") or {}
+    out["metadata_source"] = d.get("metadata_source")
     # path holds the index uid (show:<source>:<folder>) or fetched:show:<title>:<year>
     out["folder"] = d.get("path", "").split(":", 2)[-1]
     for extra in ("episode_count", "next_season", "next_episode", "attention_count", "end_year"):

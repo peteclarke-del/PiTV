@@ -17,7 +17,7 @@
     const body = { mode, kind: kind || null, count: num(count, { min: 1, int: true }), url: url.trim() || null };
     const r = await tryApi(toolPost('run', body));
     busy = false;
-    if (r?.ok) { toast.success(`pitv_content run started (job ${r.job_id ?? '?'})`); onchange?.(); }
+    if (r?.ok) { toast.success(`pitv_content job accepted (${r.status ?? 'queued'} · ${r.job_id ?? '?'})`); onchange?.(); }
     else if (r) toast.error(r.error || 'Run was not started');
   }
   async function cancel() {
@@ -40,8 +40,8 @@
     </label>
     <label class="field">Count<input class="xnarrow" type="number" min="1" bind:value={count} placeholder="all" /></label>
     <label class="field" style="flex:1;min-width:220px">URL<input bind:value={url} placeholder="optional: fetch this one page/file" /></label>
-    <button class="primary" onclick={run} disabled={busy || running}>Run</button>
+    <button class="primary" onclick={run} disabled={busy}>Run</button>
     {#if running}<button class="danger" onclick={cancel} disabled={busy}>Cancel</button>{/if}
   </div>
-  {#if running}<p class="tiny muted mt">A run is active; wait for it to finish or cancel it before starting another.</p>{/if}
+  {#if running}<p class="tiny muted mt">A run is active; new work is queued behind it, with schedule/cache delivery taking priority over catalogue top-ups.</p>{/if}
 </div>

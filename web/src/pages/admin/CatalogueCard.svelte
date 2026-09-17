@@ -25,6 +25,10 @@
   });
   const importNow = guard(() => importCatalogue(false));
   const reindex = guard(() => importCatalogue(true));
+  const enrich = guard(async () => {
+    const r = await tryApi(post('/api/catalogue/enrich', { limit: 500, force: true }), { success: 'Online certificate checks started' });
+    if (r) toast.success('Missing ratings are being checked; progress appears below');
+  });
   const exportNow = guard(async () => {
     const doc = await tryApi(get('/api/catalogue/export'));
     if (doc) downloadJson(doc, 'catalogue.json');
@@ -45,11 +49,12 @@
     <span class="spacer"></span>
     <button class="small primary" onclick={importNow} disabled={importNow.busy}>Import catalogue</button>
     <button class="small" onclick={reindex} disabled={reindex.busy} title="pitv_content re-scans its sources first, then PiTV imports the new index">Re-index sources and import</button>
+    <button class="small" onclick={enrich} disabled={enrich.busy} title="Look up unrated films and series through pitv_content; exact title/year matches only">Check missing ratings</button>
     <button class="small ghost" onclick={() => fileInput?.click()} title="Development: import an index document from a file">Import file…</button>
     <button class="small ghost" onclick={exportNow} disabled={exportNow.busy}>Export</button>
     <input type="file" accept="application/json,.json" bind:this={fileInput} onchange={importFile} hidden />
   </div>
-  <p class="scope">What PiTV can schedule: imported from pitv_content's library index daily at the catalogue hour. Admin overrides below win over the indexed values.</p>
+  <p class="scope">What PiTV can schedule: imported from pitv_content's library index daily at the catalogue hour. Trusted online enrichment fills missing metadata; your admin overrides always win.</p>
   {#if cat}
     <div class="row small">
       {#if li}<StatusBadge status={li.status} /><span>{li.summary}</span><span class="tiny muted">{fmtAgo(li.finished_at ?? li.started_at, clock.ts)}</span>

@@ -17,6 +17,9 @@
   // A browser only starts a video on its own when it is silent, so the picture comes up muted
   // and the viewer turns the sound on. One click, and it stays on for the rest of the visit.
   let muted = $state(true);
+  // One id per browser player lets the server retire this player's previous channel without
+  // confusing it with another tab (localhost viewers otherwise all have the same address).
+  const viewer = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   function sound() {
     if (!video) return;
     video.muted = false;
@@ -24,18 +27,17 @@
     muted = false;
     video.play?.().catch(() => {});
   }
-  let hls = null;
-
   let entry = $derived((now?.channels ?? []).find((c) => c.channel.number === number) ?? null);
   let others = $derived((now?.channels ?? []).map((c) => c.channel));
 
   async function load() { now = (await tryApi(get('/api/now', { next: 1 }))) ?? now; }
   onMount(load);
   poll(load, 20000);
+  let hls = null;
 
   // One player per channel: rebuilt when the channel changes, torn down when the page closes.
   $effect(() => {
-    const src = `/channel/${number}.m3u8`;
+    const src = `/channel/${number}.m3u8?viewer=${encodeURIComponent(viewer)}`;
     const el = video;
     if (!el) return;
     error = '';
@@ -62,7 +64,14 @@
       hls.loadSource(src);
       hls.attachMedia(el);
     })();
-    return () => { cancelled = true; hls?.destroy(); hls = null; el.removeAttribute('src'); el.load(); };
+    return () => {
+      cancelled = true;
+      hls?.destroy();
+      hls = null;
+      el.removeAttribute('src');
+      el.load();
+      fetch(src, { method: 'DELETE', keepalive: true }).catch(() => {});
+    };
   });
 </script>
 

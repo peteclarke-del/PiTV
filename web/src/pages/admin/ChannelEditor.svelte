@@ -43,7 +43,8 @@
     description: c.description ?? '', content: c.content ?? 'general',
     allowed_genres: c.allowed_genres ?? [], excluded_genres: c.excluded_genres ?? [], nas_only: c.nas_only ?? 'inherit',
     short_episode_minutes: c.short_episode_minutes ?? '', short_episode_run_minutes: c.short_episode_run_minutes ?? '',
-    fetch_kind: c.fetch_kind ?? '',
+    fetch_kind: c.fetch_kind ?? '', band_item_max_minutes: c.band_item_max_minutes ?? '',
+    strict_matching: c.strict_matching ?? false,
     decades: c.decades ?? [], kids_any_time: !!c.kids_any_time, bands: (c.bands ?? []).map((b) => ({ ...b, fill: { ...b.fill } })),
     band_item_repeat_hours: c.band_item_repeat_hours ?? '', band_feature_repeat_days: c.band_feature_repeat_days ?? '',
   });
@@ -87,7 +88,8 @@
       allowed_genres: f.allowed_genres, excluded_genres: f.excluded_genres, nas_only: f.nas_only,
       short_episode_minutes: f.short_episode_minutes === '' ? null : Number(f.short_episode_minutes),
       short_episode_run_minutes: f.short_episode_run_minutes === '' ? null : Number(f.short_episode_run_minutes),
-      fetch_kind: f.fetch_kind || null,
+      fetch_kind: f.fetch_kind || null, strict_matching: f.strict_matching,
+      band_item_max_minutes: f.band_item_max_minutes === '' ? null : Number(f.band_item_max_minutes),
       decades: f.decades, kids_any_time: f.kids_any_time, bands: f.bands,
       band_item_repeat_hours: num(f.band_item_repeat_hours, { min: 0, max: 8760, int: true }),
       band_feature_repeat_days: num(f.band_feature_repeat_days, { min: 0, max: 8760, int: true }),
@@ -131,7 +133,7 @@
           <span class="help">Only programmes from these decades; empty means any. A series that ran into one of them counts, and a programme with no year is still allowed.</span>
         </div>
         {#if shown('standard')}
-          <label class="field">Short episodes are under (minutes)<input type="number" class="narrow" min="0" max="60" bind:value={f.short_episode_minutes} placeholder="as Settings says" /><span class="help">Episodes shorter than this run together under the series title, so a five minute cartoon does not take a slot of its own.</span></label>
+          <label class="field">Group episodes shorter than (minutes)<input type="number" class="narrow" min="0" max="60" bind:value={f.short_episode_minutes} placeholder="as Settings says" /><span class="help">Episodes shorter than a normal programme run together under the series title, with no advert break between them.</span></label>
           <label class="field">Run them together for (minutes)<input type="number" class="narrow" min="5" max="120" bind:value={f.short_episode_run_minutes} placeholder="as Settings says" /></label>
         {/if}
         <label class="field wide">Fetch more material as
@@ -141,6 +143,7 @@
           </select>
           <span class="help">When a band on this channel has too little of its own genres and decades, pitv_content is asked to fetch this kind of material. A band may ask for a different one.</span>
         </label>
+        <label class="check wide"><input type="checkbox" bind:checked={f.strict_matching} /> Only material with a known genre and year<span class="help">Nothing the index has not labelled is scheduled here, including in its bands. A strict channel plays less, but plays nothing it cannot vouch for.</span></label>
         <label class="check wide"><input type="checkbox" bind:checked={f.kids_any_time} /> Children's programmes at any hour<span class="help">Ignores the children's cutoff in Settings, Certificates. Suits a channel that shows cartoons all evening.</span></label>
         {#if shown('standard')}
           <label class="field">Only schedule what is on disk
@@ -156,6 +159,7 @@
       {#if shown('standard')}
         <div class="form-grid mt">
           <label class="field">Repeat an item after (hours)<input type="number" class="narrow" min="0" max="8760" bind:value={f.band_item_repeat_hours} placeholder="as Settings says" /><span class="help">How long before this channel's bands may play the same short item again.</span></label>
+          <label class="field">Band items are under (minutes)<input type="number" class="narrow" min="1" max="600" bind:value={f.band_item_max_minutes} placeholder="as Settings says" /><span class="help">Anything this long is a feature, not one item among several: a film or a concert. A single band may set its own.</span></label>
           <label class="field">Repeat a feature after (days)<input type="number" class="narrow" min="0" max="8760" bind:value={f.band_feature_repeat_days} placeholder="as Settings says" /><span class="help">The same, for concerts and films.</span></label>
         </div>
       {/if}

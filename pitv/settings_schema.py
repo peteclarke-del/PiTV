@@ -61,8 +61,6 @@ FIELDS: tuple[dict[str, Any], ...] = (
     _f("horizon_days", "day", "standard", "Days built ahead", "int", "How many days ahead the schedule is kept built.", min=1, max=31),
     _f("rebuild_when_days_left", "day", "advanced", "Extend when fewer than", "int",
        "Days left before the schedule is extended automatically.", min=0, max=30),
-    _f("end_of_day_overrun_minutes", "day", "advanced", "End of day overrun (minutes)", "int",
-       "How far past day end the last programme may run before filler is used instead.", min=0, max=180),
     _f("start_rounding_minutes", "day", "advanced", "Start rounding (minutes)", "int",
        "Programme start times are rounded up to a multiple of this.", min=1, max=30),
     _f("duration_tolerance_minutes", "day", "advanced", "Duration tolerance (minutes)", "int",
@@ -87,11 +85,15 @@ FIELDS: tuple[dict[str, Any], ...] = (
     _f("sport_back_to_back_weekends", "programming", "standard", "Sport back to back at weekends", "bool",
        "Let sport follow sport through weekend afternoons."),
     _f("cartoon_genres", "programming", "standard", "Cartoon genres", "chips",
-       "Series with any of these genres go to a cartoons channel.", options={"lower": True}),
+       "Series with any of these genres go to a cartoons channel. Spellings are brought to PiTV's"
+       " own, so Kids and Children's both mean Children."),
     _f("show_repeat_penalty", "programming", "advanced", "Show repeat penalty", "float",
        "Weight multiplier for each earlier airing of the same series that day.", min=0, max=1, step=0.05),
-    _f("same_slot_bonus", "programming", "advanced", "Same slot bonus", "float",
-       "Multiplier favouring a series at the time it aired yesterday, so regulars keep their slot.",
+    _f("series_cadence_days", "programming", "standard", "Series cadence (days)", "int",
+       "Ordinary series aim to return on the same weekday after this many days. Strip and weekly anchors remain exact.",
+       min=1, max=28),
+    _f("series_cadence_bonus", "programming", "advanced", "Series cadence bonus", "float",
+       "Multiplier favouring the next episode close to its target weekday and time.",
        min=0, max=10, step=0.5),
     _f("genre_repeat_penalty", "programming", "advanced", "Genre repeat penalty", "float",
        "Multiplier when the previous programme shared a genre.", min=0, max=1, step=0.05),
@@ -122,11 +124,14 @@ FIELDS: tuple[dict[str, Any], ...] = (
     _f("adult_advert_keywords", "adverts", "standard", "Adult advert keywords", "chips",
        "Used only when pitv_content gives no family-safety verdict: a whole word from this list in "
        "the title keeps the advert off family channels.", options={"lower": True}),
+    _f("max_break_minutes", "adverts", "standard", "Longest advert break (minutes)", "int",
+       "Adverts stop here however wide the gap they are filling, so a hole in the day never becomes"
+       " twenty minutes of advertising. What is left takes idents, then the caption.", min=1, max=30),
     _f("advert_year_window", "adverts", "advanced", "Advert year window", "int",
        "Prefer adverts from within this many years of the programme.", min=0, max=30),
     _f("advert_repeat_penalty_hours", "adverts", "advanced", "Advert repeat gap (hours)", "int",
        "Avoid repeating an advert within this many hours.", min=0, max=168),
-    _f("short_episode_minutes", "programming", "standard", "Short episodes are under", "int",
+    _f("short_episode_minutes", "programming", "standard", "Group episodes shorter than", "int",
        "Episodes shorter than this are run together under the series title, so a five minute"
        " cartoon does not take a slot of its own. 0 turns it off.", min=0, max=60),
     _f("short_episode_run_minutes", "programming", "standard", "Run them together for", "int",
@@ -146,14 +151,14 @@ FIELDS: tuple[dict[str, Any], ...] = (
        "Watch a channel on a phone, a browser or VLC at http://<this machine>/channel/1 (2, 3 and so on). "
        "A stream starts when someone asks for it and stops when nobody is watching."),
     _f("stream_max_streams", "player", "advanced", "Streams at once", "int",
-       "Channels that may stream at the same time. Copies cost little; a re-encode on a Pi 4 costs a lot.",
+       "Channels that may stream at the same time. Each browser-safe stream is encoded to H.264/AAC.",
        min=1, max=8),
     _f("stream_segment_seconds", "player", "advanced", "Stream segment (seconds)", "int",
        "Shorter segments start sooner and lag less; longer ones are steadier on a poor network.", min=2, max=10),
     _f("stream_idle_seconds", "player", "advanced", "Stop a stream after (seconds)", "int",
        "How long a stream keeps running once nothing has asked for it.", min=10, max=3600),
     _f("stream_encoder", "player", "advanced", "Stream encoder", "text",
-       "ffmpeg encoder for material that cannot be streamed as it is; empty picks h264_v4l2m2m on the Pi "
+       "ffmpeg encoder used for browser-safe streams; empty picks h264_v4l2m2m on the Pi "
        "and libx264 elsewhere."),
     _f("badge_seconds", "player", "standard", "Channel badge seconds", "int",
        "How long the channel badge stays on screen after a change.", min=1, max=60),
@@ -182,19 +187,22 @@ FIELDS: tuple[dict[str, Any], ...] = (
        "Gaps between the episodes on disk go to the wanted list for pitv_content to fetch."),
     _f("band_fetch", "content", "standard", "Find material for bands", "bool",
        "A band with too little of its own genres and decades in the library asks pitv_content to"
-       " fetch some. One band a night, in the small hours."),
-    _f("band_item_max_minutes", "content", "advanced", "Band items are under (minutes)", "int",
-       "What counts as an item a band can use, and the longest thing fetched for one. Long enough"
-       " for a long song, short enough to exclude a concert film.", min=1, max=600),
+       " fetch some. All known shortfalls are queued up front and downloaded one at a time."),
+    _f("band_fetch_hours", "content", "advanced", "Hours it may fetch for bands", "hours",
+       "Hours when PiTV may queue band top-ups. pitv_content downloads them one at a time."),
+    _f("band_item_max_minutes", "programming", "standard", "Band items are under (minutes)", "int",
+       "A band runs several short things under one title, so anything this long counts as a feature"
+       " instead: a film or a concert, which only a band that opens with one will take. It is also the"
+       " longest thing fetched for a band. A channel or a single band may set its own.", min=1, max=600),
     _f("acquire_dir", "content", "advanced", "Download folder", "path",
        "Where pitv_content files what it fetches; empty uses the cache folder's acquired folder."),
-    _f("external_lead_days", "content", "advanced", "Lead time for fetches (days)", "int",
-       "Material not on disk is scheduled at least this far ahead, so pitv_content has time to fetch it.",
-       min=0, max=14),
+    _f("external_lead_hours", "content", "advanced", "Local-first window (hours)", "int",
+       "Inside this window PiTV favours files already local or on the NAS. Beyond it remote line-up entries compete on variety.",
+       min=0, max=168),
     _f("external_episode_minutes", "content", "advanced", "Assumed episode length (minutes)", "int",
        "For series whose files are not on disk yet.", min=1, max=240),
     _f("external_weight", "content", "advanced", "Weight of material not on disk", "float",
-       "How readily it is picked next to material on disk; 1 is equal footing.", min=0, max=2, step=0.05),
+       "How readily remote material is picked once outside the local-first window; 1 is equal footing.", min=0, max=2, step=0.05),
     _f("transient_keep_days", "content", "advanced", "Keep transient files (days)", "int",
        "Fetched transient material is deleted this long after it airs.", min=0, max=365),
     _f("browse_roots", "content", "advanced", "Folders the picker may browse", "chips",
@@ -210,7 +218,8 @@ FIELDS: tuple[dict[str, Any], ...] = (
 
 BY_KEY: dict[str, dict[str, Any]] = {f["key"]: f for f in FIELDS}
 # Settings with no field: edited elsewhere or never by hand.
-UNLISTED = frozenset({"keymap", "admin_password_hash", "content_fetch_kinds"})
+UNLISTED = frozenset({"keymap", "admin_password_hash", "content_fetch_kinds",
+                      "end_of_day_overrun_minutes"})
 # Fields shown but not stored: derived from other settings when the schema is served.
 COMPUTED = frozenset({"content_profile"})
 

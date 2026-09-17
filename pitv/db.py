@@ -20,6 +20,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from . import genres
+
 log = logging.getLogger("pitv.db")
 
 SCHEMA_VERSION = 1
@@ -46,7 +48,7 @@ CREATE TABLE IF NOT EXISTS sources (
     mount TEXT,                    -- where this machine finds that root, when it differs; PiTV's own
     remote TEXT,                   -- e.g. smb://synologynas/tvshows/
     location TEXT NOT NULL DEFAULT 'nas',        -- nas | cache
-    category TEXT NOT NULL DEFAULT 'general',   -- general | sport | kids; series inherit it
+    category TEXT NOT NULL DEFAULT 'general',   -- scheduling default: general | sport; legacy kids is imported as audience
     enabled INTEGER NOT NULL DEFAULT 1,
     last_indexed_at INTEGER,       -- last index import that included this source
     index_summary TEXT
@@ -76,6 +78,8 @@ CREATE TABLE IF NOT EXISTS channels (
     short_episode_minutes INTEGER,     -- short-episode runs; NULL follows the global settings
     short_episode_run_minutes INTEGER,
     fetch_kind TEXT,                   -- what pitv_content should fetch for this channel's bands; NULL = nothing
+    band_item_max_minutes INTEGER,     -- longest item its bands treat as one of their own; NULL = settings
+    strict_matching INTEGER NOT NULL DEFAULT 0,   -- 1: only items whose genre and year are known and allowed
     allowed_genres TEXT,                       -- JSON list; empty/NULL = any genre
     excluded_genres TEXT,                      -- JSON list
     nas_only TEXT NOT NULL DEFAULT 'inherit',  -- inherit | yes | no : may this channel schedule material not yet on disk
@@ -93,7 +97,7 @@ CREATE TABLE IF NOT EXISTS shows (
     genres TEXT,                   -- JSON list
     plot TEXT,
     kids INTEGER NOT NULL DEFAULT 0,
-    category TEXT NOT NULL DEFAULT 'general',   -- general | sport | kids | cartoon
+    category TEXT NOT NULL DEFAULT 'general',   -- scheduling class: general | sport
     home_channel_id INTEGER REFERENCES channels(id) ON DELETE SET NULL,   -- derived from lineup
     mode TEXT NOT NULL DEFAULT 'auto' CHECK (mode IN ('auto', 'strip', 'weekly')),
     anchor_time TEXT,              -- 'HH:MM' for strip/weekly
@@ -101,6 +105,9 @@ CREATE TABLE IF NOT EXISTS shows (
     rest_weeks INTEGER NOT NULL DEFAULT 4,
     excluded INTEGER NOT NULL DEFAULT 0,
     missing INTEGER NOT NULL DEFAULT 0,
+    enriched TEXT NOT NULL DEFAULT '{}',    -- JSON: trusted online metadata, below admin overrides
+    metadata_checked_at INTEGER,
+    metadata_source TEXT,
     overrides TEXT NOT NULL DEFAULT '{}',   -- JSON: admin edits that beat indexed values
     updated_at INTEGER
 );
@@ -141,6 +148,9 @@ CREATE TABLE IF NOT EXISTS media (
     excluded INTEGER NOT NULL DEFAULT 0,
     missing INTEGER NOT NULL DEFAULT 0,
     attention TEXT,                -- reason this item needs a look, or NULL
+    enriched TEXT NOT NULL DEFAULT '{}',    -- JSON: trusted online metadata, below admin overrides
+    metadata_checked_at INTEGER,
+    metadata_source TEXT,
     overrides TEXT NOT NULL DEFAULT '{}',
     updated_at INTEGER
 );
@@ -327,9 +337,9 @@ DEFAULT_MUSIC_BANDS = [
     _band("22:30", "Nineties Indie & Dance", ["indie", "dance", "electronic", "britpop"], [1990]),
     _band("23:30", "Late Soul", ["soul", "r&b", "reggae", "jazz", "blues"]),
 ]
-CARTOON_GENRES = ["animation", "cartoon", "anime", "animated"]
+CARTOON_GENRES = list(genres.CARTOONS)
 # Genres that mark children's programming (kids cutoff at 21:00, kids-friendly dayparts).
-KIDS_GENRES = {"animation", "children", "children's", "kids", "family", "cartoon"}
+KIDS_GENRES = {g.casefold() for g in genres.CHILDRENS}
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "timezone": "Europe/London",
@@ -363,18 +373,21 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Bands (a titled stretch of a day filled with several items, pitv/scheduler/bands.py)
     "band_feature_repeat_days": 14,    # a long item (a concert, a film) is not repeated within this
     "band_item_repeat_hours": 36,      # nor a short one (a video, an episode) within this
-    "short_episode_minutes": 12,       # an episode shorter than this is run with the next ones
+    "max_break_minutes": 4,            # the longest run of adverts, however wide the gap to fill
+    "short_episode_minutes": 20,       # anything shorter than a normal slot joins following episodes
     "short_episode_run_minutes": 20,   # ... until the run reaches about this length
     "band_fetch": True,                # ask pitv_content for material when a band has too little
-    "band_item_max_minutes": 15,       # the longest item a band counts as one of its own
+    "band_fetch_hours": [1, 2, 3, 4, 5],   # hours it may queue top-ups; pitv_content serialises the work
+    "band_item_max_minutes": 15,       # a band runs several short items; anything this long is a feature
     "content_fetch_kinds": [],         # what pitv_content said it can fetch, kept for when it is down
     "cartoon_genres": CARTOON_GENRES,
     "movie_repeat_days": 21,
-    "same_slot_bonus": 3.0,
+    "series_cadence_days": 7,          # ordinary series aim for the same weekday next week
+    "series_cadence_bonus": 4.0,       # preference near that target; strips/weekly anchors are explicit
     "genre_repeat_penalty": 0.4,
     "duration_tolerance_minutes": 5,
     "start_rounding_minutes": 5,
-    "end_of_day_overrun_minutes": 30,
+    "end_of_day_overrun_minutes": 30,  # legacy: kept in stored config; closedown now waits for the item to finish
     "advert_year_window": 3,
     "advert_repeat_penalty_hours": 6,
     "series_rest_weeks": 4,
@@ -407,9 +420,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "acquire_fill_gaps": False,        # queue missing episodes between the ones on disk
     # line-ups: what each channel carries. NAS-only restricts scheduling to material on disk.
     "nas_only": True,
-    "external_lead_days": 2,           # material not on disk is scheduled at least this many days ahead
+    "external_lead_hours": 23,         # nearer slots favour files already local/NAS
     "external_episode_minutes": 30,    # expected length when a line-up entry does not say
-    "external_weight": 0.7,            # relative to library programmes when choosing
+    "external_weight": 1.0,            # remote entries compete equally once there is time to fetch them
     "transient_keep_days": 7,          # fetched transient files are deleted this long after airing
     # folders the admin folder picker may browse, e.g. for pitv_content source roots (plus the cache, acquire and home dirs)
     "browse_roots": ["/mnt", "/media", "/srv"],
@@ -454,7 +467,7 @@ DEFAULT_CHANNELS = [
     {"number": 6, "name": "PiTV Toons", "short_name": "Toons", "colour": "#ffb703", "ads_enabled": 1,
      "pattern": "show, show, ad, ad", "description": "Cartoons all day; child-friendly adverts only",
      "kind_weights": {"tv": 1.0, "movie": 0.0}, "content": "cartoons", "family_safe_ads": 1, "kids_any_time": 1,
-     "allowed_genres": ["Animation", "Cartoon", "Anime"], "fetch_kind": "cartoons"},
+     "allowed_genres": ["Animation", "Cartoon", "Anime", "Children"], "fetch_kind": "cartoons"},
 ]
 
 
@@ -480,6 +493,8 @@ def init_db(conn: sqlite3.Connection) -> None:
     _migrate(conn)
     with tx(conn):
         _migrate_settings(conn)
+        _canonical_genres(conn)
+        _canonical_programme_classification(conn)
         _seed_channel_genres(conn)
         _seed_fetch_kinds(conn)
         assign_ident_channels(conn)
@@ -543,6 +558,14 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("channels", "short_episode_run_minutes", "INTEGER"),
     ("band", "last_fetch_at", "INTEGER"),
     ("channels", "fetch_kind", "TEXT"),
+    ("channels", "band_item_max_minutes", "INTEGER"),
+    ("channels", "strict_matching", "INTEGER NOT NULL DEFAULT 0"),
+    ("shows", "enriched", "TEXT NOT NULL DEFAULT '{}'"),
+    ("shows", "metadata_checked_at", "INTEGER"),
+    ("shows", "metadata_source", "TEXT"),
+    ("media", "enriched", "TEXT NOT NULL DEFAULT '{}'"),
+    ("media", "metadata_checked_at", "INTEGER"),
+    ("media", "metadata_source", "TEXT"),
 ]
 
 
@@ -687,6 +710,84 @@ def _migrate_music_blocks(conn: sqlite3.Connection) -> None:
         log.info("music blocks moved to bands on %d channel(s)", len(channels))
 
 
+# Every column and JSON field holding genres: (table, column) for plain JSON lists, and the
+# fields inside `band.fill` and the `overrides` blobs, which hold a list under a key.
+_GENRE_COLUMNS = (("shows", "genres"), ("media", "genres"), ("lineup", "genres"),
+                  ("channels", "allowed_genres"), ("channels", "excluded_genres"))
+
+
+def _canonical_genres(conn: sqlite3.Connection) -> None:
+    """Bring genres already stored to the one spelling PiTV now uses.
+
+    Rows written before the vocabulary existed hold whatever their source called a genre, so a
+    channel allowing Children would still miss a series tagged Kids until its next import. This
+    rewrites them once, in place, and is a no-operation afterwards."""
+    for table, column in _GENRE_COLUMNS:
+        for row in conn.execute(f"SELECT id, {_ident(column)} AS g FROM {_ident(table)}"
+                                f" WHERE {_ident(column)} IS NOT NULL AND {_ident(column)} != ''").fetchall():
+            names = genre_list(row["g"])
+            after = json.dumps(names)
+            if after != row["g"]:
+                conn.execute(f"UPDATE {_ident(table)} SET {_ident(column)} = ? WHERE id = ?", (after, row["id"]))
+    for table in ("shows", "media"):
+        for column in ("enriched", "overrides"):
+            for row in conn.execute(f"SELECT id, {_ident(column)} AS doc FROM {_ident(table)}"
+                                    f" WHERE {_ident(column)} IS NOT NULL AND {_ident(column)} != ''").fetchall():
+                try:
+                    doc = json.loads(row["doc"])
+                except ValueError:
+                    continue
+                if not isinstance(doc, dict) or "genres" not in doc:
+                    continue
+                doc["genres"] = genre_list(doc["genres"])
+                after = json.dumps(doc)
+                if after != row["doc"]:
+                    conn.execute(f"UPDATE {_ident(table)} SET {_ident(column)} = ? WHERE id = ?",
+                                 (after, row["id"]))
+    for row in conn.execute("SELECT id, fill FROM band WHERE fill IS NOT NULL AND fill != ''").fetchall():
+        try:
+            fill = json.loads(row["fill"])
+        except ValueError:
+            continue
+        if not isinstance(fill, dict):
+            continue
+        fill["genres"] = genre_list(fill.get("genres"))
+        after = json.dumps(fill)
+        if after != row["fill"]:
+            conn.execute("UPDATE band SET fill = ? WHERE id = ?", (after, row["id"]))
+    row = conn.execute("SELECT value FROM settings WHERE key = 'cartoon_genres'").fetchone()
+    if row:
+        after = json.dumps(genre_list(row["value"]))
+        if after != row["value"]:
+            conn.execute("UPDATE settings SET value = ? WHERE key = 'cartoon_genres'", (after,))
+
+
+def _canonical_programme_classification(conn: sqlite3.Connection) -> None:
+    """Migrate the old mixed category model to orthogonal scheduling/audience/genre fields.
+
+    ``kids`` and ``cartoon`` used to be accepted in ``shows.category`` even though the scheduler
+    actually uses the children flag and genres for those facts.  Preserve their meaning in
+    ``kids`` and leave only general/sport in the scheduling-class column.
+    """
+    for row in conn.execute("SELECT id, category, genres, kids FROM shows").fetchall():
+        names = genre_list(row["genres"])
+        legacy_child = str(row["category"] or "").casefold() in ("kids", "cartoon")
+        kids = int(bool(row["kids"]) or legacy_child or genres.is_childrens(names))
+        category = genres.scheduling_class(row["category"], names)
+        if kids != row["kids"] or category != row["category"]:
+            conn.execute("UPDATE shows SET kids = ?, category = ? WHERE id = ?", (kids, category, row["id"]))
+    # Scheduling class is a direct admin/index field, never online enrichment. Early development
+    # builds briefly wrote it into the lower-precedence metadata layer; remove those stale copies.
+    for row in conn.execute("SELECT id, enriched FROM shows WHERE enriched IS NOT NULL AND enriched != '{}'"):
+        try:
+            enriched = json.loads(row["enriched"])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(enriched, dict) and "category" in enriched:
+            enriched.pop("category", None)
+            conn.execute("UPDATE shows SET enriched = ? WHERE id = ?", (json.dumps(enriched), row["id"]))
+
+
 def _seed_channel_genres(conn: sqlite3.Connection) -> None:
     """Channels created before line-ups had no genre lists. Give the shipped default channels
     (matched on number and unchanged name) their default lists once; anything renamed or added
@@ -694,6 +795,15 @@ def _seed_channel_genres(conn: sqlite3.Connection) -> None:
     conn.executemany("UPDATE channels SET allowed_genres = ? WHERE number = ? AND name = ? AND allowed_genres IS NULL",
                      [(json.dumps(ch["allowed_genres"]), ch["number"], ch["name"])
                       for ch in DEFAULT_CHANNELS if ch.get("allowed_genres")])
+    # `Children` is the catalogue/provider genre used for non-animated children's series. It
+    # belongs in the cartoons channel's programme vocabulary alongside Animation/Cartoon/Anime.
+    # Upgrade only the shipped old trio, leaving customised genre lists untouched.
+    old = {"animation", "cartoon", "anime"}
+    for row in conn.execute("SELECT id, allowed_genres FROM channels WHERE content = 'cartoons'"):
+        genres = genre_list(row["allowed_genres"])
+        if {g.lower() for g in genres} == old:
+            conn.execute("UPDATE channels SET allowed_genres = ? WHERE id = ?",
+                         (json.dumps([*genres, "Children"]), row["id"]))
 
 
 # What a channel of each content label would ask pitv_content to fetch for its bands. A seed for
@@ -713,6 +823,12 @@ def _seed_fetch_kinds(conn: sqlite3.Connection) -> None:
 
 def _migrate_settings(conn: sqlite3.Connection) -> None:
     """Drop settings that no longer exist and fill in keys added to stored daypart rows."""
+    # The old scheduler used calendar-day lead time and yesterday's slot. The replacement rules
+    # are hour-accurate and target the following week. Preserve a customised bonus value, but the
+    # 23-hour fetch boundary is deliberate rather than a conversion of the former two-day default.
+    old_bonus = conn.execute("SELECT value FROM settings WHERE key = 'same_slot_bonus'").fetchone()
+    if old_bonus and not conn.execute("SELECT 1 FROM settings WHERE key = 'series_cadence_bonus'").fetchone():
+        conn.execute("INSERT INTO settings(key, value) VALUES ('series_cadence_bonus', ?)", (old_bonus["value"],))
     conn.executemany("DELETE FROM settings WHERE key = ?",
                      [(r["key"],) for r in conn.execute("SELECT key FROM settings").fetchall()
                       if r["key"] not in DEFAULT_SETTINGS and r["key"] not in _EXTRA_SETTING_KEYS])
@@ -778,7 +894,7 @@ def all_settings(conn: sqlite3.Connection) -> dict[str, Any]:
 
 # --- rows ----------------------------------------------------------------------------------
 
-_JSON_COLUMNS = ("genres", "overrides", "anchor_days", "era_weights", "genre_weights",
+_JSON_COLUMNS = ("genres", "enriched", "overrides", "anchor_days", "era_weights", "genre_weights",
                  "kind_weights", "daypart_profile", "details", "allowed_genres", "excluded_genres",
                  "decades")
 
@@ -855,11 +971,14 @@ def enabled_channels(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 def effective(row: dict[str, Any]) -> dict[str, Any]:
-    """Apply the JSON overrides column (admin edits) on top of indexed values."""
+    """Apply trusted online enrichment, then admin edits, on top of indexed values."""
+    enriched = row.get("enriched") or {}
+    if isinstance(enriched, str):
+        enriched = json.loads(enriched)
     overrides = row.get("overrides") or {}
     if isinstance(overrides, str):
         overrides = json.loads(overrides)
-    return {**row, **overrides}
+    return {**row, **enriched, **overrides}
 
 
 # --- values from documents another process wrote --------------------------------------------
@@ -910,7 +1029,10 @@ def as_bool(value: Any, default: bool = False) -> bool:
 
 
 def genre_list(value: Any) -> list[str]:
-    """Genres as a list of non-empty names, from a list, a JSON column or a single name."""
+    """Genres as a list of names, from a list, a JSON column or a single name, each brought to
+    the one spelling PiTV uses (`pitv/genres.py`): "Sci-Fi" and "science fiction" both arrive as
+    Science Fiction, "Kids" as Children. Every genre PiTV stores or compares comes through here,
+    so a channel that allows Children cannot miss a series tagged Kids."""
     if isinstance(value, str):
         try:
             decoded = json.loads(value)
@@ -919,7 +1041,7 @@ def genre_list(value: Any) -> list[str]:
         value = decoded if isinstance(decoded, list) else [decoded if isinstance(decoded, str) else value]
     if not isinstance(value, list):
         return []
-    return [name for g in value if (name := as_text(g)) and name.strip()]
+    return genres.canonical_all([name for g in value if (name := as_text(g))])
 
 
 # --- files beside the database -------------------------------------------------------------

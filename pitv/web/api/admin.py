@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from ... import __version__, catalogue, display, settings_schema, tool_client
+from ... import __version__, catalogue, display, genres as genre_rules, settings_schema, tool_client
 from ... import db as dbm
 from ... import lineup as lineup_mod
 from ... import wanted as wanted_mod
@@ -33,8 +33,14 @@ from ...guide import SLOT_QUERY
 from ...hostinfo import host_info
 from ...logsetup import log_dir
 from ...scheduler import bands as band_rules
-from ...scheduler.build import build_horizon, parse_day, rebuild_from, slot_titles
-from ...scheduler.rules import broadcast_day_for, parse_pattern, tz_of
+from ...scheduler.build import (
+    build_horizon,
+    fresh_rebuild_horizon,
+    parse_day,
+    rebuild_from,
+    slot_titles,
+)
+from ...scheduler.rules import broadcast_day_for, normalise_cert, parse_pattern, tz_of
 from .content import tool_catalogue
 from .deps import (
     admin_conn,
@@ -48,7 +54,7 @@ from .deps import (
     slot_public,
     tool_url,
 )
-from .services import CONTENT_RUN, CONTENT_TIMER, SERVICE_ACTIONS, services
+from .services import CONTENT_RUN, CONTENT_TIMER, DEV_UNITS, SERVICE_ACTIONS, services, systemd_state
 from .settings_rules import HHMM, SECRET_SETTINGS, SettingError, check_setting
 
 log = logging.getLogger("pitv.web")
@@ -56,7 +62,7 @@ router = APIRouter(prefix="/api", dependencies=[Depends(admin_conn)])
 
 SHOW_OVERRIDE_FIELDS = {"title", "year", "certificate", "genres", "plot", "kids"}
 SHOW_DIRECT_FIELDS = {"home_channel_id", "mode", "anchor_time", "anchor_days", "rest_weeks", "excluded", "category"}
-SHOW_CATEGORIES = ("general", "sport", "kids", "cartoon")
+SHOW_CATEGORIES = genre_rules.SCHEDULING_CLASSES
 MEDIA_OVERRIDE_FIELDS = {"title", "year", "certificate", "genres", "plot", "season", "episode", "artist"}
 MEDIA_DIRECT_FIELDS = {"excluded", "concert", "family_safe", "home_channel_id"}
 CHANNEL_FIELDS = {"number", "name", "short_name", "colour", "enabled", "ads_enabled", "ads_per_break",
@@ -64,7 +70,8 @@ CHANNEL_FIELDS = {"number", "name", "short_name", "colour", "enabled", "ads_enab
                   "overnight_replay_from", "idents_enabled", "description", "content", "family_safe_ads",
                   "allowed_genres", "excluded_genres", "nas_only", "kids_any_time", "decades", "bands",
                   "band_item_repeat_hours", "band_feature_repeat_days",
-                  "short_episode_minutes", "short_episode_run_minutes", "fetch_kind"}
+                  "short_episode_minutes", "short_episode_run_minutes", "fetch_kind",
+                  "band_item_max_minutes", "strict_matching"}
 JSON_CHANNEL_FIELDS = {"era_weights", "genre_weights", "kind_weights", "daypart_profile", "allowed_genres",
                        "excluded_genres", "decades"}
 _COLOUR = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -99,7 +106,7 @@ def allowed_dir(path: str, roots: list[Path]) -> Path:
 
 # --- sources (owned by pitv_content) -------------------------------------------------------------
 
-SOURCE_CATEGORIES = ("general", "sport", "kids")
+SOURCE_CATEGORIES = genre_rules.SCHEDULING_CLASSES
 
 
 def _mirror_sources(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -138,7 +145,7 @@ def put_source(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depe
         if "type" in body and body["type"] not in catalogue.SOURCE_TYPES:
             raise HTTPException(400, "type must be tv, movie, advert, ident or music")
         if "category" in body and (body["category"] or "general") not in SOURCE_CATEGORIES:
-            raise HTTPException(400, "category must be general, sport or kids")
+            raise HTTPException(400, "category must be general or sport")
         if body.get("root"):
             body["root"] = str(allowed_dir(str(body["root"]), browse_roots(all_settings(conn))))
     # Where this machine mounts the share is PiTV's own business, not pitv_content's.
@@ -183,8 +190,11 @@ def catalogue_job(request: Request, reindex: bool, label: str, doc: dict[str, An
                 else catalogue.refresh(conn, reindex=reindex)
             if result.get("status") == "error":
                 raise RuntimeError(result["summary"])   # the job reads "failed", with the reason
+            enrichment = catalogue.enrich_missing_metadata(
+                conn, limit=50, progress=lambda m, d, t: state.jobs.progress(job, m, d, t))
             state.bus.publish_threadsafe("library", {"changed": True})
-            return {"status": result.get("status", "ok"), "summary": result["summary"]}
+            return {"status": result.get("status", "ok"),
+                    "summary": f"{result['summary']} {enrichment['summary']}", "enrichment": enrichment}
         finally:
             conn.close()
     return state.jobs.submit("catalogue", label, run).public()
@@ -203,6 +213,29 @@ def catalogue_refresh(request: Request, body: dict[str, Any] = Body(default={}))
     """Import pitv_content's current index; with `reindex`, ask it to re-index the sources first."""
     reindex = bool(body.get("reindex"))
     return catalogue_job(request, reindex, "Re-index and import the catalogue" if reindex else "Import the catalogue")
+
+
+@router.post("/catalogue/enrich")
+def catalogue_enrich(request: Request, body: dict[str, Any] = Body(default={})):
+    """Check unrated series/films online without replacing indexed data or admin overrides."""
+    state = request.app.state
+    try:
+        limit = max(1, min(int(body.get("limit", 500)), 2000))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "limit must be a whole number") from exc
+
+    def run(job):
+        conn = dbm.connect(state.cfg.db_path)
+        try:
+            result = catalogue.enrich_missing_metadata(
+                conn, limit=limit, force=bool(body.get("force", True)),
+                progress=lambda m, d, t: state.jobs.progress(job, m, d, t))
+            job.notes.extend(result.get("notes", []))
+            state.bus.publish_threadsafe("library", {"changed": True})
+            return result
+        finally:
+            conn.close()
+    return state.jobs.submit("catalogue", "Check missing certificates online", run).public()
 
 
 @router.post("/catalogue/import")
@@ -315,9 +348,14 @@ def _override_value(key: str, value: Any) -> Any:
     if key == "genres":
         if not isinstance(value, list) or not all(isinstance(g, str) for g in value):
             raise HTTPException(400, "genres must be a list of names")
-        return [g.strip() for g in value if g.strip()]
+        return genre_rules.canonical_all(value)
     if key == "kids":
         return int(bool(value))
+    if key == "certificate":
+        cert = normalise_cert(optional_text(value, key))
+        if cert is None:
+            raise HTTPException(400, "certificate must be U, PG, 12, 12A, 15 or 18")
+        return cert
     return optional_text(value, key, limit=4000)
 
 
@@ -354,7 +392,7 @@ def update_show(sid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Connec
     if "mode" in direct and direct["mode"] not in ("auto", "strip", "weekly"):
         raise HTTPException(400, "mode must be auto, strip or weekly")
     if "category" in direct and direct["category"] not in SHOW_CATEGORIES:
-        raise HTTPException(400, "category must be general, sport, kids or cartoon")
+        raise HTTPException(400, "category must be general or sport")
     if direct.get("anchor_time") is not None and not HHMM.match(str(direct["anchor_time"])):
         raise HTTPException(400, "anchor_time must be HH:MM")
     if direct.get("anchor_days") is not None:
@@ -541,10 +579,16 @@ def _clean_channel_fields(body: dict[str, Any]) -> dict[str, Any]:
         if k in JSON_CHANNEL_FIELDS:
             if v not in (None, "", {}, []) and not isinstance(v, (dict, list)):
                 raise HTTPException(400, f"{k} must be an object or list")
+            if k in ("allowed_genres", "excluded_genres") and v not in (None, "", []):
+                v = genre_rules.canonical_all(v)
+            elif k == "genre_weights" and isinstance(v, dict):
+                v = {name: weight for raw, weight in v.items()
+                     if (name := genre_rules.canonical(raw)) is not None}
             fields[k] = json.dumps(v) if v not in (None, "", {}, []) else None
-        elif k in ("enabled", "ads_enabled", "idents_enabled", "family_safe_ads", "kids_any_time"):
+        elif k in ("enabled", "ads_enabled", "idents_enabled", "family_safe_ads", "kids_any_time",
+                   "strict_matching"):
             fields[k] = int(bool(v))
-        elif k in ("band_item_repeat_hours", "band_feature_repeat_days",
+        elif k in ("band_item_repeat_hours", "band_feature_repeat_days", "band_item_max_minutes",
                    "short_episode_minutes", "short_episode_run_minutes"):
             fields[k] = optional_int(v, k)      # empty follows the global setting
             if fields[k] is not None and not 0 <= fields[k] <= 8760:
@@ -710,6 +754,42 @@ def schedule_build(request: Request, body: dict[str, Any] = Body(default={})):
         finally:
             conn.close()
     return app.state.jobs.submit("schedule", "Build schedule" + (" (force)" if force else ""), run).public()
+
+
+@router.post("/schedule/fresh-rebuild")
+def schedule_fresh_rebuild(request: Request):
+    """Drop all derived schedule state and rebuild the configured horizon from its inputs."""
+    app = request.app
+
+    def run(job):
+        conn = dbm.connect(app.state.cfg.db_path)
+        try:
+            # pitv_content stops what it is doing and drops its published index and status;
+            # its media, fingerprints and reports stay. A fresh index then comes back through
+            # the usual import, so the rebuild sees the catalogue as it stands.
+            app.state.jobs.progress(job, "stopping pitv_content's work")
+            status, reset = tool_client.request(tool_url(conn), "POST", "reset", body={}, timeout=30)
+            if status != 200 or not isinstance(reset, dict) or not reset.get("ok"):
+                detail = reset.get("error") if isinstance(reset, dict) else f"HTTP {status}"
+                raise RuntimeError(f"pitv_content reset failed: {detail}")
+            app.state.jobs.progress(job, "asking pitv_content for a fresh index")
+            imported = catalogue.refresh(conn, reindex=True)
+            if imported.get("status") == "error":
+                raise RuntimeError(imported["summary"])
+            result = fresh_rebuild_horizon(
+                conn, progress=lambda m: app.state.jobs.progress(job, m))
+            # Declare every band's shortfall now. pitv_content's coordinator serialises the
+            # actual downloads, while PiTV has the whole horizon prepared up front.
+            app.state.jobs.progress(job, "asking pitv_content for material the bands lack")
+            asked = wanted_mod.request_all_band_material(conn, all_settings(conn))
+            return {**result, "content_reset": reset, "import": imported["summary"],
+                    "band_material": asked["summary"]}
+        finally:
+            conn.close()
+            # The clear may have succeeded even if a later channel-day failed to build.
+            _schedule_changed(app)
+
+    return app.state.jobs.submit("schedule", "Fresh rebuild", run).public()
 
 
 def _slot(conn: sqlite3.Connection, slot_id: int) -> sqlite3.Row:
@@ -890,10 +970,40 @@ def system_info(request: Request, conn: sqlite3.Connection = Depends(admin_conn)
 def service_action(name: str, action: str):
     if action not in SERVICE_ACTIONS.get(name, ()):
         raise HTTPException(400, "unsupported service or action")
-    rc, _, err = run_cmd(["sudo", "-n", "systemctl", action, name], timeout=30)
+    props = systemd_state([name]).get(name) or {}
+    if props.get("LoadState") == "loaded":
+        cmd = ["sudo", "-n", "systemctl", action, name]
+    else:
+        dev_name = DEV_UNITS.get(name)
+        dev = systemd_state([dev_name], user=True).get(dev_name) if dev_name else None
+        if not dev or dev.get("LoadState") != "loaded":
+            raise HTTPException(409, f"{name} is not installed")
+        cmd = ["systemctl", "--user", action, dev_name]
+    rc, _, err = run_cmd(cmd, timeout=30)
     if rc != 0:
         raise HTTPException(500, err or "systemctl failed")
     return {"ok": True}
+
+
+@router.post("/system/services/{action}")
+def all_service_action(action: str):
+    """Control the persistent stack in dependency order. Web goes last when stopping or
+    restarting because this request is running inside it."""
+    if action not in ("start", "stop", "restart"):
+        raise HTTPException(400, "action must be start, stop or restart")
+    forward = ["pitv-web.service", "pitv-content-api.service", "pitv-player.service", CONTENT_TIMER]
+    order = list(reversed(forward)) if action == "stop" else [*forward[1:], forward[0]]
+    done, skipped = [], []
+    for name in order:
+        try:
+            service_action(name, action)
+            done.append(name)
+        except HTTPException as exc:
+            if exc.status_code == 409:
+                skipped.append(name)       # for example the Pi-only timer on a desktop
+                continue
+            raise
+    return {"ok": True, "services": done, "skipped": skipped}
 
 
 @router.get("/runs")
@@ -998,16 +1108,16 @@ def bands_fetch_kinds(conn: sqlite3.Connection = Depends(admin_conn)):
 
 @router.post("/bands/material")
 def bands_material(conn: sqlite3.Connection = Depends(admin_conn)):
-    """Ask pitv_content now for material for the band that has least, rather than waiting for
-    the nightly pass. The answer says which band was asked for, and what."""
-    return wanted_mod.request_band_material(conn, all_settings(conn))
+    """Declare every band's current shortfall to pitv_content now."""
+    return wanted_mod.request_all_band_material(conn, all_settings(conn))
 
 
 @router.get("/bands/needs")
 def bands_needs(conn: sqlite3.Connection = Depends(admin_conn)):
     """What each band is short of, for the channel editor."""
     settings = all_settings(conn)
-    return [{"channel_id": n["band"].channel_id, "name": n["band"].name, "have": n["have"], "want": n["want"]}
+    return [{"channel_id": n["band"].channel_id, "name": n["band"].name, "have": n["have"], "want": n["want"],
+             "kind": n["kind"], "minutes": n["minutes"], "last_fetch_at": n["band"].last_fetch_at}
             for n in wanted_mod.band_needs(conn, settings)]
 
 

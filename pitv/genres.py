@@ -1,0 +1,118 @@
+"""One spelling per genre, everywhere PiTV stores or compares one.
+
+Genres reach PiTV from several places: pitv_content's index, a title added by hand in the admin,
+an override typed into a show editor, a channel's allowed list, a band's fill. The same genre
+arrives as "Sci-Fi" and "Science Fiction", "Kids" and "Children's", "cartoon" and "Animation".
+A channel that allows Children then misses a series tagged Kids, which is how an added title
+quietly never airs.
+
+So every genre is brought to one canonical name as it is read, by `db.genre_list`, which is the
+single door genres come through. Comparisons elsewhere are then a plain case-insensitive match
+between names that already agree. The table mirrors pitv_content's own (`pitv_content/genres.py`)
+so both applications call the same thing by the same name; when one side adds a spelling, the
+other follows.
+
+A name this table has never seen keeps its own words in title case, rather than being dropped:
+an unusual genre is still a genre, and it stays consistent between files.
+"""
+
+from __future__ import annotations
+
+import re
+
+# Spellings that mean a genre already in use. Keys are compared with case, punctuation and
+# spacing removed, so "Sci-Fi", "sci fi" and "SCIFI" all match "scifi".
+ALIASES: dict[str, str] = {
+    "scifi": "Science Fiction", "sciencefiction": "Science Fiction", "sf": "Science Fiction",
+    "childrens": "Children", "children": "Children", "kids": "Children", "childrenstv": "Children",
+    "childrensprogramme": "Children", "childrensprogrammes": "Children", "child": "Children",
+    "family": "Family",
+    "cartoon": "Animation", "cartoons": "Animation", "animated": "Animation", "animation": "Animation",
+    "docu": "Documentary", "docs": "Documentary", "documentaries": "Documentary", "factual": "Documentary",
+    "gameshow": "Game Show", "gameshows": "Game Show", "quiz": "Game Show", "quizshow": "Game Show",
+    "sitcom": "Sitcom", "sitcoms": "Sitcom", "situationcomedy": "Sitcom", "comedysitcom": "Sitcom",
+    "standup": "Comedy", "standupcomedy": "Comedy",
+    "soapopera": "Soap", "soaps": "Soap", "advert": "Advert", "adverts": "Advert",
+    "advertisement": "Advert", "advertisements": "Advert", "commercial": "Advert", "commercials": "Advert",
+    "musicvideo": "Music", "musicvideos": "Music", "musical": "Musical",
+    "rnb": "R&B", "rb": "R&B", "randb": "R&B", "rhythmandblues": "R&B", "rhythmblues": "R&B",
+    "hiphop": "Hip Hop", "rap": "Rap", "synth": "Synth Pop", "synthpop": "Synth Pop", "electropop": "Synth Pop",
+    "newwave": "New Wave", "postpunk": "Post Punk", "hardrock": "Hard Rock", "heavymetal": "Metal",
+    "motown": "Motown", "electronica": "Electronic", "electronic": "Electronic", "dancepop": "Dance",
+    "soccer": "Football", "prowrestling": "Wrestling", "professionalwrestling": "Wrestling",
+    "motorsports": "Motorsport", "motorracing": "Motorsport", "motorsport": "Motorsport",
+    "trackandfield": "Athletics", "figureskating": "Ice Skating", "iceskating": "Ice Skating",
+    "horseracing": "Horse Racing", "suspense": "Thriller", "warfilm": "War", "warmovie": "War",
+    "news": "News", "currentaffairs": "News", "entertainment": "Entertainment", "variety": "Entertainment",
+    "education": "Education", "educational": "Education", "science": "Science", "technology": "Technology",
+    "scienceandtechnology": "Science", "popular": "Pop", "pop": "Pop",
+}
+
+# Children's programming, however it is labelled: what marks a series as one for children and
+# what a cartoon channel is built from. Canonical names, so the lists are short and exact.
+CHILDRENS = ("Animation", "Anime", "Children", "Family")
+CARTOONS = ("Animation", "Anime")
+SCHEDULING_CLASSES = ("general", "sport")
+
+# Words that keep their own case inside a title-cased name.
+_LOWER = {"and", "of", "the", "in", "on", "de", "la"}
+_KEY = re.compile(r"[^a-z0-9]+")
+# One tag, several genres: a slash, a comma, a semicolon or a spaced ampersand separates them.
+# "R&B" survives, because only a spaced ampersand separates.
+_SEPARATORS = re.compile(r"\s*[/,;]\s*|\s+&\s+")
+
+
+def canonical(name: object) -> str | None:
+    """One canonical genre name, or None when there is nothing usable in it."""
+    if not isinstance(name, str):
+        return None
+    text = re.sub(r"\s+", " ", name.replace("_", " ")).strip(" \t.,;:/|-\"'")
+    if not text or text.isdigit():
+        return None
+    known = ALIASES.get(_KEY.sub("", text.casefold()))
+    if known:
+        return known
+    words = [w if w.isupper() and len(w) > 1 else w.capitalize() for w in text.split(" ")]
+    return " ".join([words[0], *(w.lower() if w.lower() in _LOWER else w for w in words[1:])])
+
+
+def canonical_all(names: object) -> list[str]:
+    """A list of genres, canonical, in order, without repeats; a tag holding several is split."""
+    if isinstance(names, str):
+        names = [names]
+    out: list[str] = []
+    for name in names if isinstance(names, (list, tuple)) else []:
+        parts = _SEPARATORS.split(name) if isinstance(name, str) else [name]
+        for part in parts or [name]:
+            genre = canonical(part)
+            if genre and genre not in out:
+                out.append(genre)
+    return out
+
+
+def matches(names: object, wanted: object) -> bool:
+    """Whether any of `names` is one of `wanted`, both read canonically. The comparison every
+    channel, band and rule makes, in one place."""
+    have = {g.casefold() for g in canonical_all(names)}
+    return bool(have & {g.casefold() for g in canonical_all(wanted)})
+
+
+def is_childrens(names: object) -> bool:
+    """Whether canonical programme genres describe material made for children."""
+    return matches(names, CHILDRENS)
+
+
+def is_cartoon(names: object) -> bool:
+    """Cartoon is derived content metadata, never a channel or scheduling category."""
+    return matches(names, CARTOONS)
+
+
+def scheduling_class(value: object, names: object = ()) -> str:
+    """The one coarse scheduler classification that is not already represented elsewhere.
+
+    Old databases and indexes used ``kids`` and ``cartoon`` as category values.  They are
+    audience/genre facts and therefore collapse to general; sport remains distinct because it
+    changes daypart weighting and back-to-back rules.
+    """
+    return "sport" if str(value or "").strip().casefold() == "sport" or matches(names, ("Sport",)) else "general"
+

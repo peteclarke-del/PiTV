@@ -6,27 +6,31 @@
   // it airs. An advert or music video joins the wanted list, pinned to the chosen video.
   import { get, post, tryApi } from '../../lib/api.js';
   import { isOffline, toolGet } from '../../lib/toolapi.js';
-  import { num, splitList } from '../../lib/util.js';
+  import { num } from '../../lib/util.js';
   import { safeUrl } from '../../lib/format.js';
   import { guard } from '../../lib/guard.svelte.js';
   import { noteChange } from '../../lib/stores.svelte.js';
   import Modal from '../../components/Modal.svelte';
   import AppBadge from '../../components/AppBadge.svelte';
   import LookupResults from './LookupResults.svelte';
+  import GenrePicker from '../../components/GenrePicker.svelte';
 
   let { open = false, channels = [], onclose, onadded } = $props();
   const KINDS = [['show', 'Series'], ['movie', 'Film'], ['advert', 'Advert'], ['music', 'Music video']];
-  const blankForm = () => ({ kind: 'show', title: '', year: '', genres: '', channel: '', transient: true, minutes: '', artist: '', url: '' });
+  const blankForm = () => ({ kind: 'show', title: '', year: '', genres: [], channel: '', transient: true, minutes: '', artist: '', url: '' });
   let f = $state(blankForm());
   let step = $state('search');        // search | place
   let found = $state(null);           // candidates, once looked up
   let lookupNote = $state('');        // why there are none to show, when the lookup could not run
   let chosen = $state(null);          // the candidate confirmed, or null for "without a match"
   let options = $state([]);
+  let facets = $state(null);
   $effect(() => {
     if (!open) return;
     f = blankForm(); step = 'search'; found = null; lookupNote = ''; chosen = null;
-    tryApi(get('/api/lineup/options')).then((o) => (options = o ?? []));
+    Promise.all([tryApi(get('/api/lineup/options')), tryApi(get('/api/library/facets'))]).then(([o, x]) => {
+      options = o ?? []; facets = x ?? null;
+    });
   });
 
   let programme = $derived(f.kind === 'show' || f.kind === 'movie');
@@ -51,7 +55,7 @@
     chosen = c;
     f.title = c.title ?? f.title;
     if (c.year) f.year = c.year;
-    if (c.genres?.length) f.genres = c.genres.join(', ');
+    if (c.genres?.length) f.genres = [...c.genres];
     if (c.runtime_minutes) f.minutes = c.runtime_minutes;
     if (c.artist) f.artist = c.artist;
     if (!programme) f.url = safeUrl(c.match?.url) ?? '';
@@ -63,7 +67,7 @@
     const year = num(f.year, { min: 1900, max: 2100, int: true });
     const r = programme
       ? await tryApi(post('/api/lineup', {
-          kind: f.kind, title: f.title.trim(), year, genres: splitList(f.genres), transient: f.transient,
+          kind: f.kind, title: f.title.trim(), year, genres: f.genres, transient: f.transient,
           channel_id: f.channel === '' ? null : Number(f.channel), match: chosen?.match ?? null,
           episode_minutes: f.kind === 'show' ? num(f.minutes, { min: 1, max: 240, int: true }) : null }))
       : await tryApi(post('/api/wanted', { kind: f.kind, title: f.title.trim(), year, artist: f.artist.trim() || null, ref: f.url.trim() || null }));
@@ -104,7 +108,7 @@
         <label class="field wide">Title<input bind:value={f.title} /></label>
         <label class="field">Year<input type="number" class="narrow" min="1900" max="2100" bind:value={f.year} /></label>
         {#if programme}
-          <label class="field">Genres<input bind:value={f.genres} placeholder="Comedy, Drama" /><span class="help">Decide the channel when none is picked.</span></label>
+          <div class="field"><span>Genres</span><GenrePicker value={f.genres} options={facets?.genres ?? {}} kinds={f.kind === 'show' ? ['episode'] : ['movie']} onchange={(v) => (f.genres = v)} label="Entry genres" empty="Choose genres" /><span class="help">The same programme genres used by Channel settings.</span></div>
           <label class="field">Channel
             <select bind:value={f.channel}><option value="">Choose by genres</option>{#each channels as c (c.id)}<option value={c.id}>{c.number} {c.name}</option>{/each}</select>
           </label>

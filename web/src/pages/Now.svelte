@@ -91,8 +91,8 @@
                 <div class="label">Now</div>
                 <div class="title">{s.title}</div>
                 {#if s.block}
-                  {#if s.video_title}<div class="video">♪ {s.video_title}</div>{/if}
-                  <div class="muted small">{s.subtitle || 'Music videos'}{s.items ? ` · ${plural(s.items, 'video')}` : ''}</div>
+                  {#if s.video_title && s.video_title !== s.title}<div class="video">{s.video_title}</div>{/if}
+                  <div class="muted small">{s.subtitle || s.block}{s.items > 1 ? ` · ${plural(s.items, 'programme')}` : ''}</div>
                 {:else if s.subtitle}<div class="muted small">{s.subtitle}</div>{/if}
                 <div class="muted small">{fmtRange(s.start_ts, s.end_ts)} · {fmtDuration(s.end_ts - s.start_ts)}{s.replay ? ' · replay' : ''}</div>
                 <ProgressBar value={progress(s)} />
@@ -104,7 +104,7 @@
           {#if c.next.length}
             <ul class="next">
               {#each c.next as n (n.id)}
-                <li><span class="mono time">{fmtTime(n.start_ts)}</span><span class="truncate"><b>{n.title}</b>{n.block ? ` · ${plural(n.items ?? 1, 'video')}` : n.subtitle ? ` · ${n.subtitle}` : ''}</span></li>
+                <li><span class="mono time">{fmtTime(n.start_ts)}</span><span class="truncate"><b>{n.title}</b>{n.block && (n.items ?? 1) > 1 ? ` · ${plural(n.items, 'programme')}` : n.subtitle ? ` · ${n.subtitle}` : ''}</span></li>
               {/each}
             </ul>
           {/if}

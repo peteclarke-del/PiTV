@@ -428,17 +428,25 @@ def test_proxy_rejects_path_escapes(client):
     assert client.get("/api/content/tool/api/settings/providers").status_code == 503   # allowed, tool offline
 
 
-def test_service_actions_match_sudoers(client):
+def test_service_actions_match_sudoers(monkeypatch):
     """The admin offers exactly the systemctl commands the installer lets the pitv user run."""
     from pathlib import Path
 
+    from fastapi import HTTPException
+
+    from pitv.web.api.admin import service_action
     from pitv.web.api.services import SERVICE_ACTIONS
     install = (Path(__file__).parents[1] / "setup" / "install.sh").read_text()
     rule = next(line for line in install.splitlines() if line.startswith("pitv ALL=(root) NOPASSWD:"))
     granted = {tuple(cmd.split()[1:]) for cmd in rule.split("NOPASSWD:", 1)[1].split(",")}
     assert granted == {(action, unit) for unit, actions in SERVICE_ACTIONS.items() for action in actions}
-    assert client.post("/api/system/service/pitv-web.service/stop").status_code == 400
-    assert client.post("/api/system/service/sshd.service/restart").status_code == 400
+    monkeypatch.setattr("pitv.web.api.admin.systemd_state", lambda *args, **kwargs: {})
+    with pytest.raises(HTTPException) as missing:
+        service_action("pitv-web.service", "stop")
+    assert missing.value.status_code == 409
+    with pytest.raises(HTTPException) as unsupported:
+        service_action("sshd.service", "restart")
+    assert unsupported.value.status_code == 400
 
 
 def test_services_cover_both_apps():

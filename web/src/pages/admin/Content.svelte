@@ -108,7 +108,7 @@
     <div class="card-title"><h3>pitv_content</h3><AppBadge app="content" />
       {#if online}<span class="badge ok">API online{live?.version ? ` · ${live.version}` : ''}{live?.api_version ? ` (api ${live.api_version})` : ''}</span>{:else}<span class="badge warn">API offline</span>{/if}
       <span class="spacer"></span>
-      <button class="small primary" onclick={runNow} disabled={runNow.busy || !tool || isRunning}>Run now</button>
+      <button class="small primary" onclick={runNow} disabled={runNow.busy || !tool}>Queue cache run</button>
     </div>
     <p class="scope">The support app that indexes the NAS, fetches what is not on it, encodes to the Pi's profile and fills the cache. Everything on this page is pitv_content's, except the manifest and readiness, which are PiTV's side of the exchange.</p>
     {#if tool}
@@ -119,6 +119,7 @@
         {#if tool.running_marker}<span class="badge info">running marker present</span>{/if}
       </div>
       {#if tool.next_run_ts}<div class="tiny muted mt">Next scheduled run {fmtDateTime(tool.next_run_ts)}</div>{/if}
+      {#if live?.queued_jobs?.length}<div class="tiny muted mt">{live.queued_jobs.length} queued job{live.queued_jobs.length === 1 ? '' : 's'}; cache/Wanted work runs first.</div>{/if}
     {:else}<div class="skeleton" style="height:40px"></div>{/if}
   </div>
 

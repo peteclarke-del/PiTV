@@ -16,6 +16,7 @@
   import MediaEditor from './MediaEditor.svelte';
   import CatalogueCard from './CatalogueCard.svelte';
   import AddToCatalogue from './AddToCatalogue.svelte';
+  import LineupEditor from './LineupEditor.svelte';
   import Availability from '../../components/Availability.svelte';
   import Codec from '../../components/Codec.svelte';
 
@@ -34,6 +35,7 @@
   let rows = $state(null);
   let showId = $state(null);
   let mediaId = $state(null);
+  let lineupEntry = $state(null);
   let adding = $state(false);
   let fixes = $state({}); // Needs attention: pending quick-fix values by media id
 
@@ -108,7 +110,7 @@
     shows: 'No series in the catalogue.', movies: 'No films in the catalogue.', music: 'No music videos. Add a music source under pitv_content, Sources, then import the catalogue.',
     adverts: 'No adverts.', idents: 'No idents.', custom: 'Nothing added by hand yet: use Add to the catalogue.', attention: 'Nothing needs attention.',
   };
-  const edit = (r) => (tab === 'shows' ? (showId = r.id) : KIND[tab] ? (mediaId = r.id) : undefined);
+  const edit = (r) => (tab === 'shows' ? (showId = r.id) : KIND[tab] ? (mediaId = r.id) : tab === 'custom' ? (lineupEntry = r) : undefined);
 </script>
 
 <div class="stack">
@@ -120,13 +122,13 @@
   </div>
   {#key tab}
     <DataTable id="catalogue-{tab}" {columns} {rows} search="Filter titles…" empty={EMPTY[tab]}
-      onrow={tab === 'shows' || KIND[tab] ? edit : null} rowClass={(r) => (r.excluded ? 'off' : '')} />
+      onrow={tab === 'shows' || tab === 'custom' || KIND[tab] ? edit : null} rowClass={(r) => (r.excluded ? 'off' : '')} />
   {/key}
 </div>
 
 {#snippet titleCell(m)}<b>{m.title}</b><div class="tiny muted truncate" style="max-width:320px">{m.filename}</div>{/snippet}
 {#snippet musicTitleCell(m)}<b>{m.title}</b>{#if m.concert}<span class="badge info">concert</span>{/if}<div class="tiny muted truncate" style="max-width:320px">{m.filename}</div>{/snippet}
-{#snippet showTitleCell(s)}<b>{s.title}</b>{#if s.category && s.category !== 'general'}<span class="badge info">{s.category}</span>{/if}{#if s.excluded}<span class="badge">excluded</span>{/if}{#if s.attention_count}<span class="badge warn">{s.attention_count}</span>{/if}{/snippet}
+{#snippet showTitleCell(s)}<b>{s.title}</b>{#if s.category === 'sport'}<span class="badge info">sport</span>{/if}{#if s.cartoon}<span class="badge info">cartoon</span>{:else if s.kids}<span class="badge info">children's</span>{/if}{#if s.excluded}<span class="badge">excluded</span>{/if}{#if s.attention_count}<span class="badge warn">{s.attention_count}</span>{/if}{/snippet}
 {#snippet yearsCell(s)}{s.year ?? '?'}{s.end_year && s.end_year !== s.year ? `–${s.end_year}` : ''}{/snippet}
 {#snippet lastAiredCell(s)}{#if s.last_aired}{fmtEpisode(s.last_aired.season, s.last_aired.episode)} · {fmtAgo(s.last_aired.ts, clock.ts)}{:else}never{/if}{/snippet}
 {#snippet lengthCell(m)}{fmtDuration(m.duration)}{/snippet}
@@ -140,7 +142,7 @@
 {#snippet familySafeCell(m)}<span role="presentation" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}><label class="check small" title={m.family_safe ? 'May air on family-safe channels' : 'Never airs on family-safe channels'}><input type="checkbox" checked={!!m.family_safe} onchange={(e) => setFamilySafe(m, e.currentTarget.checked)} />{m.family_safe ? 'yes' : 'no'}</label></span>{/snippet}
 {#snippet customTitleCell(e)}<b>{e.title}</b>{#if e.match}{@const link = safeUrl(e.match.url)}<span class="badge ok" title="Confirmed online; pitv_content fetches this title">{#if link}<a href={link} target="_blank" rel="noopener noreferrer">{e.match.source} ↗</a>{:else}{e.match.source}{/if}</span>{:else}<span class="badge warn" title="Added without an online match; pitv_content searches by title">unmatched</span>{/if}{#if e.genres?.length}<div class="tiny muted">{e.genres.join(', ')}</div>{/if}{/snippet}
 {#snippet stateCell(e)}{@const [cls, text] = lineupState(e)}<span class="badge {cls}">{text}</span>{/snippet}
-{#snippet removeCell(e)}<button class="small ghost" onclick={() => removeCustom(e)}>Remove</button>{/snippet}
+{#snippet removeCell(e)}<button class="small ghost" onclick={(event) => { event.stopPropagation(); removeCustom(e); }}>Remove</button>{/snippet}
 {#snippet attentionItemCell(item)}<button class="ghost small" onclick={() => (mediaId = item.id)}><b>{item.show_title ? `${item.show_title} · ` : ''}{item.title}</b></button>
   <div class="tiny muted">{item.kind}{item.year ? ` · ${item.year}` : ''}{item.vcodec ? ` · ${item.vcodec}` : ''}</div>{/snippet}
 {#snippet fixCell(item)}
@@ -154,6 +156,9 @@
 {/snippet}
 
 <AddToCatalogue open={adding} {channels} onclose={() => (adding = false)} onadded={added} />
+{#if lineupEntry}
+  <LineupEditor entry={lineupEntry} {channels} onclose={() => (lineupEntry = null)} onsaved={load} />
+{/if}
 {#if showId}
   <ShowEditor id={showId} {channels} onclose={() => (showId = null)} onsaved={load} />
 {/if}
