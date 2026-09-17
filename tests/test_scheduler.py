@@ -680,6 +680,13 @@ def test_a_band_is_a_titled_stretch_of_any_channels_day(tmp_path):
                                " WHERE s.channel_id = ? AND s.replay = 0 AND s.kind = 'programme'", (music,)).fetchall()
     assert music_slots and all(s["block"] for s in music_slots), "every music slot belongs to a band"
     assert {s["kind"] for s in music_slots} == {"music"}
+    overnight = conn.execute(
+        "SELECT block FROM schedule WHERE channel_id = ? AND replay = 1 AND kind = 'programme'",
+        (music,),
+    ).fetchall()
+    assert overnight and all(s["block"] for s in overnight), (
+        "overnight must replay labelled bands, not flatten their media into an unlabelled pool"
+    )
     # Each ordinary band runs at its own time. A band after a feature may begin early when the
     # feature ends; otherwise a day of bands must not collapse into one all-day block.
     windows = [(local_ts(day, r["start"], tz), r["name"])
@@ -902,6 +909,8 @@ def test_a_band_short_of_material_asks_for_more(tmp_path, monkeypatch):
     settings = dbm.all_settings(conn)
     needs = wanted.band_needs(conn, settings)
     assert [n["band"].name for n in needs if n["channel"]["id"] == toons] == ["Saturday Morning"]
+    need = next(n for n in needs if n["channel"]["id"] == toons)
+    assert need["want"] == 60, "a daily two-hour band needs two days for its 36-hour repeat gap"
 
     sent = {}
     def fake_request(base, method, path, query="", body=None, timeout=15):
@@ -913,6 +922,7 @@ def test_a_band_short_of_material_asks_for_more(tmp_path, monkeypatch):
     assert sent["body"]["mode"] == "catalogue" and sent["body"]["kind"] == "cartoons"
     assert sent["body"]["genres"] == ["Stop Motion"] and sent["body"]["years"] == [1980, 1989]
     assert sent["body"]["max_minutes"] == settings["band_item_max_minutes"]
+    assert sent["body"]["count"] == 60
     # Asked once, then left alone, so one stubborn band cannot block the rest night after night.
     assert wanted.request_band_material(conn, settings)["summary"] != result["summary"]
 

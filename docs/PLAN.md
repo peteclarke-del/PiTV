@@ -326,6 +326,13 @@ no programme, waiting for the clock) and stands in for missing idents. Channel c
 their burst of generated static. `pitv test-signal` regenerates the clip with ffmpeg; the
 boot splash still draws the still test card on the framebuffer.
 
+Scheduler responsibilities are deliberately separated. `scheduler/policy.py` is the central
+typed interpretation of tunable rules, units and per-channel inheritance; defaults remain in
+`db.DEFAULT_SETTINGS`. `scheduler/rules.py` contains pure eligibility rules (time, certificate,
+era and daypart), `scheduler/bands.py` contains generic titled-block matching, and
+`scheduler/build.py` performs the stateful schedule walk. New settings should enter through the
+policy rather than being interpreted independently inside the builder.
+
 ### 4.4 Anchors: strips and weekly slots
 
 Real 80s scheduling is about regularity, and it also gives episode order for free.
@@ -344,17 +351,21 @@ Anchors are pinned into the day first; the gaps are filled afterwards.
 
 A five minute cartoon on its own leaves the day in scraps and the guide unreadable, so an
 episode shorter than `short_episode_minutes` is followed straight away by the next ones of the
-same series, in order, until the run reaches `short_episode_run_minutes` (defaults 12 and 20).
+same series, in order, until the run reaches `short_episode_run_minutes` (both default to 20).
 The run carries the series title as its block, so the guide shows one entry with the episodes
-beneath it, as it does for a band. A channel may set its own pair; empty follows Settings.
+beneath it, as it does for a band. Remote catalogue series queue every episode required by the
+bundle, and cadence repeats replay the bundle. A channel may set its own pair; empty follows
+Settings.
 
 ### 4.4c Topping a band up
 
 A band is only as good as what the library holds for it. A "Disco Lunch" must not fall back to
 an unrelated concert or unlabelled clip merely because it fits the clock. PiTV therefore counts,
 for every band, the items of its genres and decades short enough to be one
-of its own (`band_item_max_minutes`, 15 by default, set per channel or per band), and where a
-band is short it declares every known shortfall to pitv_content up front. The content coordinator
+of its own (`band_item_max_minutes`, 15 by default, set per channel or per band). Its target
+allows for every airing inside `band_item_repeat_hours`, so a daily band has enough distinct
+material for tomorrow rather than merely enough to fill today. Where a band is short it declares
+every known shortfall to pitv_content up front. The content coordinator
 queues those requests and runs them one at a time, with schedule cache work taking priority.
 A band with nothing may be queued at any hour; other shortfalls use the configured catalogue
 hours. Each successful
@@ -497,7 +508,9 @@ reproduces it.
   the scheduler knows what was shown, not just what was planned.
 - From 00:00 to 08:00 each channel replays its day from `overnight_replay_from` (08:00 by
   default, per channel), looping a short day, never butting the same series against the
-  day's last programme or tomorrow's first, and filling any remainder up to 08:00.
+  day's last programme or tomorrow's first, and filling any remainder up to 08:00. A channel
+  made entirely from bands replays those same labelled blocks; it does not flatten their media
+  into an unlabelled mixed pool.
 
 ### 4.10 Manual editing
 

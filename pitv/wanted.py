@@ -83,7 +83,14 @@ def band_needs(conn: sqlite3.Connection, settings: dict[str, Any]) -> list[dict[
                 continue
             minutes = band.max_minutes or int(channel.get("band_item_max_minutes") or default_minutes)
             duration = _band_duration(band, band_list, str(settings.get("day_start") or "08:00"))
-            want = max(1, (duration + BAND_ITEM_MINUTES - 1) // BAND_ITEM_MINUTES)
+            items_per_airing = max(1, (duration + BAND_ITEM_MINUTES - 1) // BAND_ITEM_MINUTES)
+            repeat_hours = channel.get("band_item_repeat_hours")
+            if repeat_hours is None:
+                repeat_hours = settings.get("band_item_repeat_hours", 36)
+            # One airing's worth guarantees that a daily band repeats itself tomorrow even
+            # though its configured repeat gap says it should not. Prepare enough distinct
+            # material for every occurrence inside that gap. A weekly band still needs one set.
+            want = items_per_airing * _airings_within(int(repeat_hours), band)
             have = _matching_items(conn, item_kinds, band.genres, band.decades, minutes * 60)
             if have < want and now - (band.last_fetch_at or 0) >= BAND_FETCH_GAP:
                 out.append({"band": band, "channel": channel, "kind": kind, "have": have, "want": want,
@@ -107,6 +114,16 @@ def _next_band_ts(band: bands.Band, settings: dict[str, Any], now: int, tz) -> i
         if at > now:
             return at
     return now + 8 * 86400
+
+
+def _airings_within(repeat_hours: int, band: bands.Band) -> int:
+    """Largest number of this band's airings inside its item repeat window."""
+    window_days = max(1, (max(0, repeat_hours) + 23) // 24)
+    active = [day for day in range(14 + window_days) if band.on(day % 7)]
+    return max(
+        (sum(start <= day < start + window_days for day in active) for start in active[:14]),
+        default=1,
+    )
 
 
 def _need_key(need: dict[str, Any]) -> tuple[Any, ...]:

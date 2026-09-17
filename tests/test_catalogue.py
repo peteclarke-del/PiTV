@@ -229,8 +229,9 @@ def test_document_values_are_read_defensively():
     assert [dbm.as_text(v) for v in ("a", 12, None, {"a": 1})] == ["a", "12", None, None]
     assert [dbm.as_bool(v) for v in (True, "false", "yes", 0, None)] == [True, False, True, False, False]
     assert dbm.as_bool(None, True) is True
-    assert dbm.genre_list('["Drama", "", 5, {"x": 1}]') == ["Drama", "5"]
-    assert dbm.genre_list("Comedy") == ["Comedy"] and dbm.genre_list(7) == [] and dbm.genre_list("1984") == ["1984"]
+    assert dbm.genre_list('["Drama", "", 5, {"x": 1}]') == ["Drama"]
+    assert dbm.genre_list("Comedy") == ["Comedy"]
+    assert dbm.genre_list(7) == [] and dbm.genre_list("1984") == []
 
 
 def test_sql_identifiers_are_checked():

@@ -114,7 +114,7 @@ def test_external_entry_scheduled_ahead_and_requested(conn):
     assert conn.execute("SELECT COUNT(*) FROM wanted WHERE lineup_id = ?", (entry["id"],)).fetchone()[0] >= len(wanted)
     assert not conn.execute("SELECT episode FROM wanted WHERE lineup_id = ? GROUP BY episode HAVING COUNT(*) > 1", (entry["id"],)).fetchall()
     # The manifest carries them for pitv_content with the series title and a search phrase.
-    from pitv.content import manifest
+    from pitv.content import REMOTE_PRIORITY_HOURS, manifest
     m = manifest(conn, days=3, now=now)
     ids = {w["id"] for w in wanted}
     mine = [i for i in m["items"] if i["wanted_id"] in ids]
@@ -122,7 +122,12 @@ def test_external_entry_scheduled_ahead_and_requested(conn):
     assert all(i["match"] == confirmed for i in mine), "the confirmed identity goes to pitv_content with every request"
     assert mine[0]["show_title"] == "The Tripods" and mine[0]["transient"] is True
     assert mine[0]["remote_required"] is True
-    assert min(i["priority"] for i in mine) < 0, "remote-only material must outrank playable NAS fallbacks"
+    local_priorities = [int(max(0.0, (i["first_air_ts"] - now) / 3600) // 4) for i in mine]
+    adjustment = REMOTE_PRIORITY_HOURS // 4
+    assert all(i["priority"] == local - adjustment
+               for i, local in zip(mine, local_priorities, strict=True))
+    assert all(i["priority"] < local for i, local in zip(mine, local_priorities, strict=True)), \
+        "remote-only material must outrank an equally timed playable NAS fallback"
     assert "The Tripods" in mine[0]["search"]["phrase"] and mine[0]["dest_dir"]
     with dbm.tx(conn):
         dbm.set_setting(conn, "nas_only", True)
