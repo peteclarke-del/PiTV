@@ -1705,31 +1705,27 @@ def needs_rebuild(conn: sqlite3.Connection, now: int | None = None) -> bool:
 
 
 def refill_empty_days(conn: sqlite3.Connection, now: int | None = None) -> dict[str, Any]:
-    """Build again the days that were built when there was little or nothing to schedule.
+    """Rebuild from each channel-day's first future holding-card gap.
 
-    A day built from an empty library is a full day of captions, which still counts as a built
-    day: the horizon looks complete and nothing rebuilds it when the material finally arrives.
-    So after a catalogue import, a channel-day whose remaining time is mostly captions is built
-    again from now on. A day already carrying programmes for most of its length is left alone,
-    so a viewer's evening does not reshuffle because a few adverts were indexed. This is what
-    makes a thin channel fill itself as its material arrives, with nobody watching it happen."""
+    A filled day can still contain an isolated hole, so judging the whole day's percentage leaves
+    visibly broken schedules behind. Start at the gap itself: earlier billing remains stable,
+    while newly eligible local or remote entries get another chance to fill it. Every filler is
+    retried: the configured advert and ident slots are their own kinds, never filler."""
     now = now or now_ts()
     rows = conn.execute(
-        "SELECT channel_id, day, MIN(start_ts) AS first_ts,"
-        " SUM(CASE WHEN kind = 'programme' THEN end_ts - start_ts ELSE 0 END) AS played,"
-        " SUM(CASE WHEN kind = 'filler' AND block IS NOT NULL THEN 1 ELSE 0 END) AS band_gaps,"
-        " SUM(end_ts - start_ts) AS total"
-        " FROM schedule WHERE end_ts > ? AND replay = 0 GROUP BY channel_id, day ORDER BY day", (now,)).fetchall()
+        "SELECT channel_id, day, MIN(MAX(start_ts, ?)) AS first_ts"
+        " FROM schedule WHERE end_ts > ? AND replay = 0 AND kind = 'filler'"
+        " GROUP BY channel_id, day ORDER BY first_ts, channel_id",
+        (now, now),
+    ).fetchall()
     days = programmes = 0
     for row in rows:
-        if not row["band_gaps"] and row["total"] and row["played"] * 2 >= row["total"]:
-            continue    # mostly programmes already: leave it as the viewer has seen it billed
-        result = rebuild_from(conn, row["channel_id"], max(int(row["first_ts"]), now), now=now)
+        result = rebuild_from(conn, row["channel_id"], int(row["first_ts"]), now=now)
         if result["status"] == "error":
             continue
         days += 1
         programmes += int(result["summary"].split(" ", 1)[0])
-    summary = f"{days} empty channel-days rebuilt, {programmes} programmes"
+    summary = f"{days} gap-bearing channel-days rebuilt, {programmes} programmes"
     if days:
         log.info("refill: %s", summary)
     return {"status": "ok", "days": days, "programmes": programmes, "summary": summary}

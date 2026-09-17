@@ -60,7 +60,8 @@ def api_now(request: Request, conn: sqlite3.Connection = Depends(get_conn), next
 
 @router.get("/api/schedule")
 def api_schedule(conn: sqlite3.Connection = Depends(get_conn), start: int | None = None,
-                 end: int | None = None, channel: int | None = None, ads: int = 0, replay: int = 1):
+                 end: int | None = None, channel: int | None = None, ads: int = 0,
+                 bands: int = 0, replay: int = 1):
     now = now_ts()
     start = start if start is not None else now - 3600
     end = end if end is not None else start + 6 * 3600
@@ -76,13 +77,13 @@ def api_schedule(conn: sqlite3.Connection = Depends(get_conn), start: int | None
         q += " AND s.replay = 0"
     q += " ORDER BY s.channel_id, s.start_ts"
     slots = [slot_public(r) for r in conn.execute(q, params)]
-    if not ads:
+    if not bands:
         slots = collapse_blocks(slots)
     return {"ts": now, "start": start, "end": end, "channels": enabled_channels(conn), "slots": slots}
 
 
 @router.get("/api/schedule/day/{day}")
-def api_schedule_day(day: str, conn: sqlite3.Connection = Depends(get_conn), ads: int = 0):
+def api_schedule_day(day: str, conn: sqlite3.Connection = Depends(get_conn), ads: int = 0, bands: int = 0):
     settings = all_settings(conn)
     tz = tz_of(conn)
     try:
@@ -95,7 +96,7 @@ def api_schedule_day(day: str, conn: sqlite3.Connection = Depends(get_conn), ads
         q += " AND s.kind IN ('programme', 'filler')"
     q += " ORDER BY s.channel_id, s.start_ts"
     slots = [slot_public(r) for r in conn.execute(q, (day,))]
-    if not ads:
+    if not bands:
         slots = collapse_blocks(slots)
     return {"day": day, "day_start": day_start, "day_end": day_end, "next_day_start": next_start,
             "channels": enabled_channels(conn), "slots": slots}

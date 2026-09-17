@@ -13,13 +13,18 @@
   import JobList from './JobList.svelte';
 
   let ads = $state(false);
+  let bandItems = $state(false);
   let selected = $state(null);
   let picker = $state(null);          // 'replace' | 'insert' | null
   let insert = $state(null);          // { channel_id, day, time, media_id, label }
   let notes = $state([]);             // notes from the last synchronous edit
   let busy = $state(false);
   // A refetch replaces the slot objects, so the open drawer follows its slot into the new list.
-  const view = new ScheduleDay({ ads: () => ads, onload: (data) => { if (selected) selected = data?.slots.find((s) => s.id === selected.id) ?? null; } });
+  const view = new ScheduleDay({
+    ads: () => ads,
+    bands: () => bandItems,
+    onload: (data) => { if (selected) selected = data?.slots.find((s) => s.id === selected.id) ?? null; },
+  });
 
   let editable = $derived(selected && selected.start_ts > clock.ts && !selected.replay);
 
@@ -98,6 +103,7 @@
     <DayNav days={view.days} day={view.day} onpick={view.pick} />
     <button class="small" onclick={view.goNow}>Now</button>
     <label class="check small"><input type="checkbox" bind:checked={ads} /> Show ads &amp; idents</label>
+    <label class="check small"><input type="checkbox" bind:checked={bandItems} /> Show band items</label>
     <span class="spacer"></span>
     <select class="small" bind:value={rebuildChannel} disabled={!view.data} aria-label="Channel to rebuild">
       <option value="">every channel</option>

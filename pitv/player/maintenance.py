@@ -22,7 +22,7 @@ from ..content import apply_report_files, protect_manifest
 from ..db import all_settings, connect, now_ts, tx
 from ..lineup import remove_aired_transients
 from ..readiness import check as readiness_check
-from ..scheduler.build import build_horizon, needs_rebuild
+from ..scheduler.build import build_horizon, needs_rebuild, refill_empty_days
 from ..scheduler.rules import tz_of
 from ..wanted import band_needs, queue_gaps, request_all_band_material
 from .cache import MediaCache
@@ -32,6 +32,7 @@ log = logging.getLogger("pitv.maintenance")
 STARTUP_DELAY = 20        # seconds; let playback start before the first pass
 PASS_INTERVAL = 600       # seconds between passes
 EMPTY_BUILD_RETRY = 3600  # a build that produced nothing (empty library) is not retried every pass
+GAP_BUILD_RETRY = 3600    # retry holding-card gaps as remote entries become eligible
 SCHEDULE_KEEP_DAYS = 14   # aired slots kept for the history and "what was on" views
 RUN_LOG_KEEP_DAYS = 30
 
@@ -47,6 +48,7 @@ class Maintenance:
         self._readiness_done: set[str] = set()   # "YYYY-MM-DD:hour" stamps already checked today
         self._first_pass = True
         self._empty_build_at = 0
+        self._gap_build_at = 0
         self._wanted_requested_at = 0
         self._index_mtime = 0.0                 # the index file version last imported
         self._pruned_on: str | None = None      # local date of the last history/schedule trim
@@ -101,6 +103,16 @@ class Maintenance:
         tz = tz_of(conn)
         if needs_rebuild(conn, now):
             self._build(conn, now)
+        # A complete horizon may still contain a holding-card slot. Remote entries become
+        # eligible as their lead window passes even when no catalogue file changes, so retry from
+        # the first gap periodically. The refill preserves everything billed before that point.
+        if now - self._gap_build_at >= GAP_BUILD_RETRY:
+            refill = refill_empty_days(conn, now=now)
+            self._gap_build_at = now
+            if refill["days"]:
+                self.status["last_build"] = {"at": now_ts(), "status": refill["status"],
+                                             "summary": refill["summary"]}
+                self.on_schedule_changed()
         local = datetime.fromtimestamp(now, tz)
         today = local.date().isoformat()
 

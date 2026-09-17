@@ -31,18 +31,18 @@ export class ScheduleDay {
   #seq = 0;
   #onpick;
 
-  /** `ads()` is read reactively and toggles adverts and idents in the slot list; `onload` runs after
-   *  every slot fetch; `onpick(day)` runs when the day is changed through pick() or goNow(). */
-  constructor({ day = '', ads = () => false, onload, onpick } = {}) {
+  /** `ads()` and `bands()` independently expose continuity and band components; `onload` runs
+   *  after every slot fetch; `onpick(day)` runs when the day changes through pick() or goNow(). */
+  constructor({ day = '', ads = () => false, bands = () => false, onload, onpick } = {}) {
     this.day = day;
     this.#onpick = onpick;
     let scrolled = false;
     $effect(() => { changes.schedule; untrack(() => this.loadDays()); });
     $effect(() => {
-      const bounds = this.bounds, withAds = ads();
+      const bounds = this.bounds, withAds = ads(), withBandItems = bands();
       if (!bounds) return;
       untrack(async () => {
-        if (!(await this.#loadSlots(bounds, withAds))) return;
+        if (!(await this.#loadSlots(bounds, withAds, withBandItems))) return;
         // Open on the current time once, the first time today is shown.
         if (!scrolled && this.day === this.days?.today) { scrolled = true; await tick(); this.scrollToNow(); }
         onload?.(this.data);
@@ -60,10 +60,12 @@ export class ScheduleDay {
   };
 
   /** Fetch the slots for `bounds`; false when a newer request has superseded this one. */
-  async #loadSlots(bounds, ads) {
+  async #loadSlots(bounds, ads, bands) {
     const seq = ++this.#seq;
     this.loading = true;
-    const r = await tryApi(get('/api/schedule', { start: bounds.start, end: bounds.end, ads: ads ? 1 : 0 }));
+    const r = await tryApi(get('/api/schedule', {
+      start: bounds.start, end: bounds.end, ads: ads ? 1 : 0, bands: bands ? 1 : 0,
+    }));
     if (seq !== this.#seq) return false;
     this.data = r ?? this.data;
     this.loading = false;
