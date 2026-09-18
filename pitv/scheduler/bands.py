@@ -27,8 +27,6 @@ from .slots import seconds
 ITEM_MINUTES = 15             # default longest item a band treats as one of its own; see is_feature
 KINDS = ("music", "episode", "movie")
 MAX_BAND_MINUTES = 12 * 60
-FIT_SECONDS = 10 * 60         # an item "meets" a stretch when it ends within this of the stretch's end
-FEATURE_OVERRUN = 20 * 60     # how far past its band a feature may run when nothing shorter fits
 MAX_STEPS = 3000              # items one stretch can hold; a runaway loop ends as a caption, not a hang
 Placement = tuple[int, dict[str, Any]]   # (start ts, item) for the walk to turn into a slot
 
@@ -185,7 +183,9 @@ class Filler:
 
     def __init__(self, bands: list[Band], pool: list[dict[str, Any]], *, item_repeat: int, feature_repeat: int,
                  rng: random.Random, last_placed: dict[int, int], item_minutes: int = ITEM_MINUTES,
-                 strict: bool = False) -> None:
+                 strict: bool = False, fit_seconds: int = 600, feature_overrun: int = 1200) -> None:
+        self.fit_seconds = fit_seconds            # settings band_fit_minutes and
+        self.feature_overrun = feature_overrun    # band_feature_overrun_minutes, as the builder passes them
         self.pool = pool
         self.item_minutes = item_minutes
         self.strict = strict
@@ -270,7 +270,7 @@ class Filler:
             for m in self.pool:
                 if float(m["duration"]) > gap or (exclude and m["id"] in exclude):
                     continue
-                if close and abs(fit - float(m["duration"])) > FIT_SECONDS:
+                if close and abs(fit - float(m["duration"])) > self.fit_seconds:
                     continue
                 if not self._suits(band, m, feature, genres, strict):
                     continue
@@ -354,7 +354,7 @@ def fill_band(band: Band, start: int, end: int, filler: Filler, hard_end: int | 
         item = filler.pick(band, t, gap, feature=opening_feature, exclude=shown,
                            fit=end - t if opening_feature else None)
         if item is None and opening_feature and hard_end is None:
-            item = filler.pick(band, t, end - t + FEATURE_OVERRUN, feature=True, exclude=shown, fit=end - t)
+            item = filler.pick(band, t, end - t + filler.feature_overrun, feature=True, exclude=shown, fit=end - t)
         want_feature = False
         if item is None:
             break

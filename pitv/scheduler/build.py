@@ -475,7 +475,9 @@ class Builder:
         return bands.Filler(todays, pool, rng=rng, last_placed=self.library.last_placed,
                             item_minutes=item_minutes,
                             strict=bool(channel.get("strict_matching")),
-                            item_repeat=item_repeat, feature_repeat=feature_repeat)
+                            item_repeat=item_repeat, feature_repeat=feature_repeat,
+                            fit_seconds=self.policy.integer("band_fit_minutes") * 60,
+                            feature_overrun=self.policy.integer("band_feature_overrun_minutes") * 60)
 
     @staticmethod
     def _segments(start: int, end: int, taken: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -521,7 +523,8 @@ class Builder:
             # A concert that ends before its band does is not a shortfall, only an interval.
             short = not (band.feature and placed)
             emit(self._filler(channel, day_str, t, end, title=band.name, block=band.name,
-                              subtitle=f"More is on its way. {resumes}" if short else resumes))
+                              subtitle=f"{self.settings.get('band_card_message') or ''} {resumes}".strip()
+                              if short else resumes))
             if short:
                 self.log.append(f"{channel['name']} {day_str}: {band.name} is {(end - t) // 60} min short of material")
             return end

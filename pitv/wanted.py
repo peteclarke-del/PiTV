@@ -51,9 +51,6 @@ def queue_gaps(conn: sqlite3.Connection) -> int:
 # --- material for bands ---------------------------------------------------------------------
 
 BAND_ITEM_MINUTES = 4                  # rough length of a band item, for judging how many a band needs
-BAND_FETCH_GAP = 6 * 3600              # leave this long before asking for the same band again
-MIN_FETCH = 20                         # the fewest items a run is worth starting for
-MAX_FETCH = 60                         # and the most to ask for at once, so one band cannot hog the night
 BAND_ITEM_KINDS = {"music": ("music",), "episode": ("episode",), "movie": ("movie",)}
 
 
@@ -109,7 +106,7 @@ def band_needs(conn: sqlite3.Connection, settings: dict[str, Any]) -> list[dict[
                 # material for every occurrence inside that gap. A weekly band still needs one set.
                 want = items_per_airing * _airings_within(int(repeat_hours), band)
                 have = _matching_items(conn, band, item_kinds, minutes * 60)
-            if have < want and now - (band.last_fetch_at or 0) >= BAND_FETCH_GAP:
+            if have < want and now - (band.last_fetch_at or 0) >= int(settings.get("band_fetch_gap_hours", 6)) * 3600:
                 out.append({"band": band, "channel": channel, "kind": kind, "have": have, "want": want,
                             "minutes": minutes, "next_ts": min(start for start, _ in mine)})
     # Preparation follows the timetable: the next band to air is more urgent than a larger
@@ -182,7 +179,8 @@ def request_band_material(conn: sqlite3.Connection, settings: dict[str, Any]) ->
     decades = sorted(band.decades)
     # Ask for what the band is short of, and never for a trifle: a run costs a search and a
     # download either way, and a band wanting thirty videos should not be fed three a night.
-    count = max(MIN_FETCH, min(MAX_FETCH, need["want"] - need["have"]))
+    count = max(int(settings.get("band_fetch_min", 20)),
+                min(int(settings.get("band_fetch_max", 60)), need["want"] - need["have"]))
     # Urgent goes ahead of pitv_content's cache work, so it is for a band with nothing at all;
     # a band that is merely short queues behind the copies tonight's schedule depends on.
     body: dict[str, Any] = {"mode": "catalogue", "kind": need["kind"], "count": count,

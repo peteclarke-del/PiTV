@@ -194,6 +194,21 @@ FIELDS: tuple[dict[str, Any], ...] = (
        "A band runs several short things under one title, so anything this long counts as a feature"
        " instead: a film or a concert, which only a band that opens with one will take. It is also the"
        " longest thing fetched for a band. A channel or a single band may set its own.", min=1, max=600),
+    _f("band_fit_minutes", "programming", "advanced", "A band is met within (minutes)", "int",
+       "A concert or film is chosen to end within this many minutes of its band's end, where the"
+       " library has one; the same goes for long items between bands.", min=0, max=60),
+    _f("band_feature_overrun_minutes", "programming", "advanced", "A feature may overrun by (minutes)", "int",
+       "When nothing ends that close, a band's opening feature may run this far past the band rather"
+       " than the band open with none.", min=0, max=120),
+    _f("band_card_message", "programming", "standard", "Band holding card", "text",
+       "Shown under a band's name for whatever part of its time the library cannot fill, followed by"
+       " when service resumes."),
+    _f("band_fetch_gap_hours", "content", "advanced", "Ask again for a band after (hours)", "int",
+       "How long PiTV leaves a band before asking pitv_content for more of the same.", min=1, max=168),
+    _f("band_fetch_min", "content", "advanced", "Fewest items to ask for", "int",
+       "A top-up never asks for fewer than this: a run costs a search either way.", min=1, max=200),
+    _f("band_fetch_max", "content", "advanced", "Most items to ask for", "int",
+       "Nor for more than this at once, so one band cannot take the whole night.", min=1, max=500),
     _f("acquire_dir", "content", "advanced", "Download folder", "path",
        "Where pitv_content files what it fetches; empty uses the cache folder's acquired folder."),
     _f("external_lead_hours", "content", "advanced", "Local-first window (hours)", "int",

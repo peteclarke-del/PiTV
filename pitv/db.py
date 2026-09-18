@@ -381,6 +381,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "band_fetch": True,                # ask pitv_content for material when a band has too little
     "band_fetch_hours": [1, 2, 3, 4, 5],   # hours it may queue top-ups; pitv_content serialises the work
     "band_item_max_minutes": 15,       # a band runs several short items; anything this long is a feature
+    "band_fit_minutes": 10,            # an item "meets" a stretch when it ends within this of the stretch's end
+    "band_feature_overrun_minutes": 20,  # how far past its band a feature may run when nothing closer fits
+    "band_card_message": "More is on its way.",  # first line of a band's holding card when it is short of material
+    "band_fetch_gap_hours": 6,         # leave this long before asking for the same band again
+    "band_fetch_min": 20,              # the fewest items a top-up asks for: a run costs a search either way
+    "band_fetch_max": 60,              # and the most, so one band cannot take the whole night
     "content_fetch_kinds": [],         # what pitv_content said it can fetch, kept for when it is down
     "movie_repeat_days": 21,
     "series_cadence_days": 7,          # ordinary series aim for the same weekday next week

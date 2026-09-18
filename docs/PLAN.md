@@ -419,7 +419,9 @@ with other material under other names, never shortened, and never moved: a "Disc
 a metal set billed as disco, and a "Rock Hour" is not sixteen minutes long. The card is honest
 and it corrects itself, because the shortfall is what asks pitv_content for more and every
 import rebuilds the day from its first card. A band billed as a concert is one concert, chosen
-to end as near the band's end as the library allows. The last item of a band may run over by up
+to end within `band_fit_minutes` (10) of the band's end where the library has one, and allowed
+`band_feature_overrun_minutes` (20) past it only when it has none. The card's first line is the
+setting `band_card_message`. The last item of a band may run over by up
 to `duration_tolerance_minutes` (5) and the next band starts when it ends, as programmes did on
 air; nothing runs over into a kept slot or an anchored programme. A rebuild part way through a
 band (or a locked slot or an anchor inside one) does not drop the band: it carries on around
