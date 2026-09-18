@@ -226,11 +226,16 @@ class _Index:
 
 
 def build_fake_library(root: Path, seed: int = 1, with_nfo: bool = True,
-                       max_episodes_per_show: int | None = None) -> dict[str, Any]:
+                       max_episodes_per_show: int | None = None, templates: Path | None = None) -> dict[str, Any]:
     """Write a small library of real (tiny) video files and the library index pitv_content would
-    publish for it. Returns the folders plus `index` (the document) and `index_path`."""
+    publish for it. Returns the folders plus `index` (the document) and `index_path`.
+
+    Each distinct length is encoded once into `templates` and copied from there. The folder
+    defaults to one inside the library, so a one-off library is self-contained; the test suite
+    passes a folder shared by every test and every run, because encoding a two-hour concert at
+    one frame a second is minutes of libx264 and the scheduler never reads the pixels."""
     rnd = random.Random(seed)
-    templates = root / ".templates"
+    templates = templates or root / ".templates"
     tv, movies, pitv = root / "tvshows", root / "movies", root / "pitv"
     sport, music = root / "tvsports", root / "music videos"
     for folder in (tv, movies, pitv / "Adverts", pitv / "Idents", sport, music):
