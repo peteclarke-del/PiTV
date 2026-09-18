@@ -27,6 +27,7 @@ from .slots import seconds
 ITEM_MINUTES = 15             # default longest item a band treats as one of its own; see is_feature
 KINDS = ("music", "episode", "movie")
 MAX_BAND_MINUTES = 12 * 60
+FIT_SECONDS = 10 * 60         # an item "meets" a stretch when it ends within this of the stretch's end
 FEATURE_OVERRUN = 20 * 60     # how far past its band a feature may run when nothing shorter fits
 MAX_STEPS = 3000              # items one stretch can hold; a runaway loop ends as a caption, not a hang
 Placement = tuple[int, dict[str, Any]]   # (start ts, item) for the walk to turn into a slot
@@ -245,9 +246,10 @@ class Filler:
         band gives its time back when the library has nothing, and that shortfall is what asks
         pitv_content for more.
 
-        `fit` is the stretch the caller would like filled exactly: an item that ends within ten
-        minutes of it is strongly preferred, so long items are chosen to meet the next fixed
-        point rather than leave a scrap that only the same few short files can plug. The item
+        `fit` is the stretch the caller would like filled exactly. The whole search is made
+        first among items that end within ten minutes of it, and only when none does is it made
+        again without the condition, so a two hour concert band takes a two hour concert where
+        the library has one, even an undated one over a dated one of ninety minutes. The item
         just played is never chosen again while there is any other, and nothing in `exclude`
         (what this airing of the band has already shown) is chosen at all. `fresh` stops the
         search before it allows anything played within the repeat gap."""
@@ -262,10 +264,13 @@ class Filler:
             steps = (("match", False, False), ("match", True, False), ("match", True, True))
         if fresh:
             steps = tuple(step for step in steps if not step[1])
-        for genres, allow_recent, allow_today in steps:
+        searches = [(step, close) for close in ((True, False) if fit is not None else (False,)) for step in steps]
+        for (genres, allow_recent, allow_today), close in searches:
             candidates: list[tuple[float, dict[str, Any]]] = []
             for m in self.pool:
                 if float(m["duration"]) > gap or (exclude and m["id"] in exclude):
+                    continue
+                if close and abs(fit - float(m["duration"])) > FIT_SECONDS:
                     continue
                 if not self._suits(band, m, feature, genres, strict):
                     continue
@@ -280,8 +285,6 @@ class Filler:
                     weight *= 1.0 / (1 + self.played_today.get(m["id"], 0)) ** 2
                 elif m["id"] in reserved:
                     weight *= 0.1
-                if fit is not None and abs(fit - float(m["duration"])) <= 600:
-                    weight *= 8.0
                 candidates.append((weight, m))
             if len(candidates) > 1:
                 candidates = [c for c in candidates if c[1]["id"] != self.last_id]

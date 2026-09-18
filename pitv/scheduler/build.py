@@ -517,10 +517,13 @@ class Builder:
             if shown is not None:
                 shown.add(item["id"])
         if end - t >= 60:
-            resumes = datetime.fromtimestamp(end, self.tz).strftime("%H:%M")
+            resumes = f"Service resumes at {datetime.fromtimestamp(end, self.tz).strftime('%H:%M')}"
+            # A concert that ends before its band does is not a shortfall, only an interval.
+            short = not (band.feature and placed)
             emit(self._filler(channel, day_str, t, end, title=band.name, block=band.name,
-                              subtitle=f"More is on its way. Service resumes at {resumes}"))
-            self.log.append(f"{channel['name']} {day_str}: {band.name} is {(end - t) // 60} min short of material")
+                              subtitle=f"More is on its way. {resumes}" if short else resumes))
+            if short:
+                self.log.append(f"{channel['name']} {day_str}: {band.name} is {(end - t) // 60} min short of material")
             return end
         return max(t, end) if placed else end
 
