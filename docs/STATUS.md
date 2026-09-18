@@ -47,7 +47,6 @@ In the order that unblocks testing. Each was sent to its owner with the evidence
 | C3 | Stop downloading further uploads of a named track once one is filed (about half of a run's time). Landed in 217ba21; to be checked on the next band run's log | 3, 4 | A run's log shows no "duplicate of" for a track it made earlier in the same run |
 | C4 | A mid-run index publish rescans only the fetched sources and merges the rest (seven minutes before, every fifteen). Landed in 217ba21; to be checked on the next band run's log | 3, 4 | A mid-run publish takes under thirty seconds in the log |
 | C5 | Copy rather than re-encode fetched video that already fits the profile's copy rule (H.264, at most 864 lines). Agreed. How much it saves depends on the profile's `max_source_height`, which PiTV owns: at the present 1080 for a 576 line screen almost nothing fetched qualifies for the copy. Pete's decision, see P4 | 3, 4 | A typical music video is filed in under a minute on the development machine; PiTV times a run |
-| C7 | Band runs worked in helpings of about ten items, the remainder requeued behind the other bands, so every band has something early and cache work never waits more than one helping. Agreed; contract section 9 has the wording | 2, 3 | With several bands queued, each has new files before any has all of its count, and a queued cache run starts within one helping |
 | C12 | A cache run stops opening with a full walk of every share (seven minutes before any delivery, duplicating the nightly index job). Agreed; contract section 6 has the wording. The nightly timer queues the index as its own job | 2 | A cache run's log begins with deliveries |
 | C8 | Inside one job: searches and downloads run ahead of a single analyse-and-encode stage; one or two decode passes instead of four | 3, 4 | Timed by PiTV against C5's figure |
 | C9 | SIGTERM in a job cleans its temporary files, releases the run marker and reports what it had delivered | 5 | Stopping the service mid-run leaves no `encode-*` files and PiTV receives a report |
@@ -63,6 +62,14 @@ API refuses a non-loopback bind; a reset names what it could not remove.
 
 Closed since: C6, identical band requests are one job (cbd9644, ee003aa), seen in
 `GET /api/status` as eight distinct band runs with the true duplicate cancelled.
+C7, band runs in helpings (6591751, and 265cbda for runs queued before helpings existed):
+seen live as one active helping of ten and six queued at ten each of their counts; a helping
+that files nothing ends its band. The helping size is pitv_content's `catalogue_helping`.
+C3, no further uploads of a filed song are downloaded: no "duplicate of" in either band log
+written since 217ba21, against three in the last log before it.
+
+pitv_content 265cbda is committed and running on this machine but not pushed: the GitHub token
+here has expired and Pete has to sign in again.
 
 ## Open in PiTV
 
