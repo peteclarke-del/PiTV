@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import (
+    LIVE,
     as_bool,
     as_int,
     as_text,
@@ -192,7 +193,7 @@ def generate(conn: sqlite3.Connection, rebalance: bool = False) -> dict[str, int
                               "bucket": _bucket(r["category"])})
         for r in conn.execute(
                 "SELECT id, title, year, genres, certificate, duration FROM media"
-                " WHERE kind = 'movie' AND excluded = 0 AND missing = 0 AND duration IS NOT NULL"):
+                f" WHERE kind = 'movie' AND {LIVE} AND duration IS NOT NULL"):
             if r["id"] not in taken_films:
                 items.append({"kind": "movie", "id": r["id"], "title": r["title"], "year": r["year"],
                               "genres": _genre_set(r["genres"]), "secs": r["duration"], "cert": r["certificate"], "kids": 0,
@@ -387,10 +388,9 @@ def facets(conn: sqlite3.Connection) -> dict[str, Any]:
     genres: dict[str, dict[str, int]] = {}
     decades: dict[str, dict[str, int]] = {}
     concerts = 0
-    live = "missing = 0 AND excluded = 0"
-    for kind, sql in (("episode", f"SELECT genres, year, 0 AS concert FROM shows WHERE {live}"),
-                      ("movie", f"SELECT genres, year, 0 AS concert FROM media WHERE kind = 'movie' AND {live}"),
-                      ("music", f"SELECT genres, year, concert FROM media WHERE kind = 'music' AND {live}")):
+    for kind, sql in (("episode", f"SELECT genres, year, 0 AS concert FROM shows WHERE {LIVE}"),
+                      ("movie", f"SELECT genres, year, 0 AS concert FROM media WHERE kind = 'movie' AND {LIVE}"),
+                      ("music", f"SELECT genres, year, concert FROM media WHERE kind = 'music' AND {LIVE}")):
         for r in conn.execute(sql):
             for g in genre_list(r["genres"]):
                 genres.setdefault(g, dict.fromkeys(FACET_KINDS, 0))[kind] += 1

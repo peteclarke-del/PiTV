@@ -22,6 +22,7 @@ from ... import wanted as wanted_mod
 from ...db import (
     CHANNEL_CONTENT,
     DEFAULT_SETTINGS,
+    LIVE,
     all_settings,
     get_setting,
     now_ts,
@@ -522,12 +523,12 @@ def library_search(conn: sqlite3.Connection = Depends(admin_conn), q: str = "", 
     like = f"%{q}%"
     limit = max(1, min(limit, 100))
     if kind in ("programme", "tv"):
-        shows = conn.execute("SELECT * FROM shows WHERE missing = 0 AND excluded = 0 AND title LIKE ? ORDER BY title LIMIT ?", (like, limit)).fetchall()
+        shows = conn.execute(f"SELECT * FROM shows WHERE {LIVE} AND title LIKE ? ORDER BY title LIMIT ?", (like, limit)).fetchall()
         eps_by_show: dict[int, list[dict[str, Any]]] = {r["id"]: [] for r in shows}
         if shows:
             marks = ",".join("?" for _ in shows)
             for e in conn.execute(f"SELECT id, show_id, season, episode, title, duration FROM media WHERE show_id IN ({marks})"
-                                  " AND missing = 0 AND excluded = 0 ORDER BY show_id, COALESCE(season,999), COALESCE(episode,999)",
+                                  f" AND {LIVE} ORDER BY show_id, COALESCE(season,999), COALESCE(episode,999)",
                                   [r["id"] for r in shows]):
                 lst = eps_by_show[e["show_id"]]
                 if len(lst) < 200:
@@ -535,10 +536,10 @@ def library_search(conn: sqlite3.Connection = Depends(admin_conn), q: str = "", 
         for r in shows:
             out.append({"type": "show", "id": r["id"], "title": r["title"], "year": r["year"], "episodes": eps_by_show[r["id"]]})
     if kind in ("programme", "movie"):
-        for r in conn.execute("SELECT * FROM media WHERE kind = 'movie' AND missing = 0 AND excluded = 0 AND title LIKE ? ORDER BY title LIMIT ?", (like, limit)):
+        for r in conn.execute(f"SELECT * FROM media WHERE kind = 'movie' AND {LIVE} AND title LIKE ? ORDER BY title LIMIT ?", (like, limit)):
             out.append({"type": "movie", "id": r["id"], "title": r["title"], "year": r["year"], "duration": r["duration"], "certificate": r["certificate"]})
     if kind in ("programme", "music"):
-        for r in conn.execute("SELECT * FROM media WHERE kind = 'music' AND missing = 0 AND excluded = 0 AND title LIKE ? ORDER BY title LIMIT ?", (like, limit)):
+        for r in conn.execute(f"SELECT * FROM media WHERE kind = 'music' AND {LIVE} AND title LIKE ? ORDER BY title LIMIT ?", (like, limit)):
             out.append({"type": "music", "id": r["id"], "title": r["title"], "year": r["year"], "duration": r["duration"], "concert": r["concert"]})
     return out
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from ..db import effective, rows_to_dicts
+from ..db import LIVE, effective, rows_to_dicts
 from . import bands
 from .policy import SchedulerPolicy
 from .rules import era_spans, era_weight_spans, is_kids
@@ -25,8 +25,8 @@ from .slots import Show, json_field
 # to_ts None for "everything from from_ts on" (a forced horizon build).
 Rebuild = dict[int, tuple[int, int | None]]
 
-# The rows a build may use at all: on disk, not excluded by the admin, with a known length.
-USABLE = "excluded = 0 AND missing = 0 AND duration IS NOT NULL"
+# The rows a build may place: live, with a known length so the slot has an end.
+USABLE = f"{LIVE} AND duration IS NOT NULL"
 
 
 class Library:
@@ -76,7 +76,7 @@ class Library:
         pinned_movies = {r[0] for r in conn.execute(
             "SELECT media_id FROM lineup WHERE pinned = 1 AND enabled = 1 AND media_id IS NOT NULL")}
         show_rows = rows_to_dicts(conn.execute(
-            "SELECT * FROM shows WHERE excluded = 0 AND missing = 0"))
+            f"SELECT * FROM shows WHERE {LIVE}"))
         by_show: dict[int, list[dict[str, Any]]] = {}
         for e in self.playable("episode", " AND show_id IS NOT NULL"
                                " ORDER BY show_id, COALESCE(season, 999), COALESCE(episode, 999), path"):

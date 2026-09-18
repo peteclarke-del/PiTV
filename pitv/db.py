@@ -322,6 +322,10 @@ def _band(start: str, name: str, genres: list[str] | None = None, decades: list[
 
 # What a channel is for. A label: the scheduler follows the channel's pattern, genres, decades
 # and bands, never this.
+# A catalogue row PiTV may use at all: on disk and not excluded by the admin. Every query that
+# picks material to schedule, list or count starts from this.
+LIVE = "missing = 0 AND excluded = 0"
+
 CHANNEL_CONTENT = ("general", "music", "cartoons", "documentaries", "films", "sport", "kids")
 
 DEFAULT_MUSIC_BANDS = [

@@ -15,7 +15,7 @@ from datetime import timedelta
 from typing import Any
 
 from . import tool_client
-from .db import DEFAULT_SETTINGS, genre_list, get_setting, now_ts, rows_to_dicts, tx
+from .db import DEFAULT_SETTINGS, LIVE, genre_list, get_setting, now_ts, rows_to_dicts, tx
 from .scheduler import bands
 from .scheduler.library import USABLE
 from .scheduler.rules import tz_of
@@ -26,7 +26,7 @@ log = logging.getLogger("pitv.wanted")
 def queue_gaps(conn: sqlite3.Connection) -> int:
     """Queue episodes missing between the first and last episode of each season on disk.
     Three queries in all, however large the library: this runs on every maintenance pass."""
-    shows = {r["id"]: r for r in conn.execute("SELECT id, title, year FROM shows WHERE missing = 0 AND excluded = 0")}
+    shows = {r["id"]: r for r in conn.execute(f"SELECT id, title, year FROM shows WHERE {LIVE}")}
     seasons: dict[tuple[int, int], set[int]] = {}
     for e in conn.execute("SELECT show_id, season, episode FROM media WHERE show_id IS NOT NULL AND missing = 0"
                           " AND season IS NOT NULL AND episode IS NOT NULL ORDER BY show_id, season"):

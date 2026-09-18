@@ -1,17 +1,34 @@
-"""PiTV scheduling, split by responsibility.
+"""PiTV scheduling, one responsibility per module.
 
+``slots``
+    What a schedule is made of: slots, the series they come from, titles. Plain data.
 ``policy``
-    The central, typed interpretation of configurable rules and channel inheritance.
+    What the configured settings mean: units, channel inheritance, timing formulae.
 ``rules``
-    Pure eligibility rules for time, eras, certificates, dayparts and patterns.
+    Pure eligibility rules: broadcast day bounds, eras, certificates, dayparts, decades,
+    patterns.
+``library``
+    What a build has to schedule and what has aired of it: the usable catalogue, the line-up
+    entries with nothing on disk, each channel's bands, history and cursors. Loaded once.
+``select``
+    Choosing one thing for a gap: a programme, an advert, an ident. Every weighting rule.
 ``bands``
-    Generic titled-block matching and selection (music is not special-cased).
+    Titled stretches of a day: the timetable, what a band may use, filling a band and the
+    time between bands. Nothing here knows what music is.
+``runs``
+    Runs of short episodes, local or remote, and the placeholder slot for material not on
+    disk yet.
+``overnight``
+    The small hours: a replay of the day, or more of a band channel's own material.
 ``build``
-    The stateful schedule walk: it applies policy and rules to library/line-up state.
+    The day walk: kept slots, anchors and bands as fixed points, the pattern between them.
+    It asks the modules above and emits slots; it decides nothing about eligibility.
+``horizon``
+    Which days to build and when: the nightly extension, refill of thin days, rebuilding a
+    channel from a point, starting over.
 ``listing``
     Human-readable schedule output.
 
-New tunable behaviour should normally be declared in ``db.DEFAULT_SETTINGS``, exposed through
-``SchedulerPolicy``, and consumed by the builder. This keeps setting names and unit conversion
-out of the scheduling algorithm.
+A new rule goes in the module that owns its question; a new tunable is declared in
+``db.DEFAULT_SETTINGS`` and read through ``SchedulerPolicy``.
 """

@@ -17,7 +17,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .content import manifest_window
-from .db import all_settings, now_ts, rows_to_dicts, run_log_finish, run_log_start
+from .db import LIVE, all_settings, now_ts, rows_to_dicts, run_log_finish, run_log_start
 from .player.cache import MediaCache
 from .scheduler.horizon import rebuild_from
 from .scheduler.rules import tz_of
@@ -34,7 +34,7 @@ def playable_media(conn: sqlite3.Connection, cache: MediaCache, nas_fallback: bo
         mounted = {r["id"]: Path(r["path"]).is_dir() for r in conn.execute(
             "SELECT id, COALESCE(NULLIF(mount, ''), path) AS path FROM sources WHERE location = 'nas'")}
     ids: set[int] = set()
-    for m in rows_to_dicts(conn.execute("SELECT id, path, cache_path, origin, source_id FROM media WHERE missing = 0 AND excluded = 0")):
+    for m in rows_to_dicts(conn.execute(f"SELECT id, path, cache_path, origin, source_id FROM media WHERE {LIVE}")):
         if cache.cache_copy(m) is not None or (nas_fallback and m["origin"] == "nas" and mounted.get(m["source_id"])):
             ids.add(m["id"])
     return ids

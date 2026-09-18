@@ -330,7 +330,8 @@ Scheduler responsibilities are deliberately separated. `scheduler/policy.py` is 
 typed interpretation of tunable rules, units and per-channel inheritance; defaults remain in
 `db.DEFAULT_SETTINGS`. `scheduler/rules.py` contains pure eligibility rules (time, certificate,
 era and daypart), `scheduler/bands.py` contains generic titled-block matching, and
-`scheduler/build.py` performs the stateful schedule walk. New settings should enter through the
+`scheduler/build.py` performs the day walk; the library, selection, bands, runs, overnight and
+horizon are each their own module (see `pitv/scheduler/__init__.py`). New settings should enter through the
 policy rather than being interpreted independently inside the builder.
 
 The player also revisits every future holding-card gap once an hour, rebuilding only from the
@@ -1006,7 +1007,7 @@ PiTV/
 │   ├── guide.py               "what's on" lookups shared by the OSD guide and the web API
 │   ├── lineup.py              channel line-ups: generation by genre, editing, JSON mirror, deliveries, transient clean-up
 │   ├── wanted.py              the wanted list (gap detection)
-│   ├── scheduler/             build.py (week builder, anchors, gap fill, music, overnight, rebuild), rules.py, listing.py
+│   ├── scheduler/             slots, policy, rules, library, select, bands, runs, overnight, build (the day walk), horizon, listing
 │   ├── player/                controller.py, mpv_ipc.py, hwdec.py, input.py, control_socket.py, osd.py, cache.py, maintenance.py
 │   ├── web/                   app.py, api/ (public, admin, wanted, content, settings_rules, deps), events.py (SSE), auth.py, tasks.py, player_client.py, static/
 │   ├── logsetup.py, sdnotify.py, splash.py, devtools.py (fake library and its index)
