@@ -24,8 +24,11 @@
   let slotId = $derived(s.slot?.id ?? null);
   $effect(() => { slotId; untrack(loadHistory); });
 
-  const restart = () => confirmApi('Restart the player service? The picture will drop for a few seconds.', { title: 'Restart player', okLabel: 'Restart' },
-    () => post('/api/system/service/pitv-player.service/restart'), { success: 'Restart requested' });
+  const playerService = (action) => confirmApi(
+    action === 'start' ? 'Start the main television player?' : 'Restart the player service? The picture will drop for a few seconds.',
+    { title: action === 'start' ? 'Start player' : 'Restart player', okLabel: action === 'start' ? 'Start' : 'Restart' },
+    () => post(`/api/system/service/pitv-player.service/${action}`),
+    { success: action === 'start' ? 'Player start requested' : 'Restart requested' });
   let slotProgress = $derived.by(() => {
     const sl = s.slot; if (!sl || !sl.start_ts || !sl.end_ts) return 0;
     return (clock.ts - sl.start_ts) / (sl.end_ts - sl.start_ts);
@@ -45,7 +48,7 @@
   <div class="two">
     <div class="stack">
       <div class="card">
-        <div class="card-title"><h3>Player</h3><AppBadge app="pitv" /><button class="small danger" onclick={restart}>Restart player</button></div>
+        <div class="card-title"><h3>Player</h3><AppBadge app="pitv" /><button class="small" class:danger={s.online} onclick={() => playerService(s.online ? 'restart' : 'start')}>{s.online ? 'Restart player' : 'Start player'}</button></div>
         <PlayerStatus />
         {#if s.online}
           <div class="nowplaying mt">

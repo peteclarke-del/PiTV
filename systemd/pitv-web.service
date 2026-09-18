@@ -24,7 +24,9 @@ TimeoutStopSec=10
 MemoryHigh=400M
 MemoryMax=600M
 OOMPolicy=kill
-Nice=5
+# Browser HLS encoders are children of this process. Lowering the web service's CPU priority
+# also lowers every live encoder and lets background content transcodes starve viewers.
+Nice=0
 # Sandbox. The admin's service actions run `sudo -n systemctl ...` (/etc/sudoers.d/pitv), and
 # sudo needs its setuid bit. So no NoNewPrivileges=, and none of the settings that imply it for
 # a service running as a user on systemd 252 (Debian 12): ProtectKernelTunables=,

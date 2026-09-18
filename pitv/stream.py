@@ -80,21 +80,29 @@ def _codec_args(media: dict[str, Any] | None, where: str, profile: dict[str, Any
     MPEG-TS itself accepts HEVC, MPEG-2 and AC-3, but that does not make them safe in Chrome,
     Firefox or Safari. Even copied H.264 can carry a profile/pixel format a browser's hardware
     decoder refuses. The web rendition therefore never inherits source codecs."""
-    fit = (f"scale={profile['width']}:{profile['height']}:force_original_aspect_ratio=decrease,"
+    # Some old AVI/MPEG files retain broken or non-zero timestamps after an input seek. Reset
+    # both tracks for the live rendition so a browser never has to join an HLS stream whose
+    # first audio/video timestamps are unrelated.
+    fit = (f"setpts=PTS-STARTPTS,scale={profile['width']}:{profile['height']}:force_original_aspect_ratio=decrease,"
            f"pad={profile['width']}:{profile['height']}:-1:-1")
     args = ["-c:v", encoder, "-b:v", f"{profile['max_bitrate_kbps']}k", "-vf", fit,
             "-pix_fmt", "yuv420p", "-force_key_frames", f"expr:gte(t,n_forced*{segment_seconds})"]
     if encoder == "libx264":
-        args += ["-profile:v", "main"]
-    args += ["-c:a", "aac", "-b:a", "128k", "-ac", "2"]
+        # This is a live rendition, not a cache master. The default x264 preset can consume
+        # several cores and fall behind while pitv_content is transcoding; viewers then poll a
+        # playlist whose next segment never arrives in time. Fixed bitrate plus veryfast keeps
+        # the picture browser-safe while preserving enough CPU for independent channel streams.
+        args += ["-preset", "veryfast", "-tune", "zerolatency", "-profile:v", "main"]
+    args += ["-af", "aresample=async=1:first_pts=0", "-c:a", "aac", "-b:a", "128k", "-ac", "2"]
     return args
 
 
 def ffmpeg_command(source: Path, *, start: float, seconds: int, out_dir: Path, seq: int, segment_seconds: int,
                    media: dict[str, Any] | None, where: str, profile: dict[str, Any], encoder: str,
                    loop: bool = False, silent_audio: bool = False, burst: int = 0) -> list[str]:
-    """One programme's packaging run. Pure, so the arguments can be checked in a test."""
-    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
+    """Build one programme's packaging run, resuming only a playlist with existing media."""
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+           "-fflags", "+genpts+discardcorrupt", "-err_detect", "ignore_err"]
     if loop:
         cmd += ["-stream_loop", "-1"]
     if start > 0:
@@ -115,10 +123,19 @@ def ffmpeg_command(source: Path, *, start: float, seconds: int, out_dir: Path, s
     if loop:
         cmd += ["-r", "25"]   # the test signal is one frame a second; players dislike so few
     cmd += _codec_args(media, where, profile, encoder, segment_seconds, source)
+    hls_flags = "delete_segments+omit_endlist+independent_segments"
+    # Only resume a playlist which already contains media. ffmpeg's append_list flag emits an
+    # unnecessary leading discontinuity even for a brand-new stream; some native demuxers reject
+    # that startup. Reserve append mode for the programme boundaries that actually need it.
+    if (out_dir / PLAYLIST).exists() and any(out_dir.glob("s*.ts")):
+        hls_flags = f"append_list+{hls_flags}"
     cmd += [
-        "-t", str(max(1, seconds)),
+        "-t", str(max(1, seconds)), "-avoid_negative_ts", "make_zero",
         "-f", "hls", "-hls_time", str(segment_seconds), "-hls_list_size", str(LIST_SIZE),
-        "-hls_flags", "append_list+delete_segments+omit_endlist+independent_segments+discont_start",
+        # append_list adds the boundary discontinuity when a new programme's ffmpeg process
+        # resumes this live playlist. Adding discont_start as well produces two adjacent
+        # markers, which Chromium can reject as an unparseable stream after a channel change.
+        "-hls_flags", hls_flags,
         "-hls_segment_type", "mpegts", "-hls_segment_filename", str(out_dir / "s%05d.ts"),
         "-start_number", str(seq), str(out_dir / PLAYLIST),
     ]
@@ -153,6 +170,9 @@ class Streams:
 
         Called with ``_lock`` held. A browser cannot explicitly close an HLS GET when it
         changes channel, so its previous stream otherwise occupies a slot until the idle sweep.
+        A shared encoder belongs to every viewer using it: never stop it merely because one of
+        them changes channel. In that case the configured encoder limit is genuinely full and
+        the new stream must wait (or the administrator can raise ``stream_max_streams``).
         """
         if len(self._channels) < max_streams:
             return True
@@ -160,7 +180,12 @@ class Streams:
                     if old.number != number and client and client in old.viewers]
         if not previous:
             return False
-        old = min(previous, key=lambda item: item.last_request)
+        # Only an encoder exclusively owned by this viewer can be reclaimed. Stopping a shared
+        # channel here would blank every other browser watching it.
+        exclusive = [old for old in previous if set(old.viewers) == {client}]
+        if not exclusive:
+            return False
+        old = min(exclusive, key=lambda item: item.viewers[client])
         log.info("stream ch%s stopped (viewer %s changed to ch%s)", old.number, client, number)
         self._stop_channel(old)
         self._channels.pop(old.number, None)

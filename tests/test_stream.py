@@ -12,9 +12,30 @@ def test_web_stream_is_browser_safe_even_when_source_is_not(tmp_path):
     )
     assert cmd[cmd.index("-c:v") + 1] == "libx264"
     assert cmd[cmd.index("-profile:v") + 1] == "main"
+    assert cmd[cmd.index("-preset") + 1] == "veryfast"
+    assert cmd[cmd.index("-tune") + 1] == "zerolatency"
+    assert cmd[cmd.index("-fflags") + 1] == "+genpts+discardcorrupt"
+    assert cmd[cmd.index("-err_detect") + 1] == "ignore_err"
+    assert cmd[cmd.index("-af") + 1] == "aresample=async=1:first_pts=0"
+    assert cmd[cmd.index("-avoid_negative_ts") + 1] == "make_zero"
+    assert "discont_start" not in cmd[cmd.index("-hls_flags") + 1]
+    assert "append_list" not in cmd[cmd.index("-hls_flags") + 1]
+    assert "setpts=PTS-STARTPTS" in cmd[cmd.index("-vf") + 1]
     assert cmd[cmd.index("-pix_fmt") + 1] == "yuv420p"
     assert cmd[cmd.index("-c:a") + 1] == "aac"
     assert "copy" not in cmd
+
+
+def test_existing_web_stream_playlist_is_resumed(tmp_path):
+    (tmp_path / "index.m3u8").write_text("#EXTM3U\n")
+    (tmp_path / "s00000.ts").touch()
+    cmd = ffmpeg_command(
+        Path("source.mp4"), start=0, seconds=30, out_dir=tmp_path, seq=1,
+        segment_seconds=4, media=None, where="nas",
+        profile={"width": 720, "height": 576, "max_bitrate_kbps": 3500},
+        encoder="libx264",
+    )
+    assert "append_list" in cmd[cmd.index("-hls_flags") + 1]
 
 
 def test_channel_change_replaces_viewers_least_recent_stream(tmp_path, monkeypatch):
@@ -42,6 +63,23 @@ def test_channel_change_does_not_evict_another_viewer(tmp_path, monkeypatch):
 
     assert not streams._make_room(3, "127.0.0.1#three", 2)
     assert set(streams._channels) == {1, 2}
+
+
+def test_channel_change_does_not_stop_a_stream_shared_with_another_viewer(tmp_path, monkeypatch):
+    streams = Streams(type("Cfg", (), {"run_dir": tmp_path})())
+    shared = _Channel(number=1, channel_id=1, dir=tmp_path / "ch1", viewers={
+        "127.0.0.1#leaving": 10,
+        "127.0.0.1#staying": 11,
+    })
+    other = _Channel(number=2, channel_id=2, dir=tmp_path / "ch2", viewers={"127.0.0.1#other": 20})
+    streams._channels = {1: shared, 2: other}
+    stopped = []
+    monkeypatch.setattr(streams, "_stop_channel", lambda channel: stopped.append(channel.number))
+
+    assert not streams._make_room(3, "127.0.0.1#leaving", 2)
+    assert stopped == []
+    assert set(streams._channels) == {1, 2}
+    assert set(shared.viewers) == {"127.0.0.1#leaving", "127.0.0.1#staying"}
 
 
 def test_browser_viewer_is_carried_to_segment_urls():
