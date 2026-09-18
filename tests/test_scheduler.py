@@ -853,6 +853,20 @@ def test_a_band_keeps_its_length_past_closedown(conn):
     assert end <= next_start, "and never runs into tomorrow's broadcast day"
 
 
+def test_specials_stay_out_of_the_rotation(tmp_path):
+    """Season 0 sorts first, so a series used to open its run with a gag reel. Specials are
+    never scheduled, as episodes or in a band, and remain in the catalogue."""
+    c = make_library(tmp_path, max_episodes=4)["conn"]
+    with dbm.tx(c):
+        c.execute("UPDATE media SET season = 0 WHERE kind = 'episode' AND episode = 1")
+    specials = c.execute("SELECT COUNT(*) FROM media WHERE season = 0 AND missing = 0").fetchone()[0]
+    build_horizon(c, start_day=parse_day("2026-09-14"), days=2, seed=8, force=True)
+    assert specials and c.execute("SELECT COUNT(*) FROM schedule WHERE kind = 'programme'").fetchone()[0]
+    assert not c.execute("SELECT 1 FROM schedule s JOIN media m ON m.id = s.media_id WHERE m.season = 0").fetchone()
+    assert c.execute("SELECT COUNT(*) FROM media WHERE season = 0 AND missing = 0").fetchone()[0] == specials
+    c.close()
+
+
 def test_a_run_never_shows_the_same_episode_twice():
     """A series whose only short file sits among long episodes (a trailer filed beside them)
     comes round to that file again when the run looks for more; the run ends instead."""

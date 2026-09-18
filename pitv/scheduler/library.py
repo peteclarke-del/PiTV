@@ -25,8 +25,11 @@ from .slots import Show, json_field
 # to_ts None for "everything from from_ts on" (a forced horizon build).
 Rebuild = dict[int, tuple[int, int | None]]
 
-# The rows a build may place: live, with a known length so the slot has an end.
-USABLE = f"{LIVE} AND duration IS NOT NULL"
+# The rows a build may place: live, with a known length so the slot has an end, and not a
+# special. Season 0 is where a library files gag reels, trailers cut as episodes and the odd
+# Christmas film; sorted first, they were how every series opened its run. They stay in the
+# catalogue and can still be placed by hand or asked for through a line-up entry.
+USABLE = f"{LIVE} AND duration IS NOT NULL AND COALESCE(season, 1) != 0"
 
 
 class Library:

@@ -476,6 +476,8 @@ For each channel and day, walk from 08:00 to 00:00 following the pattern:
 1. If a kept slot or an anchor starts here, place it.
 2. Otherwise take the next token. Only programmes in the channel's line-up are candidates,
    plus its external entries when NAS-only is off for it and the day is far enough ahead.
+   Specials (season 0: gag reels, extras filed as episodes) are never candidates, for a
+   series or for a band; they stay in the catalogue for placing by hand.
    For a programme token, first choose the kind (TV or film) by the channel's kind weights
    multiplied by the daypart's, then choose an item by weight.
    An item's weight is its era weight (divided by the size of its era pool to the power
