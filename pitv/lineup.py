@@ -35,6 +35,7 @@ from .db import (
     write_data_file,
 )
 from .scheduler.rules import parse_pattern
+from .scheduler.slots import slot_titles
 
 log = logging.getLogger("pitv.lineup")
 
@@ -517,8 +518,6 @@ def attach_delivery(conn: sqlite3.Connection, wanted_id: int, media_id: int) -> 
     the entry's channel and never generated onto another one. Each bound slot takes the file's
     real length (a film is never cut off). Returns {channel_id: earliest change} for the caller
     to rebuild from."""
-    # Imported here: the scheduler imports this module.
-    from .scheduler.build import slot_titles
     w = conn.execute("SELECT lineup_id FROM wanted WHERE id = ?", (wanted_id,)).fetchone()
     media = dict(conn.execute("SELECT m.*, s.title AS show_title FROM media m LEFT JOIN shows s ON s.id = m.show_id"
                               " WHERE m.id = ?", (media_id,)).fetchone())

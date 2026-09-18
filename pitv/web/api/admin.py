@@ -34,14 +34,9 @@ from ...guide import SLOT_QUERY
 from ...hostinfo import host_info
 from ...logsetup import log_dir
 from ...scheduler import bands as band_rules
-from ...scheduler.build import (
-    build_horizon,
-    fresh_rebuild_horizon,
-    parse_day,
-    rebuild_from,
-    slot_titles,
-)
+from ...scheduler.horizon import build_horizon, fresh_rebuild_horizon, rebuild_from
 from ...scheduler.rules import broadcast_day_for, normalise_cert, parse_pattern, tz_of
+from ...scheduler.slots import parse_day, slot_titles
 from ..keeper import PLAYER_UNIT, start_player
 from .content import tool_catalogue
 from .deps import (

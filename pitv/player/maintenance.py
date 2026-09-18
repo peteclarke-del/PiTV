@@ -22,7 +22,7 @@ from ..content import apply_report_files, protect_manifest
 from ..db import all_settings, connect, now_ts, tx
 from ..lineup import remove_aired_transients
 from ..readiness import check as readiness_check
-from ..scheduler.build import build_horizon, needs_rebuild, refill_empty_days
+from ..scheduler.horizon import build_horizon, needs_rebuild, refill_empty_days
 from ..scheduler.rules import tz_of
 from ..wanted import band_needs, queue_gaps, request_all_band_material
 from .cache import MediaCache

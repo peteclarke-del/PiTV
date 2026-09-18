@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 from .content import manifest_window
 from .db import all_settings, now_ts, rows_to_dicts, run_log_finish, run_log_start
 from .player.cache import MediaCache
-from .scheduler.build import rebuild_from
+from .scheduler.horizon import rebuild_from
 from .scheduler.rules import tz_of
 
 log = logging.getLogger("pitv.readiness")

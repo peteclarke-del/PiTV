@@ -49,7 +49,7 @@ from .db import (
 )
 from .lineup import generate, restore_if_empty
 from .player.hwdec import PI_HW_CODECS
-from .scheduler.build import refill_empty_days
+from .scheduler.horizon import refill_empty_days
 from .scheduler.rules import normalise_cert
 
 log = logging.getLogger("pitv.catalogue")

@@ -1,4 +1,4 @@
-"""Build the schedule horizon: N broadcast days for every enabled channel.
+"""Build one channel-day.
 
 Overview of one channel-day:
 
@@ -16,13 +16,12 @@ one already placed (in history or the schedule), or a cursor set in the admin UI
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import random
 import sqlite3
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -33,17 +32,14 @@ from ..db import (
     enabled_channels,
     now_ts,
     rows_to_dicts,
-    run_log_finish,
-    run_log_start,
     tx,
 )
 from ..lineup import nas_only_for
 from . import bands
-from .policy import WEEK, SchedulerPolicy
+from .policy import SchedulerPolicy
 from .rules import (
     EraSpans,
     allowed_at,
-    broadcast_day_for,
     day_bounds,
     daypart_end_minutes,
     daypart_for,
@@ -58,6 +54,7 @@ from .rules import (
     parse_pattern,
     tz_of,
 )
+from .slots import Show, Slot, json_field, seconds, slot_titles
 
 Progress = Callable[[str], None] | None
 # Per channel, the window of unlocked slots a build is about to replace: (from_ts, to_ts) with
@@ -72,152 +69,6 @@ FREE_FEATURE_SECONDS = 30 * 60  # ... in any free stretch at least this long
 FILLER_TITLE = "Programmes will continue shortly"
 STAND_IN_IDENT_SECONDS = 10     # the shipped test signal's length (pitv/assets)
 log = logging.getLogger("pitv.scheduler")
-
-
-@dataclass
-class Slot:
-    channel_id: int
-    day: str
-    start_ts: int
-    end_ts: int
-    media_id: int | None
-    offset: float
-    kind: str
-    title: str
-    subtitle: str = ""
-    part: int = 1
-    replay: int = 0
-    locked: int = 0
-    block: str | None = None
-    wanted_id: int | None = None
-    wanted_spec: dict[str, Any] | None = None   # external entry placed; a wanted row is created on save
-    # not persisted
-    show_id: int | None = None
-    genres: list[str] = field(default_factory=list)
-    year: int | None = None
-
-    @property
-    def duration(self) -> int:
-        return self.end_ts - self.start_ts
-
-
-@dataclass
-class Show:
-    id: int
-    title: str
-    year: int | None
-    home_channel_id: int | None
-    mode: str
-    anchor_time: str | None
-    anchor_days: list[int]
-    rest_weeks: int
-    episodes: list[dict[str, Any]]      # sorted by season, episode
-    end_year: int | None = None          # premiere year + seasons - 1 (approximation)
-    category: str = "general"
-    pinned: bool = False                 # explicitly assigned by the admin, not auto-routed
-    next_index: int = 0
-    resting_until: int | None = None
-    held: list[int] = field(default_factory=list)   # episodes passed over by a run; offered first next time
-
-    @property
-    def anchored(self) -> bool:
-        return self.mode in ("strip", "weekly") and bool(self.anchor_time)
-
-    def next_episode(self) -> dict[str, Any] | None:
-        if not self.episodes:
-            return None
-        if self.held:
-            return self.episodes[self.held[0]]
-        return self.episodes[self.next_index % len(self.episodes)]
-
-    def previous_episode(self) -> dict[str, Any] | None:
-        """The episode most recently advanced past, used for an explicitly marked repeat while
-        the following episode waits for its weekly slot."""
-        if not self.episodes or (self.next_index == 0 and self.resting_until is None):
-            return None
-        return self.episodes[(self.next_index - 1) % len(self.episodes)]
-
-    def advance(self, ts: int) -> None:
-        """Move past the episode placed at `ts`; after the last one the series rests."""
-        if self.held:
-            self.held.pop(0)
-            return
-        self.next_index += 1
-        if self.next_index >= len(self.episodes):
-            self.next_index = 0
-            self.resting_until = ts + self.rest_weeks * WEEK
-
-    def take_short(self, max_seconds: float, look_ahead: int = 6) -> dict[str, Any] | None:
-        """The next episode short enough to join a run, passing over longer ones.
-
-        A series of five minute cartoons often carries the odd full-length special, and stopping
-        the run at the first of those leaves a five minute programme on its own. Those are held
-        back instead and offered first the next time the series is placed, so nothing drops out
-        of the rotation. Works forward from the cursor and never touches what is already held."""
-        if not self.episodes:
-            return None
-        for _ in range(min(look_ahead, len(self.episodes))):
-            index = self.next_index % len(self.episodes)
-            self.next_index = index + 1
-            episode = self.episodes[index]
-            if _seconds(episode) < max_seconds:
-                return episode
-            if index not in self.held:
-                self.held.append(index)
-            if self.next_index >= len(self.episodes):
-                self.next_index = 0
-                break        # a run does not carry the series round into a second pass
-        return None
-
-
-def episode_subtitle(item: dict[str, Any]) -> str:
-    """The episode's own title; falls back to 'Episode N' when the file has no title."""
-    title = (item.get("title") or "").strip()
-    if title:
-        return title
-    if item.get("episode") is not None:
-        return f"Episode {int(item['episode'])}"
-    return ""
-
-
-def slot_titles(item: dict[str, Any], show_title: str | None = None) -> tuple[str, str]:
-    """Guide title and subtitle for a programme. Episodes: the series name over the episode
-    title (never the SxxEyy code). Films: '(year) certificate'. Music videos: '(year) genres'."""
-    year = f"({item['year']})" if item.get("year") else ""
-    if item.get("kind") == "episode":
-        return show_title or item["title"], episode_subtitle(item)
-    if item.get("kind") == "music":
-        detail = ", ".join(_json_field(item.get("genres")) or [])
-    else:
-        detail = item.get("certificate") or ""
-    return item["title"], " ".join(x for x in (year, detail) if x)
-
-
-def parse_day(value: str) -> date:
-    """A broadcast day as written in the schedule and the API (YYYY-MM-DD)."""
-    return date.fromisoformat(value)
-
-
-def _json_field(value: Any) -> Any:
-    """A column stored as JSON text (or already decoded by row_to_dict); unreadable -> None."""
-    if isinstance(value, str):
-        if not value:
-            return None
-        try:
-            return json.loads(value)
-        except ValueError:
-            return None
-    return value
-
-
-def _seconds(item: dict[str, Any]) -> int:
-    """Slot length for a file: whole seconds, never zero so a slot always has an end."""
-    return max(1, round(float(item["duration"])))
-
-
-def _cap(gap: int, room: int | None) -> int:
-    """A gap limited to the room left before a kept slot (None: nothing follows)."""
-    return gap if room is None else min(gap, room)
 
 
 class Builder:
@@ -311,7 +162,7 @@ class Builder:
                 e["show_title"] = s["title"]
                 e["category"] = s.get("category") or "general"
                 e["lineup_pinned"] = s["id"] in pinned_shows
-            days = _json_field(s.get("anchor_days"))
+            days = json_field(s.get("anchor_days"))
             if not days:
                 days = [0, 1, 2, 3, 4] if s.get("mode") == "strip" else [0]
             self.shows[s["id"]] = Show(
@@ -390,7 +241,7 @@ class Builder:
             lineup_id = int(e["id"])
             e["lineup_id"] = lineup_id
             e["id"] = -lineup_id   # negative: never collides with a media id
-            e["genres"] = _json_field(e.get("genres")) or []
+            e["genres"] = json_field(e.get("genres")) or []
             e["kids"] = is_kids(e)
             e["next_number"] = max(raised.get(lineup_id, 0), int(e.get("next_episode") or 1) - 1) + 1
             open_requests = standing.get(lineup_id, [])
@@ -525,7 +376,7 @@ class Builder:
         """A channel's JSON column, parsed once per build rather than once per candidate."""
         ck = (channel["id"], key)
         if ck not in self._channel_cols:
-            self._channel_cols[ck] = _json_field(channel.get(key))
+            self._channel_cols[ck] = json_field(channel.get(key))
         return self._channel_cols[ck]
 
     def _channel_setting(self, channel: dict[str, Any], key: str) -> Any:
@@ -556,34 +407,12 @@ class Builder:
             (channel_id, day)).fetchall()
         return [Slot(channel_id=r["channel_id"], day=r["day"], start_ts=r["start_ts"], end_ts=r["end_ts"],
                      media_id=r["media_id"], offset=r["offset"], kind=r["kind"], title=r["title"],
-                     subtitle=r["subtitle"], part=r["part"], replay=r["replay"], locked=r["locked"],
+                     subtitle=r["subtitle"], replay=r["replay"], locked=r["locked"],
                      block=r["block"], wanted_id=r["wanted_id"], show_id=r["show_id"],
-                     genres=_json_field(r["mgenres"]) or [], year=r["myear"])
+                     genres=json_field(r["mgenres"]) or [], year=r["myear"])
                 for r in rows]
 
     # --- choosing ----------------------------------------------------------------------
-
-    def _external_allowed(self, channel: dict[str, Any], t: int) -> bool:
-        """Remote material remains eligible unless this is explicitly a NAS-only channel.
-
-        The lead window changes its weight, not whether it exists: a near-term local item is
-        safer, but an urgent fetch is still preferable to knowingly scheduling dead air.
-        """
-        return not nas_only_for(channel, self.settings)
-
-    def _external_weight(self, t: int) -> float:
-        return self.policy.external_weight(t)
-
-    def _external_prepared(self, t: int) -> bool:
-        return self.policy.external_prepared(t)
-
-    def _cadence_factor(self, last: int | None, t: int, *, relaxed: bool = False) -> float:
-        """Prefer the following episode near the same slot next week without making a thin
-        channel go blank. Exact strip/weekly scheduling is handled by anchors instead."""
-        return self.policy.cadence_factor(last, t, relaxed=relaxed)
-
-    def _next_episode_due(self, last: int | None, t: int) -> bool:
-        return self.policy.next_episode_due(last, t)
 
     def _choose_programme(self, channel: dict[str, Any], rng: random.Random, t: int, gap: int,
                           token: str, placed_today: dict[int, int], prev: Slot | None,
@@ -640,7 +469,7 @@ class Builder:
             duration = float(item["duration"])
             if duration > gap + slack:
                 return 0.0
-            short_threshold, short_target = self.policy.short_episode_seconds(channel)
+            short_threshold, short_target = self.policy.short_episodeseconds(channel)
             if kind == "tv" and short_threshold and duration < short_threshold and short_target > gap + slack:
                 return 0.0     # never strand one short episode before a fixed boundary
             if not allowed_at(item, start_min, self.settings, kids_rule=kids_rule):
@@ -697,7 +526,7 @@ class Builder:
                 if times_today >= daily_limit:
                     continue
                 last_new = self.show_last_placed.get(show.id)
-                repeating = show.mode == "auto" and not self._next_episode_due(last_new, t)
+                repeating = show.mode == "auto" and not self.policy.next_episode_due(last_new, t)
                 prior_run = self._short_runs.get(show.id)
                 ep = (prior_run[0] if repeating and prior_run else
                       show.previous_episode() if repeating else show.next_episode())
@@ -715,7 +544,7 @@ class Builder:
                 if repeating:
                     w *= 0.12       # useful fallback, but fresh titles win decisively
                 elif show.mode == "auto":
-                    w *= self._cadence_factor(self.show_last_placed.get(show.id), t, relaxed=relaxed)
+                    w *= self.policy.cadence_factor(self.show_last_placed.get(show.id), t, relaxed=relaxed)
                 tv_cands.append((w, ep, show))
         if token in ("show", "movie"):
             for m in self._movies_on.get(channel["id"], ()):
@@ -739,10 +568,10 @@ class Builder:
                 movie_cands.append((w, m, None))
 
         externals = self._externals_on.get(channel["id"])
-        if externals and self._external_allowed(channel, t):
+        if externals and not nas_only_for(channel, self.settings):
             # Once there is enough preparation time, remote titles compete on programme variety,
             # rather than being permanently disadvantaged merely because they are not on the NAS.
-            ext_w = self._external_weight(t)
+            ext_w = self.policy.external_weight(t)
             for e in externals:
                 times_today = placed_today.get(e["id"], 0)
                 emergency_repeat = relax >= 2 and bool(e.get("last_spec"))
@@ -755,7 +584,7 @@ class Builder:
                 item_limit = daily_limit if episode else 1
                 if times_today >= item_limit and not emergency_repeat:
                     continue
-                due = not episode or self._next_episode_due(self.external_last_placed.get(e["lineup_id"]), t)
+                due = not episode or self.policy.next_episode_due(self.external_last_placed.get(e["lineup_id"]), t)
                 candidate = e
                 if episode and (not due or times_today >= item_limit):
                     if not e.get("last_spec"):
@@ -772,7 +601,7 @@ class Builder:
                     continue
                 if episode:
                     w *= (0.18 if not due else
-                          self._cadence_factor(self.external_last_placed.get(e["lineup_id"]), t, relaxed=relaxed))
+                          self.policy.cadence_factor(self.external_last_placed.get(e["lineup_id"]), t, relaxed=relaxed))
                 (tv_cands if episode else movie_cands).append((w, candidate, None))
 
             # A configured remote title is part of the channel's catalogue, not an occasional
@@ -783,9 +612,9 @@ class Builder:
                          if c[1]["id"] < 0 and c[1]["lineup_id"] not in self.external_last_placed]
             unseen_movies = [c for c in movie_cands
                              if c[1]["id"] < 0 and c[1]["lineup_id"] not in self.external_last_placed]
-            if unseen_tv and self._external_prepared(t):
+            if unseen_tv and self.policy.external_prepared(t):
                 tv_cands = unseen_tv
-            if unseen_movies and self._external_prepared(t):
+            if unseen_movies and self.policy.external_prepared(t):
                 movie_cands = unseen_movies
 
         kinds: list[tuple[float, list[tuple[float, dict[str, Any], Show | None]]]] = []
@@ -940,7 +769,7 @@ class Builder:
                 continue
             if channel.get("strict_matching") and not show.pinned and not (ep.get("genres") and ep.get("year")):
                 continue     # this channel takes only what the index has labelled, anchors included
-            end = ts + _seconds(ep)
+            end = ts + seconds(ep)
             if any(not (end <= fs or ts >= fe) for fs, fe, _ in fixed):
                 self.log.append(f"{channel['name']} {day_str}: anchor {show.title} at {show.anchor_time} clashes with a kept slot")
                 continue
@@ -1205,7 +1034,7 @@ class Builder:
         """The decades a channel plays; empty means any. Held as JSON on the channel row."""
         cached = self._decades.get(channel["id"])
         if cached is None:
-            raw = _json_field(channel.get("decades")) or []
+            raw = json_field(channel.get("decades")) or []
             cached = self._decades[channel["id"]] = tuple(int(d) for d in raw if isinstance(d, (int, float, str))
                                                           and str(d).isdigit())
         return cached
@@ -1374,7 +1203,7 @@ class Builder:
     def _programme_slot(self, channel: dict[str, Any], day_str: str, start: int, item: dict[str, Any],
                         show: Show | None, block: str | None = None) -> Slot:
         title, subtitle = slot_titles(item, show.title if show else None)
-        return Slot(channel_id=channel["id"], day=day_str, start_ts=start, end_ts=start + _seconds(item),
+        return Slot(channel_id=channel["id"], day=day_str, start_ts=start, end_ts=start + seconds(item),
                     media_id=item["id"], offset=0, kind="programme", title=title, subtitle=subtitle,
                     show_id=show.id if show else None, genres=item.get("genres") or [],
                     year=item.get("year"), block=block)
@@ -1422,7 +1251,7 @@ class Builder:
         Each component gets its own wanted request so pitv_content can prepare the complete
         programme. A later cadence repeat reuses those requests in the same order.
         """
-        threshold, target = self.policy.short_episode_seconds(channel)
+        threshold, target = self.policy.short_episodeseconds(channel)
         if not threshold or not target or first.duration >= threshold:
             return first.end_ts
         first.block = first.block or entry["title"]
@@ -1468,7 +1297,7 @@ class Builder:
         episodes under `short_episode_minutes` are followed straight away by the next ones, in
         order, until the run reaches `short_episode_run_minutes`. They share the series title as
         their block, so the guide shows one entry, as it does for a band."""
-        threshold, target = self.policy.short_episode_seconds(channel)
+        threshold, target = self.policy.short_episodeseconds(channel)
         if not threshold or not target or first.duration >= threshold:
             return first.end_ts
         first.block = first.block or show.title
@@ -1479,7 +1308,7 @@ class Builder:
         while t - first.start_ts < target:
             if episodes:
                 episode = episodes.pop(0)
-                if _seconds(episode) > room:
+                if seconds(episode) > room:
                     break
             else:
                 episode = show.take_short(min(room, threshold))
@@ -1488,9 +1317,8 @@ class Builder:
                 run.append(episode)
             slot = self._programme_slot(channel, day_str, t, episode, show, block=first.block)
             emit(slot)
-            seconds = _seconds(episode)
             self.last_placed[episode["id"]] = t
-            room -= seconds
+            room -= seconds(episode)
             t = slot.end_ts
         # Component episodes are one programme for variety and daily-limit purposes.
         if not cached:
@@ -1499,7 +1327,7 @@ class Builder:
 
     def _media_slot(self, channel: dict[str, Any], day_str: str, start: int, item: dict[str, Any], kind: str) -> Slot:
         """An advert or ident slot; the subtitle is just the year."""
-        return Slot(channel_id=channel["id"], day=day_str, start_ts=start, end_ts=start + _seconds(item),
+        return Slot(channel_id=channel["id"], day=day_str, start_ts=start, end_ts=start + seconds(item),
                     media_id=item["id"], offset=0, kind=kind, title=item["title"],
                     subtitle=str(item.get("year") or ""), year=item.get("year"))
 
@@ -1591,9 +1419,9 @@ class Builder:
                              " AND start_ts >= ? AND replay = 0", (channel_id, day_str, cut))
             self._raise_wanted(slots)
             conn.executemany(
-                "INSERT INTO schedule(channel_id, day, start_ts, end_ts, media_id, offset, kind, part,"
-                " replay, locked, title, subtitle, block, wanted_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                [(s.channel_id, s.day, s.start_ts, s.end_ts, s.media_id, s.offset, s.kind, s.part,
+                "INSERT INTO schedule(channel_id, day, start_ts, end_ts, media_id, offset, kind,"
+                " replay, locked, title, subtitle, block, wanted_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [(s.channel_id, s.day, s.start_ts, s.end_ts, s.media_id, s.offset, s.kind,
                   s.replay, s.locked, s.title, s.subtitle, s.block, s.wanted_id) for s in slots])
 
     def _raise_wanted(self, slots: list[Slot]) -> None:
@@ -1617,177 +1445,3 @@ class Builder:
                     wid = int(cur.lastrowid)
                 self._requests[key] = wid
             sl.wanted_id = wid
-
-
-def _seed_for(text: str) -> int:
-    return int(hashlib.sha256(text.encode()).hexdigest()[:8], 16)
-
-
-def build_horizon(conn: sqlite3.Connection, *, start_day: date | None = None,
-                  days: int | None = None, force: bool = False,
-                  channel_numbers: list[int] | None = None, seed: int | None = None,
-                  progress: Progress = None, now: int | None = None) -> dict[str, Any]:
-    """Build `days` broadcast days from `start_day` for the enabled channels (or those
-    numbered in `channel_numbers`). Without `force` only incomplete days are extended; with it
-    everything unlocked from now on is rebuilt. Logged as a `schedule` run."""
-    settings = all_settings(conn)
-    tz = tz_of(conn)
-    now = now or now_ts()
-    if start_day is None:
-        start_day = broadcast_day_for(now, settings, tz)
-    days = days or int(settings.get("horizon_days", 7))
-    if seed is None:
-        seed = _seed_for(start_day.isoformat())
-    run_id = run_log_start(conn, "schedule")
-    channels = enabled_channels(conn)
-    if channel_numbers:
-        channels = [c for c in channels if c["number"] in channel_numbers]
-    built = 0
-    programmes = 0
-    notes: list[str] = []
-    try:
-        builder = Builder(conn, now=now, seed=seed,
-                          rebuild={c["id"]: (now, None) for c in channels} if force else None)
-        notes = builder.log
-        for i in range(days):
-            day = start_day + timedelta(days=i)
-            for channel in channels:
-                slots = builder.build_channel_day(channel, day, force)
-                if not slots:
-                    continue
-                builder.save(channel["id"], day, slots)
-                n = sum(1 for s in slots if s.kind == "programme" and not s.replay)
-                programmes += n
-                built += 1
-                if progress:
-                    progress(f"{day} {channel['name']}: {n} programmes")
-        withdraw_orphaned_requests(conn)
-    except Exception as exc:
-        # Days saved before the failure stand (each is its own transaction); the run log must
-        # not be left showing a build still running.
-        run_log_finish(conn, run_id, "error", f"failed after {built} channel-days: {exc}", [*notes, repr(exc)])
-        raise
-    status = "ok" if not notes else "warning"
-    summary = f"{built} channel-days built, {programmes} programmes; {len(notes)} notes"
-    run_log_finish(conn, run_id, status, summary, notes)
-    log.info("build from %s for %d days (force=%s): %s", start_day, days, force, summary)
-    for note in notes:
-        log.warning("note: %s", note)
-    return {"status": status, "summary": summary, "notes": notes, "run_id": run_id,
-            "start_day": start_day.isoformat(), "days": days, "built": built}
-
-
-def fresh_rebuild_horizon(conn: sqlite3.Connection, *, start_day: date | None = None,
-                          days: int | None = None, seed: int | None = None,
-                          progress: Progress = None, now: int | None = None) -> dict[str, Any]:
-    """Throw away everything PiTV worked out for itself and work it out again.
-
-    What stays is configuration: channels and bands, settings, NAS sources, catalogue/line-up
-    entries and the indexed local/NAS library. What goes is derived state: the whole schedule,
-    history, run log, every wanted request and every cached delivery reference. The caller also
-    resets pitv_content before this function, so no old acquisition can leak into the new run.
-    """
-    with tx(conn):
-        cleared_slots = conn.execute("SELECT COUNT(*) FROM schedule").fetchone()[0]
-        cleared_history = conn.execute("SELECT COUNT(*) FROM history").fetchone()[0]
-        cleared_wanted = conn.execute("SELECT COUNT(*) FROM wanted").fetchone()[0]
-        conn.execute("DELETE FROM schedule")
-        conn.execute("DELETE FROM history")
-        conn.execute("DELETE FROM run_log")
-        conn.execute("DELETE FROM wanted")
-        conn.execute("DELETE FROM show_cursor")
-        # A band's fetch timestamp describes pipeline work, not configuration.  Keeping it after
-        # pitv_content's queue has been reset suppresses the replacement job until the cooldown
-        # expires and leaves an otherwise strict band showing its holding card.
-        conn.execute("UPDATE band SET last_fetch_at = NULL")
-        conn.execute("UPDATE media SET cache_path = NULL, cache_vcodec = NULL, cache_interlaced = NULL")
-        conn.execute("UPDATE media SET missing = 1 WHERE origin IN ('cache', 'online')")
-    result = build_horizon(conn, start_day=start_day, days=days, seed=seed,
-                           progress=progress, now=now)
-    return {**result, "cleared_slots": cleared_slots, "cleared_history": cleared_history,
-            "cleared_wanted": cleared_wanted, "kept_wanted": 0,
-            "withdrawn_requests": cleared_wanted}
-
-
-def withdraw_orphaned_requests(conn: sqlite3.Connection) -> int:
-    """Line-up requests that no slot uses any more (their slots were rebuilt away) are withdrawn,
-    so pitv_content is never asked for material nothing will air and numbering cannot drift."""
-    with tx(conn):
-        cur = conn.execute("DELETE FROM wanted WHERE lineup_id IS NOT NULL AND status IN ('queued', 'failed')"
-                           " AND id NOT IN (SELECT wanted_id FROM schedule WHERE wanted_id IS NOT NULL)")
-    return cur.rowcount
-
-
-def horizon_end(conn: sqlite3.Connection) -> int | None:
-    row = conn.execute("SELECT MAX(end_ts) AS e FROM schedule").fetchone()
-    return row["e"] if row and row["e"] else None
-
-
-def needs_rebuild(conn: sqlite3.Connection, now: int | None = None) -> bool:
-    now = now or now_ts()
-    end = horizon_end(conn)
-    threshold = int(all_settings(conn).get("rebuild_when_days_left", 2)) * 86400
-    return end is None or end - now < threshold
-
-
-def refill_empty_days(conn: sqlite3.Connection, now: int | None = None) -> dict[str, Any]:
-    """Rebuild from each channel-day's first future holding-card gap.
-
-    A filled day can still contain an isolated hole, so judging the whole day's percentage leaves
-    visibly broken schedules behind. Start at the gap itself: earlier billing remains stable,
-    while newly eligible local or remote entries get another chance to fill it. Every filler is
-    retried: the configured advert and ident slots are their own kinds, never filler."""
-    now = now or now_ts()
-    rows = conn.execute(
-        "SELECT channel_id, day, MIN(MAX(start_ts, ?)) AS first_ts"
-        " FROM schedule WHERE end_ts > ? AND replay = 0 AND kind = 'filler'"
-        " GROUP BY channel_id, day ORDER BY first_ts, channel_id",
-        (now, now),
-    ).fetchall()
-    days = programmes = 0
-    for row in rows:
-        result = rebuild_from(conn, row["channel_id"], int(row["first_ts"]), now=now)
-        if result["status"] == "error":
-            continue
-        days += 1
-        programmes += int(result["summary"].split(" ", 1)[0])
-    summary = f"{days} gap-bearing channel-days rebuilt, {programmes} programmes"
-    if days:
-        log.info("refill: %s", summary)
-    return {"status": "ok", "days": days, "programmes": programmes, "summary": summary}
-
-
-def rebuild_from(conn: sqlite3.Connection, channel_id: int, from_ts: int, *,
-                 now: int | None = None, seed: int | None = None,
-                 exclude_media_ids: set[int] | None = None, allow_external: bool = True,
-                 only_media_ids: set[int] | None = None) -> dict[str, Any]:
-    """Rebuild one channel from a point in time to the end of that broadcast day.
-
-    Used by the admin schedule editor after a slot is removed, replaced or inserted, and by
-    the readiness check to substitute programmes whose files are not available."""
-    settings = all_settings(conn)
-    tz = tz_of(conn)
-    now = now or now_ts()
-    from_ts = max(from_ts, now)
-    day = broadcast_day_for(from_ts, settings, tz)
-    if seed is None:
-        seed = _seed_for(f"{day.isoformat()}:{from_ts}")
-    builder = Builder(conn, now=now, seed=seed, exclude_media_ids=exclude_media_ids, allow_external=allow_external,
-                      only_media_ids=only_media_ids, rebuild={channel_id: (from_ts, day_bounds(day, settings, tz)[2])})
-    channel = next((c for c in builder.channels if c["id"] == channel_id), None)
-    if channel is None:
-        return {"status": "error", "summary": "channel not found or disabled"}
-    # One transaction: losing power between dropping the unavailable slots and saving their
-    # replacements would leave a hole that a later build takes for a complete day.
-    with tx(conn):
-        if exclude_media_ids:
-            # Unavailable files must not survive as kept future slots either.
-            ids = sorted(exclude_media_ids)
-            conn.execute("DELETE FROM schedule WHERE channel_id = ? AND start_ts >= ? AND replay = 0"
-                         f" AND media_id IN ({','.join('?' * len(ids))})", (channel_id, from_ts, *ids))
-        slots = builder.build_channel_day(channel, day, force=True, from_ts=from_ts)
-        builder.save(channel_id, day, slots)
-    withdraw_orphaned_requests(conn)
-    return {"status": "ok" if not builder.log else "warning",
-            "summary": f"{sum(1 for s in slots if s.kind == 'programme' and not s.replay)} programmes",
-            "notes": builder.log}

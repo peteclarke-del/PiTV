@@ -1,5 +1,5 @@
 from pitv import db as dbm
-from pitv.scheduler import build
+from pitv.scheduler import horizon
 
 
 def test_every_future_gap_rebuilds_from_the_first_gap_only(monkeypatch):
@@ -22,15 +22,16 @@ def test_every_future_gap_rebuilds_from_the_first_gap_only(monkeypatch):
 
     def fake_rebuild(_conn, channel_id, from_ts, *, now):
         calls.append((channel_id, from_ts, now))
-        return {"status": "ok", "summary": "2 programmes"}
+        return {"status": "ok", "summary": "2 programmes", "programmes": 2}
 
-    monkeypatch.setattr(build, "rebuild_from", fake_rebuild)
-    result = build.refill_empty_days(conn, now=1000)
+    monkeypatch.setattr(horizon, "rebuild_from", fake_rebuild)
+    result = horizon.refill_empty_days(conn, now=1000)
 
     assert calls == [(two, 1000, 1000), (one, 1200, 1000)]
     assert result == {
         "status": "ok",
         "days": 2,
         "programmes": 4,
+        "failed": 0,
         "summary": "2 gap-bearing channel-days rebuilt, 4 programmes",
     }

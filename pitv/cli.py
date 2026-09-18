@@ -66,7 +66,8 @@ def cmd_catalogue(cfg: Config, args: Args) -> int:
 
 def cmd_schedule(cfg: Config, args: Args) -> int:
     from .logsetup import setup_logging
-    from .scheduler.build import build_horizon, parse_day
+    from .scheduler.horizon import build_horizon
+    from .scheduler.slots import parse_day
     setup_logging(cfg, "schedule")
     conn = _open(cfg)
     start = parse_day(args.start) if args.start else None

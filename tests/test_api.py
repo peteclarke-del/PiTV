@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from pitv import db as dbm
 from pitv.db import DEFAULT_SETTINGS, now_ts
-from pitv.scheduler.build import build_horizon
+from pitv.scheduler.horizon import build_horizon
 from pitv.scheduler.rules import broadcast_day_for
 
 # The schedule editor refuses slots that have already started on the real clock, so the

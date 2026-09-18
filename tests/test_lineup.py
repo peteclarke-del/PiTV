@@ -8,8 +8,9 @@ from conftest import make_library
 
 from pitv import db as dbm
 from pitv import lineup
-from pitv.scheduler.build import build_horizon, parse_day
+from pitv.scheduler.horizon import build_horizon
 from pitv.scheduler.rules import local_ts, tz_of
+from pitv.scheduler.slots import parse_day
 
 
 @pytest.fixture(scope="module")

@@ -38,7 +38,7 @@ from .db import (
 from .lineup import attach_delivery, clean_match
 from .player.cache import MediaCache
 from .player.hwdec import PI_HW_CODECS, is_raspberry_pi
-from .scheduler.build import rebuild_from
+from .scheduler.horizon import rebuild_from
 from .scheduler.rules import broadcast_day_for, day_bounds, normalise_cert, tz_of
 
 MANIFEST_SCHEMA = 2

@@ -12,16 +12,10 @@ import pytest
 from conftest import make_library
 
 from pitv import db as dbm
+from pitv.lineup import nas_only_for
 from pitv.scheduler import bands
-from pitv.scheduler.build import (
-    Builder,
-    Slot,
-    build_horizon,
-    fresh_rebuild_horizon,
-    parse_day,
-    rebuild_from,
-    slot_titles,
-)
+from pitv.scheduler.build import Builder
+from pitv.scheduler.horizon import build_horizon, fresh_rebuild_horizon, rebuild_from
 from pitv.scheduler.rules import (
     allowed_at,
     day_bounds,
@@ -30,6 +24,7 @@ from pitv.scheduler.rules import (
     minutes_of_day,
     tz_of,
 )
+from pitv.scheduler.slots import Slot, parse_day, slot_titles
 from pitv.wanted import _band_duration
 
 
@@ -900,15 +895,13 @@ def test_remote_cutoff_and_weekly_series_cadence_are_hour_accurate():
     channel = dbm.row_to_dict(c.execute("SELECT * FROM channels WHERE number = 1").fetchone())
     # The preparation boundary changes weighting, never eligibility: remote material is still
     # preferable to a holding card when local/NAS choices cannot fill a near-term slot.
-    assert builder._external_allowed(channel, now + 23 * 3600)
-    assert builder._external_allowed(channel, now + 23 * 3600 + 1)
-    builder.started_channels.add(channel["id"])
-    assert builder._external_allowed(channel, now + 1)
-    assert builder._external_weight(now + 23 * 3600) < builder._external_weight(now + 23 * 3600 + 1)
-    assert builder._cadence_factor(now, now + 24 * 3600) < 0.1
-    assert builder._cadence_factor(now, now + 7 * 86400) == dbm.all_settings(c)["series_cadence_bonus"]
-    assert not builder._next_episode_due(now, now + 6 * 86400)
-    assert builder._next_episode_due(now, now + 7 * 86400 - 12 * 3600)
+    assert not nas_only_for(channel, builder.settings)
+    policy = builder.policy
+    assert policy.external_weight(now + 23 * 3600) < policy.external_weight(now + 23 * 3600 + 1)
+    assert policy.cadence_factor(now, now + 24 * 3600) < 0.1
+    assert policy.cadence_factor(now, now + 7 * 86400) == dbm.all_settings(c)["series_cadence_bonus"]
+    assert not policy.next_episode_due(now, now + 6 * 86400)
+    assert policy.next_episode_due(now, now + 7 * 86400 - 12 * 3600)
     c.close()
 
 
