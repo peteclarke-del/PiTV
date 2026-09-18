@@ -277,7 +277,6 @@ def add(conn: sqlite3.Connection, channel_id: int | None, *, show_id: int | None
 _EDITABLE = {"channel_id", "enabled", "transient", "remove_after_airing", "episode_minutes", "next_episode", "notes",
              "pinned", "year", "genres"}
 _FLAGS = {"enabled", "transient", "remove_after_airing", "pinned"}
-_NUMBERS = {"channel_id", "episode_minutes", "next_episode", "year"}
 
 
 def update(conn: sqlite3.Connection, lineup_id: int, fields: dict[str, Any]) -> dict[str, Any]:

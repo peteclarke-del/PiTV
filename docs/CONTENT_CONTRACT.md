@@ -340,3 +340,58 @@ PiTV never contacts the sources itself, as all online access is pitv_content's.
 - PiTV keeps the chosen `match` with the line-up entry (`lineups.json` included) and sends it
   on every fetch request for that title (section 2). For an advert or music video the chosen
   video's URL is kept as the wanted request's `ref`.
+
+## 9. Material for bands (PiTV asks, pitv_content fetches)
+
+A band is a titled stretch of a channel's day filled with short items of certain kinds, genres
+and decades (PiTV, PLAN section 4.5). When PiTV finds a band short of material it asks
+pitv_content to go and find some, constrained to what that band wants:
+
+```
+POST {content_tool_url}/api/run
+{"mode": "catalogue", "kind": "music", "count": 26, "urgent": true, "max_minutes": 15,
+ "genres": ["Soul", "Reggae", "Jazz", "Blues"], "years": [1970, 2009]}
+```
+
+- `kind` is one of the catalogue kinds pitv_content offers: the `choices` of the
+  `catalogue_kinds` key in its settings schema (adverts, sport, shows, cartoons, music), not
+  that key's saved value, which is the operator's pick of what the scheduled runs collect.
+  PiTV reads the choices and offers them per channel and per band.
+- `count` is how many new items the run adds before stopping (PiTV asks for 20 to 60).
+- `max_minutes` (1 to 600) is the longest item the band can use as one of several.
+- `genres` (at most 12) are the band's, spelled as the index publishes them (section 1 and
+  `GET /api/genres`); `years` is `[from, to]`, both 1900 to 2100, the band's decades.
+- `urgent` says the run should go ahead of ordinary queued cache and index work; PiTV sets it
+  when a band has nothing at all.
+
+The run searches for material of those genres and years: its own catalogue of well-known
+titles that match, and open searches by genre and year ("disco 1979 official music video" and
+the like), so a band is not limited to what the catalogue has heard of. It files what it finds
+under the genre it was asked for and stops rather than drift into other genres. Results reach
+PiTV through the next library index like anything else. A particular song someone wants is
+not a band request: it is added in PiTV's admin and travels in the manifest's `wanted` list
+(section 2), fetched by its own title and artist.
+
+Replies: `{"ok": true, "job_id": "...", "status": "running" | "queued", "deduplicated":
+false}` (`deduplicated` is true only for a cache run that matched one already queued, whose
+id is returned instead): pitv_content queues
+requests and runs one job at a time, lowest priority number first (cache 0, index 10,
+catalogue 20; `urgent` puts a catalogue run at -10, ahead of the cache), ties in order of
+arrival. `400 {"errors"}` for a bad body (PiTV records the refusal and moves on); `503` or no
+answer when pitv_content is down, in which case the band keeps its turn. `GET /api/status`
+lists `active_job` and `queued_jobs`. PiTV submits every band that is short in one pass,
+identical bands as one request, and does not ask for a band again within six hours.
+
+### Genre vocabulary
+
+`GET {content_tool_url}/api/genres` publishes the spellings the index uses: `known` (the
+canonical names), `aliases` (synonyms and what they fold into), how a synonym is matched and
+how a tag holding several genres is split. PiTV keeps the same table and compares the two on
+every catalogue import, logging anything that differs, so a channel that allows Children never
+misses a series the index calls Kids.
+
+### Concerts
+
+The index says whether a music item is a concert (`concert`, section 1). pitv_content decides
+that from a Concerts folder, an NFO tag, or a running time of 35 minutes or more. PiTV uses
+the field as sent and applies the same length rule only when the field is absent.

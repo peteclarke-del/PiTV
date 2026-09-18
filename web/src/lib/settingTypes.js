@@ -12,12 +12,6 @@ function daypart(d) {
   return out;
 }
 
-function musicBlock(b) {
-  const out = { start: b.start, name: b.name ?? '', genres: (b.genres ?? []).map((g) => String(g).toLowerCase()),
-                decades: [...new Set((b.decades ?? []).map(Number))].sort((x, y) => x - y) };
-  if (b.concert) out.concert = true;
-  return out;
-}
 
 const CLEAN = {
   int: (f, v) => bounded(v, f.min, f.max, true, f.default),
@@ -28,7 +22,6 @@ const CLEAN = {
   decades: (f, v) => [...new Set((v ?? []).map(Number))].sort((a, b) => a - b),
   kind_weights: (f, v) => ({ tv: bounded(v?.tv, 0, 1, false, 0), movie: bounded(v?.movie, 0, 1, false, 0) }),
   dayparts: (f, v) => (v ?? []).map(daypart),
-  music_blocks: (f, v) => (v ?? []).map(musicBlock),
   hours: (f, v) => String(v ?? '').trim(),
 };
 
@@ -38,7 +31,7 @@ export const clean = (f, v) => (CLEAN[f.type] ? CLEAN[f.type](f, v) : v);
 /** A blank value of the field's type, for fields the server sent without a value. */
 export function blank(type) {
   if (type === 'bool') return false;
-  if (['list', 'chips', 'hour_list', 'decades', 'dayparts', 'music_blocks'].includes(type)) return [];
+  if (['list', 'chips', 'hour_list', 'decades', 'dayparts'].includes(type)) return [];
   if (['weights', 'times', 'kind_weights'].includes(type)) return {};
   return type === 'int' || type === 'float' || type === 'slider' ? 0 : '';
 }

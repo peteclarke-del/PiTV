@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS channels (
     daypart_profile TEXT,                      -- JSON or NULL (use global)
     overnight_replay_from TEXT NOT NULL DEFAULT '08:00',
     idents_enabled INTEGER NOT NULL DEFAULT 1,
-    content TEXT NOT NULL DEFAULT 'general',   -- what the channel is for; a label only
+    content TEXT NOT NULL DEFAULT 'general',   -- what the channel is for; general channels also take untagged material
     kids_any_time INTEGER NOT NULL DEFAULT 0,  -- children's programmes are not held to the kids cutoff
     decades TEXT,                  -- JSON list of decade start years the channel plays; empty = any
     band_item_repeat_hours INTEGER,    -- band repeat gaps; NULL follows the global settings
@@ -337,9 +337,7 @@ DEFAULT_MUSIC_BANDS = [
     _band("22:30", "Nineties Indie & Dance", ["indie", "dance", "electronic", "britpop"], [1990]),
     _band("23:30", "Late Soul", ["soul", "r&b", "reggae", "jazz", "blues"]),
 ]
-CARTOON_GENRES = list(genres.CARTOONS)
 # Genres that mark children's programming (kids cutoff at 21:00, kids-friendly dayparts).
-KIDS_GENRES = {g.casefold() for g in genres.CHILDRENS}
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "timezone": "Europe/London",
@@ -380,14 +378,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "band_fetch_hours": [1, 2, 3, 4, 5],   # hours it may queue top-ups; pitv_content serialises the work
     "band_item_max_minutes": 15,       # a band runs several short items; anything this long is a feature
     "content_fetch_kinds": [],         # what pitv_content said it can fetch, kept for when it is down
-    "cartoon_genres": CARTOON_GENRES,
     "movie_repeat_days": 21,
     "series_cadence_days": 7,          # ordinary series aim for the same weekday next week
     "series_cadence_bonus": 4.0,       # preference near that target; strips/weekly anchors are explicit
     "genre_repeat_penalty": 0.4,
     "duration_tolerance_minutes": 5,
     "start_rounding_minutes": 5,
-    "end_of_day_overrun_minutes": 30,  # legacy: kept in stored config; closedown now waits for the item to finish
     "advert_year_window": 3,
     "advert_repeat_penalty_hours": 6,
     "series_rest_weeks": 4,
@@ -428,6 +424,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "browse_roots": ["/mnt", "/media", "/srv"],
     "content_tool_url": "http://127.0.0.1:8081",   # pitv_content's local API (index, sources, settings, run, log)
     "nas_fallback": True,              # play the NAS original when the cache copy is missing or unplayable
+    "player_keepalive": True,          # the web service starts the player whenever it finds it stopped
     # resilience
     "clock_wait_seconds": 120,         # at boot, wait this long for NTP before tuning (no RTC on the Pi)
     "memory_limit_mb": 700,            # the player restarts itself above this; systemd also caps it
@@ -755,11 +752,6 @@ def _canonical_genres(conn: sqlite3.Connection) -> None:
         after = json.dumps(fill)
         if after != row["fill"]:
             conn.execute("UPDATE band SET fill = ? WHERE id = ?", (after, row["id"]))
-    row = conn.execute("SELECT value FROM settings WHERE key = 'cartoon_genres'").fetchone()
-    if row:
-        after = json.dumps(genre_list(row["value"]))
-        if after != row["value"]:
-            conn.execute("UPDATE settings SET value = ? WHERE key = 'cartoon_genres'", (after,))
 
 
 def _canonical_programme_classification(conn: sqlite3.Connection) -> None:

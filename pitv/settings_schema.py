@@ -84,9 +84,6 @@ FIELDS: tuple[dict[str, Any], ...] = (
        "Weeks a series rests after its last episode before starting again.", min=0, max=104),
     _f("sport_back_to_back_weekends", "programming", "standard", "Sport back to back at weekends", "bool",
        "Let sport follow sport through weekend afternoons."),
-    _f("cartoon_genres", "programming", "standard", "Cartoon genres", "chips",
-       "Series with any of these genres go to a cartoons channel. Spellings are brought to PiTV's"
-       " own, so Kids and Children's both mean Children."),
     _f("show_repeat_penalty", "programming", "advanced", "Show repeat penalty", "float",
        "Weight multiplier for each earlier airing of the same series that day.", min=0, max=1, step=0.05),
     _f("series_cadence_days", "programming", "standard", "Series cadence (days)", "int",
@@ -142,6 +139,9 @@ FIELDS: tuple[dict[str, Any], ...] = (
     _f("band_feature_repeat_days", "programming", "advanced", "Band feature repeat (days)", "int",
        "Minimum days before a band plays the same long item (a concert, a film) again.", min=0, max=365),
     # --- player and screen ---------------------------------------------------------------------
+    _f("player_keepalive", "player", "basic", "Keep the television on", "bool",
+       "Start the player whenever it is found stopped, within about half a minute, whether it was"
+       " closed, crashed or never started. Off only while you are working on it."),
     _f("nas_fallback", "player", "basic", "Play from the NAS when the cache lacks a file", "bool",
        "Otherwise the technical difficulties card is shown until the cache copy arrives."),
     _f("nav_keys_change_channel", "player", "basic", "Up and down change channel", "bool",
@@ -218,8 +218,7 @@ FIELDS: tuple[dict[str, Any], ...] = (
 
 BY_KEY: dict[str, dict[str, Any]] = {f["key"]: f for f in FIELDS}
 # Settings with no field: edited elsewhere or never by hand.
-UNLISTED = frozenset({"keymap", "admin_password_hash", "content_fetch_kinds",
-                      "end_of_day_overrun_minutes"})
+UNLISTED = frozenset({"keymap", "admin_password_hash", "content_fetch_kinds"})
 # Fields shown but not stored: derived from other settings when the schema is served.
 COMPUTED = frozenset({"content_profile"})
 

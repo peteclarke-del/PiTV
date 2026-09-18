@@ -27,6 +27,7 @@ from ..stream import Streams
 from .api import admin, content, public, stream, wanted
 from .auth import content_token
 from .events import EventBus
+from .keeper import Keeper
 from .player_client import PlayerClient
 from .tasks import JobRunner
 
@@ -121,6 +122,16 @@ class RequestGuard:
         await self.app(scope, capped_receive, send_with_headers)
 
 
+def _keepalive_wanted(cfg: Config) -> bool:
+    """The keep-alive setting, read fresh on its own connection: settings change at runtime and
+    SQLite connections stay on the thread that made them."""
+    conn = dbm.connect(cfg.db_path)
+    try:
+        return bool(dbm.get_setting(conn, "player_keepalive", True))
+    finally:
+        conn.close()
+
+
 def _player_subscriber(app: FastAPI, stop: threading.Event) -> None:
     """Keep a subscription to the player's state stream and relay it to the event bus.
 
@@ -176,6 +187,7 @@ def create_app(cfg: Config) -> FastAPI:
         bus.attach(asyncio.get_running_loop())
         t = threading.Thread(target=_player_subscriber, args=(app, stop), name="pitv-player-sub", daemon=True)
         t.start()
+        Keeper(cfg, lambda: app.state.player_state, lambda: _keepalive_wanted(cfg), stop).start()
         sdnotify.ready()
 
         async def heartbeat() -> None:

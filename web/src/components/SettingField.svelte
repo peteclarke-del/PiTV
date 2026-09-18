@@ -10,7 +10,7 @@
   import { fmtProfile } from '../lib/format.js';
 
   let { field: f, value = $bindable(), error = '', changed = false, secretSet = false } = $props();
-  const WIDE = new Set(['list', 'chips', 'path', 'weights', 'times', 'dayparts', 'music_blocks', 'decades', 'readonly']);
+  const WIDE = new Set(['list', 'chips', 'path', 'weights', 'times', 'dayparts', 'decades', 'readonly']);
   const placeholder = (f) => (f.type === 'time' ? 'HH:MM' : f.type === 'hours' ? 'e.g. 1,2,3 or 01:00-06:00' : f.type === 'path' ? '/path/to/folder'
     : f.default != null && f.default !== '' && typeof f.default !== 'object' ? `default: ${f.default}` : '');
 </script>

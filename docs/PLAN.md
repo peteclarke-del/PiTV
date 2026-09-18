@@ -692,6 +692,28 @@ re-renders on every key press and every 30 s so the clock and the "now" marker s
 - Look: clean and minimal with the PiTV logo and a teletext-style clock; works on a phone,
   which is the second remote.
 
+### 6.1b Keeping the television on
+
+The web service is the one process that is always up, so it keeps the player up too
+(`pitv/web/keeper.py`). It watches the player's state stream; when the player has been silent
+for about twenty seconds and "Keep the television on" is set (it is by default), it starts it by
+whatever the machine has: the system unit through the sudo rule the installer writes, the
+development user unit, or the `pitv play` command itself, detached, windowed off the Pi, with
+its output in the data directory. systemd alone restarts a player that crashes; this also
+restarts one that was stopped, closed or never started, and it is what the admin's Start
+button and a phone use. Attempts are a minute apart, so a player that keeps dying is not
+thrashed, and every attempt is in the web log.
+
+### 6.1c On a phone
+
+The site is installable: a web app manifest and a service worker (`web/public/`) let a phone
+add it to its home screen and open it full screen, with Remote and Guide as shortcuts. The
+worker caches the shell and the hashed assets only. The API, the streams and index.html always
+go to the network, since what is on changes by the minute and index.html names the current
+build, and the last good shell is shown if the Pi is briefly unreachable. Nothing native is
+needed: the pages already fit a phone, and the remote, the guide, the channel pages and the
+streams are what a phone wants.
+
 ### 6.2 Public pages
 
 | Page | Content |

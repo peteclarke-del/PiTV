@@ -13,7 +13,6 @@ from zoneinfo import ZoneInfo
 from .. import genres as genre_rules
 from ..db import get_setting
 
-CERTIFICATES = frozenset({"U", "PG", "12", "12A", "15", "18"})
 _CERTIFICATE_ALIASES = {
     "G": "U", "TV-Y": "U", "TV-Y7": "U", "TV-G": "U",
     "PG": "PG", "TV-PG": "PG", "APPROVED": "PG", "PASSED": "PG",

@@ -36,11 +36,10 @@ from .db import (
     update_row,
 )
 from .lineup import attach_delivery, clean_match
-from .scheduler.rules import normalise_cert
 from .player.cache import MediaCache
 from .player.hwdec import PI_HW_CODECS, is_raspberry_pi
 from .scheduler.build import rebuild_from
-from .scheduler.rules import broadcast_day_for, day_bounds, tz_of
+from .scheduler.rules import broadcast_day_for, day_bounds, normalise_cert, tz_of
 
 MANIFEST_SCHEMA = 2
 RESIZE_THRESHOLD = 30   # seconds; smaller differences between scheduled and delivered length are absorbed

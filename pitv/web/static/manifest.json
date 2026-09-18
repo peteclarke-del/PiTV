@@ -1,0 +1,20 @@
+{
+  "name": "PiTV",
+  "short_name": "PiTV",
+  "description": "What is on, the guide, the remote and the channels, on your phone.",
+  "start_url": "/#/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#111318",
+  "theme_color": "#111318",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Remote", "url": "/#/remote", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Guide", "url": "/#/guide", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] }
+  ]
+}

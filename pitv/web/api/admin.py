@@ -42,6 +42,7 @@ from ...scheduler.build import (
     slot_titles,
 )
 from ...scheduler.rules import broadcast_day_for, normalise_cert, parse_pattern, tz_of
+from ..keeper import PLAYER_UNIT, start_player
 from .content import tool_catalogue
 from .deps import (
     admin_conn,
@@ -978,7 +979,7 @@ def system_info(request: Request, conn: sqlite3.Connection = Depends(admin_conn)
 
 
 @router.post("/system/service/{name}/{action}")
-def service_action(name: str, action: str):
+def service_action(name: str, action: str, request: Request):
     if action not in SERVICE_ACTIONS.get(name, ()):
         raise HTTPException(400, "unsupported service or action")
     props = systemd_state([name]).get(name) or {}
@@ -988,6 +989,12 @@ def service_action(name: str, action: str):
         dev_name = DEV_UNITS.get(name)
         dev = systemd_state([dev_name], user=True).get(dev_name) if dev_name else None
         if not dev or dev.get("LoadState") != "loaded":
+            if name == PLAYER_UNIT and action == "start":
+                # No unit at all (a desktop): the keeper's own way of starting the player.
+                result = start_player(request.app.state.cfg)
+                if not result["ok"]:
+                    raise HTTPException(503, f"could not start the player: {result['error']}")
+                return {"ok": True, "via": result["via"]}
             raise HTTPException(409, f"{name} is not installed")
         cmd = ["systemctl", "--user", action, dev_name]
     rc, _, err = run_cmd(cmd, timeout=30)

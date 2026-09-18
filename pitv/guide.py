@@ -1,7 +1,7 @@
 """What is on: schedule lookups shared by the player's on-screen guide and the web API.
 
 Both guides read the same schedule table and must always agree, so the query, the
-"current programme" rules and the merging of music blocks live here rather than in either
+"current programme" rules and the merging of bands live here rather than in either
 consumer. Results are plain dicts of the slot row plus the media columns below.
 """
 
@@ -18,7 +18,7 @@ SLOT_QUERY = ("SELECT s.*, m.path AS media_path, m.cache_path, m.cache_vcodec, m
               " m.kind AS media_kind"
               " FROM schedule s LEFT JOIN media m ON m.id = s.media_id")
 
-# A music block can hold this many short videos, and `next_programmes` must read every
+# A band can hold this many short items, and `next_programmes` must read every
 # slot of a block to merge it into one entry.
 _SLOTS_PER_ENTRY = 40
 
@@ -31,7 +31,7 @@ def slot_at(conn: sqlite3.Connection, channel_id: int, ts: int) -> dict[str, Any
 
 
 def next_programmes(conn: sqlite3.Connection, channel_id: int, after: int, n: int = 12) -> list[dict[str, Any]]:
-    """The next `n` guide entries (programmes only, music blocks merged) starting at or after `after`."""
+    """The next `n` guide entries (programmes only, bands merged) starting at or after `after`."""
     rows = conn.execute(SLOT_QUERY + " WHERE s.channel_id = ? AND s.start_ts >= ? AND s.kind = 'programme'"
                         " ORDER BY s.start_ts LIMIT ?", (channel_id, after, n * _SLOTS_PER_ENTRY)).fetchall()
     return collapse_blocks([dict(r) for r in rows])[:n]

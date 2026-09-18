@@ -6,8 +6,9 @@ feature rather than a run of short items. The scheduler fills it while it builds
 the guide shows the band as a single programme, with whatever is playing inside it.
 
 An hour of disco videos called "Disco Lunch", a Saturday cartoon morning and a double bill are
-the same thing to PiTV: nothing here knows what music is. Channels keep a content label for
-people to read, but no part of the build depends on it."""
+the same thing to PiTV: nothing here knows what music is. A channel's content label says what it
+is for; the only rule that reads it is the line-up generator, which gives material carrying no
+genre at all to the general channels. Nothing here depends on it."""
 
 from __future__ import annotations
 

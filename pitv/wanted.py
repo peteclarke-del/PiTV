@@ -185,9 +185,10 @@ def _matching_items(conn: sqlite3.Connection, kinds: list[str], genres: tuple[st
 def request_band_material(conn: sqlite3.Connection, settings: dict[str, Any]) -> dict[str, Any]:
     """Ask pitv_content for material for the band that needs it most.
 
-    One band at a time: pitv_content runs one job at a time, and these runs fetch from YouTube,
-    which objects to a crowd. The band is stamped either way, so a band whose genre nothing can
-    satisfy does not block the rest night after night."""
+    pitv_content queues the request and runs one job at a time (contract section 9), so
+    `request_all_band_material` calls this once per starved band and the whole night's work is
+    declared up front. A band is stamped once its request is accepted, so one whose genre
+    nothing can satisfy does not block the rest night after night."""
     needs = band_needs(conn, settings)
     if not needs:
         return {"status": "ok", "asked": 0, "summary": "every band has material"}
@@ -197,8 +198,10 @@ def request_band_material(conn: sqlite3.Connection, settings: dict[str, Any]) ->
     # Ask for what the band is short of, and never for a trifle: a run costs a search and a
     # download either way, and a band wanting thirty videos should not be fed three a night.
     count = max(MIN_FETCH, min(MAX_FETCH, need["want"] - need["have"]))
-    body: dict[str, Any] = {"mode": "catalogue", "kind": need["kind"], "count": count, "urgent": True,
-                            "max_minutes": need["minutes"]}
+    # Urgent goes ahead of pitv_content's cache work, so it is for a band with nothing at all;
+    # a band that is merely short queues behind the copies tonight's schedule depends on.
+    body: dict[str, Any] = {"mode": "catalogue", "kind": need["kind"], "count": count,
+                            "urgent": need["have"] == 0, "max_minutes": need["minutes"]}
     if band.genres:
         body["genres"] = list(band.genres[:12])
     if decades:
