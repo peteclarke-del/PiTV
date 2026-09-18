@@ -28,7 +28,6 @@ ITEM_MINUTES = 15             # default longest item a band treats as one of its
 KINDS = ("music", "episode", "movie")
 MAX_BAND_MINUTES = 12 * 60
 MAX_STEPS = 3000              # items one stretch can hold; a runaway loop ends as a caption, not a hang
-FREE_SHORT_ITEMS = 24         # fewer short items than this and a channel leans on its long ones
 Placement = tuple[int, dict[str, Any]]   # (start ts, item) for the walk to turn into a slot
 
 
@@ -200,12 +199,6 @@ class Filler:
         self.reserved = {b.id: set().union(*(c for i, c in claimed.items() if i != b.id), set()) - claimed[b.id]
                          for b in bands}
 
-    def short_items(self, band: Band) -> int:
-        """How many items a band could use as one of several: what decides whether a channel has
-        enough short material to carry itself, or must lean on its long items."""
-        limit = band.max_minutes or self.item_minutes
-        return sum(1 for m in self.pool if not is_feature(m, limit) and band.dated(m) is not False)
-
     def can_play(self, band: Band) -> bool:
         """Whether the library holds anything at all this band may show, however recently it
         aired. A band that cannot is no fixed point in the day: the channel's own time runs
@@ -245,7 +238,7 @@ class Filler:
         self.last_placed[item["id"]] = at
 
     def pick(self, band: Band, at: int, gap: float, feature: bool, fit: float | None = None,
-             exclude: set[int] | None = None) -> dict[str, Any] | None:
+             exclude: set[int] | None = None, fresh: bool = False) -> dict[str, Any] | None:
         """One item for a band, searched for in widening steps.
 
         The steps are (its genres and decades), (any genre it has no word on), (a genre it did
@@ -263,7 +256,8 @@ class Filler:
         minutes of it is strongly preferred, so long items are chosen to meet the next fixed
         point rather than leave a scrap that only the same few short files can plug. The item
         just played is never chosen again while there is any other, and nothing in `exclude`
-        (what this airing of the band has already shown) is chosen at all."""
+        (what this airing of the band has already shown) is chosen at all. `fresh` stops the
+        search before it allows anything played within the repeat gap."""
         repeat = self.feature_repeat if feature else self.item_repeat
         reserved = self.reserved.get(band.id, set())
         strict = self.strict if band.only_matching is None else band.only_matching
@@ -273,6 +267,8 @@ class Filler:
             # A strict band may repeat a correctly classified item as its final fallback; it may
             # never fill the remainder with an unknown or wrong genre merely to avoid a card.
             steps = (("match", False, False), ("match", True, False), ("match", True, True))
+        if fresh:
+            steps = tuple(step for step in steps if not step[1])
         for genres, allow_recent, allow_today in steps:
             candidates: list[tuple[float, dict[str, Any]]] = []
             for m in self.pool:
@@ -378,25 +374,26 @@ def fill_free(channel_id: int, kinds: tuple[str, ...], decades: tuple[int, ...],
     """Time between bands on a channel that has no pattern: ordinary airtime for that channel,
     the same kinds of item held to the channel's own decades, belonging to no band.
 
-    A channel with only a handful of short items would play those same few over and over, so
-    where it also holds long ones (a share of concert films, say) those carry the time and the
-    short items fill around them. A well stocked channel never reaches for them. The last item
-    may run `overrun` seconds past `end`, as a band's may."""
+    Short items are what bands are made of, and a band's stretch is where they belong under
+    its name. Outside the bands, and through the small hours, a run of them is eight hours of
+    three minute entries nobody chose, each played several times a night. So long items carry
+    this time (concerts, films, sessions too long to be a band item), each chosen to end near
+    the next fixed point, and short items plug what no long item fits. Anything not played
+    within its repeat gap comes before anything that has been, long or short, so a channel
+    with few long items is not reduced to the same concert all day. The last item may run
+    `overrun` seconds past `end`, as a band's may."""
     free = Band(id=0, channel_id=channel_id, name="", start="", minutes=None, days=(),
                 kinds=kinds or ("music",), genres=(), decades=decades, feature=False)
-    thin = filler.short_items(free) < FREE_SHORT_ITEMS
     placed: list[Placement] = []
     t = start
     for _ in range(MAX_STEPS):
         if t >= end:
             break
-        item = None
-        if thin:
-            # Long items carry a thin channel, each chosen to meet the end of the stretch where
-            # one can, and the last of them may run over as any last item may.
-            item = filler.pick(free, t, end - t + overrun, feature=True, fit=end - t)
-        if item is None:
-            item = filler.pick(free, t, end - t + overrun, feature=False)
+        gap = end - t + overrun
+        item = (filler.pick(free, t, gap, feature=True, fit=end - t, fresh=True)
+                or filler.pick(free, t, gap, feature=False, fresh=True)
+                or filler.pick(free, t, gap, feature=True, fit=end - t)
+                or filler.pick(free, t, gap, feature=False))
         if item is None:
             break
         placed.append((t, item))

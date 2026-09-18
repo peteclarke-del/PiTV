@@ -417,10 +417,12 @@ shortfall is what asks for more disco. A band billed as a concert is one concert
 left of its stretch is the channel's time in the same way. A band plays nothing twice in one
 airing: one with three songs plays three songs and gives the rest back. A band the library has
 nothing at all for is no fixed point in the day, so the channel's own time runs through its
-stretch rather than being cut at a start time nothing happens at. That time, on a channel with
-few short items, is carried by its long ones (concerts, and sessions too long to be a band
-item), each chosen to end near the next fixed point so the joins are not plugged with the same
-few short files, and the item just played is never the next one. The last item before a band may run
+stretch rather than being cut at a start time nothing happens at. That time, and the small
+hours, are carried by the channel's long items (concerts, films, sessions too long to be a band
+item), each chosen to end near the next fixed point, with short items plugging only what no
+long item fits: short items are what bands are made of, and outside a band a night of them is
+hundreds of three minute entries nobody chose. Anything not played within its repeat gap comes
+before anything that has been, and the item just played is never the next one. The last item before a band may run
 over by up to `duration_tolerance_minutes` (5) and the band starts when it ends, as programmes
 did on air, rather than every band closing on a minute of caption; nothing runs over into a
 kept slot or an anchored programme. Items a narrow band

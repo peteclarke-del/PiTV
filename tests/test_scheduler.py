@@ -372,7 +372,8 @@ def test_music_channel_day(conn):
             assert (json.loads(band["fill"]).get("feature") or not pool(band)
                     or shown.get(band["name"] + band["start"])), f"{r['title']} unbilled inside {band['name']}"
     assert all(len(ids) == len(set(ids)) for ids in shown.values()), "a band repeated itself within one airing"
-    concerts = [r for r in rows if r["concert"]]
+    # Two bands are billed as a concert; the channel's own time may hold concerts too.
+    concerts = [r for r in rows if r["concert"] and r["block"]]
     assert len(concerts) == 2, [r["title"] for r in concerts]
     for concert in concerts:
         band = band_at(concert["start_ts"])
