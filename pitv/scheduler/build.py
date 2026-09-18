@@ -569,9 +569,7 @@ class Builder:
         The lead window changes its weight, not whether it exists: a near-term local item is
         safer, but an urgent fetch is still preferable to knowingly scheduling dead air.
         """
-        if nas_only_for(channel, self.settings):
-            return False
-        return self._external_prepared(t) or channel["id"] in self.started_channels
+        return not nas_only_for(channel, self.settings)
 
     def _external_weight(self, t: int) -> float:
         return self.policy.external_weight(t)
@@ -989,23 +987,32 @@ class Builder:
 
         break_cap = self.policy.advert_break_seconds
 
-        def break_room() -> int:
-            """Seconds of advertising still allowed before the run of adverts under way must end.
+        def break_state() -> tuple[int, int]:
+            """Seconds and number of adverts in the consecutive break currently under way.
+
             The pattern's own breaks, the tidy-up to a round start time and the padding of a
-            gap all draw on the same allowance, so they cannot add up to a twenty minute break
-            between them."""
-            run = 0
+            gap all draw on the same limits, so they cannot silently turn two configured adverts
+            into a much longer break."""
+            seconds = count = 0
             for s in reversed(all_slots):
                 if s.kind != "advert":
                     break
-                run += s.duration
-            return max(0, break_cap - run)
+                seconds += s.duration
+                count += 1
+            return seconds, count
+
+        def break_room() -> int:
+            return max(0, break_cap - break_state()[0])
+
+        def advert_count_room() -> int:
+            return max(0, ads_per_break - break_state()[1])
 
         def fill_to(target: int, note: bool = False) -> None:
             """Close the gap up to `target` with adverts or idents, then filler, so the
             channel-day stays contiguous (the guide and the player both rely on that)."""
             nonlocal t
-            t = self._pad(channel, rng, day_str, t, target, last_programme_year, emit, advert_room=break_room())
+            t = self._pad(channel, rng, day_str, t, target, last_programme_year, emit,
+                          advert_room=break_room(), advert_limit=advert_count_room())
             if t < target:
                 if note and target - t > 120:
                     self.log.append(f"{channel['name']} {day_str}: filler {(target - t) // 60} min at {self._hhmm(t)}")
@@ -1077,7 +1084,8 @@ class Builder:
             pat_idx += 1
 
             if token in ("ad", "break"):
-                for _ in range(ads_per_break if token == "break" else 1):
+                requested = ads_per_break if token == "break" else 1
+                for _ in range(min(requested, advert_count_room())):
                     room = min(boundary - t, break_room())
                     ad = self._choose_advert(channel, rng, t, room, last_programme_year) if room > 0 else None
                     if ad is None:
@@ -1103,7 +1111,7 @@ class Builder:
                 room = break_room()
                 if 0 < target - t <= break_cap and target < boundary and room > 0:
                     t = self._pad(channel, rng, day_str, t, min(target, t + room), last_programme_year, emit,
-                                  advert_room=room)
+                                  advert_room=room, advert_limit=advert_count_room())
                     gap = boundary - t
             slack = 0
             if not fixed_queue:
@@ -1326,7 +1334,8 @@ class Builder:
         return t
 
     def _pad(self, channel: dict[str, Any], rng: random.Random, day_str: str, t: int, target: int,
-             near_year: int | None, emit: Callable[[Slot], None], advert_room: int | None = None) -> int:
+             near_year: int | None, emit: Callable[[Slot], None], advert_room: int | None = None,
+             advert_limit: int | None = None) -> int:
         """Fill t..target with adverts (ad channels) or idents; returns the new t.
 
         A break is a break, not a filibuster: adverts stop when `advert_room` (what is left of
@@ -1336,6 +1345,7 @@ class Builder:
         is left after both becomes filler, which the caller adds."""
         guard = 0
         idents = 0
+        adverts = 0
         if advert_room is None:
             advert_room = self.policy.advert_break_seconds
         break_end = t + advert_room
@@ -1344,7 +1354,8 @@ class Builder:
             gap = target - t
             item = None
             kind = "advert"
-            if channel.get("ads_enabled") and t < break_end:
+            if (channel.get("ads_enabled") and t < break_end
+                    and (advert_limit is None or adverts < advert_limit)):
                 item = self._choose_advert(channel, rng, t, min(gap, break_end - t), near_year)
             if item is None and idents < 2:
                 item = self._choose_ident(channel, rng, gap)
@@ -1355,6 +1366,7 @@ class Builder:
             slot = self._media_slot(channel, day_str, t, item, kind)
             emit(slot)
             if kind == "advert":
+                adverts += 1
                 self.ad_last[(channel["id"], item["id"])] = t
             t = slot.end_ts
         return t
@@ -1509,6 +1521,10 @@ class Builder:
             source = self._next_day_slots(channel["id"], next_day_start)
             if labelled_only:
                 source = [s for s in source if s.block]
+        # A break only makes sense attached to a programme.  Starting a replay part-way through
+        # the source day must not begin with the adverts that preceded its first programme.
+        first_programme = next((i for i, s in enumerate(source) if s.kind == "programme"), len(source))
+        source = source[first_programme:]
         # The replay follows straight on from the day's last programme: never start it with
         # another episode of that same series.
         last_prog = next((s for s in reversed(ordered) if s.kind == "programme"), None)
@@ -1522,6 +1538,7 @@ class Builder:
         t = max(day_end, max((s.end_ts for s in day_slots), default=day_end))
         queue = deque(source)
         loops = 0
+        suppress_break = False
         while t < next_day_start:
             if not queue:
                 # A short day (thin library) is replayed again until 08:00.
@@ -1532,7 +1549,15 @@ class Builder:
             s = queue.popleft()
             if (s.kind == "programme" and tomorrow_first is not None and s.show_id == tomorrow_first
                     and t + s.duration >= next_day_start):
+                # The adverts which followed this programme in the source belong to it too.
+                # Suppress the whole unit, otherwise a thin channel can end with every advert
+                # from the source day and no programme between them.
+                suppress_break = True
                 continue  # would run straight into the same series at 08:00
+            if s.kind != "programme" and suppress_break:
+                continue
+            if s.kind == "programme":
+                suppress_break = False
             end = min(t + s.duration, next_day_start)
             # A replayed placeholder keeps its request (wanted_id, or wanted_spec until save)
             # so the delivered file binds to the replay too.

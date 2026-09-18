@@ -585,6 +585,38 @@ def test_replayed_placeholder_shares_its_request(conn):
     assert {s.wanted_id for s in [placeholder, *replays]} == {424242}
 
 
+def test_overnight_drops_break_when_its_programme_is_skipped(conn):
+    """Avoid an orphaned wall of adverts when a replayed series is suppressed at breakfast."""
+    tz = tz_of(conn)
+    day = parse_day("2026-09-20")
+    builder = Builder(conn, now=local_ts(day, "07:00", tz), seed=1)
+    ch = builder.channels[0]
+    _, day_end, _ = day_bounds(day, builder.settings, tz)
+    next_start = day_end + 50 * 60
+    slots = [
+        Slot(ch["id"], day.isoformat(), day_end - 7200, day_end - 5400, 1, 0, "programme",
+             title="Different series", show_id=2),
+        Slot(ch["id"], day.isoformat(), day_end - 5400, day_end - 1800, 2, 0, "programme",
+             title="Breakfast series", show_id=1),
+        Slot(ch["id"], day.isoformat(), day_end - 1800, day_end - 1740, 3, 0, "advert", title="Advert"),
+        Slot(ch["id"], day.isoformat(), day_end - 1740, day_end, 4, 0, "programme",
+             title="Film", show_id=None),
+    ]
+    builder._adjacent_show = lambda *_args, **_kwargs: 1
+    replay = builder._overnight(ch, day, day_end, next_start, slots)
+    assert not [s for s in replay if s.kind == "advert"]
+
+
+def test_advert_runs_obey_channel_count(conn):
+    """Rounding and gap padding share the configured per-break advert count."""
+    for channel in conn.execute("SELECT id, ads_per_break FROM channels WHERE ads_enabled = 1"):
+        run = 0
+        for slot in conn.execute(
+                "SELECT kind FROM schedule WHERE channel_id = ? AND replay = 0 ORDER BY start_ts", (channel["id"],)):
+            run = run + 1 if slot["kind"] == "advert" else 0
+            assert run <= channel["ads_per_break"]
+
+
 def test_film_request_shared_across_days(conn):
     """A film placed on two days of one build raises a single wanted row."""
     builder = Builder(conn, seed=1)
@@ -865,7 +897,9 @@ def test_remote_cutoff_and_weekly_series_cadence_are_hour_accurate():
         dbm.set_setting(c, "nas_only", False)
     builder = Builder(c, now=now)
     channel = dbm.row_to_dict(c.execute("SELECT * FROM channels WHERE number = 1").fetchone())
-    assert not builder._external_allowed(channel, now + 23 * 3600)
+    # The preparation boundary changes weighting, never eligibility: remote material is still
+    # preferable to a holding card when local/NAS choices cannot fill a near-term slot.
+    assert builder._external_allowed(channel, now + 23 * 3600)
     assert builder._external_allowed(channel, now + 23 * 3600 + 1)
     builder.started_channels.add(channel["id"])
     assert builder._external_allowed(channel, now + 1)
