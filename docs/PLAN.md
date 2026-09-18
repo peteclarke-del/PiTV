@@ -848,8 +848,8 @@ ahead divided by four) and `deadline_ts` (15 minutes before air). A NAS item is 
 already decodes in hardware on the Pi and is no taller than 1.5 times the profile's 576 lines,
 otherwise `transcode` to `content_profile` (768x576 4:3, H.264, AAC, 4000 kbps, deinterlaced
 if interlaced); either way its `target` is `<cache>/<media_id>_<stem>.<ext>`. An item with no
-NAS original (a line-up placeholder, or fetched material that has since been evicted) is
-`fetch`, with an exact search phrase, extra hints, a typical duration range, a year tolerance
+NAS original (a line-up placeholder, or material fetched for a request that still stands and
+has since been evicted) is `fetch`, with an exact search phrase, extra hints, a typical duration range, a year tolerance
 (0 for music, otherwise 2) and a `dest_dir` under `acquire_dir` in the Kodi layout. Items
 already in the cache are still listed, with `already_cached`, which is also how eviction knows
 what to keep. `wanted` carries requests that are not scheduled yet: adverts and music videos

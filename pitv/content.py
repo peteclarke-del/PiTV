@@ -84,9 +84,17 @@ def _fetch_fields(w: dict[str, Any], show_title: str | None, acquire: str) -> di
             "dest_dir": _wanted_dest({**w, "title": show_title or w["title"]}, acquire)}
 
 
-def _media_request(m: dict[str, Any], cache: MediaCache, acquire: str, max_height: int) -> dict[str, Any]:
+def _media_request(m: dict[str, Any], cache: MediaCache, acquire: str, max_height: int) -> dict[str, Any] | None:
     """The request for a catalogue file: copy or transcode a NAS original into the cache, or
-    fetch again material that only ever lived in the cache and has been evicted."""
+    fetch again material that only ever lived in the cache and has gone.
+
+    Fetching again is only honest where a request stands behind the row (`requested_by`): a
+    title somebody named, which pitv_content can find again by that identity. A row that came
+    from the index of a band collection is whatever an open search happened to find, and its
+    title and year are pitv_content's reading of an upload; sent back as a request they read
+    as an instruction, and the search returns some other upload to be filed under the same
+    guess. Such a row has no request: the index will report it gone, readiness replaces its
+    slot, and the band asks for more material in the ordinary way."""
     copy = cache.cache_copy(m)
     base = {"media_id": m["id"], "wanted_id": None, "uid": m.get("uid"), **_identity(m, m.get("show_title")),
             "duration": m.get("duration"), "already_cached": copy is not None, "transient": bool(m.get("transient"))}
@@ -102,6 +110,8 @@ def _media_request(m: dict[str, Any], cache: MediaCache, acquire: str, max_heigh
                 "target": str(copy or (cache.dir / name if cache.dir else name))}
     if copy is not None:
         return {**base, "action": "copy", "source": None, "target": str(copy)}
+    if not m.get("requested_by"):
+        return None
     return {**base, "action": "fetch", "source": None, **_fetch_fields(m, m.get("show_title"), acquire)}
 
 
@@ -135,12 +145,15 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
     max_height = profile["height"]
     items: dict[str, dict[str, Any]] = {}
 
-    def add(request_id: str, slot: dict[str, Any], build: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
+    def add(request_id: str, slot: dict[str, Any],
+            build: Callable[[dict[str, Any]], dict[str, Any] | None]) -> None:
         """One request per file however many slots and channels use it, timed by its first airing."""
         it = items.get(request_id)
         if it is None:
             first_air = slot["start_ts"]
             request = build(slot)
+            if request is None:
+                return
             priority = int(max(0.0, (first_air - now) / 3600) // 4)
             remote = request.get("action") == "fetch"
             if remote:
@@ -156,7 +169,9 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
             it["channels"].append(slot["channel"])
 
     for r in rows_to_dicts(conn.execute(
-            "SELECT s.start_ts, c.number AS channel, m.*, sh.title AS show_title FROM schedule s"
+            "SELECT s.start_ts, c.number AS channel, m.*, sh.title AS show_title,"
+            " (SELECT w.id FROM wanted w WHERE w.dest_path IS NOT NULL AND w.dest_path IN (m.path, m.cache_path)"
+            "  LIMIT 1) AS requested_by FROM schedule s"
             " JOIN media m ON m.id = s.media_id JOIN channels c ON c.id = s.channel_id"
             " LEFT JOIN shows sh ON sh.id = m.show_id"
             " WHERE s.end_ts > ? AND s.start_ts < ? AND m.missing = 0 AND s.kind != 'filler'"

@@ -166,7 +166,10 @@ service is down. Schema 2.
 - Every scheduled file appears once, however many slots or channels use it.
 - `action` is `copy` (the source already decodes in hardware on the Pi and fits the profile),
   `transcode` (it does not), or `fetch` (there is no known source; find it online, encode it to
-  the profile and file it under `dest_dir`).
+  the profile and file it under `dest_dir`). Every `fetch` names something a person or a
+  line-up asked for, so its title, year and genre are an instruction. PiTV never asks again
+  for a file that came from a band collection (section 9): that row's title and year are
+  pitv_content's own reading of an upload, and a search for them finds something else.
 - `target` is where a copy or transcode must end up. Fetched material is filed under
   `dest_dir` in the Kodi layout and its path is reported.
 - `wanted` lists requests that are not scheduled yet (adverts or music videos added by hand,

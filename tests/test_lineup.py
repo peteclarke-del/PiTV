@@ -433,3 +433,24 @@ def test_confirmed_identity_is_cleaned_and_survives_the_mirror(tmp_path):
     lineup.import_doc(conn, doc)
     restored = next(e for e in lineup.entries(conn) if e["title"] == "A Film Not On The NAS")
     assert restored["match"] == match
+
+
+def test_the_manifest_never_asks_again_for_what_a_band_collection_found(tmp_path):
+    """A scheduled row whose only copy has gone is requested again only when a request stands
+    behind it. A band collection's row carries pitv_content's own guess at title and year; sent
+    back as a request it fetches some other upload under the same guess, every night."""
+    from pitv.content import manifest
+    c = make_library(tmp_path, max_episodes=4)["conn"]
+    now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(c))
+    build_horizon(c, start_day=parse_day("2026-09-14"), days=1, now=now, seed=2)
+    mid = c.execute("SELECT s.media_id FROM schedule s JOIN media m ON m.id = s.media_id WHERE m.kind = 'music'"
+                    " AND s.start_ts > ? ORDER BY s.start_ts LIMIT 1", (now,)).fetchone()[0]
+    with dbm.tx(c):
+        c.execute("UPDATE media SET origin = 'cache', path = '/nowhere/gone (1960).mp4', cache_path = NULL WHERE id = ?", (mid,))
+    assert not [i for i in manifest(c, days=1, now=now)["items"] if i["media_id"] == mid]
+    with dbm.tx(c):
+        c.execute("INSERT INTO wanted(kind, title, status, dest_path, created_at)"
+                  " VALUES ('music', 'Asked for', 'done', '/nowhere/gone (1960).mp4', ?)", (now,))
+    again = [i for i in manifest(c, days=1, now=now)["items"] if i["media_id"] == mid]
+    assert len(again) == 1 and again[0]["action"] == "fetch"
+    c.close()
