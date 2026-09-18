@@ -5,9 +5,13 @@ One setting, `display_profile`, names the set: a tube or a flat panel, PAL, NTSC
 player asks for, the screen shape mpv is told, how much of the edge the graphics keep clear,
 and the best source worth fetching.
 
-Sources are fetched up to two rungs above the target on the HD ladder (a 576-line set takes
-up to 1080p) so the downscale has detail to work from and the library is ready for a better
-screen later; at 4K the ceiling is the target itself. The Pi 4 decodes H.264 in hardware only
+A standard definition screen (576 or 480 lines) takes sources up to 720p. That is already more
+than the screen shows, what PiTV fetches is television and music of the 1960s to the 2000s
+with no true HD master behind it, and an H.264 source of 720 lines falls inside the rule for
+copying a file into the cache as it is (at most one and a half times the target), where a
+1080p source is a larger download and a full re-encode on a Pi for a picture nobody can tell
+apart. An HD screen takes sources up to two rungs above the target on the HD ladder, so the
+downscale has detail to work from; at 4K the ceiling is the target itself. The Pi 4 decodes H.264 in hardware only
 up to 1080p, so the 4K profile encodes to HEVC, which it decodes to 2160p."""
 
 from __future__ import annotations
@@ -34,6 +38,8 @@ class Profile:
 
     @property
     def max_source_height(self) -> int:
+        if self.height < HD_LADDER[0]:
+            return HD_LADDER[0]
         above = [h for h in HD_LADDER if h > self.height]
         return above[1] if len(above) >= 2 else max(self.height, above[0] if above else self.height)
 

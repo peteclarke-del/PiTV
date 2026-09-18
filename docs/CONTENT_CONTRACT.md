@@ -126,7 +126,7 @@ service is down. Schema 2.
   "cache_dir": "/mnt/cache/pitv", "acquire_dir": "/mnt/cache/pitv/acquired",
   "free_bytes": 500000000000, "cache_max_bytes": 644245094400, "pi": true,
   "profile": {"name": "crt_pal", "label": "CRT (PAL)", "width": 768, "height": 576, "aspect": "4:3",
-              "max_source_height": 1080, "vcodec": "h264", "acodec": "aac", "max_bitrate_kbps": 4000,
+              "max_source_height": 720, "vcodec": "h264", "acodec": "aac", "max_bitrate_kbps": 4000,
               "frame_rate": 25, "deinterlace": "if_interlaced"},
   "running_marker": "/mnt/cache/pitv/.pitv_content.running",
   "reports_dir": "/mnt/cache/pitv/reports",
@@ -157,8 +157,9 @@ service is down. Schema 2.
   lines, HEVC above, which is what the Pi 4 decodes in hardware), at most `max_bitrate_kbps`,
   conformed to `frame_rate` when it is set (PAL 25, NTSC 29.97; null keeps the source rate).
   When fetching, look across every enabled provider and start from the best source available
-  up to `max_source_height` lines: two rungs above the target on the 720, 1080, 1440, 2160
-  ladder, and equal to it at 4K. Prefer the higher resolution, then the higher bitrate, among
+  up to `max_source_height` lines: 720 for a standard definition screen (which keeps an H.264
+  source inside the copy rule below), two rungs above the target on the 720, 1080, 1440, 2160
+  ladder for an HD screen, and equal to it at 4K. Prefer the higher resolution, then the higher bitrate, among
   hits of the same title; never go above the ceiling, and take a lower source only when
   nothing better exists. A copy or transcode from the NAS uses the file there as it is.
   PiTV also sets pitv_content's own screen setting (`PUT /api/settings {"profile": <name>}`)

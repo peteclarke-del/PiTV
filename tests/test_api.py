@@ -683,11 +683,12 @@ def test_settings_schema_matches_the_defaults(client):
 
 
 def test_screen_profile_sets_quality_and_screen(client):
-    """Choosing the screen sets what pitv_content encodes to and the best source it fetches (two
-    rungs higher, equal at 4K), and brings the screen's shape and margins with it."""
+    """Choosing the screen sets what pitv_content encodes to and the best source it fetches (720p
+    for a standard definition screen, two rungs higher for HD, equal at 4K), and brings the
+    screen's shape and margins with it."""
     from pitv import display
     ceilings = {p.height: p.max_source_height for p in display.PROFILES}
-    assert ceilings == {576: 1080, 480: 1080, 720: 1440, 1080: 2160, 2160: 2160}
+    assert ceilings == {576: 720, 480: 720, 720: 1440, 1080: 2160, 2160: 2160}
     assert display.BY_ID["lcd_2160p"].vcodec == "hevc" and display.BY_ID["lcd_1080p"].vcodec == "h264"
     r = client.put("/api/settings", json={"display_profile": "lcd_1080p"}).json()
     assert r["display_aspect"] == "16:9" and r["osd_safe_margin"] == 0.03

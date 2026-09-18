@@ -568,9 +568,11 @@ controller (main thread, half-second loop)
 - Screen profiles (`pitv/display.py`, setting `display_profile`): CRT or LCD in PAL, PAL
   widescreen, NTSC and NTSC widescreen, and LCD at 720p, 1080p and 4K. Each fixes the frame
   pitv_content encodes to and the player shows, the HDMI mode, the screen shape, the overlay
-  margin and text size, and the best source worth fetching: two rungs above the target on
-  the 720, 1080, 1440, 2160 ladder (576 and 480 lines take up to 1080p, 720p up to 1440p,
-  1080p up to 4K) and equal to it at 4K. The 4K profile encodes to HEVC, the only codec the
+  margin and text size, and the best source worth fetching: 720p for a standard definition
+  screen (576 or 480 lines), which is more than it shows, suits material with no HD master
+  behind it, and keeps an H.264 source inside the copy rule so a Pi does not re-encode it; two
+  rungs above the target on the 720, 1080, 1440, 2160 ladder for an HD screen (720p up to
+  1440p, 1080p up to 4K) and equal to it at 4K. The 4K profile encodes to HEVC, the only codec the
   Pi 4 decodes in hardware above 1080p. PAL profiles conform to 25 fps and NTSC to 29.97; HD
   keeps the source rate. The manifest's `profile` carries all of it (contract section 2). `--sub=no`, `--no-config`, a 64 MiB
   demuxer cache with 20 s read-ahead.
