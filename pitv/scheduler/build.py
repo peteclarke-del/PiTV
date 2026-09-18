@@ -31,14 +31,13 @@ from ..db import (
     now_ts,
     tx,
 )
-from . import bands
+from . import bands, overnight
 from .library import Library, Rebuild
 from .policy import SchedulerPolicy
 from .rules import (
     day_bounds,
     daypart_end_minutes,
     dayparts_for_weekday,
-    hhmm_to_minutes,
     in_decades,
     local_ts,
     minutes_of_day,
@@ -430,14 +429,12 @@ class Builder:
                     t = max(t, fe)
             if t < day_end:
                 emit(self._filler(channel, day_str, t, day_end))
-        # Overnight is a replay on every channel, including one whose daytime is entirely made
-        # from bands. Rebuilding it from the band's combined media pool loses every genre/year
-        # boundary and turns the guide into scores of unrelated, unlabelled short clips.
-        overnight = self._overnight(
-            channel, day, day_end, next_day_start, all_slots,
-            labelled_only=bool(not pattern and day_bands),
-        )
-        return new_slots + overnight
+        if not pattern and filler is not None:
+            # A channel of bands carries on through the night from its own material, with the
+            # repeat gaps holding, rather than replaying a thin day.
+            return new_slots + self._overnight_from_pool(channel, day, day_end, next_day_start, all_slots,
+                                                         filler, day_bands)
+        return new_slots + self._overnight(channel, day, day_end, next_day_start, all_slots)
 
     # --- bands ---------------------------------------------------------------------------
 
@@ -650,69 +647,30 @@ class Builder:
                     subtitle=str(item.get("year") or ""), year=item.get("year"))
 
     def _overnight(self, channel: dict[str, Any], day: date, day_end: int, next_day_start: int,
-                   day_slots: list[Slot], *, labelled_only: bool = False) -> list[Slot]:
-        """00:00 to 08:00: replay the day from the channel's `overnight_replay_from`, looping a
-        short day, without butting the same series against the day's end or tomorrow's start."""
+                   day_slots: list[Slot]) -> list[Slot]:
+        """The replay of the day; see `overnight.replay`."""
         day_str = day.isoformat()
-        replay_from = channel.get("overnight_replay_from") or self.policy.day_start
-        from_day = day + timedelta(days=1) if hhmm_to_minutes(replay_from) < self.day_start_min else day
-        from_ts = local_ts(from_day, replay_from, self.tz)
-        ordered = sorted(day_slots, key=lambda s: s.start_ts)
-        source = [s for s in ordered if s.start_ts >= from_ts and s.kind != "filler"
-                  and (not labelled_only or bool(s.block))]
-        if not source:
-            # A day with nothing to replay is a day built before the library had anything in it.
-            # Showing a caption until morning is worse than opening tomorrow early, so the
-            # overnight takes the next day's programmes when they are already built.
-            source = self._next_day_slots(channel["id"], next_day_start)
-            if labelled_only:
-                source = [s for s in source if s.block]
-        # A break only makes sense attached to a programme.  Starting a replay part-way through
-        # the source day must not begin with the adverts that preceded its first programme.
-        first_programme = next((i for i, s in enumerate(source) if s.kind == "programme"), len(source))
-        source = source[first_programme:]
-        # The replay follows straight on from the day's last programme: never start it with
-        # another episode of that same series.
-        last_prog = next((s for s in reversed(ordered) if s.kind == "programme"), None)
-        if last_prog is not None and last_prog.show_id is not None:
-            first = next((i for i, s in enumerate(source)
-                          if s.kind == "programme" and s.show_id != last_prog.show_id), len(source))
-            source = source[first:]
-        # If tomorrow is already built, the replay must not end with tomorrow's opening series.
-        tomorrow_first = self._adjacent_show(channel["id"], next_day_start, before=False)
-        out: list[Slot] = []
-        t = max(day_end, max((s.end_ts for s in day_slots), default=day_end))
-        queue = deque(source)
-        loops = 0
-        suppress_break = False
-        while t < next_day_start:
-            if not queue:
-                # A short day (thin library) is replayed again until 08:00.
-                loops += 1
-                if not source or loops > 12:
-                    break
-                queue.extend(source)
-            s = queue.popleft()
-            if (s.kind == "programme" and tomorrow_first is not None and s.show_id == tomorrow_first
-                    and t + s.duration >= next_day_start):
-                # The adverts which followed this programme in the source belong to it too.
-                # Suppress the whole unit, otherwise a thin channel can end with every advert
-                # from the source day and no programme between them.
-                suppress_break = True
-                continue  # would run straight into the same series at 08:00
-            if s.kind != "programme" and suppress_break:
-                continue
-            if s.kind == "programme":
-                suppress_break = False
-            end = min(t + s.duration, next_day_start)
-            # A replayed placeholder keeps its request (wanted_id, or wanted_spec until save)
-            # so the delivered file binds to the replay too.
-            out.append(replace(s, day=day_str, start_ts=t, end_ts=end, replay=1, locked=0))
-            t = end
+        return overnight.replay(
+            channel, day, day_end, next_day_start, day_slots, policy=self.policy, tz=self.tz,
+            day_start_min=self.day_start_min,
+            next_day_slots=lambda: self._next_day_slots(channel["id"], next_day_start),
+            tomorrow_first=self._adjacent_show(channel["id"], next_day_start, before=False),
+            caption=lambda start, end: self._filler(channel, day_str, start, end,
+                                                    title=f"Programmes will resume at {self.policy.day_start}",
+                                                    replay=1))
+
+    def _overnight_from_pool(self, channel: dict[str, Any], day: date, day_end: int, next_day_start: int,
+                             day_slots: list[Slot], filler: bands.Filler,
+                             day_bands: list[tuple[int, int, bands.Band]]) -> list[Slot]:
+        """The small hours on a channel of bands; see `overnight.from_pool`."""
+        day_str = day.isoformat()
+        kinds = tuple(sorted({k for _, _, b in day_bands for k in b.kinds}))
+        placed, t = overnight.from_pool(channel["id"], kinds, self.select.channel_decades(channel),
+                                        day_end, next_day_start, day_slots, filler)
+        out = [replace(self._programme_slot(channel, day_str, at, item, None), replay=1) for at, item in placed]
         if t < next_day_start:
             out.append(self._filler(channel, day_str, t, next_day_start,
-                                    title=f"Programmes will resume at {self.policy.day_start}",
-                                    replay=1))
+                                    title=f"Programmes will resume at {self.policy.day_start}", replay=1))
         return out
 
     def _hhmm(self, ts: int) -> str:
