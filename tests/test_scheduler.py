@@ -78,6 +78,29 @@ def test_music_feature_requires_concert_classification():
     assert filler.pick(band, 0, 2 * 3600, feature=True) is None
 
 
+def test_a_band_takes_its_own_genre_before_an_untagged_item_and_another_genre_last():
+    """The order a band widens its search in: its genres, then an item the index gives no genre
+    (it might be disco), and a genre it did not ask for only when there is nothing else."""
+    band = bands.Band(1, 5, "Disco Lunch", "12:00", None, (), ("music",), ("Disco",), (1970,), False)
+    disco = {"id": 1, "duration": 240, "concert": 0, "genres": ["Disco"], "year": 1978}
+    untagged = {"id": 2, "duration": 240, "concert": 0, "genres": [], "year": 1979}
+    metal = {"id": 3, "duration": 240, "concert": 0, "genres": ["Metal"], "year": 1976}
+    eighties = {"id": 4, "duration": 240, "concert": 0, "genres": ["Disco"], "year": 1984}
+    filler = bands.Filler([band], [metal, untagged, eighties, disco], item_repeat=36 * 3600, feature_repeat=0,
+                          rng=random.Random(1), last_placed={})
+    order = []
+    for at in (0, 300, 600):
+        item = filler.pick(band, at, 3600, feature=False)
+        filler.note(item, at)
+        order.append(item["id"])
+    assert order == [1, 2, 3], "its genre, then the untagged item, then another genre"
+    assert 4 not in order, "the decades are never given up"
+    strict = bands.Filler([band], [metal, untagged, disco], item_repeat=36 * 3600, feature_repeat=0,
+                          rng=random.Random(1), last_placed={}, strict=True)
+    strict.note(strict.pick(band, 0, 3600, feature=False), 0)
+    assert strict.pick(band, 300, 3600, feature=False) is disco, "a strict band repeats its own rather than widen"
+
+
 def test_the_timetable_is_the_one_the_scheduler_places_by():
     """A band without a length runs to the next band or to closedown; one with a length keeps
     it past midnight. The top-up measures a band by this same timetable, so what it asks for is
@@ -379,14 +402,6 @@ def test_music_channel_day(conn):
         pool = conn.execute(f"SELECT COUNT(*) FROM media WHERE kind = 'music' AND concert = 0 AND ({years})").fetchone()[0]
         assert pool, f"{name} has no videos of its decades"
         assert max(Counter(r["media_id"] for r in band).values()) <= math.ceil(len(band) / pool) + 2, name
-    # A block prefers its genres: they are over-represented in it compared with the whole day.
-    # (Counts depend on what aired in the last 36 hours, so the test asserts the preference.)
-    def soulful(r):
-        genres = conn.execute("SELECT genres FROM media WHERE id = ?", (r["media_id"],)).fetchone()["genres"]
-        return any(g.lower() in ("disco", "funk", "soul", "motown") for g in json.loads(genres))
-    disco = [r for r in rows if r["block"] == "Disco & Soul"]
-    assert disco
-    assert sum(map(soulful, disco)) / len(disco) > sum(map(soulful, rows)) / len(rows)
 
 
 def test_guide_collapses_music_blocks(conn):
