@@ -43,12 +43,10 @@ In the order that unblocks testing. Each was sent to its owner with the evidence
 | # | Item | Blocks | Done when |
 |---|---|---|---|
 | C1 | A listing source for named, dated, genre-labelled tracks. MusicBrainz landed in pitv_content 0bec644: listings by tag and first release date, tags mapped through the shared genre vocabulary, spread over the band's years, two songs an artist a year, misses remembered for six weeks. It finds the period but not reliably the hits, since MusicBrainz records nothing about popularity | 3 | A helping's log shows songs made against names listed, the misses are counted, and PiTV's import shows the rows live under the canonical genre with the listing's years; the ratio of made to listed is recorded here |
-| C13 | A chart source ahead of MusicBrainz: UK top-ten and best-selling singles by year first (the project is British television of the period, and a music slot felt right because it was the singles people knew), Billboard year-end second; genre from MusicBrainz for the recording; charted singles rank first in a band's listing. Agreed to follow C9 | 3 | A band's first helpings are recognisable singles of its years; a spot check of one band's listing against the chart pages |
 | C2 | Cache delivery actually delivers. The cause was order, not speed: requests were worked by priority and deadline alone, so an hour-long remote episode to be searched for, downloaded and encoded sat ahead of 519 plain copies, and every interruption restarted the manifest. Fixed in pitv_content 3a0dd22 (copies first); awaiting a cache run, which is queued behind a band run that will not yield until it ends (see C7) | 2 | After one cache run, the manifest reports at least 95% `already_cached` for the next 24 hours and the player's status no longer reports NAS playback |
 | C3 | Stop downloading further uploads of a named track once one is filed (about half of a run's time). Landed in 217ba21; to be checked on the next band run's log | 3, 4 | A run's log shows no "duplicate of" for a track it made earlier in the same run |
 | C4 | A mid-run index publish rescans only the fetched sources and merges the rest (seven minutes before, every fifteen). Landed in 217ba21; to be checked on the next band run's log | 3, 4 | A mid-run publish takes under thirty seconds in the log |
 | C5 | Copy rather than re-encode fetched video that already fits the profile's copy rule (H.264, at most 864 lines). Agreed. Pete has set the ceiling for standard definition screens to 720p (PiTV, `display.py`), so most fetched H.264 now qualifies | 3, 4 | A typical music video is filed in under a minute on the development machine; PiTV times a run |
-| C12 | A cache run stops opening with a full walk of every share. Landed in pitv_content 207fc3b, with an index job paired to every cache run by the API (seen: the reply carries `index_job_id`); awaiting a cache run's log. Three cache runs today were ended by deploy restarts before they delivered, which is the practical case for C9 | 2 | A cache run's log begins with deliveries, and an index job follows it unasked |
 | C8 | Inside one job: searches and downloads run ahead of a single analyse-and-encode stage; one or two decode passes instead of four | 3, 4 | Timed by PiTV against C5's figure |
 | C9 | SIGTERM in a job cleans its temporary files, releases the run marker and reports what it had delivered. Landed in pitv_content 832f9f0; to be checked the next time a job is stopped mid-run | 5 | Stopping the service mid-run leaves no `encode-*` files and PiTV receives a report |
 | C10 | Catalogue runs take and refresh the running marker and ask PiTV to make room before fetching | 2, 5 | A long band run is visible to PiTV's eviction as running |
@@ -69,6 +67,15 @@ seen live as one active helping of ten and six queued at ten each of their count
 that files nothing ends its band. The helping size is pitv_content's `catalogue_helping`.
 C3, no further uploads of a filed song are downloaded: no "duplicate of" in either band log
 written since 217ba21, against three in the last log before it.
+
+C12, a cache run delivers from its first line (207fc3b): run 6a1e opened with copies thirty
+seconds after it started, no walk of the shares, and its index job queued behind it unasked.
+C13's listing is in (074b37f): UK best-selling singles by year, then Billboard year-end, above
+MusicBrainz; genre from the recording, then the artist, then pitv_content's artist map. Its
+check (recognisable singles in a band's first helpings) is met by the first Nineties helping
+(World in Motion, The Power, Killer, Nothing Compares 2 U); one case is open with its owner:
+a reissue that charted years after its record (The Joker, 1973, filed as 1990) should take
+the recording's first release year.
 
 pitv_content 265cbda is committed and running on this machine but not pushed: the GitHub token
 here has expired and Pete has to sign in again.
