@@ -559,7 +559,6 @@ def test_kept_slots_inform_the_rebuild(conn):
     builder = Builder(conn, now=cut, seed=3, rebuild={ch["id"]: (cut, None)})
     builder.build_channel_day(dict(ch), day, force=True, from_ts=cut)   # not saved
     assert all(builder.library.ad_last.get((ch["id"], a["media_id"]), 0) >= a["start_ts"] for a in kept_ads)
-    assert kept_shows <= set(builder._day_minutes[(ch["id"], day.isoformat())])
 
 
 def test_replayed_placeholder_shares_its_request(conn):

@@ -21,7 +21,7 @@ import random
 import sqlite3
 from collections import deque
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -62,6 +62,52 @@ Progress = Callable[[str], None] | None
 # programme (adverts or idents alone) gets near it; the rest of such a day becomes filler.
 MAX_STEPS_PER_DAY = 3000
 log = logging.getLogger("pitv.scheduler")
+
+
+@dataclass
+class Walk:
+    """Where the walk through one channel-day has got to, and what it has placed so far.
+
+    Kept slots update these as the walk passes them, so nothing is seeded from what is kept:
+    its last entry may be a locked slot late in the day. What precedes the day's start is the
+    tail of yesterday's overnight replay."""
+    channel: dict[str, Any]
+    day_str: str
+    rng: random.Random
+    t: int
+    all_slots: list[Slot]                                  # kept and new, in the order they air
+    last_show_id: int | None
+    ads_per_break: int
+    break_cap: int
+    new_slots: list[Slot] = field(default_factory=list)
+    prev: Slot | None = None
+    last_programme_year: int | None = None
+    placed_today: dict[int, int] = field(default_factory=dict)
+
+    def emit(self, slot: Slot) -> None:
+        self.new_slots.append(slot)
+        self.all_slots.append(slot)
+        self.prev = slot
+
+    def break_state(self) -> tuple[int, int]:
+        """Seconds and number of adverts in the consecutive break currently under way.
+
+        The pattern's own breaks, the tidy-up to a round start time and the padding of a gap
+        all draw on the same limits, so they cannot silently turn two configured adverts into a
+        much longer break."""
+        length = count = 0
+        for s in reversed(self.all_slots):
+            if s.kind != "advert":
+                break
+            length += s.duration
+            count += 1
+        return length, count
+
+    def break_room(self) -> int:
+        return max(0, self.break_cap - self.break_state()[0])
+
+    def advert_count_room(self) -> int:
+        return max(0, self.ads_per_break - self.break_state()[1])
 
 
 class Builder:
@@ -185,14 +231,16 @@ class Builder:
         keep = self._keep_slots(channel["id"], day_str, day_end, force, from_ts)
         if keep is None:
             return []
-        placed_today: dict[int, int] = {}
+        w = Walk(channel=channel, day_str=day_str, rng=rng, t=day_start, all_slots=list(keep),
+                 last_show_id=self._adjacent_show(channel["id"], day_start, before=True),
+                 ads_per_break=int(channel.get("ads_per_break") or 2), break_cap=self.policy.advert_break_seconds)
         for s in keep:
             if s.show_id:
-                placed_today[s.show_id] = placed_today.get(s.show_id, 0) + 1
+                w.placed_today[s.show_id] = w.placed_today.get(s.show_id, 0) + 1
 
         fixed: list[tuple[int, int, Any]] = [(s.start_ts, s.end_ts, s) for s in keep]
         for ts, show in self._anchors_for(channel, day, day_start, day_end):
-            if placed_today.get(show.id):
+            if w.placed_today.get(show.id):
                 continue
             ep = show.next_episode()
             if ep is None:
@@ -204,7 +252,7 @@ class Builder:
                 self.log.append(f"{channel['name']} {day_str}: anchor {show.title} at {show.anchor_time} clashes with a kept slot")
                 continue
             fixed.append((ts, end, ("anchor", show, ep)))
-            placed_today[show.id] = placed_today.get(show.id, 0) + 1
+            w.placed_today[show.id] = w.placed_today.get(show.id, 0) + 1
         day_bands = bands.timetable(self.library.bands.get(channel["id"], []), day, day_start, day_end,
                                     next_day_start, self.day_start_min, self.tz)
         filler = self._band_filler(channel, day, [b for _, _, b in day_bands], rng) if day_bands else None
@@ -216,84 +264,33 @@ class Builder:
         fixed.sort(key=lambda x: x[0])
 
         # An empty pattern means the channel places no programmes of its own: its day is its
-        # bands, and anything they leave is padded.
+        # bands, and anything they leave is its own free time.
         pattern_text = (channel.get("pattern") or "").strip()
         pattern = parse_pattern(pattern_text) if pattern_text else []
         ads_on = bool(channel.get("ads_enabled"))
-        ads_per_break = int(channel.get("ads_per_break") or 2)
         if not ads_on and pattern:
             pattern = [tok for tok in pattern if tok not in ("ad", "break")] or ["show"]
         rounding = self.policy.start_rounding_seconds
         tol = self.policy.duration_tolerance_seconds
-
-        new_slots: list[Slot] = []
-        all_slots: list[Slot] = list(keep)
-        t = day_start
         pat_idx = 0
-        # Kept slots update these (and the advert repeat times) as the walk passes them, so
-        # nothing is seeded from `keep`: its last entry may be a locked slot late in the day.
-        # What precedes 08:00 is the tail of yesterday's overnight replay.
-        prev: Slot | None = None
-        last_programme_year: int | None = None
-        last_show_id = self._adjacent_show(channel["id"], day_start, before=True)
         steps = 0
         fixed_queue = deque(fixed)
 
-        def emit(slot: Slot) -> None:
-            nonlocal prev
-            new_slots.append(slot)
-            all_slots.append(slot)
-            prev = slot
-
-        break_cap = self.policy.advert_break_seconds
-
-        def break_state() -> tuple[int, int]:
-            """Seconds and number of adverts in the consecutive break currently under way.
-
-            The pattern's own breaks, the tidy-up to a round start time and the padding of a
-            gap all draw on the same limits, so they cannot silently turn two configured adverts
-            into a much longer break."""
-            seconds = count = 0
-            for s in reversed(all_slots):
-                if s.kind != "advert":
-                    break
-                seconds += s.duration
-                count += 1
-            return seconds, count
-
-        def break_room() -> int:
-            return max(0, break_cap - break_state()[0])
-
-        def advert_count_room() -> int:
-            return max(0, ads_per_break - break_state()[1])
-
-        def fill_to(target: int, note: bool = False) -> None:
-            """Close the gap up to `target` with adverts or idents, then filler, so the
-            channel-day stays contiguous (the guide and the player both rely on that)."""
-            nonlocal t
-            t = self._pad(channel, rng, day_str, t, target, last_programme_year, emit,
-                          advert_room=break_room(), advert_limit=advert_count_room())
-            if t < target:
-                if note and target - t > 120:
-                    self.log.append(f"{channel['name']} {day_str}: filler {(target - t) // 60} min at {self._hhmm(t)}")
-                emit(self._filler(channel, day_str, t, target))
-                t = target
-
         # A band or programme that began before closedown finishes; the walk stops looking for
         # anything new at closedown.
-        while t < day_end and steps < MAX_STEPS_PER_DAY:
+        while w.t < day_end and steps < MAX_STEPS_PER_DAY:
             steps += 1
             # A fixed item starting now (or that we have run into)?
-            if fixed_queue and t >= fixed_queue[0][0] - 60:
+            if fixed_queue and w.t >= fixed_queue[0][0] - 60:
                 fs, fe, payload = fixed_queue.popleft()
-                if t < fs:
-                    fill_to(fs)
+                if w.t < fs:
+                    self._fill_to(w, fs)
                 if isinstance(payload, Slot):
-                    t = max(t, fe)
-                    prev = payload
+                    w.t = max(w.t, fe)
+                    w.prev = payload
                     if payload.kind == "programme":
-                        last_show_id = payload.show_id
-                        last_programme_year = payload.year
+                        w.last_show_id = payload.show_id
+                        w.last_programme_year = payload.year
                     elif payload.kind == "advert" and payload.media_id:
                         self.library.ad_last[(channel["id"], payload.media_id)] = payload.start_ts
                     continue
@@ -301,66 +298,66 @@ class Builder:
                     # A band that runs to closedown, or past it, may let its final item finish;
                     # the overnight starts when the band does end. A band that ends early gives
                     # its time back to the channel; the next band starts when the timetable says.
-                    t = self._fill_band(channel, day_str, payload[1], max(t, fs), fe, filler, emit,
-                                        hard_end=next_day_start if not fixed_queue else None)
+                    w.t = self._fill_band(channel, day_str, payload[1], max(w.t, fs), fe, filler, w.emit,
+                                          hard_end=next_day_start if not fixed_queue else None)
                     continue
                 _, show, ep = payload
-                start = max(t, fs)
+                start = max(w.t, fs)
                 slot = self._programme_slot(channel, day_str, start, ep, show)
-                emit(slot)
+                w.emit(slot)
                 show.advance(start)
                 self.library.show_last_placed[show.id] = start
-                last_programme_year = ep.get("year")
-                last_show_id = show.id
-                t = slot.end_ts
+                w.last_programme_year = ep.get("year")
+                w.last_show_id = show.id
+                w.t = slot.end_ts
                 pat_idx += 1  # the anchor stands in for a 'show' token
                 continue
             boundary = fixed_queue[0][0] if fixed_queue else day_end
-            gap = boundary - t
+            gap = boundary - w.t
             if gap <= 0:
-                t = boundary
+                w.t = boundary
                 continue
             if not pattern:
                 # A bands-only channel: what the bands leave is still its own airtime, so it is
                 # filled from the same material with no band name, and the guide lists each item
                 # by its own title rather than under a band it does not belong to.
-                t = self._fill_free(channel, day_str, t, boundary, filler, day_bands, emit)
-                if t < boundary:
-                    fill_to(boundary)
+                w.t = self._fill_free(channel, day_str, w.t, boundary, filler, day_bands, w.emit)
+                if w.t < boundary:
+                    self._fill_to(w, boundary)
                 continue
             token = pattern[pat_idx % len(pattern)]
             pat_idx += 1
 
             if token in ("ad", "break"):
-                requested = ads_per_break if token == "break" else 1
-                for _ in range(min(requested, advert_count_room())):
-                    room = min(boundary - t, break_room())
-                    ad = self.select.advert(channel, rng, t, room, last_programme_year) if room > 0 else None
+                requested = w.ads_per_break if token == "break" else 1
+                for _ in range(min(requested, w.advert_count_room())):
+                    room = min(boundary - w.t, w.break_room())
+                    ad = self.select.advert(channel, rng, w.t, room, w.last_programme_year) if room > 0 else None
                     if ad is None:
                         break
-                    slot = self._media_slot(channel, day_str, t, ad, "advert")
-                    emit(slot)
-                    self.library.ad_last[(channel["id"], ad["id"])] = t
-                    t = slot.end_ts
+                    slot = self._media_slot(channel, day_str, w.t, ad, "advert")
+                    w.emit(slot)
+                    self.library.ad_last[(channel["id"], ad["id"])] = w.t
+                    w.t = slot.end_ts
                 continue
             if token == "ident":
-                ident = self.select.ident(channel, rng, boundary - t) or self.select.stand_in_ident(channel, boundary - t)
+                ident = self.select.ident(channel, rng, boundary - w.t) or self.select.stand_in_ident(channel, boundary - w.t)
                 if ident is not None:
-                    slot = self._media_slot(channel, day_str, t, ident, "ident")
-                    emit(slot)
-                    t = slot.end_ts
+                    slot = self._media_slot(channel, day_str, w.t, ident, "ident")
+                    w.emit(slot)
+                    w.t = slot.end_ts
                 continue
 
             if rounding and ads_on:
                 # Tidy start time: pad with adverts up to the next rounding boundary, as far as
                 # the break allowance goes; a programme may start off the five minutes rather
                 # than sit behind a longer break.
-                target = -(-t // rounding) * rounding
-                room = break_room()
-                if 0 < target - t <= break_cap and target < boundary and room > 0:
-                    t = self._pad(channel, rng, day_str, t, min(target, t + room), last_programme_year, emit,
-                                  advert_room=room, advert_limit=advert_count_room())
-                    gap = boundary - t
+                target = -(-w.t // rounding) * rounding
+                room = w.break_room()
+                if 0 < target - w.t <= w.break_cap and target < boundary and room > 0:
+                    w.t = self._pad(channel, rng, day_str, w.t, min(target, w.t + room), w.last_programme_year,
+                                    w.emit, advert_room=room, advert_limit=w.advert_count_room())
+                    gap = boundary - w.t
             slack = 0
             if not fixed_queue:
                 # Closedown is when the final programme may start, not when it is cut off. It may
@@ -370,12 +367,12 @@ class Builder:
             next_fixed = fixed_queue[0][2] if fixed_queue else None
             next_show_id = (next_fixed.show_id if isinstance(next_fixed, Slot)
                             else next_fixed[1].id if next_fixed else None)
-            barred = {x for x in (last_show_id, next_show_id) if x}
+            barred = {x for x in (w.last_show_id, next_show_id) if x}
             attempts = [(token, 0)] + ([("show", 0)] if token != "show" else []) + [("show", 1), ("show", 2)]
             choice = None
             for tok, relax in attempts:
-                choice = self.select.programme(channel, rng, t, gap, tok, placed_today, prev,
-                                                barred, relax=relax, slack=slack)
+                choice = self.select.programme(channel, rng, w.t, gap, tok, w.placed_today, w.prev,
+                                               barred, relax=relax, slack=slack)
                 if choice is not None:
                     break
             if choice is None:
@@ -383,67 +380,78 @@ class Builder:
                 # weights can make a sparse channel viable even though nothing fits now.  Do
                 # not turn the first miss into one holding card through closedown; retry at the
                 # next daypart boundary.
-                start_min = self._bday_minutes(t)
+                start_min = self._bday_minutes(w.t)
                 dayparts = dayparts_for_weekday(
-                    datetime.fromtimestamp(t, self.tz).weekday(), self.settings,
+                    datetime.fromtimestamp(w.t, self.tz).weekday(), self.settings,
                     self.select.channel_json(channel, "daypart_profile"))
                 retry_min = daypart_end_minutes(start_min, dayparts, 1440)
-                retry = min(boundary, t + max(60, retry_min - start_min) * 60)
-                fill_to(retry, note=True)
+                retry = min(boundary, w.t + max(60, retry_min - start_min) * 60)
+                self._fill_to(w, retry, note=True)
                 continue
             item, show = choice
             if item["id"] < 0:   # external line-up entry: placeholder slot plus a wanted request
-                slot = self.runs.external_slot(channel["id"], day_str, t, item)
-                emit(slot)
-                placed_today[item["id"]] = placed_today.get(item["id"], 0) + 1
+                slot = self.runs.external_slot(channel["id"], day_str, w.t, item)
+                w.emit(slot)
+                w.placed_today[item["id"]] = w.placed_today.get(item["id"], 0) + 1
                 if not item.get("_external_repeat"):
-                    self.library.external_last_placed[item["lineup_id"]] = t
-                last_show_id = item["id"] if item["kind"] == "episode" else None
-                last_programme_year = item.get("year")
-                t = slot.end_ts
+                    self.library.external_last_placed[item["lineup_id"]] = w.t
+                w.last_show_id = item["id"] if item["kind"] == "episode" else None
+                w.last_programme_year = item.get("year")
+                w.t = slot.end_ts
                 if item["kind"] == "episode":
-                    more, t = self.runs.external_run(channel, day_str, item, slot, gap - slot.duration,
-                                                     repeating=bool(item.get("_external_repeat")))
+                    more, w.t = self.runs.external_run(channel, day_str, item, slot, gap - slot.duration,
+                                                       repeating=bool(item.get("_external_repeat")))
                     for extra in more:
-                        emit(extra)
+                        w.emit(extra)
                 continue
-            slot = self._programme_slot(channel, day_str, t, item, show)
-            emit(slot)
+            slot = self._programme_slot(channel, day_str, w.t, item, show)
+            w.emit(slot)
             if show is not None:
                 series_repeat = bool(item.get("_series_repeat"))
                 if not series_repeat:
-                    show.advance(t)
-                    self.library.show_last_placed[show.id] = t
-                placed_today[show.id] = placed_today.get(show.id, 0) + 1
-                last_show_id = show.id
+                    show.advance(w.t)
+                    self.library.show_last_placed[show.id] = w.t
+                w.placed_today[show.id] = w.placed_today.get(show.id, 0) + 1
+                w.last_show_id = show.id
             else:
-                last_show_id = None
-                self.library.movie_placements.setdefault(item["id"], []).append(t)
-            self.library.last_placed[item["id"]] = t
-            last_programme_year = item.get("year")
-            t = slot.end_ts
+                w.last_show_id = None
+                self.library.movie_placements.setdefault(item["id"], []).append(w.t)
+            self.library.last_placed[item["id"]] = w.t
+            w.last_programme_year = item.get("year")
+            w.t = slot.end_ts
             if show is not None:
-                more, t = self.runs.series_run(channel, day_str, show, item, slot, gap - slot.duration,
-                                               repeating=bool(item.get("_series_repeat")))
+                more, w.t = self.runs.series_run(channel, day_str, show, item, slot, gap - slot.duration,
+                                                 repeating=bool(item.get("_series_repeat")))
                 for extra in more:
-                    emit(extra)
+                    w.emit(extra)
 
-        if t < day_end:
+        if w.t < day_end:
             self.log.append(f"{channel['name']} {day_str}: gave up after {MAX_STEPS_PER_DAY} steps at"
-                            f" {self._hhmm(t)}; check the channel pattern")
+                            f" {self._hhmm(w.t)}; check the channel pattern")
             for fs, fe, payload in fixed_queue:
                 if isinstance(payload, Slot):   # kept slots stay; only the gaps become filler
-                    if t < fs:
-                        emit(self._filler(channel, day_str, t, fs))
-                    t = max(t, fe)
-            if t < day_end:
-                emit(self._filler(channel, day_str, t, day_end))
+                    if w.t < fs:
+                        w.emit(self._filler(channel, day_str, w.t, fs))
+                    w.t = max(w.t, fe)
+            if w.t < day_end:
+                w.emit(self._filler(channel, day_str, w.t, day_end))
         if not pattern and filler is not None:
             # A channel of bands carries on through the night from its own material, with the
             # repeat gaps holding, rather than replaying a thin day.
-            return new_slots + self._overnight_from_pool(channel, day, day_end, next_day_start, all_slots,
-                                                         filler, day_bands)
-        return new_slots + self._overnight(channel, day, day_end, next_day_start, all_slots)
+            return w.new_slots + self._overnight_from_pool(channel, day, day_end, next_day_start, w.all_slots,
+                                                           filler, day_bands)
+        return w.new_slots + self._overnight(channel, day, day_end, next_day_start, w.all_slots)
+
+    def _fill_to(self, w: Walk, target: int, note: bool = False) -> None:
+        """Close the gap up to `target` with adverts or idents, then a caption, so the
+        channel-day stays contiguous (the guide and the player both rely on that)."""
+        w.t = self._pad(w.channel, w.rng, w.day_str, w.t, target, w.last_programme_year, w.emit,
+                        advert_room=w.break_room(), advert_limit=w.advert_count_room())
+        if w.t < target:
+            if note and target - w.t > 120:
+                self.log.append(f"{w.channel['name']} {w.day_str}: filler {(target - w.t) // 60} min at {self._hhmm(w.t)}")
+            w.emit(self._filler(w.channel, w.day_str, w.t, target))
+            w.t = target
 
     # --- bands ---------------------------------------------------------------------------
 
