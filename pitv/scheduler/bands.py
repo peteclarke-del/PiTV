@@ -27,6 +27,7 @@ from .slots import seconds
 ITEM_MINUTES = 15             # default longest item a band treats as one of its own; see is_feature
 KINDS = ("music", "episode", "movie")
 MAX_BAND_MINUTES = 12 * 60
+FEATURE_OVERRUN = 20 * 60     # how far past its band a feature may run when nothing shorter fits
 MAX_STEPS = 3000              # items one stretch can hold; a runaway loop ends as a caption, not a hang
 Placement = tuple[int, dict[str, Any]]   # (start ts, item) for the walk to turn into a slot
 
@@ -199,14 +200,6 @@ class Filler:
         self.reserved = {b.id: set().union(*(c for i, c in claimed.items() if i != b.id), set()) - claimed[b.id]
                          for b in bands}
 
-    def can_play(self, band: Band) -> bool:
-        """Whether the library holds anything at all this band may show, however recently it
-        aired. A band that cannot is no fixed point in the day: the channel's own time runs
-        through its stretch instead of being cut in two at a start time nothing happens at."""
-        strict = self.strict if band.only_matching is None else band.only_matching
-        return any(self._suits(band, m, band.feature, "match" if strict else "any", strict)
-                   for m in self.pool)
-
     def _suits(self, band: Band, m: dict[str, Any], feature: bool, genres: str, strict: bool) -> bool:
         """The part of the search that does not depend on the clock: length, kind of item,
         decades, labels and genre, at one step of the widening."""
@@ -334,30 +327,31 @@ def timetable(todays: list[Band], day: date, day_start: int, day_end: int, next_
 
 
 def fill_band(band: Band, start: int, end: int, filler: Filler, hard_end: int | None = None,
-              overrun: int = 0) -> tuple[list[Placement], int]:
-    """What goes in one band, and where the band actually ends.
+              overrun: int = 0, already: set[int] | None = None) -> tuple[list[Placement], int]:
+    """What the library has for one band, and where that material ends.
 
-    A band billed as a concert is one concert: it opens with its feature and ends when the
-    feature does, and what is left of the stretch is the channel's own time. A band of short
-    items runs to its timetabled end. A band that finds nothing it may use gives the rest of
-    its time back rather than holding a title card over it; the channel fills that time with
-    whatever it has, under each item's own name, and only a channel with nothing at all ends up
-    showing a caption. No item plays twice in one airing: a band with three songs plays three
-    songs and gives the rest back, rather than the same three for two hours. The next band
-    starts when the timetable says, never early; it may start
-    up to `overrun` seconds late, because a last item that does not quite fit runs over, as it
-    did on air, rather than leaving a minute of caption at the end of every band."""
+    A band billed as a concert opens with one concert chosen to meet the band's length. A band
+    of short items plays what it may, nothing twice in one airing: three songs are three songs,
+    not the same three for two hours. When there is nothing more the material simply ends, and
+    the caller holds the rest of the band's stretch under the band's own card; a band is never
+    padded with something it did not ask for. The last item may run `overrun` seconds past the
+    end, as programmes did on air, and the following band starts when it finishes."""
     placed: list[Placement] = []
     t = start
-    want_feature = band.feature
+    want_feature = band.feature and not already    # a band carried on after a rebuild has had its feature
     for _ in range(MAX_STEPS):
         if t >= end:
             break
         opening_feature = want_feature
-        # A feature may run a little past its band rather than be dropped for being long.
-        gap = ((hard_end - t) if hard_end is not None else (end - t + 20 * 60) if opening_feature
-               else (end - t + overrun))
-        item = filler.pick(band, t, gap, feature=opening_feature, exclude={m["id"] for _, m in placed})
+        gap = (hard_end - t) if hard_end is not None else (end - t + overrun)
+        shown = {m["id"] for _, m in placed} | (already or set())
+        # A band has a length and its feature is chosen to meet it: one that ends within a few
+        # minutes of the band's end is strongly preferred, and only a channel with nothing that
+        # close takes a longer one rather than open the band with no feature at all.
+        item = filler.pick(band, t, gap, feature=opening_feature, exclude=shown,
+                           fit=end - t if opening_feature else None)
+        if item is None and opening_feature and hard_end is None:
+            item = filler.pick(band, t, end - t + FEATURE_OVERRUN, feature=True, exclude=shown, fit=end - t)
         want_feature = False
         if item is None:
             break

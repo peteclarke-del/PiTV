@@ -17,8 +17,9 @@ broadcast day, and is then repeated on a Raspberry Pi 4:
    twice in a day outside the documented repeat rules.
 2. The player takes what is on air from the cache. "Playing from the NAS: not in the cache" is
    the exception the log reports, not the normal state.
-3. The music channel's bands appear in the guide under their own names with material of their
-   genres and decades, enough that a band fills most of its stretch.
+3. The music channel's bands appear in the guide at their configured times and lengths under
+   their own names, with material of their genres and decades, enough that a band's holding
+   card is the exception.
 4. Remote line-up entries scheduled more than `external_lead_hours` ahead are delivered before
    they air, and what is not delivered is replaced by the readiness check without a gap.
 5. A fresh rebuild from the admin returns to this state without anyone intervening.
@@ -87,7 +88,6 @@ here has expired and Pete has to sign in again.
 | # | Item | Done when |
 |---|---|---|
 | P1 | Time a band run and a cache run as each of C1 to C8 lands, import, rebuild, and record the result here | Figures recorded against each item above |
-| P2 | The two bands of one decade play the same few songs at 08:00 and 15:30 while the library is thin. Acceptable for now; revisit when C1 has delivered, and decide with Pete whether a band should rather stay dark than repeat what aired earlier that day | Decision recorded |
 | P6 | The development cache is a 10 GB RAM disk and a day needs about 250 GB, so condition 2 cannot be shown here. It needs a folder on a real disk, and the size of the Pi's cache drive decides whether a full day of seven channels is the right thing to cache at all | A cache folder Pete names is in use and C2's check has been run against it |
 | P3 | Hardware verification on a Raspberry Pi 4: hardware decode of copied files, the cache drive, encode times with the Pi's presets, the player keeper under systemd | REQUIREMENTS.md rows marked "by hand" checked on the device |
 

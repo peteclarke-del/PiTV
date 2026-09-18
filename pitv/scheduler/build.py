@@ -193,10 +193,12 @@ class Builder:
         if force or from_ts is not None:
             cut = max(self.now, from_ts) if from_ts is not None else self.now
             self._cuts[(channel_id, day_str)] = cut
-            # A holding card is not content already in progress. Rebuild its remaining time;
-            # save() truncates the persisted slot at the cut so the past stays truthful.
-            return [s for s in existing if s.locked or (s.start_ts < cut and not (
-                    s.kind == "filler" and not s.locked and s.end_ts > cut))]
+            # A holding card is not content already in progress: its remaining time is rebuilt,
+            # and save() truncates the persisted slot at the cut so the past stays truthful. The
+            # part before the cut is kept here at that length, or the walk would take the hole
+            # it leaves for time to fill and place programmes in the past, over the card.
+            return [replace(s, end_ts=cut) if s.kind == "filler" and not s.locked and s.end_ts > cut else s
+                    for s in existing if s.locked or s.start_ts < cut]
         if existing and max(s.end_ts for s in existing) >= day_end - 60:
             return None
         self._cuts[(channel_id, day_str)] = None
@@ -256,13 +258,17 @@ class Builder:
         day_bands = bands.timetable(self.library.bands.get(channel["id"], []), day, day_start, day_end,
                                     next_day_start, self.day_start_min, self.tz)
         filler = self._band_filler(channel, day, [b for _, _, b in day_bands], rng) if day_bands else None
+        # A band holds its configured stretch except where something already stands in it: what
+        # aired before a rebuild's cut, a locked slot, an anchored programme. It carries on
+        # around those rather than being dropped for the day, and does not show again what it
+        # showed before the cut.
+        taken = sorted((fs, fe) for fs, fe, _ in fixed)
+        band_shown: dict[tuple[int, int], set[int]] = {}
         for ts, end, band in day_bands:
-            if filler is not None and not filler.can_play(band):
-                continue    # nothing it may show: the channel's own time runs through its stretch
-            if any(not (end <= fs or ts >= fe) for fs, fe, _ in fixed):
-                self.log.append(f"{channel['name']} {day_str}: band {band.name} at {band.start} clashes with a kept slot")
-                continue
-            fixed.append((ts, end, ("band", band)))
+            band_shown[(band.id, ts)] = {s.media_id for s in keep if s.block == band.name and s.media_id
+                                               and ts <= s.start_ts < end}
+            for seg_start, seg_end in self._segments(ts, end, taken):
+                fixed.append((seg_start, seg_end, ("band", band, ts)))
         fixed.sort(key=lambda x: x[0])
 
         # An empty pattern means the channel places no programmes of its own: its day is its
@@ -302,7 +308,8 @@ class Builder:
                     # its time back to the channel; the next band starts when the timetable says.
                     w.t = self._fill_band(channel, day_str, payload[1], max(w.t, fs), fe, filler, w.emit,
                                           hard_end=next_day_start if not fixed_queue else None,
-                                          overrun=self._overrun(fixed_queue, tol))
+                                          overrun=self._overrun(fixed_queue, tol),
+                                          shown=band_shown[(payload[1].id, payload[2])])
                     continue
                 _, show, ep = payload
                 start = max(w.t, fs)
@@ -471,6 +478,20 @@ class Builder:
                             item_repeat=item_repeat, feature_repeat=feature_repeat)
 
     @staticmethod
+    def _segments(start: int, end: int, taken: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """The parts of start..end not covered by `taken` (sorted), each at least a minute."""
+        out, t = [], start
+        for fs, fe in taken:
+            if fe <= t or fs >= end:
+                continue
+            if fs - t >= 60:
+                out.append((t, fs))
+            t = max(t, fe)
+        if end - t >= 60:
+            out.append((t, end))
+        return out
+
+    @staticmethod
     def _overrun(fixed_queue: deque[tuple[int, int, Any]], tolerance: int) -> int:
         """How far the last item before the next fixed thing may run over: the duration
         tolerance when a band follows (it starts when the item ends), nothing before a kept
@@ -480,16 +501,28 @@ class Builder:
 
     def _fill_band(self, channel: dict[str, Any], day_str: str, band: bands.Band, start: int, end: int,
                    filler: bands.Filler | None, emit: Callable[[Slot], None],
-                   hard_end: int | None = None, overrun: int = 0) -> int:
-        """Emit one band's items under its name (the guide shows them as one programme) and
-        return where it ended; see `bands.fill_band` for what goes in and why it may end early."""
-        if filler is None:
-            emit(self._filler(channel, day_str, start, end, title=band.name, block=band.name))
-            return end
-        placed, t = bands.fill_band(band, start, end, filler, hard_end, overrun)
+                   hard_end: int | None = None, overrun: int = 0, shown: set[int] | None = None) -> int:
+        """Emit one band over the whole stretch it is configured for, under its name (the guide
+        shows it as one programme), and return where it ended.
+
+        The configuration is the authority: a band set to run ninety minutes occupies ninety
+        minutes. What the library has for it plays (see `bands.fill_band`), and whatever is left
+        of the stretch is the band's own holding card saying when service resumes, never other
+        material under other names. The shortfall is what asks pitv_content for more, and each
+        import rebuilds from the card, so it shrinks as material arrives."""
+        placed, t = (bands.fill_band(band, start, end, filler, hard_end, overrun, shown)
+                     if filler is not None else ([], start))
         for at, item in placed:
             emit(self._programme_slot(channel, day_str, at, item, None, block=band.name))
-        return t
+            if shown is not None:
+                shown.add(item["id"])
+        if end - t >= 60:
+            resumes = datetime.fromtimestamp(end, self.tz).strftime("%H:%M")
+            emit(self._filler(channel, day_str, t, end, title=band.name, block=band.name,
+                              subtitle=f"More is on its way. Service resumes at {resumes}"))
+            self.log.append(f"{channel['name']} {day_str}: {band.name} is {(end - t) // 60} min short of material")
+            return end
+        return max(t, end) if placed else end
 
     def _fill_free(self, channel: dict[str, Any], day_str: str, start: int, end: int,
                    filler: bands.Filler | None, day_bands: list[tuple[int, int, bands.Band]],

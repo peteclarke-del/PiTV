@@ -410,22 +410,24 @@ widened, where the alternative is dead air. An item whose genre is known and is 
 items the index has no genre for: an untagged file might be disco, a file tagged metal is not.
 A channel set to take only labelled matches (or a single band set the same way) keeps the first
 step alone, so the item must carry a genre and a year and both must be what the band asked for.
-Such a band with nothing it may play gives its time back to the channel, which fills it from
-its own material under each item's own name: a "Disco Lunch" is never a metal set billed as
-disco, the screen is never a caption while the channel holds anything at all, and the
-shortfall is what asks for more disco. A band billed as a concert is one concert, and what is
-left of its stretch is the channel's time in the same way. A band plays nothing twice in one
-airing: one with three songs plays three songs and gives the rest back. A band the library has
-nothing at all for is no fixed point in the day, so the channel's own time runs through its
-stretch rather than being cut at a start time nothing happens at. That time, and the small
-hours, are carried by the channel's long items (concerts, films, sessions too long to be a band
-item), each chosen to end near the next fixed point, with short items plugging only what no
-long item fits: short items are what bands are made of, and outside a band a night of them is
-hundreds of three minute entries nobody chose. Anything not played within its repeat gap comes
-before anything that has been, and the item just played is never the next one. The last item before a band may run
-over by up to `duration_tolerance_minutes` (5) and the band starts when it ends, as programmes
-did on air, rather than every band closing on a minute of caption; nothing runs over into a
-kept slot or an anchored programme. Items a narrow band
+The configuration is the authority for the shape of the day. A band occupies the stretch it
+is set to, from its start for its length, under its own name, every day it is set for. What the
+library has for it plays, nothing twice in one airing (a band with three songs plays three
+songs, not the same three for two hours), and whatever is left of the stretch is the band's own
+holding card: its name, and "More is on its way. Service resumes at 19:00". It is never padded
+with other material under other names, never shortened, and never moved: a "Disco Lunch" is not
+a metal set billed as disco, and a "Rock Hour" is not sixteen minutes long. The card is honest
+and it corrects itself, because the shortfall is what asks pitv_content for more and every
+import rebuilds the day from its first card. A band billed as a concert is one concert, chosen
+to end as near the band's end as the library allows. The last item of a band may run over by up
+to `duration_tolerance_minutes` (5) and the next band starts when it ends, as programmes did on
+air; nothing runs over into a kept slot or an anchored programme. A rebuild part way through a
+band (or a locked slot or an anchor inside one) does not drop the band: it carries on around
+what already stands, without showing again what it showed before the cut. Time no band is
+configured for, and the small hours, belong to the channel: its long items carry them (concerts,
+films, sessions too long to be a band item), each chosen to end near the next fixed point, with
+short items plugging only what no long item fits, anything not played within its repeat gap
+first, and the item just played never the next one. Items a narrow band
 needs are held back from broader bands earlier in the day, or a lunchtime disco band finds its
 disco already played. Nothing is repeated within the channel's repeat gaps (its own, else
 `band_item_repeat_hours` and `band_feature_repeat_days`). Every slot of a band carries its

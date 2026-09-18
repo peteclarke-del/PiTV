@@ -3,7 +3,6 @@ import json
 import math
 import os
 import random
-from collections import Counter
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from itertools import pairwise
@@ -339,74 +338,59 @@ def test_cartoons_routed_to_cartoon_channel(conn):
 
 
 def test_music_channel_day(conn):
+    """The configuration is the authority. Every band holds the stretch it is set to, under its
+    own name: what the library has for it plays, nothing twice in one airing, and whatever is
+    left is the band's own holding card, never other material under other names."""
     music = _channel(conn, 5)
     assert music["content"] == "music"
-    rows = conn.execute("SELECT s.*, m.concert, m.kind AS mkind FROM schedule s JOIN media m ON m.id = s.media_id"
-                        " WHERE s.channel_id = ? AND s.day = '2026-09-16' AND s.replay = 0 ORDER BY s.start_ts", (music["id"],)).fetchall()
-    assert rows and all(r["mkind"] == "music" for r in rows)
+    rows = conn.execute("SELECT s.*, m.concert, m.kind AS mkind FROM schedule s LEFT JOIN media m ON m.id = s.media_id"
+                        " WHERE s.channel_id = ? AND s.day = '2026-09-16' AND s.replay = 0 ORDER BY s.start_ts",
+                        (music["id"],)).fetchall()
+    assert rows and all(r["mkind"] == "music" for r in rows if r["media_id"])
     tz = tz_of(conn)
     day = parse_day("2026-09-16")
     configured = conn.execute("SELECT name, start, fill FROM band WHERE channel_id = ? ORDER BY start",
                               (music["id"],)).fetchall()
     nominal = [(local_ts(day, b["start"], tz), b) for b in configured]
+    tolerance = 5 * 60
 
     def band_at(ts):
         return nominal[max(i for i, (at, _) in enumerate(nominal) if at <= ts)][1]
 
-    def pool(band):
-        decades = json.loads(band["fill"]).get("decades") or []
-        years = " OR ".join(f"year BETWEEN {d} AND {d + 9}" for d in decades) or "1"
-        return conn.execute(f"SELECT COUNT(*) FROM media WHERE kind = 'music' AND concert = 0 AND ({years})").fetchone()[0]
-
-    # A band of short items carries its name and plays nothing twice in one airing. A band
-    # whose decades the library cannot supply gives its time back to the channel, and so does
-    # one that has shown what it has, or a concert band once its one concert has played; that
-    # time is billed under each item's own name, never under a band it is not in.
-    shown: dict[str, list[int]] = {}
+    # The fixture's bands cover the day, so every slot belongs to one: the band whose stretch
+    # it starts in, or the one before it when that band's last item ran over by a few minutes.
+    airings: dict[int, list] = {}
     for r in rows:
-        band = band_at(r["start_ts"])
-        if r["block"]:
-            assert r["block"] == band["name"]
-            shown.setdefault(band["name"] + band["start"], []).append(r["media_id"])
-        else:
-            assert (json.loads(band["fill"]).get("feature") or not pool(band)
-                    or shown.get(band["name"] + band["start"])), f"{r['title']} unbilled inside {band['name']}"
-    assert all(len(ids) == len(set(ids)) for ids in shown.values()), "a band repeated itself within one airing"
-    # Two bands are billed as a concert; the channel's own time may hold concerts too.
-    concerts = [r for r in rows if r["concert"] and r["block"]]
-    assert len(concerts) == 2, [r["title"] for r in concerts]
-    for concert in concerts:
-        band = band_at(concert["start_ts"])
-        assert json.loads(band["fill"]).get("feature") and concert["block"] == band["name"]
-        late = concert["start_ts"] - local_ts(day, band["start"], tz)
-        assert 0 <= late <= 300, "the concert opens its band, at most an overrun late"
-        rest = [r for r in rows if r["start_ts"] >= concert["end_ts"] and band_at(r["start_ts"]) is band]
-        assert not any(r["block"] for r in rest), "one concert, then the channel's own time"
-    # Contiguous from 08:00 to closedown, every slot counted. A last item that does not quite
-    # fit runs over and the next band starts when it ends, so no band closes on a minute of
-    # caption.
-    assert not conn.execute("SELECT 1 FROM schedule WHERE channel_id = ? AND day = '2026-09-16' AND replay = 0"
-                            " AND kind = 'filler' AND end_ts - start_ts < 300", (music["id"],)).fetchone()
-    day = conn.execute("SELECT start_ts, end_ts FROM schedule WHERE channel_id = ? AND day = '2026-09-16'"
-                       " AND replay = 0 ORDER BY start_ts", (music["id"],)).fetchall()
-    for a, b in pairwise(day):
+        assert r["block"], f"{r['title']} at {r['start_ts']} is in no band"
+        index = max(i for i, (at, _) in enumerate(nominal) if at <= r["start_ts"])
+        if nominal[index][1]["name"] != r["block"]:
+            index -= 1
+            assert r["start_ts"] - nominal[index + 1][0] <= tolerance and r["kind"] == "programme"
+        assert nominal[index][1]["name"] == r["block"]
+        airings.setdefault(index, []).append(r)
+    assert set(airings) == set(range(len(nominal))), "every configured band appears in the day"
+    for index, slots in airings.items():
+        band, starts = nominal[index][1], nominal[index][0]
+        ends = nominal[index + 1][0] if index + 1 < len(nominal) else slots[-1]["end_ts"]
+        assert 0 <= slots[0]["start_ts"] - starts <= tolerance, f"{band['name']} starts when it is set to"
+        assert -60 <= slots[-1]["end_ts"] - ends <= tolerance, f"{band['name']} holds its whole stretch"
+        played = [r["media_id"] for r in slots if r["kind"] == "programme"]
+        assert len(played) == len(set(played)), f"{band['name']} repeated itself within one airing"
+        cards = [r for r in slots if r["kind"] == "filler"]
+        assert len(cards) <= 1 and (not cards or cards[0] is slots[-1]), "the card closes the band"
+        if cards:
+            assert cards[0]["title"] == band["name"] and "resumes at" in cards[0]["subtitle"]
+        fill = json.loads(band["fill"])
+        if fill.get("feature"):
+            assert len(played) == 1 and slots[0]["concert"], "a concert band is one concert"
+        decades = fill.get("decades") or []
+        if decades and not fill.get("feature"):
+            years = " OR ".join(f"year BETWEEN {d} AND {d + 9}" for d in decades)
+            pool = conn.execute(f"SELECT COUNT(*) FROM media WHERE kind = 'music' AND concert = 0 AND ({years})").fetchone()[0]
+            assert bool(played) == bool(pool), f"{band['name']} plays exactly when the library has its decades"
+    # Contiguous from 08:00 to closedown, every slot counted.
+    for a, b in pairwise(rows):
         assert a["end_ts"] == b["start_ts"]
-    # Every eligible video is used before any repeats. Repeats are spread evenly within each
-    # band, which is as even as it can be: a band held to one decade can only play that decade,
-    # so the day as a whole repeats whatever the narrowest band is short of.
-    ids = [r["media_id"] for r in rows]
-    eligible = conn.execute("SELECT COUNT(*) FROM media WHERE kind = 'music' AND concert = 0 AND year BETWEEN 1970 AND 2009").fetchone()[0]
-    assert len(set(ids)) >= min(eligible, len(ids)) - 2
-    for name in {r["block"] for r in rows if r["block"]}:
-        band = [r for r in rows if r["block"] == name and not r["concert"]]
-        if not band:
-            continue
-        decades = json.loads(conn.execute("SELECT fill FROM band WHERE channel_id = ? AND name = ?",
-                                          (music["id"], name)).fetchone()["fill"]).get("decades") or []
-        years = " OR ".join(f"year BETWEEN {d} AND {d + 9}" for d in decades) or "1"
-        pool = conn.execute(f"SELECT COUNT(*) FROM media WHERE kind = 'music' AND concert = 0 AND ({years})").fetchone()[0]
-        assert pool, f"{name} has no videos of its decades"
-        assert max(Counter(r["media_id"] for r in band).values()) <= math.ceil(len(band) / pool) + 2, name
 
 
 def test_guide_collapses_music_blocks(conn):

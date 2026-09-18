@@ -539,7 +539,7 @@ class Player:
             self.playing_slot_id = slot["id"]
             return
         if slot["kind"] == "filler" or not slot.get("media_id"):
-            self._show_testcard(slot.get("title") or "Programmes will continue shortly", "")
+            self._show_testcard(slot.get("title") or "Programmes will continue shortly", slot.get("subtitle") or "")
             self.playing_slot_id = slot["id"]
             return
         media = self._slot_media(slot)
