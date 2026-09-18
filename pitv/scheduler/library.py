@@ -50,6 +50,12 @@ class Library:
         self.started_channels = {int(r[0]) for r in conn.execute(
             "SELECT DISTINCT channel_id FROM history UNION SELECT DISTINCT channel_id FROM schedule"
             " WHERE kind='programme' AND start_ts < ?", (now,))}
+        # What this build has placed so far, which the rest of the build must respect.
+        self.ad_last: dict[tuple[int, int], int] = {}          # (channel, media) -> ts
+        # A short series is scheduled as a bundle. Cadence repeats replay that bundle instead
+        # of collapsing back to one five-minute episode followed by an advert break.
+        self.short_runs: dict[int, list[dict[str, Any]]] = {}
+        self.external_short_runs: dict[int, list[dict[str, Any]]] = {}
 
     # --- loading -------------------------------------------------------------------
 

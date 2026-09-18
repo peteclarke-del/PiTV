@@ -26,25 +26,18 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from ..db import (
-    DEFAULT_SETTINGS,
     all_settings,
     enabled_channels,
     now_ts,
     tx,
 )
-from ..lineup import nas_only_for
 from . import bands
 from .library import Library, Rebuild
 from .policy import SchedulerPolicy
 from .rules import (
-    EraSpans,
-    allowed_at,
     day_bounds,
     daypart_end_minutes,
-    daypart_for,
     dayparts_for_weekday,
-    era_spans,
-    era_weight_spans,
     hhmm_to_minutes,
     in_decades,
     local_ts,
@@ -52,6 +45,7 @@ from .rules import (
     parse_pattern,
     tz_of,
 )
+from .select import Selector
 from .slots import Show, Slot, json_field, seconds, slot_titles
 
 Progress = Callable[[str], None] | None
@@ -61,7 +55,6 @@ MAX_STEPS_PER_DAY = 3000
 FREE_SHORT_ITEMS = 24          # fewer short items than this and a channel leans on its long ones
 FREE_FEATURE_SECONDS = 30 * 60  # ... in any free stretch at least this long
 FILLER_TITLE = "Programmes will continue shortly"
-STAND_IN_IDENT_SECONDS = 10     # the shipped test signal's length (pitv/assets)
 log = logging.getLogger("pitv.scheduler")
 
 
@@ -81,28 +74,15 @@ class Builder:
         # Minute of day the broadcast day starts (08:00 = 480); minutes before it belong to the
         # previous day and are counted past 1440 so comparisons stay monotonic.
         self.day_start_min = self.policy.day_start_minutes
-        # Parsed once: the candidate loops run tens of thousands of times per build.
-        self._global_spans = era_spans(self.policy.value("era_weights"))
-        self._advert_spans = era_spans(self.policy.value("advert_era_weights")
-                                       or DEFAULT_SETTINGS["advert_era_weights"])
-        self._advert_window = self.policy.integer("advert_year_window")
-        self._advert_penalty = self.policy.advert_repeat_seconds
-        self._advert_pools: dict[int, list[tuple[dict[str, Any], float, float]]] = {}
-        self._channel_cols: dict[tuple[int, str], Any] = {}
-        self._decades: dict[int, tuple[int, ...]] = {}
         self.library = Library(conn, self.policy, now=self.now, rebuild=rebuild,
                                exclude_media_ids=exclude_media_ids, only_media_ids=only_media_ids,
                                allow_external=allow_external)
-        self.ad_last: dict[tuple[int, int], int] = {}  # (channel, media) -> ts
+        self.select = Selector(self.policy, self.settings, self.tz, self.library)
         # (channel, day) -> time from which save() replaces unlocked slots; None adds only.
         self._cuts: dict[tuple[int, str], int | None] = {}
         # (lineup_id, episode) -> wanted id, so every placement of one request in this build
         # shares a row (a film's later airings, a placeholder's overnight replay).
         self._requests: dict[tuple[int, int | None], int] = {}
-        # A short series is scheduled as a bundle. Cadence repeats replay that bundle instead
-        # of collapsing back to one five-minute episode followed by an advert break.
-        self._short_runs: dict[int, list[dict[str, Any]]] = {}
-        self._external_short_runs: dict[int, list[dict[str, Any]]] = {}
 
     def _bday(self, minute: int) -> int:
         """A local minute of day on the broadcast day's clock: +1440 after midnight."""
@@ -117,32 +97,6 @@ class Builder:
         key = f"{self.seed}:{channel_id}:{day.isoformat()}".encode()
         return random.Random(int.from_bytes(hashlib.sha256(key).digest()[:8], "big"))
 
-    def _channel_json(self, channel: dict[str, Any], key: str) -> Any:
-        """A channel's JSON column, parsed once per build rather than once per candidate."""
-        ck = (channel["id"], key)
-        if ck not in self._channel_cols:
-            self._channel_cols[ck] = json_field(channel.get(key))
-        return self._channel_cols[ck]
-
-    def _channel_setting(self, channel: dict[str, Any], key: str) -> Any:
-        """A channel's own era/kind weights, falling back to the global setting."""
-        return self._channel_json(channel, key) or self.policy.value(key)
-
-    def _channel_spans(self, channel: dict[str, Any]) -> EraSpans:
-        own = self._channel_json(channel, "era_weights")
-        if not own:
-            return self._global_spans
-        ck = (channel["id"], "era_spans")
-        if ck not in self._channel_cols:
-            self._channel_cols[ck] = era_spans(own)
-        return self._channel_cols[ck]
-
-    def _genre_weight(self, channel: dict[str, Any], genres: list[str]) -> float:
-        gw = self._channel_json(channel, "genre_weights")
-        if not gw or not genres:
-            return 1.0
-        return max(float(gw.get(g, gw.get(g.lower(), 1.0))) for g in genres)
-
     def _existing_slots(self, channel_id: int, day: str) -> list[Slot]:
         """The day's persisted slots (overnight replay excluded), in time order."""
         rows = self.conn.execute(
@@ -156,281 +110,6 @@ class Builder:
                      block=r["block"], wanted_id=r["wanted_id"], show_id=r["show_id"],
                      genres=json_field(r["mgenres"]) or [], year=r["myear"])
                 for r in rows]
-
-    # --- choosing ----------------------------------------------------------------------
-
-    def _choose_programme(self, channel: dict[str, Any], rng: random.Random, t: int, gap: int,
-                          token: str, placed_today: dict[int, int], prev: Slot | None,
-                          barred: set[int], relax: int = 0,
-                          slack: int = 0) -> tuple[dict[str, Any], Show | None] | None:
-        """Pick a programme for a gap. Selection is two-stage so the TV/movie balance follows the
-        channel's kind weights rather than the size of each pool: choose the kind, then the item.
-
-        relax=0 normal rules; relax=1 ignore daypart preferences;
-        relax=2 additionally allow movies that aired recently. Certificates are never relaxed.
-        `barred` holds the series either side of the gap (never two episodes back to back).
-        `slack` is how far past the gap a programme may run: the duration tolerance at closedown,
-        zero when a fixed slot follows (it must not be overlapped)."""
-        start_min = minutes_of_day(t, self.tz)
-        bday_min = self._bday_minutes(t)
-        weekday_n = datetime.fromtimestamp(t, self.tz).weekday()
-        dayparts = dayparts_for_weekday(weekday_n, self.settings, self._channel_json(channel, "daypart_profile"))
-        dp = daypart_for(bday_min, dayparts)
-        sport_block = float(dp.get("sport", 1.0)) >= 3.0   # docs/PLAN.md section 4.6: 3 and above forms a block
-        dp_end = daypart_end_minutes(bday_min, dayparts, 1440)
-        spans = self._channel_spans(channel)
-        kind_weights = self._channel_setting(channel, "kind_weights")
-        movie_repeat = self.policy.movie_repeat_seconds
-        genre_penalty = self.policy.number("genre_repeat_penalty")
-        # A channel may take only what the index has labelled: no genre or no year, no airing.
-        strict_matching = bool(channel.get("strict_matching"))
-        daily_limit = self.policy.integer("show_daily_limit")
-        repeat_penalty = self.policy.number("show_repeat_penalty")
-        max_minutes = dp.get("max_minutes")
-        weekend = weekday_n >= 5
-        relaxed = relax >= 1
-        kids_rule = not channel.get("kids_any_time")
-        kids_breakfast = weekend and self.policy.enabled("weekend_kids_breakfast") and dp.get("name") == "Breakfast"
-        unknown_w = self.policy.number("unknown_year_weight")
-        prev_genres = ({g.lower() for g in prev.genres}
-                       if prev is not None and prev.kind == "programme" and prev.genres else set())
-
-        decades = self._channel_decades(channel)
-
-        def common_weight(item: dict[str, Any], kind: str, end_year: int | None = None) -> float:
-            # A pinned external line-up entry was put on this exact channel by the user. Its
-            # year must not be rejected by the automatic era-routing defaults; those defaults
-            # decide where unassigned library material belongs.
-            explicit = bool(item.get("lineup_pinned") or (item.get("lineup_id") and item.get("pinned")))
-            if strict_matching and not explicit and not (item.get("genres") and item.get("year")):
-                return 0.0     # this channel takes only what the index has labelled
-            if not explicit and not in_decades(item.get("year"), decades, end_year, unknown_ok=not strict_matching):
-                return 0.0
-            w = era_weight_spans(item.get("year"), spans, end_year, unknown_w)
-            if explicit and w <= 0:
-                w = max(unknown_w, 0.2)
-            if w <= 0:
-                return 0.0
-            duration = float(item["duration"])
-            if duration > gap + slack:
-                return 0.0
-            short_threshold, short_target = self.policy.short_episode_seconds(channel)
-            if kind == "tv" and short_threshold and duration < short_threshold and short_target > gap + slack:
-                return 0.0     # never strand one short episode before a fixed boundary
-            if not allowed_at(item, start_min, self.settings, kids_rule=kids_rule):
-                return 0.0
-            if not relaxed:
-                w *= float(dp.get(kind, 1.0))
-            if item.get("kids"):
-                kw = float(dp.get("kids", 1.0))
-                if kids_breakfast:
-                    kw = max(kw, 4.0)
-                w *= kw if not relaxed else max(kw, 0.2)
-            w *= self._genre_weight(channel, item.get("genres") or [])
-            is_sport = (item.get("category") == "sport")
-            if is_sport:
-                sport_w = float(dp.get("sport", 1.0))
-                # Outside sport-friendly dayparts sport is admitted only at the final relaxation
-                # step, after recently aired films: it is a last resort, not a filler.
-                if sport_w < 0.5 and relax < 2:
-                    return 0.0
-                w *= sport_w if not relaxed else sport_w * 0.5
-            w *= self.library.pool_factor(kind, item.get("year"), end_year)
-            if max_minutes and duration > max_minutes * 60 and not relaxed and not (is_sport and sport_block):
-                w *= 0.15
-            # Running well past the end of the daypart changes the feel of the next one: a sport
-            # block must not swallow the evening, and a long film should not start at teatime.
-            overrun_min = (bday_min + duration / 60) - dp_end
-            if overrun_min > 30 and not relaxed:
-                w *= 0.02 if is_sport else (0.5 if kind == "movie" and overrun_min < 75 else 0.25)
-            # Sharing a genre with the previous programme is penalised, except within a sport
-            # block, which is meant to run together.
-            if (prev_genres and item.get("genres") and not (is_sport and sport_block)
-                    and prev_genres & {g.lower() for g in item["genres"]}):
-                w *= genre_penalty
-            if gap - duration < 600:
-                w *= 1.5  # fills the gap neatly
-            return w
-
-        tv_cands: list[tuple[float, dict[str, Any], Show | None]] = []
-        movie_cands: list[tuple[float, dict[str, Any], Show | None]] = []
-
-        if token in ("show", "tv"):
-            for show in self.library.free_shows.get(channel["id"], ()):
-                if show.id in barred:
-                    sport_ok = (show.category == "sport" and weekend
-                                and self.policy.enabled("sport_back_to_back_weekends"))
-                    if not sport_ok:
-                        continue  # never two episodes of the same series back to back
-                resting = bool(show.resting_until and t < show.resting_until)
-                if resting and relax < 2:
-                    continue
-                times_today = placed_today.get(show.id, 0)
-                # Relaxing daypart preferences must never turn a thin channel into the same
-                # episode all day.  The daily series cap is a variety rule, not a preference.
-                if times_today >= daily_limit:
-                    continue
-                last_new = self.library.show_last_placed.get(show.id)
-                repeating = show.mode == "auto" and not self.policy.next_episode_due(last_new, t)
-                prior_run = self._short_runs.get(show.id)
-                ep = (prior_run[0] if repeating and prior_run else
-                      show.previous_episode() if repeating else show.next_episode())
-                if ep is None:
-                    continue
-                if repeating:
-                    ep = {**ep, "_series_repeat": True}
-                w = common_weight(ep, "tv", show.end_year)
-                if w <= 0:
-                    continue
-                if times_today:
-                    w *= repeat_penalty ** times_today
-                if resting:
-                    w *= 0.3
-                if repeating:
-                    w *= 0.12       # useful fallback, but fresh titles win decisively
-                elif show.mode == "auto":
-                    w *= self.policy.cadence_factor(self.library.show_last_placed.get(show.id), t, relaxed=relaxed)
-                tv_cands.append((w, ep, show))
-        if token in ("show", "movie"):
-            for m in self.library.movies_on.get(channel["id"], ()):
-                placements = self.library.movie_placements.get(m["id"], [])
-                # Distance to the nearest airing in either direction: a film already placed later
-                # today on another channel is just as "recent" as one shown yesterday.
-                nearest = min((abs(t - x) for x in placements), default=None)
-                recent = nearest is not None and nearest < movie_repeat
-                if recent and (relax < 2 or nearest < 12 * 3600):
-                    continue
-                w = common_weight(m, "movie")
-                if w <= 0:
-                    continue
-                if recent:
-                    # Forced repeat (thin library): strongly prefer the one aired longest ago.
-                    w *= 0.2 * (nearest / movie_repeat) ** 2
-                elif nearest is not None:
-                    w *= min(2.0, nearest / movie_repeat)  # prefer the least recently aired
-                else:
-                    w *= 2.0
-                movie_cands.append((w, m, None))
-
-        externals = self.library.externals_on.get(channel["id"])
-        if externals and not nas_only_for(channel, self.settings):
-            # Once there is enough preparation time, remote titles compete on programme variety,
-            # rather than being permanently disadvantaged merely because they are not on the NAS.
-            ext_w = self.policy.external_weight(t)
-            for e in externals:
-                times_today = placed_today.get(e["id"], 0)
-                emergency_repeat = relax >= 2 and bool(e.get("last_spec"))
-                if ((e["id"] in barred or (e.get("show_id") and e["show_id"] in barred))
-                        and not emergency_repeat):
-                    continue
-                episode = e["kind"] == "episode"
-                if token not in ("show", "tv" if episode else "movie"):
-                    continue
-                item_limit = daily_limit if episode else 1
-                if times_today >= item_limit and not emergency_repeat:
-                    continue
-                due = not episode or self.policy.next_episode_due(self.library.external_last_placed.get(e["lineup_id"]), t)
-                candidate = e
-                if episode and (not due or times_today >= item_limit):
-                    if not e.get("last_spec"):
-                        continue
-                    # Re-air the episode already requested rather than advancing the external
-                    # series before its weekly next-episode slot.  The shared wanted row means
-                    # one download serves both airings.
-                    candidate = {**e, "_external_repeat": True}
-                    prior_run = self._external_short_runs.get(e["lineup_id"])
-                    if prior_run:
-                        candidate["_repeat_spec"] = prior_run[0]
-                w = common_weight(e, "tv" if episode else "movie") * ext_w
-                if w <= 0:
-                    continue
-                if episode:
-                    w *= (0.18 if not due else
-                          self.policy.cadence_factor(self.library.external_last_placed.get(e["lineup_id"]), t, relaxed=relaxed))
-                (tv_cands if episode else movie_cands).append((w, candidate, None))
-
-            # A configured remote title is part of the channel's catalogue, not an occasional
-            # lottery ticket.  Once the preparation window has passed, give every as-yet unseen
-            # remote title one turn before falling back to already represented local material.
-            # This is deliberately per kind so the channel's TV/film balance still applies.
-            unseen_tv = [c for c in tv_cands
-                         if c[1]["id"] < 0 and c[1]["lineup_id"] not in self.library.external_last_placed]
-            unseen_movies = [c for c in movie_cands
-                             if c[1]["id"] < 0 and c[1]["lineup_id"] not in self.library.external_last_placed]
-            if unseen_tv and self.policy.external_prepared(t):
-                tv_cands = unseen_tv
-            if unseen_movies and self.policy.external_prepared(t):
-                movie_cands = unseen_movies
-
-        kinds: list[tuple[float, list[tuple[float, dict[str, Any], Show | None]]]] = []
-        for kind, cands in (("tv", tv_cands), ("movie", movie_cands)):
-            kind_weight = float(kind_weights.get(kind, 1.0))
-            if not cands or kind_weight <= 0:
-                continue  # zero is an explicit prohibition, not a very small preference
-            weight = kind_weight * (1.0 if relaxed else float(dp.get(kind, 1.0)))
-            if weight > 0:
-                kinds.append((weight, cands))
-        if not kinds:
-            return None
-        pool = rng.choices(kinds, weights=[k[0] for k in kinds], k=1)[0][1]
-        pick = rng.choices(pool, weights=[c[0] for c in pool], k=1)[0]
-        return pick[1], pick[2]
-
-    def _advert_pool(self, channel: dict[str, Any]) -> list[tuple[dict[str, Any], float, float]]:
-        """(advert, duration, era weight) for every advert the channel may carry, in library
-        order. Built once per channel: `_choose_advert` runs for every break of every day."""
-        pool = self._advert_pools.get(channel["id"])
-        if pool is None:
-            family_only = bool(channel.get("family_safe_ads"))
-            pool = []
-            for ad in self.library.adverts:
-                if family_only and not ad.get("family_safe", 1):
-                    continue  # no alcohol, tobacco or adult adverts on a family channel
-                w = era_weight_spans(ad.get("year"), self._advert_spans)
-                if w > 0:     # adverts must be from the configured decades
-                    pool.append((ad, float(ad["duration"]), w))
-            self._advert_pools[channel["id"]] = pool
-        return pool
-
-    def _choose_advert(self, channel: dict[str, Any], rng: random.Random, t: int, gap: int,
-                       near_year: int | None) -> dict[str, Any] | None:
-        cands: list[tuple[float, dict[str, Any]]] = []
-        fresh: list[tuple[float, dict[str, Any]]] = []
-        for ad, duration, w in self._advert_pool(channel):
-            if duration > gap:
-                continue
-            year = ad.get("year")
-            if near_year and year is not None and abs(year - near_year) <= self._advert_window:
-                w *= 3.0
-            last = self.ad_last.get((channel["id"], ad["id"]))
-            if last is not None and t - last < self._advert_penalty:
-                w *= 0.1
-            cands.append((w, ad))
-            if last is None or t - last > 900:
-                fresh.append((w, ad))  # not shown in the last quarter of an hour
-        pool = fresh or cands  # never repeat an advert within a break if any other will fit
-        if not pool:
-            return None
-        return rng.choices(pool, weights=[c[0] for c in pool], k=1)[0][1]
-
-    def _choose_ident(self, channel: dict[str, Any], rng: random.Random, gap: int) -> dict[str, Any] | None:
-        if not channel.get("idents_enabled", 1):
-            return None
-        fits = [i for i in self.library.idents if float(i["duration"]) <= gap]
-        # The channel's own idents, else generic ones; never another channel's, which name it.
-        pool = [i for i in fits if i.get("home_channel_id") == channel["id"]] or \
-            [i for i in fits if not i.get("home_channel_id")]
-        return rng.choice(pool) if pool else None
-
-    def _stand_in_ident(self, channel: dict[str, Any], gap: int) -> dict[str, Any] | None:
-        """For a channel whose pattern asks for idents but which has none, of its own or generic:
-        a slot with no file, which the player fills with the test signal under the channel's
-        badge. Only where the pattern asks; gaps are never padded with it."""
-        if not channel.get("idents_enabled", 1) or gap < STAND_IN_IDENT_SECONDS:
-            return None
-        if any(i.get("home_channel_id") in (None, channel["id"]) for i in self.library.idents):
-            return None   # it has idents; none fitted this gap
-        return {"id": None, "title": channel.get("short_name") or channel["name"], "duration": STAND_IN_IDENT_SECONDS}
 
     # --- building ----------------------------------------------------------------------
 
@@ -609,7 +288,7 @@ class Builder:
                         last_show_id = payload.show_id
                         last_programme_year = payload.year
                     elif payload.kind == "advert" and payload.media_id:
-                        self.ad_last[(channel["id"], payload.media_id)] = payload.start_ts
+                        self.library.ad_last[(channel["id"], payload.media_id)] = payload.start_ts
                     continue
                 if payload[0] == "band":
                     # A band that runs to closedown, or past it, may let its final item finish;
@@ -661,16 +340,16 @@ class Builder:
                 requested = ads_per_break if token == "break" else 1
                 for _ in range(min(requested, advert_count_room())):
                     room = min(boundary - t, break_room())
-                    ad = self._choose_advert(channel, rng, t, room, last_programme_year) if room > 0 else None
+                    ad = self.select.advert(channel, rng, t, room, last_programme_year) if room > 0 else None
                     if ad is None:
                         break
                     slot = self._media_slot(channel, day_str, t, ad, "advert")
                     emit(slot)
-                    self.ad_last[(channel["id"], ad["id"])] = t
+                    self.library.ad_last[(channel["id"], ad["id"])] = t
                     t = slot.end_ts
                 continue
             if token == "ident":
-                ident = self._choose_ident(channel, rng, boundary - t) or self._stand_in_ident(channel, boundary - t)
+                ident = self.select.ident(channel, rng, boundary - t) or self.select.stand_in_ident(channel, boundary - t)
                 if ident is not None:
                     slot = self._media_slot(channel, day_str, t, ident, "ident")
                     emit(slot)
@@ -700,7 +379,7 @@ class Builder:
             attempts = [(token, 0)] + ([("show", 0)] if token != "show" else []) + [("show", 1), ("show", 2)]
             choice = None
             for tok, relax in attempts:
-                choice = self._choose_programme(channel, rng, t, gap, tok, placed_today, prev,
+                choice = self.select.programme(channel, rng, t, gap, tok, placed_today, prev,
                                                 barred, relax=relax, slack=slack)
                 if choice is not None:
                     break
@@ -712,7 +391,7 @@ class Builder:
                 start_min = self._bday_minutes(t)
                 dayparts = dayparts_for_weekday(
                     datetime.fromtimestamp(t, self.tz).weekday(), self.settings,
-                    self._channel_json(channel, "daypart_profile"))
+                    self.select.channel_json(channel, "daypart_profile"))
                 retry_min = daypart_end_minutes(start_min, dayparts, 1440)
                 retry = min(boundary, t + max(60, retry_min - start_min) * 60)
                 fill_to(retry, note=True)
@@ -775,15 +454,6 @@ class Builder:
 
     # --- bands ---------------------------------------------------------------------------
 
-    def _channel_decades(self, channel: dict[str, Any]) -> tuple[int, ...]:
-        """The decades a channel plays; empty means any. Held as JSON on the channel row."""
-        cached = self._decades.get(channel["id"])
-        if cached is None:
-            raw = json_field(channel.get("decades")) or []
-            cached = self._decades[channel["id"]] = tuple(int(d) for d in raw if isinstance(d, (int, float, str))
-                                                          and str(d).isdigit())
-        return cached
-
     def _bands_for(self, channel: dict[str, Any], day: date, day_start: int, day_end: int,
                    last_end: int | None = None) -> list[tuple[int, int, bands.Band]]:
         """This channel's bands for this day as (start, end, band). A band without a length runs
@@ -817,7 +487,7 @@ class Builder:
     def _band_filler(self, channel: dict[str, Any], day: date, todays: list[bands.Band],
                      rng: random.Random) -> bands.Filler:
         kinds = {k for b in todays for k in b.kinds}
-        decades = self._channel_decades(channel)
+        decades = self.select.channel_decades(channel)
         pool = [m for kind in sorted(kinds) for m in self.library.band_pool(kind)
                 if in_decades(m.get("year"), decades, unknown_ok=not channel.get("strict_matching"))]
         if not pool:
@@ -879,7 +549,7 @@ class Builder:
             return start
         kinds = tuple(sorted({k for _, _, b in day_bands for k in b.kinds})) or ("music",)
         free = bands.Band(id=0, channel_id=channel["id"], name="", start="", minutes=None, days=(),
-                          kinds=kinds, genres=(), decades=self._channel_decades(channel), feature=False)
+                          kinds=kinds, genres=(), decades=self.select.channel_decades(channel), feature=False)
         # A channel with only a handful of short items would play those same few over and over,
         # so where it also holds long ones (a share of concert films, say) those carry the time
         # and the short items fill around them. A well stocked channel never reaches for them.
@@ -924,9 +594,9 @@ class Builder:
             kind = "advert"
             if (channel.get("ads_enabled") and t < break_end
                     and (advert_limit is None or adverts < advert_limit)):
-                item = self._choose_advert(channel, rng, t, min(gap, break_end - t), near_year)
+                item = self.select.advert(channel, rng, t, min(gap, break_end - t), near_year)
             if item is None and idents < 2:
-                item = self._choose_ident(channel, rng, gap)
+                item = self.select.ident(channel, rng, gap)
                 kind = "ident"
                 idents += 1
             if item is None:
@@ -935,7 +605,7 @@ class Builder:
             emit(slot)
             if kind == "advert":
                 adverts += 1
-                self.ad_last[(channel["id"], item["id"])] = t
+                self.library.ad_last[(channel["id"], item["id"])] = t
             t = slot.end_ts
         return t
 
@@ -995,7 +665,7 @@ class Builder:
             return first.end_ts
         first.block = first.block or entry["title"]
         t = first.end_ts
-        cached = self._external_short_runs.get(entry["lineup_id"]) if repeating else None
+        cached = self.library.external_short_runs.get(entry["lineup_id"]) if repeating else None
         specs = list(cached[1:]) if cached else []
         run = list(cached) if cached else [dict(first.wanted_spec or {})]
         fresh = dict(entry)
@@ -1017,7 +687,7 @@ class Builder:
             room -= slot.duration
             t = slot.end_ts
         if not cached:
-            self._external_short_runs[entry["lineup_id"]] = run
+            self.library.external_short_runs[entry["lineup_id"]] = run
         return t
 
     def _next_day_slots(self, channel_id: int, next_day_start: int) -> list[Slot]:
@@ -1041,7 +711,7 @@ class Builder:
             return first.end_ts
         first.block = first.block or show.title
         t = first.end_ts
-        cached = self._short_runs.get(show.id) if repeating else None
+        cached = self.library.short_runs.get(show.id) if repeating else None
         episodes = list(cached[1:]) if cached else []
         run = list(cached) if cached else [first_item]
         while t - first.start_ts < target:
@@ -1061,7 +731,7 @@ class Builder:
             t = slot.end_ts
         # Component episodes are one programme for variety and daily-limit purposes.
         if not cached:
-            self._short_runs[show.id] = run
+            self.library.short_runs[show.id] = run
         return t
 
     def _media_slot(self, channel: dict[str, Any], day_str: str, start: int, item: dict[str, Any], kind: str) -> Slot:

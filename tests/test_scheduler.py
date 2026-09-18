@@ -56,7 +56,7 @@ def test_daily_show_limit_survives_preference_relaxation(tmp_path):
     builder = Builder(c, now=now)
     channel = next(ch for ch in builder.channels if ch["id"] == channel_id)
     show = builder.library.free_shows[channel_id][0]
-    choice = builder._choose_programme(channel, random.Random(1), now, 3600, "show",
+    choice = builder.select.programme(channel, random.Random(1), now, 3600, "show",
                                        {show.id: builder.settings["show_daily_limit"]}, None,
                                        set(), relax=2)
     assert choice is None
@@ -558,7 +558,7 @@ def test_kept_slots_inform_the_rebuild(conn):
     assert kept_ads and kept_shows
     builder = Builder(conn, now=cut, seed=3, rebuild={ch["id"]: (cut, None)})
     builder.build_channel_day(dict(ch), day, force=True, from_ts=cut)   # not saved
-    assert all(builder.ad_last.get((ch["id"], a["media_id"]), 0) >= a["start_ts"] for a in kept_ads)
+    assert all(builder.library.ad_last.get((ch["id"], a["media_id"]), 0) >= a["start_ts"] for a in kept_ads)
     assert kept_shows <= set(builder._day_minutes[(ch["id"], day.isoformat())])
 
 
