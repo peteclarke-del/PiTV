@@ -257,6 +257,8 @@ class Builder:
                                     next_day_start, self.day_start_min, self.tz)
         filler = self._band_filler(channel, day, [b for _, _, b in day_bands], rng) if day_bands else None
         for ts, end, band in day_bands:
+            if filler is not None and not filler.can_play(band):
+                continue    # nothing it may show: the channel's own time runs through its stretch
             if any(not (end <= fs or ts >= fe) for fs, fe, _ in fixed):
                 self.log.append(f"{channel['name']} {day_str}: band {band.name} at {band.start} clashes with a kept slot")
                 continue

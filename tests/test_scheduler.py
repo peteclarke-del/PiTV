@@ -358,16 +358,20 @@ def test_music_channel_day(conn):
         years = " OR ".join(f"year BETWEEN {d} AND {d + 9}" for d in decades) or "1"
         return conn.execute(f"SELECT COUNT(*) FROM media WHERE kind = 'music' AND concert = 0 AND ({years})").fetchone()[0]
 
-    # A band of short items carries its name. A band whose decades the library cannot supply
-    # gives its time back to the channel, and so does a concert band once its one concert has
-    # played; that time is billed under each item's own name, never under a band it is not in.
+    # A band of short items carries its name and plays nothing twice in one airing. A band
+    # whose decades the library cannot supply gives its time back to the channel, and so does
+    # one that has shown what it has, or a concert band once its one concert has played; that
+    # time is billed under each item's own name, never under a band it is not in.
+    shown: dict[str, list[int]] = {}
     for r in rows:
         band = band_at(r["start_ts"])
         if r["block"]:
             assert r["block"] == band["name"]
+            shown.setdefault(band["name"] + band["start"], []).append(r["media_id"])
         else:
-            assert json.loads(band["fill"]).get("feature") or not pool(band), \
-                f"{r['title']} unbilled inside {band['name']}"
+            assert (json.loads(band["fill"]).get("feature") or not pool(band)
+                    or shown.get(band["name"] + band["start"])), f"{r['title']} unbilled inside {band['name']}"
+    assert all(len(ids) == len(set(ids)) for ids in shown.values()), "a band repeated itself within one airing"
     concerts = [r for r in rows if r["concert"]]
     assert len(concerts) == 2, [r["title"] for r in concerts]
     for concert in concerts:
@@ -793,7 +797,7 @@ def test_final_band_item_finishes_before_overnight_replay(conn):
         def __init__(self):
             self.used = False
 
-        def pick(self, _band, _at, gap, feature):
+        def pick(self, _band, _at, gap, feature, **_):
             if self.used or feature or gap < 180:
                 return None
             self.used = True

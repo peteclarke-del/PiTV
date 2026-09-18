@@ -29,7 +29,6 @@ KINDS = ("music", "episode", "movie")
 MAX_BAND_MINUTES = 12 * 60
 MAX_STEPS = 3000              # items one stretch can hold; a runaway loop ends as a caption, not a hang
 FREE_SHORT_ITEMS = 24         # fewer short items than this and a channel leans on its long ones
-FREE_FEATURE_SECONDS = 30 * 60  # ... in any free stretch at least this long
 Placement = tuple[int, dict[str, Any]]   # (start ts, item) for the walk to turn into a slot
 
 
@@ -195,6 +194,7 @@ class Filler:
         self.feature_repeat = feature_repeat
         self.used_today: set[int] = set()
         self.played_today: dict[int, int] = {}
+        self.last_id: int | None = None
         wanted = {b.id: {m["id"] for m in pool if b.wants(m)} for b in bands}
         claimed = {b.id: (wanted[b.id] if b.genres else set()) for b in bands}
         self.reserved = {b.id: set().union(*(c for i, c in claimed.items() if i != b.id), set()) - claimed[b.id]
@@ -206,12 +206,46 @@ class Filler:
         limit = band.max_minutes or self.item_minutes
         return sum(1 for m in self.pool if not is_feature(m, limit) and band.dated(m) is not False)
 
+    def can_play(self, band: Band) -> bool:
+        """Whether the library holds anything at all this band may show, however recently it
+        aired. A band that cannot is no fixed point in the day: the channel's own time runs
+        through its stretch instead of being cut in two at a start time nothing happens at."""
+        strict = self.strict if band.only_matching is None else band.only_matching
+        return any(self._suits(band, m, band.feature, "match" if strict else "any", strict)
+                   for m in self.pool)
+
+    def _suits(self, band: Band, m: dict[str, Any], feature: bool, genres: str, strict: bool) -> bool:
+        """The part of the search that does not depend on the clock: length, kind of item,
+        decades, labels and genre, at one step of the widening."""
+        if is_feature(m, band.max_minutes or self.item_minutes) != feature:
+            return False
+        # A band billed as a concert is a concert slot, not a slot for any unusually long music
+        # file: the index's classification is the authority, or an unclassified compilation
+        # passes for a concert. The channel's own time has no such billing to live up to.
+        if feature and band.feature and band.kinds == ("music",) and not m.get("concert"):
+            return False
+        dated = band.dated(m)
+        if dated is False or (dated is None and (genres == "match" or strict)):
+            return False      # the wrong decade, ever; an unknown year only once widened
+        if strict and not (m.get("genres") and m.get("year")):
+            return False      # this channel takes only what the index has labelled
+        if band.genres:
+            wanted = {g.lower() for g in band.genres}
+            theirs = {str(g).lower() for g in (m.get("genres") or [])}
+            if genres == "match" and wanted.isdisjoint(theirs):
+                return False
+            if genres == "unknown" and theirs and wanted.isdisjoint(theirs):
+                return False    # tagged as something else: not this band's, unless nothing else is left
+        return True
+
     def note(self, item: dict[str, Any], at: int) -> None:
+        self.last_id = item["id"]
         self.used_today.add(item["id"])
         self.played_today[item["id"]] = self.played_today.get(item["id"], 0) + 1
         self.last_placed[item["id"]] = at
 
-    def pick(self, band: Band, at: int, gap: float, feature: bool) -> dict[str, Any] | None:
+    def pick(self, band: Band, at: int, gap: float, feature: bool, fit: float | None = None,
+             exclude: set[int] | None = None) -> dict[str, Any] | None:
         """One item for a band, searched for in widening steps.
 
         The steps are (its genres and decades), (any genre it has no word on), (a genre it did
@@ -222,11 +256,16 @@ class Filler:
 
         A channel (or a single band) set to take only labelled matches keeps the first step
         alone: the item must carry a genre and a year, both of which the band asked for. Such a
-        band shows its own title card when the library has nothing, and that shortfall is what
-        asks pitv_content for more."""
+        band gives its time back when the library has nothing, and that shortfall is what asks
+        pitv_content for more.
+
+        `fit` is the stretch the caller would like filled exactly: an item that ends within ten
+        minutes of it is strongly preferred, so long items are chosen to meet the next fixed
+        point rather than leave a scrap that only the same few short files can plug. The item
+        just played is never chosen again while there is any other, and nothing in `exclude`
+        (what this airing of the band has already shown) is chosen at all."""
         repeat = self.feature_repeat if feature else self.item_repeat
         reserved = self.reserved.get(band.id, set())
-        wanted = {g.lower() for g in band.genres}
         strict = self.strict if band.only_matching is None else band.only_matching
         steps = (("match", False, False), ("unknown", False, False), ("any", False, False),
                  ("match", True, False), ("unknown", True, False), ("any", True, True))
@@ -237,26 +276,12 @@ class Filler:
         for genres, allow_recent, allow_today in steps:
             candidates: list[tuple[float, dict[str, Any]]] = []
             for m in self.pool:
-                if is_feature(m, band.max_minutes or self.item_minutes) != feature or float(m["duration"]) > gap:
+                if float(m["duration"]) > gap or (exclude and m["id"] in exclude):
                     continue
-                # A feature band made solely from music is a concert slot, not merely a slot for
-                # any unusually long music file. The index's concert classification is the
-                # authority; otherwise an unclassified compilation can masquerade as a concert.
-                if feature and band.kinds == ("music",) and not m.get("concert"):
+                if not self._suits(band, m, feature, genres, strict):
                     continue
                 if m["id"] in self.used_today and not allow_today:
                     continue
-                dated = band.dated(m)
-                if dated is False or (dated is None and (genres == "match" or strict)):
-                    continue      # the wrong decade, ever; an unknown year only once widened
-                if strict and not (m.get("genres") and m.get("year")):
-                    continue      # this channel takes only what the index has labelled
-                if wanted:
-                    theirs = {str(g).lower() for g in (m.get("genres") or [])}
-                    if genres == "match" and wanted.isdisjoint(theirs):
-                        continue
-                    if genres == "unknown" and theirs and wanted.isdisjoint(theirs):
-                        continue    # tagged as something else: not this band's, unless nothing else is left
                 last = self.last_placed.get(m["id"])
                 age = (at - last) if last is not None else None
                 if age is not None and age < repeat and not allow_recent:
@@ -266,7 +291,11 @@ class Filler:
                     weight *= 1.0 / (1 + self.played_today.get(m["id"], 0)) ** 2
                 elif m["id"] in reserved:
                     weight *= 0.1
+                if fit is not None and abs(fit - float(m["duration"])) <= 600:
+                    weight *= 8.0
                 candidates.append((weight, m))
+            if len(candidates) > 1:
+                candidates = [c for c in candidates if c[1]["id"] != self.last_id]
             if candidates:
                 return self.rng.choices(candidates, weights=[c[0] for c in candidates], k=1)[0][1]
         return None
@@ -317,7 +346,9 @@ def fill_band(band: Band, start: int, end: int, filler: Filler, hard_end: int | 
     items runs to its timetabled end. A band that finds nothing it may use gives the rest of
     its time back rather than holding a title card over it; the channel fills that time with
     whatever it has, under each item's own name, and only a channel with nothing at all ends up
-    showing a caption. The next band starts when the timetable says, never early; it may start
+    showing a caption. No item plays twice in one airing: a band with three songs plays three
+    songs and gives the rest back, rather than the same three for two hours. The next band
+    starts when the timetable says, never early; it may start
     up to `overrun` seconds late, because a last item that does not quite fit runs over, as it
     did on air, rather than leaving a minute of caption at the end of every band."""
     placed: list[Placement] = []
@@ -330,7 +361,7 @@ def fill_band(band: Band, start: int, end: int, filler: Filler, hard_end: int | 
         # A feature may run a little past its band rather than be dropped for being long.
         gap = ((hard_end - t) if hard_end is not None else (end - t + 20 * 60) if opening_feature
                else (end - t + overrun))
-        item = filler.pick(band, t, gap, feature=opening_feature)
+        item = filler.pick(band, t, gap, feature=opening_feature, exclude={m["id"] for _, m in placed})
         want_feature = False
         if item is None:
             break
@@ -360,8 +391,10 @@ def fill_free(channel_id: int, kinds: tuple[str, ...], decades: tuple[int, ...],
         if t >= end:
             break
         item = None
-        if thin and end - t >= FREE_FEATURE_SECONDS:
-            item = filler.pick(free, t, end - t, feature=True)
+        if thin:
+            # Long items carry a thin channel, each chosen to meet the end of the stretch where
+            # one can, and the last of them may run over as any last item may.
+            item = filler.pick(free, t, end - t + overrun, feature=True, fit=end - t)
         if item is None:
             item = filler.pick(free, t, end - t + overrun, feature=False)
         if item is None:
