@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 from . import tool_client
 from .db import DEFAULT_SETTINGS, genre_list, get_setting, now_ts, rows_to_dicts, tx
 from .scheduler import bands
-from .scheduler.rules import local_ts, tz_of
+from .scheduler.library import USABLE
+from .scheduler.rules import tz_of
 
 log = logging.getLogger("pitv.wanted")
 
@@ -57,63 +58,81 @@ BAND_ITEM_KINDS = {"music": ("music",), "episode": ("episode",), "movie": ("movi
 
 
 def band_needs(conn: sqlite3.Connection, settings: dict[str, Any]) -> list[dict[str, Any]]:
-    """Bands the library cannot fill, the worst short of material first.
+    """Bands the library cannot fill, the next to air first.
 
     A band wants short items of its own genres and decades: a two hour "Disco Lunch" needs
     perhaps thirty of them. A share of full-length concert films satisfies none of that, so the
     band falls back to whatever fits and plays the same few films all day. This counts what the
     library actually holds for each band and reports the shortfall.
 
+    When a band runs, and for how long, comes from the same timetable the scheduler places it
+    by (`bands.timetable`), and whether an item is one the band could use is the band's own
+    test (`Band.wants`), so this can never disagree with what the build does.
+
     What a band asks for is configuration, not something this module knows: the channel says
     what pitv_content should fetch for it (`fetch_kind`, for instance shows, cartoons, sport or
     music), and a band may name its own instead. A channel that asks for nothing is left alone,
     however thin its bands, because its material comes from somewhere else."""
-    default_minutes = int(settings.get("band_item_max_minutes", 25))
+    default_minutes = int(settings.get("band_item_max_minutes", bands.ITEM_MINUTES))
     channels = {c["id"]: c for c in rows_to_dicts(conn.execute("SELECT * FROM channels WHERE enabled = 1"))}
     now = now_ts()
+    tz = tz_of(conn)
     out = []
     for channel_id, band_list in bands.load(conn).items():
         channel = channels.get(channel_id)
         if channel is None:
             continue
+        airings = _airings(band_list, settings, now, tz)
         for band in band_list:
             kind = band.fetch or (channel.get("fetch_kind") or "")
             item_kinds = sorted({k for b in band.kinds for k in BAND_ITEM_KINDS.get(b, ())})
-            if not kind or not item_kinds:
+            mine = airings.get(band.id, [])
+            if not kind or not item_kinds or not mine:
                 continue
             minutes = band.max_minutes or int(channel.get("band_item_max_minutes") or default_minutes)
-            duration = _band_duration(band, band_list, str(settings.get("day_start") or "08:00"))
-            items_per_airing = max(1, (duration + BAND_ITEM_MINUTES - 1) // BAND_ITEM_MINUTES)
-            repeat_hours = channel.get("band_item_repeat_hours")
-            if repeat_hours is None:
-                repeat_hours = settings.get("band_item_repeat_hours", 36)
-            # One airing's worth guarantees that a daily band repeats itself tomorrow even
-            # though its configured repeat gap says it should not. Prepare enough distinct
-            # material for every occurrence inside that gap. A weekly band still needs one set.
-            want = items_per_airing * _airings_within(int(repeat_hours), band)
-            have = _matching_items(conn, item_kinds, band.genres, band.decades, minutes * 60)
+            if band.feature:
+                # A band billed as a concert wants one long item an airing, not a run of short
+                # ones, and may not repeat it within the feature repeat gap.
+                repeat_days = channel.get("band_feature_repeat_days")
+                if repeat_days is None:
+                    repeat_days = settings.get("band_feature_repeat_days", 14)
+                want = _airings_within(int(repeat_days) * 24, band)
+                have = _matching_items(conn, band, item_kinds, minutes * 60, feature=True)
+            else:
+                longest = max(end - start for start, end in mine) // 60
+                items_per_airing = max(1, (longest + BAND_ITEM_MINUTES - 1) // BAND_ITEM_MINUTES)
+                repeat_hours = channel.get("band_item_repeat_hours")
+                if repeat_hours is None:
+                    repeat_hours = settings.get("band_item_repeat_hours", 36)
+                # One airing's worth guarantees that a daily band repeats itself tomorrow even
+                # though its configured repeat gap says it should not. Prepare enough distinct
+                # material for every occurrence inside that gap. A weekly band still needs one set.
+                want = items_per_airing * _airings_within(int(repeat_hours), band)
+                have = _matching_items(conn, band, item_kinds, minutes * 60)
             if have < want and now - (band.last_fetch_at or 0) >= BAND_FETCH_GAP:
                 out.append({"band": band, "channel": channel, "kind": kind, "have": have, "want": want,
-                            "minutes": minutes})
+                            "minutes": minutes, "next_ts": min(start for start, _ in mine)})
     # Preparation follows the timetable: the next band to air is more urgent than a larger
-    # shortfall several hours later.  The shortfall breaks ties between simultaneous bands.
-    return sorted(out, key=lambda n: (_next_band_ts(n["band"], settings, now, tz_of(conn)),
-                                     n["have"] - n["want"]))
+    # shortfall several hours later. The shortfall breaks ties between simultaneous bands.
+    return sorted(out, key=lambda n: (n["next_ts"], n["have"] - n["want"]))
 
 
-def _next_band_ts(band: bands.Band, settings: dict[str, Any], now: int, tz) -> int:
-    """Next wall-clock occurrence of a band, respecting broadcast-day weekday rules."""
-    today = datetime.fromtimestamp(now, tz).date()
-    boundary = _hhmm_minutes(str(settings.get("day_start") or "08:00"))
-    for offset in range(-1, 8):
-        broadcast_day = today + timedelta(days=offset)
-        if not band.on(broadcast_day.weekday()):
-            continue
-        calendar_day = broadcast_day + timedelta(days=1) if _hhmm_minutes(band.start) < boundary else broadcast_day
-        at = local_ts(calendar_day, band.start, tz)
-        if at > now:
-            return at
-    return now + 8 * 86400
+def _airings(band_list: list[bands.Band], settings: dict[str, Any], now: int, tz: Any
+             ) -> dict[int, list[tuple[int, int]]]:
+    """When each band next airs over the coming week, as (start, end) per band id, from the
+    scheduler's own timetable, so a band that starts before the day does or runs past
+    closedown is measured exactly as it will be placed."""
+    from .scheduler.rules import broadcast_day_for, day_bounds, hhmm_to_minutes
+    today = broadcast_day_for(now, settings, tz)
+    day_start_min = hhmm_to_minutes(str(settings.get("day_start") or "08:00"))
+    out: dict[int, list[tuple[int, int]]] = {}
+    for offset in range(8):
+        day = today + timedelta(days=offset)
+        day_start, day_end, next_day_start = day_bounds(day, settings, tz)
+        for start, end, band in bands.timetable(band_list, day, day_start, day_end, next_day_start, day_start_min, tz):
+            if end > now:
+                out.setdefault(band.id, []).append((max(start, now), end))
+    return out
 
 
 def _airings_within(repeat_hours: int, band: bands.Band) -> int:
@@ -133,53 +152,19 @@ def _need_key(need: dict[str, Any]) -> tuple[Any, ...]:
             tuple(sorted(band.decades)), need["minutes"])
 
 
-def _band_duration(band: bands.Band, all_bands: list[bands.Band], day_start: str) -> int:
-    """Longest daily window this band owns, including an implicit ``to next`` duration.
-
-    Day-specific bands can have a different successor on different weekdays, so preparation
-    uses the longest applicable window. Explicit lengths are capped at the next active band in
-    the same way as the scheduler; the final implicit band runs to the broadcast-day boundary.
-    """
-    boundary = _hhmm_minutes(day_start)
-
-    def logical(value: str) -> int:
-        minute = _hhmm_minutes(value)
-        return minute + (1440 if minute < boundary else 0)
-
-    durations = []
-    for weekday in range(7):
-        active = sorted((b for b in all_bands if b.on(weekday)), key=lambda b: logical(b.start))
-        if band not in active:
-            continue
-        index = active.index(band)
-        start = logical(band.start)
-        next_start = logical(active[index + 1].start) if index + 1 < len(active) else boundary + 1440
-        end = start + band.minutes if band.minutes is not None else next_start
-        durations.append(max(1, min(end, next_start) - start))
-    return max(durations, default=band.minutes or 60)
-
-
-def _hhmm_minutes(value: str) -> int:
-    hour, minute = value.split(":", 1)
-    return int(hour) * 60 + int(minute)
-
-
-def _matching_items(conn: sqlite3.Connection, kinds: list[str], genres: tuple[str, ...],
-                    decades: tuple[int, ...], limit_seconds: int) -> int:
-    """How many items in the library a band could actually use."""
+def _matching_items(conn: sqlite3.Connection, band: bands.Band, kinds: list[str], limit_seconds: int,
+                    feature: bool = False) -> int:
+    """How many items in the library the band could use: of its kinds, a feature or one of
+    several as the band wants, and what the band itself would take at its first, exact step
+    (its genres, and a known year in its decades)."""
     rows = conn.execute(
-        f"SELECT genres, year FROM media WHERE kind IN ({','.join('?' * len(kinds))})"
-        " AND missing = 0 AND excluded = 0 AND duration > 0 AND duration <= ?",
-        (*kinds, limit_seconds)).fetchall()
-    wanted = {g.lower() for g in genres}
-    count = 0
-    for r in rows:
-        if decades and ((r["year"] or 0) // 10) * 10 not in decades:
-            continue
-        if wanted and wanted.isdisjoint(g.lower() for g in genre_list(r["genres"])):
-            continue
-        count += 1
-    return count
+        f"SELECT id, genres, year, duration, concert FROM media WHERE kind IN ({','.join('?' * len(kinds))})"
+        f" AND {USABLE} AND duration > 0", tuple(kinds)).fetchall()
+    minutes = max(1, limit_seconds // 60)
+    return sum(1 for r in rows
+               if bands.is_feature({"duration": r["duration"], "concert": r["concert"]}, minutes) == feature
+               and band.wants({"genres": genre_list(r["genres"]), "year": r["year"]})
+               and (not band.decades or band.dated({"year": r["year"]}) is True))
 
 
 def request_band_material(conn: sqlite3.Connection, settings: dict[str, Any]) -> dict[str, Any]:

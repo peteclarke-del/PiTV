@@ -17,10 +17,17 @@ from starlette.concurrency import run_in_threadpool
 
 from ... import db as dbm
 from ...db import all_settings, enabled_channels, get_setting, now_ts, set_setting, tx
-from ...guide import SLOT_QUERY, block_entry, collapse_blocks, next_programmes, slot_at
+from ...guide import (
+    SLOT_QUERY,
+    block_entry,
+    collapse_blocks,
+    feature_seconds,
+    next_programmes,
+    slot_at,
+)
 from ...player.input import ACTIONS
-from ...scheduler.build import parse_day
 from ...scheduler.rules import broadcast_day_for, day_bounds, tz_of
+from ...scheduler.slots import parse_day
 from .. import auth
 from ..events import format_sse
 from .deps import get_conn, player_public, slot_public
@@ -78,7 +85,7 @@ def api_schedule(conn: sqlite3.Connection = Depends(get_conn), start: int | None
     q += " ORDER BY s.channel_id, s.start_ts"
     slots = [slot_public(r) for r in conn.execute(q, params)]
     if not bands:
-        slots = collapse_blocks(slots)
+        slots = collapse_blocks(slots, feature_seconds(conn))
     return {"ts": now, "start": start, "end": end, "channels": enabled_channels(conn), "slots": slots}
 
 
@@ -97,7 +104,7 @@ def api_schedule_day(day: str, conn: sqlite3.Connection = Depends(get_conn), ads
     q += " ORDER BY s.channel_id, s.start_ts"
     slots = [slot_public(r) for r in conn.execute(q, (day,))]
     if not bands:
-        slots = collapse_blocks(slots)
+        slots = collapse_blocks(slots, feature_seconds(conn))
     return {"day": day, "day_start": day_start, "day_end": day_end, "next_day_start": next_start,
             "channels": enabled_channels(conn), "slots": slots}
 

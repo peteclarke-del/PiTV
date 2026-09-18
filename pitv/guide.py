@@ -10,6 +10,9 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from .db import get_setting
+from .scheduler.bands import ITEM_MINUTES
+
 # Slot columns plus the media columns either guide or the player needs. `media_kind` keeps the
 # slot's own `kind` visible, and `media_path` names the original as distinct from `cache_path`.
 SLOT_QUERY = ("SELECT s.*, m.path AS media_path, m.cache_path, m.cache_vcodec, m.cache_interlaced, m.origin,"
@@ -34,7 +37,7 @@ def next_programmes(conn: sqlite3.Connection, channel_id: int, after: int, n: in
     """The next `n` guide entries (programmes only, bands merged) starting at or after `after`."""
     rows = conn.execute(SLOT_QUERY + " WHERE s.channel_id = ? AND s.start_ts >= ? AND s.kind = 'programme'"
                         " ORDER BY s.start_ts LIMIT ?", (channel_id, after, n * _SLOTS_PER_ENTRY)).fetchall()
-    return collapse_blocks([dict(r) for r in rows])[:n]
+    return collapse_blocks([dict(r) for r in rows], feature_seconds(conn))[:n]
 
 
 def block_entry(conn: sqlite3.Connection, slot: dict[str, Any], ts: int) -> dict[str, Any] | None:
@@ -45,7 +48,7 @@ def block_entry(conn: sqlite3.Connection, slot: dict[str, Any], ts: int) -> dict
     rows = conn.execute(SLOT_QUERY + " WHERE s.channel_id = ? AND s.block = ? AND s.replay = ?"
                         " AND s.end_ts > ? AND s.start_ts < ? ORDER BY s.start_ts",
                         (slot["channel_id"], slot["block"], slot["replay"], ts - 12 * 3600, ts + 12 * 3600)).fetchall()
-    for entry in collapse_blocks([dict(r) for r in rows]):
+    for entry in collapse_blocks([dict(r) for r in rows], feature_seconds(conn)):
         if entry["start_ts"] <= ts < entry["end_ts"]:
             entry["video_title"] = slot["title"]
             entry["video_id"] = slot["id"]
@@ -53,10 +56,14 @@ def block_entry(conn: sqlite3.Connection, slot: dict[str, Any], ts: int) -> dict
     return None
 
 
-FEATURE_SECONDS = 20 * 60     # a band item this long is billed by its own name
+def feature_seconds(conn: sqlite3.Connection) -> int:
+    """The length at which a band item is billed by its own name: the same boundary the
+    scheduler places band items by (`band_item_max_minutes`), so the guide bills by the rule
+    the builder used, and a seventeen minute item is a feature to both or to neither."""
+    return 60 * int(get_setting(conn, "band_item_max_minutes", ITEM_MINUTES) or ITEM_MINUTES)
 
 
-def collapse_blocks(slots: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def collapse_blocks(slots: list[dict[str, Any]], feature: int = ITEM_MINUTES * 60) -> list[dict[str, Any]]:
     """Merge consecutive slots that share a `block` into one guide entry.
 
     A band is one programme in the guide, so a two hour "Disco Lunch" is a single entry with the
@@ -91,7 +98,7 @@ def collapse_blocks(slots: list[dict[str, Any]]) -> list[dict[str, Any]]:
         # A band led by something long is billed as that: a concert or a film inside a two hour
         # stretch is what the viewer is being offered, and "Concert" tells them nothing. Either
         # it fills half the band, or it is long enough to be a programme in its own right.
-        leads = bool(title) and (seconds * 2 >= entry["end_ts"] - entry["start_ts"] or seconds >= FEATURE_SECONDS)
+        leads = bool(title) and (seconds * 2 >= entry["end_ts"] - entry["start_ts"] or seconds >= feature)
         entry["title"] = title if leads else entry["block"]
         entry["subtitle"] = entry["block"] if leads else ""
     return out

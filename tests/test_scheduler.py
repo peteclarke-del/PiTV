@@ -25,7 +25,6 @@ from pitv.scheduler.rules import (
     tz_of,
 )
 from pitv.scheduler.slots import Slot, parse_day, slot_titles
-from pitv.wanted import _band_duration
 
 
 @pytest.fixture(scope="module")
@@ -75,14 +74,22 @@ def test_music_feature_requires_concert_classification():
     assert filler.pick(band, 0, 2 * 3600, feature=True) is None
 
 
-def test_band_shortfall_uses_its_real_timetable_window():
+def test_the_timetable_is_the_one_the_scheduler_places_by():
+    """A band without a length runs to the next band or to closedown; one with a length keeps
+    it past midnight. The top-up measures a band by this same timetable, so what it asks for is
+    what the band will actually play."""
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo("Europe/London")
     morning = bands.Band(1, 5, "Morning", "08:00", None, (), ("music",), (), (), False)
     lunch = bands.Band(2, 5, "Lunch", "10:00", None, (), ("music",), (), (), False)
     late = bands.Band(3, 5, "Late", "23:30", 120, (), ("music",), (), (), False)
-    timetable = [morning, lunch, late]
-    assert _band_duration(morning, timetable, "08:00") == 120
-    assert _band_duration(lunch, timetable, "08:00") == 13 * 60 + 30
-    assert _band_duration(late, timetable, "08:00") == 120
+    day = parse_day("2026-09-14")
+    day_start, day_end, next_start = day_bounds(day, dbm.DEFAULT_SETTINGS, tz)
+    placed = {b.name: (start, end) for start, end, b in
+              bands.timetable([morning, lunch, late], day, day_start, day_end, next_start, 480, tz)}
+    minutes = {name: (end - start) // 60 for name, (start, end) in placed.items()}
+    assert minutes == {"Morning": 120, "Lunch": 13 * 60 + 30, "Late": 120}
+    assert placed["Late"][1] > day_end, "a band that starts before closedown keeps its length"
 
 
 def test_fresh_rebuild_discards_derived_state_but_keeps_inputs(tmp_path):
