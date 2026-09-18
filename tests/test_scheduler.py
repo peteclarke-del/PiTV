@@ -42,9 +42,11 @@ def _programmes(conn):
                         " ORDER BY s.channel_id, s.start_ts").fetchall()
 
 
-def test_daily_show_limit_survives_preference_relaxation(tmp_path):
+def test_daily_show_limit_holds_until_the_rules_relax(tmp_path):
+    """A series airs at most its daily limit while anything else fits; when nothing does, a
+    further airing beats a holding card (docs/PLAN.md section 4.5), with the next episode."""
     c = make_library(tmp_path / "daily-cap", max_episodes=3)["conn"]
-    now = local_ts(parse_day("2026-09-14"), "12:00", tz_of(c))
+    now = local_ts(parse_day("2026-09-14"), "21:00", tz_of(c))     # its one series is post-watershed
     with dbm.tx(c):
         c.execute("UPDATE channels SET enabled=0")
         channel_id = c.execute("SELECT id FROM channels WHERE number=1").fetchone()[0]
@@ -55,10 +57,12 @@ def test_daily_show_limit_survives_preference_relaxation(tmp_path):
     builder = Builder(c, now=now)
     channel = next(ch for ch in builder.channels if ch["id"] == channel_id)
     show = builder.library.free_shows[channel_id][0]
-    choice = builder.select.programme(channel, random.Random(1), now, 3600, "show",
-                                       {show.id: builder.settings["show_daily_limit"]}, None,
-                                       set(), relax=2)
-    assert choice is None
+    gap = 2 * 3600
+    assert builder.select.programme(channel, random.Random(1), now, gap, "show", {}, None, set()) is not None
+    capped = {show.id: builder.settings["show_daily_limit"]}
+    assert builder.select.programme(channel, random.Random(1), now, gap, "show", capped, None, set()) is None
+    choice = builder.select.programme(channel, random.Random(1), now, gap, "show", capped, None, set(), relax=1)
+    assert choice is not None and choice[1] is show and choice[0] == show.next_episode()
     c.close()
 
 
@@ -118,9 +122,11 @@ def test_fresh_rebuild_discards_derived_state_but_keeps_inputs(tmp_path):
     assert c.execute("SELECT COUNT(*) FROM history").fetchone()[0] == 0
     assert c.execute("SELECT COUNT(*) FROM schedule WHERE locked = 1").fetchone()[0] == 0
     assert c.execute("SELECT COUNT(DISTINCT day || ':' || channel_id) FROM schedule").fetchone()[0] == 12
-    # Fresh means no queued, delivered or manually requested work survives into the new pipeline.
-    assert result["cleared_wanted"] >= 3 and result["kept_wanted"] == 0
-    assert not c.execute("SELECT 1 FROM wanted WHERE id IN (?, ?, ?)", (old, done, manual)).fetchone()
+    # Requests the scheduler raised for itself go with the schedule they served; a request a
+    # person made is an input and stays.
+    assert result["cleared_wanted"] == 2 and result["kept_wanted"] == 1
+    assert not c.execute("SELECT 1 FROM wanted WHERE id IN (?, ?)", (old, done)).fetchone()
+    assert c.execute("SELECT status FROM wanted WHERE id = ?", (manual,)).fetchone()[0] == "queued"
     assert not c.execute("SELECT 1 FROM show_cursor").fetchone()
     assert not c.execute("SELECT 1 FROM band WHERE last_fetch_at IS NOT NULL").fetchone()
     assert c.execute("SELECT COUNT(*) FROM run_log").fetchone()[0] <= 1   # only this build's own row
@@ -315,21 +321,38 @@ def test_music_channel_day(conn):
     rows = conn.execute("SELECT s.*, m.concert, m.kind AS mkind FROM schedule s JOIN media m ON m.id = s.media_id"
                         " WHERE s.channel_id = ? AND s.day = '2026-09-16' AND s.replay = 0 ORDER BY s.start_ts", (music["id"],)).fetchall()
     assert rows and all(r["mkind"] == "music" for r in rows)
-    assert all(r["block"] for r in rows)
+    tz = tz_of(conn)
+    day = parse_day("2026-09-16")
+    configured = conn.execute("SELECT name, start, fill FROM band WHERE channel_id = ? ORDER BY start",
+                              (music["id"],)).fetchall()
+    nominal = [(local_ts(day, b["start"], tz), b) for b in configured]
+
+    def band_at(ts):
+        return nominal[max(i for i, (at, _) in enumerate(nominal) if at <= ts)][1]
+
+    def pool(band):
+        decades = json.loads(band["fill"]).get("decades") or []
+        years = " OR ".join(f"year BETWEEN {d} AND {d + 9}" for d in decades) or "1"
+        return conn.execute(f"SELECT COUNT(*) FROM media WHERE kind = 'music' AND concert = 0 AND ({years})").fetchone()[0]
+
+    # A band of short items carries its name. A band whose decades the library cannot supply
+    # gives its time back to the channel, and so does a concert band once its one concert has
+    # played; that time is billed under each item's own name, never under a band it is not in.
+    for r in rows:
+        band = band_at(r["start_ts"])
+        if r["block"]:
+            assert r["block"] == band["name"]
+        else:
+            assert json.loads(band["fill"]).get("feature") or not pool(band), \
+                f"{r['title']} unbilled inside {band['name']}"
     concerts = [r for r in rows if r["concert"]]
     assert len(concerts) == 2, [r["title"] for r in concerts]
-    # A feature is the introduction to its stretch, not a demand to pad the rest with unrelated
-    # short clips. When it ends early, the next band starts there and extends back to its nominal
-    # start time.
-    configured = conn.execute("SELECT name, start FROM band WHERE channel_id = ? ORDER BY start",
-                              (music["id"],)).fetchall()
-    tz = tz_of(conn)
     for concert in concerts:
-        nominal = [(local_ts(parse_day("2026-09-16"), b["start"], tz), b["name"]) for b in configured]
-        current = max(i for i, (at, _) in enumerate(nominal) if at <= concert["start_ts"])
-        if current + 1 < len(nominal) and concert["end_ts"] < nominal[current + 1][0]:
-            following = next(r for r in rows if r["start_ts"] == concert["end_ts"])
-            assert following["block"] == nominal[current + 1][1]
+        band = band_at(concert["start_ts"])
+        assert json.loads(band["fill"]).get("feature") and concert["block"] == band["name"]
+        assert concert["start_ts"] == local_ts(day, band["start"], tz), "the concert opens its band"
+        rest = [r for r in rows if r["start_ts"] >= concert["end_ts"] and band_at(r["start_ts"]) is band]
+        assert not any(r["block"] for r in rest), "one concert, then the channel's own time"
     # Contiguous from 08:00 to closedown. Every slot counts, not only those with a file: a band
     # that runs out of videos it may use closes its own stretch with a caption.
     day = conn.execute("SELECT start_ts, end_ts FROM schedule WHERE channel_id = ? AND day = '2026-09-16'"
@@ -342,7 +365,7 @@ def test_music_channel_day(conn):
     ids = [r["media_id"] for r in rows]
     eligible = conn.execute("SELECT COUNT(*) FROM media WHERE kind = 'music' AND concert = 0 AND year BETWEEN 1970 AND 2009").fetchone()[0]
     assert len(set(ids)) >= min(eligible, len(ids)) - 2
-    for name in {r["block"] for r in rows}:
+    for name in {r["block"] for r in rows if r["block"]}:
         band = [r for r in rows if r["block"] == name and not r["concert"]]
         if not band:
             continue
@@ -367,7 +390,12 @@ def test_guide_collapses_music_blocks(conn):
     music = _channel(conn, 5)
     rows = conn.execute("SELECT * FROM schedule WHERE channel_id = ? AND day = '2026-09-16' AND replay = 0 ORDER BY start_ts", (music["id"],)).fetchall()
     merged = collapse_blocks([dict(r) for r in rows])
-    assert 5 <= len(merged) <= 12
+    # Every stretch a band filled is one entry; time a band gave back to the channel is billed
+    # item by item, as it is on any other channel.
+    stretches = sum(1 for i, r in enumerate(rows) if r["block"] and (i == 0 or rows[i - 1]["block"] != r["block"]))
+    assert stretches >= 5
+    assert sum(1 for e in merged if e.get("block")) == stretches
+    assert sum(1 for e in merged if not e.get("block")) == sum(1 for r in rows if not r["block"])
     assert merged[0]["title"] == "Seventies Breakfast" and merged[0]["items"] > 1
     # the shared lookups (player OSD and web) agree with the raw merge
     ts = rows[3]["start_ts"] + 10
@@ -376,8 +404,11 @@ def test_guide_collapses_music_blocks(conn):
     entry = block_entry(conn, slot, ts)
     assert entry["title"] == "Seventies Breakfast" and entry["video_title"] == slot["title"] and entry["video_id"] == slot["id"]
     assert entry["start_ts"] == merged[0]["start_ts"] and entry["end_ts"] == merged[0]["end_ts"]
+    # What follows is the next band, past the caption that closes a band whose last item did
+    # not fit; captions are not programmes.
+    following = next(e for e in merged[1:] if e["kind"] == "programme")
     nxt = next_programmes(conn, music["id"], entry["end_ts"], 2)
-    assert len(nxt) == 2 and nxt[0]["start_ts"] == entry["end_ts"] and nxt[0]["title"] == merged[1]["title"]
+    assert len(nxt) == 2 and nxt[0]["start_ts"] == following["start_ts"] and nxt[0]["title"] == following["title"]
 
 
 def test_slot_titles():
@@ -709,46 +740,33 @@ def test_a_band_is_a_titled_stretch_of_any_channels_day(tmp_path):
     outside = conn.execute("SELECT COUNT(*) FROM schedule WHERE channel_id = ? AND replay = 0 AND block = 'Teatime Toons'"
                            " AND (start_ts < ? OR start_ts >= ?)", (one, start, end)).fetchone()[0]
     assert outside == 0, "a band stays inside its own stretch"
-    # The music channel: no pattern, so everything it shows comes from its bands.
-    music_slots = conn.execute("SELECT s.block, m.kind FROM schedule s LEFT JOIN media m ON m.id = s.media_id"
+    # The music channel: no pattern, so its day is its bands, and the only unbilled time is
+    # what a band gave back (nothing of its decades, or its one concert over). The small hours
+    # are more of the channel's own material, never a replay of the day.
+    music_slots = conn.execute("SELECT s.block, s.start_ts, m.kind FROM schedule s JOIN media m ON m.id = s.media_id"
                                " WHERE s.channel_id = ? AND s.replay = 0 AND s.kind = 'programme'", (music,)).fetchall()
-    assert music_slots and all(s["block"] for s in music_slots), "every music slot belongs to a band"
-    assert {s["kind"] for s in music_slots} == {"music"}
-    overnight = conn.execute(
-        "SELECT block FROM schedule WHERE channel_id = ? AND replay = 1 AND kind != 'filler'",
-        (music,),
-    ).fetchall()
-    assert overnight and all(s["block"] for s in overnight), (
-        "overnight must replay only labelled bands, not old free material between them"
-    )
-    # Each ordinary band runs at its own time. A band after a feature may begin early when the
-    # feature ends; otherwise a day of bands must not collapse into one all-day block.
+    assert music_slots and {s["kind"] for s in music_slots} == {"music"}
+    assert any(s["block"] for s in music_slots)
+    overnight = conn.execute("SELECT s.block, m.kind FROM schedule s JOIN media m ON m.id = s.media_id"
+                             " WHERE s.channel_id = ? AND s.replay = 1", (music,)).fetchall()
+    assert overnight and {s["kind"] for s in overnight} == {"music"} and not any(s["block"] for s in overnight)
+    # Each band runs at its own time: a day of bands must not collapse into one all-day block,
+    # and nothing is billed under a band outside that band's stretch.
     windows = [(local_ts(day, r["start"], tz), r["name"])
                for r in conn.execute("SELECT name, start FROM band WHERE channel_id = ? ORDER BY start", (music,))
                if local_ts(day, r["start"], tz) >= local_ts(day, "08:00", tz)]
-    placed = conn.execute("SELECT start_ts, block FROM schedule WHERE channel_id = ? AND replay = 0"
-                          " AND block IS NOT NULL ORDER BY start_ts", (music,)).fetchall()
+    placed = [s for s in music_slots if s["block"]]
     assert len({s["block"] for s in placed}) > 1, "one band must not take the whole day"
-    handoffs = []
-    feature_slots = conn.execute("SELECT s.start_ts, s.end_ts, s.block FROM schedule s JOIN media m ON m.id=s.media_id"
-                                 " WHERE s.channel_id = ? AND s.replay = 0 AND m.concert = 1 ORDER BY s.start_ts",
-                                 (music,)).fetchall()
-    for feature in feature_slots:
-        current = max((i for i, (at, _) in enumerate(windows) if at <= feature["start_ts"]), default=-1)
-        if 0 <= current < len(windows) - 1 and feature["end_ts"] < windows[current + 1][0]:
-            handoffs.append((feature["end_ts"], windows[current + 1][0], windows[current + 1][1]))
     for slot in placed:
         due = [name for at, name in windows if at <= slot["start_ts"]]
-        early = [name for start, end, name in handoffs if start <= slot["start_ts"] < end]
-        expected = early[-1] if early else (due[-1] if due else None)
-        assert slot["block"] == expected, f"{slot['block']} played in {expected or 'no'} band's time"
+        assert slot["block"] == due[-1], f"{slot['block']} played in {due[-1]} band's time"
 
 
 def test_final_band_item_finishes_before_overnight_replay(conn):
     """Midnight is a closedown boundary, not a point where a band item is cut off."""
     music = dbm.row_to_dict(_channel(conn, 5))     # the builder is given channels as dicts
     builder = Builder(conn, seed=1)
-    band = next(b for b in builder.bands[music["id"]] if not b.feature)
+    band = next(b for b in builder.library.bands[music["id"]] if not b.feature)
 
     class OneItem:
         item_minutes = 15
@@ -907,8 +925,6 @@ def test_remote_cutoff_and_weekly_series_cadence_are_hour_accurate():
     assert policy.external_weight(now + 23 * 3600) < policy.external_weight(now + 23 * 3600 + 1)
     assert policy.cadence_factor(now, now + 24 * 3600) < 0.1
     assert policy.cadence_factor(now, now + 7 * 86400) == dbm.all_settings(c)["series_cadence_bonus"]
-    assert not policy.next_episode_due(now, now + 6 * 86400)
-    assert policy.next_episode_due(now, now + 7 * 86400 - 12 * 3600)
     c.close()
 
 
@@ -920,9 +936,9 @@ def test_external_repeat_reuses_request_without_advancing_episode():
     entry = {"id": -99, "lineup_id": 99, "kind": "episode", "title": "Remote Docs",
              "duration": 1800, "year": 1995, "genres": ["Documentary"], "next_number": 4,
              "spare_wanted": []}
-    first = builder._external_slot(channel, "2026-09-14", builder.now, entry)
-    repeat = builder._external_slot(channel, "2026-09-14", builder.now + 3600,
-                                    {**entry, "_external_repeat": True})
+    first = builder.runs.external_slot(channel["id"], "2026-09-14", builder.now, entry)
+    repeat = builder.runs.external_slot(channel["id"], "2026-09-14", builder.now + 3600,
+                                        {**entry, "_external_repeat": True})
     assert first.wanted_spec["episode"] == repeat.wanted_spec["episode"] == 4
     assert entry["next_number"] == 5
     assert first.replay == 0 and repeat.replay == 1
@@ -939,11 +955,14 @@ def test_a_band_short_of_material_asks_for_more(tmp_path, monkeypatch):
     toons = conn.execute("SELECT id FROM channels WHERE content = 'cartoons'").fetchone()["id"]
     with dbm.tx(conn):
         conn.execute("UPDATE channels SET fetch_kind = 'cartoons' WHERE id = ?", (toons,))
+        # The fixture's music channel is short of material too and airs first. A channel that
+        # asks for nothing is left alone however thin its bands, which leaves the cartoons.
+        conn.execute("UPDATE channels SET fetch_kind = '' WHERE content = 'music'")
         _band_row(conn, toons, "Saturday Morning", "09:00", 120, ["episode"],
                   genres=["stop motion"], decades=[1980])
     settings = dbm.all_settings(conn)
     needs = wanted.band_needs(conn, settings)
-    assert [n["band"].name for n in needs if n["channel"]["id"] == toons] == ["Saturday Morning"]
+    assert [(n["channel"]["id"], n["band"].name) for n in needs] == [(toons, "Saturday Morning")]
     need = next(n for n in needs if n["channel"]["id"] == toons)
     assert need["want"] == 60, "a daily two-hour band needs two days for its 36-hour repeat gap"
 

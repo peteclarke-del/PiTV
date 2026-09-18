@@ -407,10 +407,8 @@ class Builder:
             slot = self._programme_slot(channel, day_str, w.t, item, show)
             w.emit(slot)
             if show is not None:
-                series_repeat = bool(item.get("_series_repeat"))
-                if not series_repeat:
-                    show.advance(w.t)
-                    self.library.show_last_placed[show.id] = w.t
+                show.advance(w.t)
+                self.library.show_last_placed[show.id] = w.t
                 w.placed_today[show.id] = w.placed_today.get(show.id, 0) + 1
                 w.last_show_id = show.id
             else:
@@ -420,8 +418,7 @@ class Builder:
             w.last_programme_year = item.get("year")
             w.t = slot.end_ts
             if show is not None:
-                more, w.t = self.runs.series_run(channel, day_str, show, item, slot, gap - slot.duration,
-                                                 repeating=bool(item.get("_series_repeat")))
+                more, w.t = self.runs.series_run(channel, day_str, show, slot, gap - slot.duration)
                 for extra in more:
                     w.emit(extra)
 

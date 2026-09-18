@@ -71,13 +71,6 @@ class Show:
             return self.episodes[self.held[0]]
         return self.episodes[self.next_index % len(self.episodes)]
 
-    def previous_episode(self) -> dict[str, Any] | None:
-        """The episode most recently advanced past, used for an explicitly marked repeat while
-        the following episode waits for its weekly slot."""
-        if not self.episodes or (self.next_index == 0 and self.resting_until is None):
-            return None
-        return self.episodes[(self.next_index - 1) % len(self.episodes)]
-
     def advance(self, ts: int) -> None:
         """Move past the episode placed at `ts`; after the last one the series rests."""
         if self.held:
@@ -88,23 +81,28 @@ class Show:
             self.next_index = 0
             self.resting_until = ts + self.rest_weeks * WEEK
 
-    def take_short(self, max_seconds: float, look_ahead: int = 6) -> dict[str, Any] | None:
+    def take_short(self, max_seconds: float, room: float, look_ahead: int = 6) -> dict[str, Any] | None:
         """The next episode short enough to join a run, passing over longer ones.
 
         A series of five minute cartoons often carries the odd full-length special, and stopping
         the run at the first of those leaves a five minute programme on its own. Those are held
         back instead and offered first the next time the series is placed, so nothing drops out
-        of the rotation. Works forward from the cursor and never touches what is already held."""
+        of the rotation. An episode that is short enough but does not fit the `room` left before
+        a fixed boundary is different: it ends the run and stays next in line, so episodes keep
+        their order. Works forward from the cursor and never touches what is already held."""
         if not self.episodes:
             return None
         for _ in range(min(look_ahead, len(self.episodes))):
             index = self.next_index % len(self.episodes)
-            self.next_index = index + 1
             episode = self.episodes[index]
             if seconds(episode) < max_seconds:
+                if seconds(episode) > room:
+                    return None
+                self.next_index = (index + 1) % len(self.episodes)
                 return episode
             if index not in self.held:
                 self.held.append(index)
+            self.next_index = index + 1
             if self.next_index >= len(self.episodes):
                 self.next_index = 0
                 break        # a run does not carry the series round into a second pass

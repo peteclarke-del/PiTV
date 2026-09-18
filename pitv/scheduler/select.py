@@ -199,19 +199,14 @@ class Selector:
                 if resting and relax < 2:
                     continue
                 times_today = placed_today.get(show.id, 0)
-                # Relaxing daypart preferences must never turn a thin channel into the same
-                # episode all day.  The daily series cap is a variety rule, not a preference.
-                if times_today >= daily_limit:
+                # The daily cap is the first rule to give when nothing else fits: a channel with
+                # a few series airs one a third time, each extra airing penalised, rather than
+                # going dark for the evening (docs/PLAN.md section 4.5).
+                if times_today >= daily_limit and not relaxed:
                     continue
-                last_new = self.library.show_last_placed.get(show.id)
-                repeating = show.mode == "auto" and not self.policy.next_episode_due(last_new, t)
-                prior_run = self.library.short_runs.get(show.id)
-                ep = (prior_run[0] if repeating and prior_run else
-                      show.previous_episode() if repeating else show.next_episode())
+                ep = show.next_episode()
                 if ep is None:
                     continue
-                if repeating:
-                    ep = {**ep, "_series_repeat": True}
                 w = common_weight(ep, "tv", show.end_year)
                 if w <= 0:
                     continue
@@ -219,9 +214,9 @@ class Selector:
                     w *= repeat_penalty ** times_today
                 if resting:
                     w *= 0.3
-                if repeating:
-                    w *= 0.12       # useful fallback, but fresh titles win decisively
-                elif show.mode == "auto":
+                if show.mode == "auto":
+                    # Episodes only ever advance. The weekly cadence says when the next one is
+                    # wanted, never that the last one is shown again in the meantime.
                     w *= self.policy.cadence_factor(self.library.show_last_placed.get(show.id), t, relaxed=relaxed)
                 tv_cands.append((w, ep, show))
         if token in ("show", "movie"):
@@ -249,27 +244,22 @@ class Selector:
         if externals and not nas_only_for(channel, self.settings):
             # Once there is enough preparation time, remote titles compete on programme variety,
             # rather than being permanently disadvantaged merely because they are not on the NAS.
+            # Inside that time a slot is filled from what is already here: the one exception is
+            # the last resort, a repeat of an episode already requested, since the shared wanted
+            # row means it costs no further download and beats a holding card.
+            prepared = self.policy.external_prepared(t)
             ext_w = self.policy.external_weight(t)
             for e in externals:
-                times_today = placed_today.get(e["id"], 0)
-                emergency_repeat = relax >= 2 and bool(e.get("last_spec"))
-                if ((e["id"] in barred or (e.get("show_id") and e["show_id"] in barred))
-                        and not emergency_repeat):
-                    continue
                 episode = e["kind"] == "episode"
                 if token not in ("show", "tv" if episode else "movie"):
                     continue
-                item_limit = daily_limit if episode else 1
-                if times_today >= item_limit and not emergency_repeat:
-                    continue
-                due = not episode or self.policy.next_episode_due(self.library.external_last_placed.get(e["lineup_id"]), t)
+                times_today = placed_today.get(e["id"], 0)
+                held_back = (not prepared or times_today >= (daily_limit if episode else 1)
+                             or e["id"] in barred or (e.get("show_id") and e["show_id"] in barred))
                 candidate = e
-                if episode and (not due or times_today >= item_limit):
-                    if not e.get("last_spec"):
+                if held_back:
+                    if relax < 2 or not e.get("last_spec"):
                         continue
-                    # Re-air the episode already requested rather than advancing the external
-                    # series before its weekly next-episode slot.  The shared wanted row means
-                    # one download serves both airings.
                     candidate = {**e, "_external_repeat": True}
                     prior_run = self.library.external_short_runs.get(e["lineup_id"])
                     if prior_run:
@@ -277,9 +267,8 @@ class Selector:
                 w = common_weight(e, "tv" if episode else "movie") * ext_w
                 if w <= 0:
                     continue
-                if episode:
-                    w *= (0.18 if not due else
-                          self.policy.cadence_factor(self.library.external_last_placed.get(e["lineup_id"]), t, relaxed=relaxed))
+                if episode and not held_back:
+                    w *= self.policy.cadence_factor(self.library.external_last_placed.get(e["lineup_id"]), t, relaxed=relaxed)
                 (tv_cands if episode else movie_cands).append((w, candidate, None))
 
             # A configured remote title is part of the channel's catalogue, not an occasional

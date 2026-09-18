@@ -29,8 +29,6 @@ def test_remote_lead_and_episode_cadence_are_named_policy_rules():
     assert rules.external_weight(rules.now + DAY) == 1.5
 
     last = rules.now
-    assert not rules.next_episode_due(last, last + 6 * DAY)
-    assert rules.next_episode_due(last, last + 7 * DAY - 12 * HOUR)
     assert rules.cadence_factor(last, last + 7 * DAY) == 4.0
 
 

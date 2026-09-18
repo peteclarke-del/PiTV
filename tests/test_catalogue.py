@@ -308,5 +308,5 @@ def test_idents_follow_their_channel_not_its_number(tmp_path):
     b = Builder(conn)
     others = [c for c in b.channels if c["id"] != home]
     for c in others:
-        picked = b._choose_ident(c, random.Random(1), 3600)
+        picked = b.select.ident(c, random.Random(1), 3600)
         assert picked is None or picked.get("home_channel_id") in (None, c["id"])

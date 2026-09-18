@@ -52,9 +52,8 @@ class Library:
             " WHERE kind='programme' AND start_ts < ?", (now,))}
         # What this build has placed so far, which the rest of the build must respect.
         self.ad_last: dict[tuple[int, int], int] = {}          # (channel, media) -> ts
-        # A short series is scheduled as a bundle. Cadence repeats replay that bundle instead
-        # of collapsing back to one five-minute episode followed by an advert break.
-        self.short_runs: dict[int, list[dict[str, Any]]] = {}
+        # A short remote series is requested as a bundle; its last-resort repeat re-airs the
+        # bundle already requested rather than one five-minute episode and an advert break.
         self.external_short_runs: dict[int, list[dict[str, Any]]] = {}
 
     # --- loading -------------------------------------------------------------------

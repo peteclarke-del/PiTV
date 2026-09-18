@@ -1,5 +1,6 @@
 import os
 from datetime import timedelta
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -444,11 +445,12 @@ def test_service_actions_match_sudoers(monkeypatch):
     granted = {tuple(cmd.split()[1:]) for cmd in rule.split("NOPASSWD:", 1)[1].split(",")}
     assert granted == {(action, unit) for unit, actions in SERVICE_ACTIONS.items() for action in actions}
     monkeypatch.setattr("pitv.web.api.admin.systemd_state", lambda *args, **kwargs: {})
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(cfg=None)))
     with pytest.raises(HTTPException) as missing:
-        service_action("pitv-web.service", "stop")
+        service_action("pitv-web.service", "stop", request)
     assert missing.value.status_code == 409
     with pytest.raises(HTTPException) as unsupported:
-        service_action("sshd.service", "restart")
+        service_action("sshd.service", "restart", request)
     assert unsupported.value.status_code == 400
 
 

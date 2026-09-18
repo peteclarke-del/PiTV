@@ -94,34 +94,23 @@ class Runs:
             self.library.external_short_runs[entry["lineup_id"]] = run
         return out, t
 
-    def series_run(self, channel: dict[str, Any], day_str: str, show: Show, first_item: dict[str, Any],
-                   first: Slot, room: int, *, repeating: bool = False) -> tuple[list[Slot], int]:
-        """The rest of a run of short episodes of one series after `first`, and where it ends."""
+    def series_run(self, channel: dict[str, Any], day_str: str, show: Show, first: Slot, room: int
+                   ) -> tuple[list[Slot], int]:
+        """The rest of a run of short episodes of one series after `first`, and where it ends.
+        Component episodes are one programme for variety and daily-limit purposes."""
         threshold, target = self.policy.short_episode_seconds(channel)
         if not threshold or not target or first.duration >= threshold:
             return [], first.end_ts
         first.block = first.block or show.title
         t = first.end_ts
         out: list[Slot] = []
-        cached = self.library.short_runs.get(show.id) if repeating else None
-        episodes = list(cached[1:]) if cached else []
-        run = list(cached) if cached else [first_item]
         while t - first.start_ts < target:
-            if episodes:
-                episode = episodes.pop(0)
-                if seconds(episode) > room:
-                    break
-            else:
-                episode = show.take_short(min(room, threshold))
-                if episode is None:
-                    break
-                run.append(episode)
+            episode = show.take_short(threshold, room)
+            if episode is None:
+                break
             slot = programme_slot(channel["id"], day_str, t, episode, show, block=first.block)
             out.append(slot)
             self.library.last_placed[episode["id"]] = t
             room -= seconds(episode)
             t = slot.end_ts
-        # Component episodes are one programme for variety and daily-limit purposes.
-        if not cached:
-            self.library.short_runs[show.id] = run
         return out, t

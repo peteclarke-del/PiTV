@@ -359,9 +359,9 @@ A five minute cartoon on its own leaves the day in scraps and the guide unreadab
 episode shorter than `short_episode_minutes` is followed straight away by the next ones of the
 same series, in order, until the run reaches `short_episode_run_minutes` (both default to 20).
 The run carries the series title as its block, so the guide shows one entry with the episodes
-beneath it, as it does for a band. Remote catalogue series queue every episode required by the
-bundle, and cadence repeats replay the bundle. A channel may set its own pair; empty follows
-Settings.
+beneath it, as it does for a band. A remote series queues every episode the bundle needs, and
+its last-resort repeat (section 4.5) re-airs the bundle it already requested. A channel may set
+its own pair; empty follows Settings.
 
 ### 4.4c Topping a band up
 
@@ -486,9 +486,11 @@ For each channel and day, walk from 08:00 to 00:00 following the pattern:
    the same slot `series_cadence_days` (7) later, and a bonus for filling the gap within ten minutes. Certificate rules, duration
    (gap plus `duration_tolerance_minutes`, 5) and the same series back to back are hard
    limits. A show may air at most `show_daily_limit` (2) times a day per channel, each
-   repeat weighted by `show_repeat_penalty` (0.3).
+   repeat weighted by `show_repeat_penalty` (0.3). Episodes only ever advance: the cadence
+   weights when the next one is wanted and never re-airs the last one to wait for it.
 3. If nothing fits, the rules relax in two steps (ignore daypart preferences and daily
-   limits, then allow recently aired films and, as the very last resort, sport outside its
+   limits, then allow recently aired films, remote titles inside the lead window as a repeat
+   of an episode already requested, and, as the very last resort, sport outside its
    dayparts); certificates are never relaxed.
 4. Adverts must be from the configured decades, prefer a year within
    `advert_year_window` (3) of the surrounding programme, are penalised within
