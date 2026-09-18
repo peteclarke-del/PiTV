@@ -119,6 +119,7 @@ def test_fresh_rebuild_discards_derived_state_but_keeps_inputs(tmp_path):
     # Fresh means no queued, delivered or manually requested work survives into the new pipeline.
     assert result["cleared_wanted"] >= 3 and result["kept_wanted"] == 0
     assert not c.execute("SELECT 1 FROM wanted WHERE id IN (?, ?, ?)", (old, done, manual)).fetchone()
+    assert not c.execute("SELECT 1 FROM show_cursor").fetchone()
     assert not c.execute("SELECT 1 FROM band WHERE last_fetch_at IS NOT NULL").fetchone()
     assert c.execute("SELECT COUNT(*) FROM run_log").fetchone()[0] <= 1   # only this build's own row
     assert inputs == {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]

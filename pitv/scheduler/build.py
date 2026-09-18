@@ -1695,6 +1695,7 @@ def fresh_rebuild_horizon(conn: sqlite3.Connection, *, start_day: date | None = 
         conn.execute("DELETE FROM history")
         conn.execute("DELETE FROM run_log")
         conn.execute("DELETE FROM wanted")
+        conn.execute("DELETE FROM show_cursor")
         # A band's fetch timestamp describes pipeline work, not configuration.  Keeping it after
         # pitv_content's queue has been reset suppresses the replacement job until the cooldown
         # expires and leaves an otherwise strict band showing its holding card.
