@@ -19,7 +19,10 @@ export PITV_CONTENT_STATE="$PITV_DATA/content-state" PITV_CONTENT_WORK="$PITV_DA
 export PITV_CONTENT_UNMOUNTED_SOURCES=1
 PORT="${PORT:-8080}"
 CONTENT_PORT="${CONTENT_PORT:-8091}"       # 8081 is the Pi's default; often taken on a desktop
-CACHE_MOUNT="${PITV_CACHE_MOUNT:-/dev/shm/pitvcache}"   # pitv_content wants a mount point that is not /
+# pitv_content wants a drive that is not / . A RAM disk does for a quick look, but a day of seven
+# channels is some 250 GB, so a machine used for real testing names a drive: PITV_CACHE_MOUNT,
+# or one line in $PITV_DATA/cache-mount, which survives between shells and stays out of the repo.
+CACHE_MOUNT="${PITV_CACHE_MOUNT:-$(cat "$PITV_DATA/cache-mount" 2>/dev/null || echo /dev/shm/pitvcache)}"
 CACHE="$CACHE_MOUNT/pitv"
 LIB="$PITV_DATA/library"
 WEB="http://127.0.0.1:$PORT/api"

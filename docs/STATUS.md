@@ -89,7 +89,7 @@ here has expired and Pete has to sign in again.
 | # | Item | Done when |
 |---|---|---|
 | P1 | Time a band run and a cache run as each of C1 to C8 lands, import, rebuild, and record the result here | Figures recorded against each item above |
-| P6 | The development cache is a 10 GB RAM disk and a day needs about 250 GB, so condition 2 cannot be shown here. The widened copy rule makes it sharper: whole 1080p films are copied, the machine has 26 GB of disk free, and PiTV's maintenance submits a cache run about hourly, so until the cache has a real drive every run stops at the first file with no room. It needs a folder on a real disk, and the size of the Pi's cache drive decides whether a full day of seven channels is the right thing to cache at all | A cache folder Pete names is in use and C2's check has been run against it |
+| P6 | The development cache had been a 10 GB RAM disk, which cannot hold a day (about 250 GB) and cost the desktop its memory once whole 1080p films were copied. Pete has given it a drive: `/media/pclarke/18TB/cache`, capped at 220 GB. PiTV's settings and `setup/dev.sh` point there (`.dev/cache-mount`); pitv_content is moving its fetched library, index and unit | pitv_content reports the move done, PiTV's import shows the fetched rows at their new paths, and C2's check has been run against the drive |
 | P3 | Hardware verification on a Raspberry Pi 4: hardware decode of copied files, the cache drive, encode times with the Pi's presets, the player keeper under systemd | REQUIREMENTS.md rows marked "by hand" checked on the device |
 
 ## How a change is accepted
