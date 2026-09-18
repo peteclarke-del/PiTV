@@ -44,14 +44,23 @@ from .rules import (
     parse_pattern,
     tz_of,
 )
+from .runs import Runs
 from .select import Selector
-from .slots import Show, Slot, json_field, seconds, slot_titles
+from .slots import (
+    FILLER_TITLE,
+    Show,
+    Slot,
+    filler_slot,
+    json_field,
+    media_slot,
+    programme_slot,
+    seconds,
+)
 
 Progress = Callable[[str], None] | None
 # Upper bound on walk steps for one channel-day. Only a pattern that can never place a
 # programme (adverts or idents alone) gets near it; the rest of such a day becomes filler.
 MAX_STEPS_PER_DAY = 3000
-FILLER_TITLE = "Programmes will continue shortly"
 log = logging.getLogger("pitv.scheduler")
 
 
@@ -75,6 +84,7 @@ class Builder:
                                exclude_media_ids=exclude_media_ids, only_media_ids=only_media_ids,
                                allow_external=allow_external)
         self.select = Selector(self.policy, self.settings, self.tz, self.library)
+        self.runs = Runs(self.policy, self.library)
         # (channel, day) -> time from which save() replaces unlocked slots; None adds only.
         self._cuts: dict[tuple[int, str], int | None] = {}
         # (lineup_id, episode) -> wanted id, so every placement of one request in this build
@@ -162,8 +172,7 @@ class Builder:
 
     def _filler(self, channel: dict[str, Any], day_str: str, start: int, end: int, title: str = FILLER_TITLE,
                 **extra: Any) -> Slot:
-        return Slot(channel_id=channel["id"], day=day_str, start_ts=start, end_ts=end, media_id=None,
-                    offset=0, kind="filler", title=title, **extra)
+        return filler_slot(channel["id"], day_str, start, end, title, **extra)
 
     def build_channel_day(self, channel: dict[str, Any], day: date, force: bool,
                           from_ts: int | None = None) -> list[Slot]:
@@ -384,7 +393,7 @@ class Builder:
                 continue
             item, show = choice
             if item["id"] < 0:   # external line-up entry: placeholder slot plus a wanted request
-                slot = self._external_slot(channel, day_str, t, item)
+                slot = self.runs.external_slot(channel["id"], day_str, t, item)
                 emit(slot)
                 placed_today[item["id"]] = placed_today.get(item["id"], 0) + 1
                 if not item.get("_external_repeat"):
@@ -393,10 +402,10 @@ class Builder:
                 last_programme_year = item.get("year")
                 t = slot.end_ts
                 if item["kind"] == "episode":
-                    t = self._external_short_episode_run(
-                        channel, day_str, item, slot, gap - slot.duration, emit,
-                        repeating=bool(item.get("_external_repeat")),
-                    )
+                    more, t = self.runs.external_run(channel, day_str, item, slot, gap - slot.duration,
+                                                     repeating=bool(item.get("_external_repeat")))
+                    for extra in more:
+                        emit(extra)
                 continue
             slot = self._programme_slot(channel, day_str, t, item, show)
             emit(slot)
@@ -414,10 +423,10 @@ class Builder:
             last_programme_year = item.get("year")
             t = slot.end_ts
             if show is not None:
-                t = self._short_episode_run(
-                    channel, day_str, show, item, slot, gap - slot.duration, emit,
-                    repeating=bool(item.get("_series_repeat")),
-                )
+                more, t = self.runs.series_run(channel, day_str, show, item, slot, gap - slot.duration,
+                                               repeating=bool(item.get("_series_repeat")))
+                for extra in more:
+                    emit(extra)
 
         if t < day_end:
             self.log.append(f"{channel['name']} {day_str}: gave up after {MAX_STEPS_PER_DAY} steps at"
@@ -517,84 +526,10 @@ class Builder:
 
     def _programme_slot(self, channel: dict[str, Any], day_str: str, start: int, item: dict[str, Any],
                         show: Show | None, block: str | None = None) -> Slot:
-        title, subtitle = slot_titles(item, show.title if show else None)
-        return Slot(channel_id=channel["id"], day=day_str, start_ts=start, end_ts=start + seconds(item),
-                    media_id=item["id"], offset=0, kind="programme", title=title, subtitle=subtitle,
-                    show_id=show.id if show else None, genres=item.get("genres") or [],
-                    year=item.get("year"), block=block)
+        return programme_slot(channel["id"], day_str, start, item, show, block)
 
-    def _external_slot(self, channel: dict[str, Any], day_str: str, start: int, e: dict[str, Any]) -> Slot:
-        """A programme that is not on disk yet. Episodes number on from the entry's counter; a
-        wanted row raised by an earlier build for a slot since replaced is reused first."""
-        duration = int(e["duration"])
-        if e["kind"] == "episode":
-            if e.get("_repeat_spec"):
-                spec = dict(e["_repeat_spec"])
-                number = int(spec["episode"] or 1)
-            elif e.get("_external_repeat"):
-                spec = dict(e["last_spec"])
-                number = int(spec["episode"] or 1)
-            elif e["spare_wanted"]:
-                spare = e["spare_wanted"].pop(0)
-                number, reuse = int(spare["episode"] or 1), int(spare["id"])
-                spec = {"kind": "episode", "lineup_id": e["lineup_id"], "title": f"Episode {number}", "season": 1,
-                        "episode": number, "year": e.get("year"), "reuse": reuse}
-            else:
-                number, reuse = e["next_number"], None
-                e["next_number"] += 1
-                spec = {"kind": "episode", "lineup_id": e["lineup_id"], "title": f"Episode {number}", "season": 1,
-                        "episode": number, "year": e.get("year"), "reuse": reuse}
-            subtitle = f"Episode {number}"
-            if not e.get("_external_repeat"):
-                e["last_spec"] = dict(spec)
-        else:
-            # One request serves every airing of a film, so a spare is shared rather than used up.
-            spare = e["spare_wanted"][0] if e["spare_wanted"] else None
-            subtitle = f"({e['year']})" if e.get("year") else ""
-            spec = {"kind": "movie", "lineup_id": e["lineup_id"], "title": e["title"], "season": None,
-                    "episode": None, "year": e.get("year"), "reuse": int(spare["id"]) if spare else None}
-        return Slot(channel_id=channel["id"], day=day_str, start_ts=start, end_ts=start + duration, media_id=None,
-                    offset=0, kind="programme", title=e["title"], subtitle=subtitle, show_id=None,
-                    genres=e.get("genres") or [], year=e.get("year"), wanted_spec=spec,
-                    replay=1 if e.get("_external_repeat") else 0)
-
-    def _external_short_episode_run(self, channel: dict[str, Any], day_str: str,
-                                    entry: dict[str, Any], first: Slot, room: int,
-                                    emit: Callable[[Slot], None], *, repeating: bool) -> int:
-        """Bundle short remote episodes exactly as local episodes are bundled.
-
-        Each component gets its own wanted request so pitv_content can prepare the complete
-        programme. A later cadence repeat reuses those requests in the same order.
-        """
-        threshold, target = self.policy.short_episode_seconds(channel)
-        if not threshold or not target or first.duration >= threshold:
-            return first.end_ts
-        first.block = first.block or entry["title"]
-        t = first.end_ts
-        cached = self.library.external_short_runs.get(entry["lineup_id"]) if repeating else None
-        specs = list(cached[1:]) if cached else []
-        run = list(cached) if cached else [dict(first.wanted_spec or {})]
-        fresh = dict(entry)
-        fresh.pop("_external_repeat", None)
-        fresh.pop("_repeat_spec", None)
-        while t - first.start_ts < target and room >= int(entry["duration"]):
-            if specs:
-                component = {**entry, "_external_repeat": True, "_repeat_spec": specs.pop(0)}
-            elif cached:
-                break
-            else:
-                component = fresh
-            slot = self._external_slot(channel, day_str, t, component)
-            slot.block = first.block
-            emit(slot)
-            if not cached:
-                run.append(dict(slot.wanted_spec or {}))
-                self.library.external_last_placed[entry["lineup_id"]] = t
-            room -= slot.duration
-            t = slot.end_ts
-        if not cached:
-            self.library.external_short_runs[entry["lineup_id"]] = run
-        return t
+    def _media_slot(self, channel: dict[str, Any], day_str: str, start: int, item: dict[str, Any], kind: str) -> Slot:
+        return media_slot(channel["id"], day_str, start, item, kind)
 
     def _next_day_slots(self, channel_id: int, next_day_start: int) -> list[Slot]:
         """Tomorrow's own slots, if tomorrow has been built: the overnight's last resort."""
@@ -602,49 +537,6 @@ class Builder:
                                 " AND kind = 'programme' ORDER BY start_ts LIMIT 1",
                                 (channel_id, next_day_start)).fetchone()
         return self._existing_slots(channel_id, row["day"]) if row else []
-
-    def _short_episode_run(self, channel: dict[str, Any], day_str: str, show: Show,
-                           first_item: dict[str, Any], first: Slot, room: int,
-                           emit: Callable[[Slot], None], *, repeating: bool = False) -> int:
-        """Run several short episodes of one series together, and return where the run ends.
-
-        A five minute cartoon on its own leaves the day in scraps and the guide unreadable, so
-        episodes under `short_episode_minutes` are followed straight away by the next ones, in
-        order, until the run reaches `short_episode_run_minutes`. They share the series title as
-        their block, so the guide shows one entry, as it does for a band."""
-        threshold, target = self.policy.short_episode_seconds(channel)
-        if not threshold or not target or first.duration >= threshold:
-            return first.end_ts
-        first.block = first.block or show.title
-        t = first.end_ts
-        cached = self.library.short_runs.get(show.id) if repeating else None
-        episodes = list(cached[1:]) if cached else []
-        run = list(cached) if cached else [first_item]
-        while t - first.start_ts < target:
-            if episodes:
-                episode = episodes.pop(0)
-                if seconds(episode) > room:
-                    break
-            else:
-                episode = show.take_short(min(room, threshold))
-                if episode is None:
-                    break
-                run.append(episode)
-            slot = self._programme_slot(channel, day_str, t, episode, show, block=first.block)
-            emit(slot)
-            self.library.last_placed[episode["id"]] = t
-            room -= seconds(episode)
-            t = slot.end_ts
-        # Component episodes are one programme for variety and daily-limit purposes.
-        if not cached:
-            self.library.short_runs[show.id] = run
-        return t
-
-    def _media_slot(self, channel: dict[str, Any], day_str: str, start: int, item: dict[str, Any], kind: str) -> Slot:
-        """An advert or ident slot; the subtitle is just the year."""
-        return Slot(channel_id=channel["id"], day=day_str, start_ts=start, end_ts=start + seconds(item),
-                    media_id=item["id"], offset=0, kind=kind, title=item["title"],
-                    subtitle=str(item.get("year") or ""), year=item.get("year"))
 
     def _overnight(self, channel: dict[str, Any], day: date, day_end: int, next_day_start: int,
                    day_slots: list[Slot]) -> list[Slot]:

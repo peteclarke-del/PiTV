@@ -13,6 +13,8 @@ from typing import Any
 
 from .policy import WEEK
 
+FILLER_TITLE = "Programmes will continue shortly"
+
 
 @dataclass
 class Slot:
@@ -152,3 +154,26 @@ def json_field(value: Any) -> Any:
 def seconds(item: dict[str, Any]) -> int:
     """Slot length for a file: whole seconds, never zero so a slot always has an end."""
     return max(1, round(float(item["duration"])))
+
+
+def programme_slot(channel_id: int, day_str: str, start: int, item: dict[str, Any],
+                   show: Show | None = None, block: str | None = None) -> Slot:
+    title, subtitle = slot_titles(item, show.title if show else None)
+    return Slot(channel_id=channel_id, day=day_str, start_ts=start, end_ts=start + seconds(item),
+                media_id=item["id"], offset=0, kind="programme", title=title, subtitle=subtitle,
+                show_id=show.id if show else None, genres=item.get("genres") or [],
+                year=item.get("year"), block=block)
+
+
+def media_slot(channel_id: int, day_str: str, start: int, item: dict[str, Any], kind: str) -> Slot:
+    """An advert or ident slot; the subtitle is just the year."""
+    return Slot(channel_id=channel_id, day=day_str, start_ts=start, end_ts=start + seconds(item),
+                media_id=item["id"], offset=0, kind=kind, title=item["title"],
+                subtitle=str(item.get("year") or ""), year=item.get("year"))
+
+
+def filler_slot(channel_id: int, day_str: str, start: int, end: int, title: str = FILLER_TITLE,
+                **extra: Any) -> Slot:
+    """A caption with no file behind it: the player shows the holding card under the title."""
+    return Slot(channel_id=channel_id, day=day_str, start_ts=start, end_ts=end, media_id=None,
+                offset=0, kind="filler", title=title, **extra)
