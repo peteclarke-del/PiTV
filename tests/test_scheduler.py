@@ -350,11 +350,15 @@ def test_music_channel_day(conn):
     for concert in concerts:
         band = band_at(concert["start_ts"])
         assert json.loads(band["fill"]).get("feature") and concert["block"] == band["name"]
-        assert concert["start_ts"] == local_ts(day, band["start"], tz), "the concert opens its band"
+        late = concert["start_ts"] - local_ts(day, band["start"], tz)
+        assert 0 <= late <= 300, "the concert opens its band, at most an overrun late"
         rest = [r for r in rows if r["start_ts"] >= concert["end_ts"] and band_at(r["start_ts"]) is band]
         assert not any(r["block"] for r in rest), "one concert, then the channel's own time"
-    # Contiguous from 08:00 to closedown. Every slot counts, not only those with a file: a band
-    # that runs out of videos it may use closes its own stretch with a caption.
+    # Contiguous from 08:00 to closedown, every slot counted. A last item that does not quite
+    # fit runs over and the next band starts when it ends, so no band closes on a minute of
+    # caption.
+    assert not conn.execute("SELECT 1 FROM schedule WHERE channel_id = ? AND day = '2026-09-16' AND replay = 0"
+                            " AND kind = 'filler' AND end_ts - start_ts < 300", (music["id"],)).fetchone()
     day = conn.execute("SELECT start_ts, end_ts FROM schedule WHERE channel_id = ? AND day = '2026-09-16'"
                        " AND replay = 0 ORDER BY start_ts", (music["id"],)).fetchall()
     for a, b in pairwise(day):

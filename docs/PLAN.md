@@ -410,9 +410,14 @@ widened, where the alternative is dead air. An item whose genre is known and is 
 items the index has no genre for: an untagged file might be disco, a file tagged metal is not.
 A channel set to take only labelled matches (or a single band set the same way) keeps the first
 step alone, so the item must carry a genre and a year and both must be what the band asked for.
-Such a band shows its own title card
-instead of the rest, which is what a "Disco Lunch" wants: a caption is better than a metal set,
-and the shortfall is what asks for more disco. Items a narrow band
+Such a band with nothing it may play gives its time back to the channel, which fills it from
+its own material under each item's own name: a "Disco Lunch" is never a metal set billed as
+disco, the screen is never a caption while the channel holds anything at all, and the
+shortfall is what asks for more disco. A band billed as a concert is one concert, and what is
+left of its stretch is the channel's time in the same way. The last item before a band may run
+over by up to `duration_tolerance_minutes` (5) and the band starts when it ends, as programmes
+did on air, rather than every band closing on a minute of caption; nothing runs over into a
+kept slot or an anchored programme. Items a narrow band
 needs are held back from broader bands earlier in the day, or a lunchtime disco band finds its
 disco already played. Nothing is repeated within the channel's repeat gaps (its own, else
 `band_item_repeat_hours` and `band_feature_repeat_days`). Every slot of a band carries its

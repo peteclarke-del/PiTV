@@ -299,7 +299,8 @@ class Builder:
                     # the overnight starts when the band does end. A band that ends early gives
                     # its time back to the channel; the next band starts when the timetable says.
                     w.t = self._fill_band(channel, day_str, payload[1], max(w.t, fs), fe, filler, w.emit,
-                                          hard_end=next_day_start if not fixed_queue else None)
+                                          hard_end=next_day_start if not fixed_queue else None,
+                                          overrun=self._overrun(fixed_queue, tol))
                     continue
                 _, show, ep = payload
                 start = max(w.t, fs)
@@ -321,7 +322,8 @@ class Builder:
                 # A bands-only channel: what the bands leave is still its own airtime, so it is
                 # filled from the same material with no band name, and the guide lists each item
                 # by its own title rather than under a band it does not belong to.
-                w.t = self._fill_free(channel, day_str, w.t, boundary, filler, day_bands, w.emit)
+                w.t = self._fill_free(channel, day_str, w.t, boundary, filler, day_bands, w.emit,
+                                      overrun=self._overrun(fixed_queue, tol))
                 if w.t < boundary:
                     self._fill_to(w, boundary)
                 continue
@@ -466,27 +468,36 @@ class Builder:
                             strict=bool(channel.get("strict_matching")),
                             item_repeat=item_repeat, feature_repeat=feature_repeat)
 
+    @staticmethod
+    def _overrun(fixed_queue: deque[tuple[int, int, Any]], tolerance: int) -> int:
+        """How far the last item before the next fixed thing may run over: the duration
+        tolerance when a band follows (it starts when the item ends), nothing before a kept
+        slot or an anchored programme, whose times are not the walk's to move."""
+        following = fixed_queue[0][2] if fixed_queue else None
+        return tolerance if isinstance(following, tuple) and following[0] == "band" else 0
+
     def _fill_band(self, channel: dict[str, Any], day_str: str, band: bands.Band, start: int, end: int,
                    filler: bands.Filler | None, emit: Callable[[Slot], None],
-                   hard_end: int | None = None) -> int:
+                   hard_end: int | None = None, overrun: int = 0) -> int:
         """Emit one band's items under its name (the guide shows them as one programme) and
         return where it ended; see `bands.fill_band` for what goes in and why it may end early."""
         if filler is None:
             emit(self._filler(channel, day_str, start, end, title=band.name, block=band.name))
             return end
-        placed, t = bands.fill_band(band, start, end, filler, hard_end)
+        placed, t = bands.fill_band(band, start, end, filler, hard_end, overrun)
         for at, item in placed:
             emit(self._programme_slot(channel, day_str, at, item, None, block=band.name))
         return t
 
     def _fill_free(self, channel: dict[str, Any], day_str: str, start: int, end: int,
                    filler: bands.Filler | None, day_bands: list[tuple[int, int, bands.Band]],
-                   emit: Callable[[Slot], None]) -> int:
+                   emit: Callable[[Slot], None], overrun: int = 0) -> int:
         """Emit the channel's own items over time its bands leave; see `bands.fill_free`."""
         if filler is None or start >= end:
             return start
         kinds = tuple(sorted({k for _, _, b in day_bands for k in b.kinds}))
-        placed, t = bands.fill_free(channel["id"], kinds, self.select.channel_decades(channel), start, end, filler)
+        placed, t = bands.fill_free(channel["id"], kinds, self.select.channel_decades(channel), start, end,
+                                    filler, overrun)
         for at, item in placed:
             emit(self._programme_slot(channel, day_str, at, item, None))
         return t

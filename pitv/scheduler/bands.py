@@ -308,8 +308,8 @@ def timetable(todays: list[Band], day: date, day_start: int, day_end: int, next_
     return sorted(out, key=lambda x: x[0])
 
 
-def fill_band(band: Band, start: int, end: int, filler: Filler, hard_end: int | None = None
-              ) -> tuple[list[Placement], int]:
+def fill_band(band: Band, start: int, end: int, filler: Filler, hard_end: int | None = None,
+              overrun: int = 0) -> tuple[list[Placement], int]:
     """What goes in one band, and where the band actually ends.
 
     A band billed as a concert is one concert: it opens with its feature and ends when the
@@ -317,7 +317,9 @@ def fill_band(band: Band, start: int, end: int, filler: Filler, hard_end: int | 
     items runs to its timetabled end. A band that finds nothing it may use gives the rest of
     its time back rather than holding a title card over it; the channel fills that time with
     whatever it has, under each item's own name, and only a channel with nothing at all ends up
-    showing a caption. The next band starts when the timetable says, never early."""
+    showing a caption. The next band starts when the timetable says, never early; it may start
+    up to `overrun` seconds late, because a last item that does not quite fit runs over, as it
+    did on air, rather than leaving a minute of caption at the end of every band."""
     placed: list[Placement] = []
     t = start
     want_feature = band.feature
@@ -326,7 +328,8 @@ def fill_band(band: Band, start: int, end: int, filler: Filler, hard_end: int | 
             break
         opening_feature = want_feature
         # A feature may run a little past its band rather than be dropped for being long.
-        gap = (hard_end - t) if hard_end is not None else (end - t + 20 * 60) if opening_feature else (end - t)
+        gap = ((hard_end - t) if hard_end is not None else (end - t + 20 * 60) if opening_feature
+               else (end - t + overrun))
         item = filler.pick(band, t, gap, feature=opening_feature)
         want_feature = False
         if item is None:
@@ -340,13 +343,14 @@ def fill_band(band: Band, start: int, end: int, filler: Filler, hard_end: int | 
 
 
 def fill_free(channel_id: int, kinds: tuple[str, ...], decades: tuple[int, ...], start: int, end: int,
-              filler: Filler) -> tuple[list[Placement], int]:
+              filler: Filler, overrun: int = 0) -> tuple[list[Placement], int]:
     """Time between bands on a channel that has no pattern: ordinary airtime for that channel,
     the same kinds of item held to the channel's own decades, belonging to no band.
 
     A channel with only a handful of short items would play those same few over and over, so
     where it also holds long ones (a share of concert films, say) those carry the time and the
-    short items fill around them. A well stocked channel never reaches for them."""
+    short items fill around them. A well stocked channel never reaches for them. The last item
+    may run `overrun` seconds past `end`, as a band's may."""
     free = Band(id=0, channel_id=channel_id, name="", start="", minutes=None, days=(),
                 kinds=kinds or ("music",), genres=(), decades=decades, feature=False)
     thin = filler.short_items(free) < FREE_SHORT_ITEMS
@@ -359,7 +363,7 @@ def fill_free(channel_id: int, kinds: tuple[str, ...], decades: tuple[int, ...],
         if thin and end - t >= FREE_FEATURE_SECONDS:
             item = filler.pick(free, t, end - t, feature=True)
         if item is None:
-            item = filler.pick(free, t, end - t, feature=False)
+            item = filler.pick(free, t, end - t + overrun, feature=False)
         if item is None:
             break
         placed.append((t, item))
