@@ -19,6 +19,7 @@ and the NAS original only if it has to. PiTV never indexes the NAS, downloads or
 pitv_content never decides what airs. The interface is [docs/CONTENT_CONTRACT.md](docs/CONTENT_CONTRACT.md).
 
 - Design: [docs/PLAN.md](docs/PLAN.md); requirements checklist: [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md)
+- Open work across both applications, its owners and its acceptance checks: [docs/STATUS.md](docs/STATUS.md)
 - Install on the Pi: [setup/README.md](setup/README.md) (SD-card installer or manual script)
 - Installer internals: [installer/README.md](installer/README.md)
 - Web frontend: [web/README.md](web/README.md)
