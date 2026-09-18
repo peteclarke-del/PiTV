@@ -37,7 +37,7 @@ from .db import (
 )
 from .lineup import attach_delivery, clean_match
 from .player.cache import MediaCache
-from .player.hwdec import PI_HW_CODECS, is_raspberry_pi
+from .player.hwdec import PI_HW_CODECS, is_raspberry_pi, pi_can_play
 from .scheduler.horizon import rebuild_from
 from .scheduler.rules import broadcast_day_for, day_bounds, normalise_cert, tz_of
 
@@ -84,7 +84,7 @@ def _fetch_fields(w: dict[str, Any], show_title: str | None, acquire: str) -> di
             "dest_dir": _wanted_dest({**w, "title": show_title or w["title"]}, acquire)}
 
 
-def _media_request(m: dict[str, Any], cache: MediaCache, acquire: str, max_height: int) -> dict[str, Any] | None:
+def _media_request(m: dict[str, Any], cache: MediaCache, acquire: str) -> dict[str, Any] | None:
     """The request for a catalogue file: copy or transcode a NAS original into the cache, or
     fetch again material that only ever lived in the cache and has gone.
 
@@ -100,9 +100,8 @@ def _media_request(m: dict[str, Any], cache: MediaCache, acquire: str, max_heigh
             "duration": m.get("duration"), "already_cached": copy is not None, "transient": bool(m.get("transient"))}
     if m.get("origin", "nas") == "nas":
         original = Path(m["path"])
-        # Anything the Pi cannot decode in hardware, or well above the screen's lines, is
-        # re-encoded to the profile; the rest is copied as it is.
-        transcode = (m.get("vcodec") or "") not in PI_HW_CODECS or (m.get("height") or 0) > max_height * 1.5
+        # What the Pi can play is copied as it is; only the rest is re-encoded to the profile.
+        transcode = not pi_can_play(m)
         name = f"{m['id']}_{original.stem}{'.mp4' if transcode else original.suffix}"
         return {**base, "action": "transcode" if transcode else "copy",
                 "source": {"path": m["path"], "vcodec": m.get("vcodec"), "height": m.get("height"),
@@ -142,7 +141,6 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
     acquire = acquire_dir(settings)
     horizon = manifest_window(settings, tz, now, days)
     profile = display.content_profile(settings)
-    max_height = profile["height"]
     items: dict[str, dict[str, Any]] = {}
 
     def add(request_id: str, slot: dict[str, Any],
@@ -176,7 +174,7 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
             " LEFT JOIN shows sh ON sh.id = m.show_id"
             " WHERE s.end_ts > ? AND s.start_ts < ? AND m.missing = 0 AND s.kind != 'filler'"
             " ORDER BY s.start_ts", (now, horizon))):
-        add(f"m:{r['id']}", r, lambda m: _media_request(m, cache, acquire, max_height))
+        add(f"m:{r['id']}", r, lambda m: _media_request(m, cache, acquire))
 
     # Placeholders: line-up material not on disk, requested by wanted row.
     for r in rows_to_dicts(conn.execute(

@@ -7,10 +7,9 @@ and the best source worth fetching.
 
 A standard definition screen (576 or 480 lines) takes sources up to 720p. That is already more
 than the screen shows, what PiTV fetches is television and music of the 1960s to the 2000s
-with no true HD master behind it, and an H.264 source of 720 lines falls inside the rule for
-copying a file into the cache as it is (at most one and a half times the target), where a
-1080p source is a larger download and a full re-encode on a Pi for a picture nobody can tell
-apart. An HD screen takes sources up to two rungs above the target on the HD ladder, so the
+with no true HD master behind it, and an H.264 source of 720 lines is one pitv_content files
+without re-encoding it, where a 1080p source is a larger download and three times the disk for
+a picture nobody can tell apart. An HD screen takes sources up to two rungs above the target on the HD ladder, so the
 downscale has detail to work from; at 4K the ceiling is the target itself. The Pi 4 decodes H.264 in hardware only
 up to 1080p, so the 4K profile encodes to HEVC, which it decodes to 2160p."""
 

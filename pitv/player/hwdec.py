@@ -8,6 +8,26 @@ from typing import Any
 from ..db import DEFAULT_SETTINGS
 
 PI_HW_CODECS = {"h264", "hevc"}  # what the Pi 4's V4L2 decoder handles; everything else is software
+# The tallest picture of each codec the Pi 4 plays without dropping frames. H.264 and HEVC are
+# the hardware decoder's own limits. The older codecs are decoded in software, which a Pi 4
+# does comfortably at standard definition and not above it.
+PI_PLAYS_UP_TO = {"h264": 1080, "hevc": 2160, "mpeg4": 576, "mpeg2video": 576, "mpeg1video": 576}
+
+
+def pi_can_play(media: dict[str, Any]) -> bool:
+    """Whether the Pi 4 can play this file as it is, so it is copied into the cache and not
+    re-encoded.
+
+    The test is what the Pi can play, not what suits the screen. A 1080p film on a 576 line
+    tube was once re-encoded for being too tall, and a day of seven channels then held ninety
+    hours of programme to transcode, which no Pi can do in a night; the Pi decodes that film in
+    hardware and scales it as it plays. Interlaced material in a software codec is the
+    exception: decoding and deinterlacing it together is more than the Pi has to spare, so it
+    is re-encoded progressive, once. An unknown height is given the benefit of the doubt."""
+    limit = PI_PLAYS_UP_TO.get(media.get("vcodec") or "")
+    if limit is None or (media.get("height") or 0) > limit:
+        return False
+    return media.get("vcodec") in PI_HW_CODECS or not media.get("interlaced")
 
 
 def decode_options(media: dict[str, Any] | None, on_pi: bool, settings: dict[str, Any]) -> dict[str, Any]:

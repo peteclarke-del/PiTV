@@ -15,7 +15,7 @@ checklist of what was asked for and where each item lives.
 |---|---|
 | Hardware | Raspberry Pi 4 (4 GB), HDMI-to-SCART converter into a 14" 4:3 colour CRT (the Pi's composite output is an alternative), OSMC RF remote, USB hard drive for the cache, wired Ethernet to the Synology NAS over SMB |
 | OS | DietPi (Bookworm) on the SD-card image built by `installer/`; Raspberry Pi OS Lite 64-bit (Bookworm) for a manual install. No desktop; boots straight into the player |
-| Video decode | Pi 4 hardware H.264 and HEVC through V4L2 M2M (section 5.3). Anything else is re-encoded into the cache by pitv_content so everything on air takes the hardware path |
+| Video decode | Pi 4 hardware H.264 (to 1080p) and HEVC (to 4K) through V4L2 M2M (section 5.3); standard definition MPEG-4 and MPEG-2 in software. Only what the Pi cannot play is re-encoded into the cache by pitv_content |
 | Boot | Target about 15 s from power to picture. A test card is drawn on the framebuffer within seconds and stays up until the clock is synchronised and the first file plays |
 | Channels | Rows in the database, each can be enabled or disabled. Six by default: 1 and 2 programmes only, 3 and 4 with adverts, 5 music, 6 cartoons |
 | Broadcast day | 08:00 to 00:00 scheduled; 00:00 to 08:00 replays that day's schedule (section 4.9) |
@@ -633,10 +633,14 @@ zero-copy first, one frame copy as fallback); anything else gets `hwdec=no` with
 attempt. On the desktop the player uses `auto-safe`. Deinterlacing is switched on only for
 files the catalogue marks as interlaced. Audio passes through untouched.
 
-Transcoding is not PiTV's job. Files the Pi cannot hardware-decode, or more than 1.5 times
-576 lines tall, are marked `action: transcode` in the request manifest (section 7.2) and
-re-encoded to the CRT profile by pitv_content into the cache, which is the copy the player
-plays. The admin Catalogue page shows each file's codec and hardware-decode status, and the
+Transcoding is not PiTV's job, and there is as little of it as possible. A file the Pi can
+play as it is (`hwdec.pi_can_play`: H.264 to 1080 lines, HEVC to 2160, progressive MPEG-4 or
+MPEG-2 to 576) is copied into the cache whatever the screen, and the Pi scales it as it plays.
+Anything else (VP9, AV1, tall or interlaced files in a software codec) is marked
+`action: transcode` in the request manifest (section 7.2) and re-encoded to the screen profile
+by pitv_content into the cache, which is the copy the player plays. The rule was once "no
+taller than one and a half times the screen", which made a day of seven channels ninety hours
+of programme to re-encode, of files the Pi plays in hardware. The admin Catalogue page shows each file's codec and hardware-decode status, and the
 "needs attention" list flags the problems listed in section 3.3. A live preview stream of
 what is on air was considered and dropped: it competes with the decoder for the same
 hardware.
@@ -861,9 +865,8 @@ directory.
 Request manifest (`GET /api/content/manifest`, or `pitv content-manifest --out file` when the
 web service is down). Every scheduled file from now through the end of the next broadcast day
 is a request, listed once however many slots or channels use it, ordered by `priority` (hours
-ahead divided by four) and `deadline_ts` (15 minutes before air). A NAS item is `copy` when it
-already decodes in hardware on the Pi and is no taller than 1.5 times the profile's 576 lines,
-otherwise `transcode` to `content_profile` (768x576 4:3, H.264, AAC, 4000 kbps, deinterlaced
+ahead divided by four) and `deadline_ts` (15 minutes before air). A NAS item is `copy` when the Pi can
+play it as it is (section 5.3), otherwise `transcode` to `content_profile` (768x576 4:3, H.264, AAC, 4000 kbps, deinterlaced
 if interlaced); either way its `target` is `<cache>/<media_id>_<stem>.<ext>`. An item with no
 NAS original (a line-up placeholder, or material fetched for a request that still stands and
 has since been evicted) is `fetch`, with an exact search phrase, extra hints, a typical duration range, a year tolerance

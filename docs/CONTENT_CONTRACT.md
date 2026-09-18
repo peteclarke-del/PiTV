@@ -157,16 +157,17 @@ service is down. Schema 2.
   lines, HEVC above, which is what the Pi 4 decodes in hardware), at most `max_bitrate_kbps`,
   conformed to `frame_rate` when it is set (PAL 25, NTSC 29.97; null keeps the source rate).
   When fetching, look across every enabled provider and start from the best source available
-  up to `max_source_height` lines: 720 for a standard definition screen (which keeps an H.264
-  source inside the copy rule below), two rungs above the target on the 720, 1080, 1440, 2160
+  up to `max_source_height` lines: 720 for a standard definition screen (which keeps a fetched
+  H.264 source one pitv_content can file without re-encoding), two rungs above the target on the 720, 1080, 1440, 2160
   ladder for an HD screen, and equal to it at 4K. Prefer the higher resolution, then the higher bitrate, among
   hits of the same title; never go above the ceiling, and take a lower source only when
   nothing better exists. A copy or transcode from the NAS uses the file there as it is.
   PiTV also sets pitv_content's own screen setting (`PUT /api/settings {"profile": <name>}`)
   whenever the admin changes the screen, so catalogue runs, which have no manifest, match.
 - Every scheduled file appears once, however many slots or channels use it.
-- `action` is `copy` (the source already decodes in hardware on the Pi and fits the profile),
-  `transcode` (it does not), or `fetch` (there is no known source; find it online, encode it to
+- `action` is `copy` (the Pi can play the source as it is: H.264 to 1080 lines, HEVC to 2160,
+  progressive standard definition MPEG-4 or MPEG-2; PiTV decides, whatever the screen),
+  `transcode` (it cannot), or `fetch` (there is no known source; find it online, encode it to
   the profile and file it under `dest_dir`). Every `fetch` names something a person or a
   line-up asked for, so its title, year and genre are an instruction. PiTV never asks again
   for a file that came from a band collection (section 9): that row's title and year are

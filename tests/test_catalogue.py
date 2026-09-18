@@ -310,3 +310,18 @@ def test_idents_follow_their_channel_not_its_number(tmp_path):
     for c in others:
         picked = b.select.ident(c, random.Random(1), 3600)
         assert picked is None or picked.get("home_channel_id") in (None, c["id"])
+
+
+def test_what_the_pi_can_play_is_copied_not_transcoded():
+    """The copy rule is what the Pi can play, not what suits the screen: a 1080p film is copied
+    for a 576 line tube, and only codecs or sizes the Pi cannot manage are re-encoded."""
+    from pitv.player.hwdec import pi_can_play
+    assert pi_can_play({"vcodec": "h264", "height": 1080})
+    assert pi_can_play({"vcodec": "hevc", "height": 2160, "interlaced": 0})
+    assert pi_can_play({"vcodec": "h264", "height": 576, "interlaced": 1}), "hardware decode leaves room to deinterlace"
+    assert pi_can_play({"vcodec": "mpeg4", "height": 480})
+    assert pi_can_play({"vcodec": "h264", "height": None}), "an unknown height is not a reason to re-encode"
+    assert not pi_can_play({"vcodec": "h264", "height": 2160})
+    assert not pi_can_play({"vcodec": "mpeg2video", "height": 576, "interlaced": 1})
+    assert not pi_can_play({"vcodec": "mpeg4", "height": 720})
+    assert not pi_can_play({"vcodec": "vp9", "height": 480}) and not pi_can_play({"vcodec": None})
