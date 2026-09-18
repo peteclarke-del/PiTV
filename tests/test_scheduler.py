@@ -24,7 +24,7 @@ from pitv.scheduler.rules import (
     minutes_of_day,
     tz_of,
 )
-from pitv.scheduler.slots import Slot, parse_day, slot_titles
+from pitv.scheduler.slots import Show, Slot, parse_day, slot_titles
 
 
 @pytest.fixture(scope="module")
@@ -851,6 +851,27 @@ def test_a_band_keeps_its_length_past_closedown(conn):
     assert start == local_ts(day, "23:30", tz_of(conn))
     assert end == start + 120 * 60 > day_end, f"{band.name} was cut at closedown"
     assert end <= next_start, "and never runs into tomorrow's broadcast day"
+
+
+def test_a_run_never_shows_the_same_episode_twice():
+    """A series whose only short file sits among long episodes (a trailer filed beside them)
+    comes round to that file again when the run looks for more; the run ends instead."""
+    from pitv.scheduler.runs import Runs
+    from pitv.scheduler.slots import programme_slot
+    c = dbm.connect(":memory:")
+    dbm.init_db(c)
+    builder = Builder(c, now=local_ts(parse_day("2026-09-14"), "10:00", tz_of(c)))
+    channel = dbm.row_to_dict(c.execute("SELECT * FROM channels WHERE number = 6").fetchone())
+    episodes = [{"id": n, "title": f"Part {n}", "duration": 2700.0, "season": 1, "episode": n, "kind": "episode"}
+                for n in (1, 2, 3)]
+    trailer = {"id": 9, "title": "tvshow-trailer", "duration": 120.0, "season": 1, "episode": 9, "kind": "episode"}
+    show = Show(id=1, title="Trainwreck", year=2022, home_channel_id=channel["id"], mode="auto",
+                anchor_time=None, anchor_days=[], rest_weeks=0, episodes=[*episodes, trailer], next_index=3)
+    first = programme_slot(channel["id"], "2026-09-14", builder.now, show.next_episode(), show)
+    show.advance(builder.now)
+    more, end = Runs(builder.policy, builder.library).series_run(channel, "2026-09-14", show, first, 3600)
+    assert first.media_id == 9 and more == [] and end == first.end_ts
+    c.close()
 
 
 def test_a_strict_channel_plays_only_labelled_material(tmp_path):

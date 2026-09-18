@@ -104,10 +104,14 @@ class Runs:
         first.block = first.block or show.title
         t = first.end_ts
         out: list[Slot] = []
+        placed = {first.media_id}
         while t - first.start_ts < target:
             episode = show.take_short(threshold, room)
-            if episode is None:
+            # A series with one short file among long ones (a trailer beside its episodes) comes
+            # round to that file again; a run never shows the same episode twice.
+            if episode is None or episode["id"] in placed:
                 break
+            placed.add(episode["id"])
             slot = programme_slot(channel["id"], day_str, t, episode, show, block=first.block)
             out.append(slot)
             self.library.last_placed[episode["id"]] = t
