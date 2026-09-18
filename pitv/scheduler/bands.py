@@ -16,13 +16,21 @@ import json
 import random
 import sqlite3
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ..db import as_bool, as_int, as_text, genre_list, rows_to_dicts
+from .rules import hhmm_to_minutes, local_ts
+from .slots import seconds
 
 ITEM_MINUTES = 15             # default longest item a band treats as one of its own; see is_feature
 KINDS = ("music", "episode", "movie")
 MAX_BAND_MINUTES = 12 * 60
+MAX_STEPS = 3000              # items one stretch can hold; a runaway loop ends as a caption, not a hang
+FREE_SHORT_ITEMS = 24         # fewer short items than this and a channel leans on its long ones
+FREE_FEATURE_SECONDS = 30 * 60  # ... in any free stretch at least this long
+Placement = tuple[int, dict[str, Any]]   # (start ts, item) for the walk to turn into a slot
 
 
 @dataclass(frozen=True)
@@ -262,3 +270,99 @@ class Filler:
             if candidates:
                 return self.rng.choices(candidates, weights=[c[0] for c in candidates], k=1)[0][1]
         return None
+
+
+# --- placing bands in a day --------------------------------------------------------------
+
+def band_start(band: Band, day: date, day_start_min: int, tz: ZoneInfo) -> int:
+    """A band's start time on this broadcast day. A time earlier than the day's own start
+    belongs to the small hours at its end, so "00:30" on a day that opens at 08:00 is tomorrow
+    morning, not twenty-four hours ago."""
+    minute = hhmm_to_minutes(band.start)
+    at = day + timedelta(days=1) if minute < day_start_min else day
+    return local_ts(at, band.start, tz)
+
+
+def timetable(todays: list[Band], day: date, day_start: int, day_end: int, next_day_start: int,
+              day_start_min: int, tz: ZoneInfo) -> list[tuple[int, int, Band]]:
+    """The bands of one day as (start, end, band), in order. A band without a length runs to
+    the next one, or to closedown.
+
+    A band that starts before closedown keeps the length it was given: a two hour band at
+    23:30 runs two hours, into the small hours, rather than being cut to thirty minutes because
+    midnight arrived. What follows it is the overnight, which simply starts later. This is the
+    one place the timetable is worked out; what the scheduler places and what the top-up asks
+    for both come from it."""
+    todays = [b for b in todays if b.on(day.weekday())]
+    starts = [band_start(b, day, day_start_min, tz) for b in todays]
+    out: list[tuple[int, int, Band]] = []
+    for i, band in enumerate(todays):
+        start = starts[i]
+        later = [s for s in starts[i + 1:] if s > start]
+        end = start + band.minutes * 60 if band.minutes else (later[0] if later else day_end)
+        if later:
+            end = min(end, later[0])
+        start, end = max(start, day_start), min(end, next_day_start)
+        if start < day_end and end - start >= 60:
+            out.append((start, end, band))
+    return sorted(out, key=lambda x: x[0])
+
+
+def fill_band(band: Band, start: int, end: int, filler: Filler, hard_end: int | None = None
+              ) -> tuple[list[Placement], int]:
+    """What goes in one band, and where the band actually ends.
+
+    A band billed as a concert is one concert: it opens with its feature and ends when the
+    feature does, and what is left of the stretch is the channel's own time. A band of short
+    items runs to its timetabled end. A band that finds nothing it may use gives the rest of
+    its time back rather than holding a title card over it; the channel fills that time with
+    whatever it has, under each item's own name, and only a channel with nothing at all ends up
+    showing a caption. The next band starts when the timetable says, never early."""
+    placed: list[Placement] = []
+    t = start
+    want_feature = band.feature
+    for _ in range(MAX_STEPS):
+        if t >= end:
+            break
+        opening_feature = want_feature
+        # A feature may run a little past its band rather than be dropped for being long.
+        gap = (hard_end - t) if hard_end is not None else (end - t + 20 * 60) if opening_feature else (end - t)
+        item = filler.pick(band, t, gap, feature=opening_feature)
+        want_feature = False
+        if item is None:
+            break
+        placed.append((t, item))
+        filler.note(item, t)
+        t += seconds(item)
+        if opening_feature:
+            break
+    return placed, t
+
+
+def fill_free(channel_id: int, kinds: tuple[str, ...], decades: tuple[int, ...], start: int, end: int,
+              filler: Filler) -> tuple[list[Placement], int]:
+    """Time between bands on a channel that has no pattern: ordinary airtime for that channel,
+    the same kinds of item held to the channel's own decades, belonging to no band.
+
+    A channel with only a handful of short items would play those same few over and over, so
+    where it also holds long ones (a share of concert films, say) those carry the time and the
+    short items fill around them. A well stocked channel never reaches for them."""
+    free = Band(id=0, channel_id=channel_id, name="", start="", minutes=None, days=(),
+                kinds=kinds or ("music",), genres=(), decades=decades, feature=False)
+    thin = filler.short_items(free) < FREE_SHORT_ITEMS
+    placed: list[Placement] = []
+    t = start
+    for _ in range(MAX_STEPS):
+        if t >= end:
+            break
+        item = None
+        if thin and end - t >= FREE_FEATURE_SECONDS:
+            item = filler.pick(free, t, end - t, feature=True)
+        if item is None:
+            item = filler.pick(free, t, end - t, feature=False)
+        if item is None:
+            break
+        placed.append((t, item))
+        filler.note(item, t)
+        t += seconds(item)
+    return placed, t

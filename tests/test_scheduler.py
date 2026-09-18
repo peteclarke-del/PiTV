@@ -821,7 +821,8 @@ def test_a_band_keeps_its_length_past_closedown(conn):
                      " (SELECT id FROM band WHERE channel_id = ? ORDER BY start DESC LIMIT 1)",
                      (music["id"], music["id"]))
     builder = Builder(conn, seed=2)
-    placed = builder._bands_for(music, day, day_start, day_end, next_start)
+    placed = bands.timetable(builder.library.bands[music["id"]], day, day_start, day_end, next_start,
+                             builder.day_start_min, tz_of(conn))
     start, end, band = placed[-1]
     assert start == local_ts(day, "23:30", tz_of(conn))
     assert end == start + 120 * 60 > day_end, f"{band.name} was cut at closedown"

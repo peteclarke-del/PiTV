@@ -52,8 +52,6 @@ Progress = Callable[[str], None] | None
 # Upper bound on walk steps for one channel-day. Only a pattern that can never place a
 # programme (adverts or idents alone) gets near it; the rest of such a day becomes filler.
 MAX_STEPS_PER_DAY = 3000
-FREE_SHORT_ITEMS = 24          # fewer short items than this and a channel leans on its long ones
-FREE_FEATURE_SECONDS = 30 * 60  # ... in any free stretch at least this long
 FILLER_TITLE = "Programmes will continue shortly"
 log = logging.getLogger("pitv.scheduler")
 
@@ -199,7 +197,8 @@ class Builder:
                 continue
             fixed.append((ts, end, ("anchor", show, ep)))
             placed_today[show.id] = placed_today.get(show.id, 0) + 1
-        day_bands = self._bands_for(channel, day, day_start, day_end, next_day_start)
+        day_bands = bands.timetable(self.library.bands.get(channel["id"], []), day, day_start, day_end,
+                                    next_day_start, self.day_start_min, self.tz)
         filler = self._band_filler(channel, day, [b for _, _, b in day_bands], rng) if day_bands else None
         for ts, end, band in day_bands:
             if any(not (end <= fs or ts >= fe) for fs, fe, _ in fixed):
@@ -292,22 +291,10 @@ class Builder:
                     continue
                 if payload[0] == "band":
                     # A band that runs to closedown, or past it, may let its final item finish;
-                    # the overnight starts when the band does end.
-                    last_band = not fixed_queue
-                    band = payload[1]
-                    t = self._fill_band(channel, day_str, band, max(t, fs), fe, filler, emit,
-                                        hard_end=next_day_start if last_band else None)
-                    # A feature band is introduced by one film/concert. If that finishes before
-                    # the next band's advertised start, hand the spare time to that next band;
-                    # unrelated free material here both breaks the guide block and defeats the
-                    # next band's genre/year rules.
-                    if band.feature and t < fe and fixed_queue:
-                        nfs, nfe, next_payload = fixed_queue[0]
-                        if (not isinstance(next_payload, Slot) and next_payload[0] == "band"
-                                and nfs == fe):
-                            fixed_queue.popleft()
-                            t = self._fill_band(channel, day_str, next_payload[1], t, nfe, filler, emit,
-                                                hard_end=next_day_start if not fixed_queue else None)
+                    # the overnight starts when the band does end. A band that ends early gives
+                    # its time back to the channel; the next band starts when the timetable says.
+                    t = self._fill_band(channel, day_str, payload[1], max(t, fs), fe, filler, emit,
+                                        hard_end=next_day_start if not fixed_queue else None)
                     continue
                 _, show, ep = payload
                 start = max(t, fs)
@@ -454,36 +441,6 @@ class Builder:
 
     # --- bands ---------------------------------------------------------------------------
 
-    def _bands_for(self, channel: dict[str, Any], day: date, day_start: int, day_end: int,
-                   last_end: int | None = None) -> list[tuple[int, int, bands.Band]]:
-        """This channel's bands for this day as (start, end, band). A band without a length runs
-        to the next one, or to the end of the day.
-
-        A band that starts before closedown keeps the length it was given: a two hour band at
-        23:30 runs two hours, into the small hours, rather than being cut to thirty minutes
-        because midnight arrived. What follows it is the overnight, which simply starts later."""
-        todays = [b for b in self.library.bands.get(channel["id"], ()) if b.on(day.weekday())]
-        out: list[tuple[int, int, bands.Band]] = []
-        starts = [self._band_start(day, b.start) for b in todays]
-        for i, band in enumerate(todays):
-            start = starts[i]
-            later = [s for s in starts[i + 1:] if s > start]
-            end = start + band.minutes * 60 if band.minutes else (later[0] if later else day_end)
-            if later:
-                end = min(end, later[0])
-            start, end = max(start, day_start), min(end, last_end or day_end)
-            if start < day_end and end - start >= 60:
-                out.append((start, end, band))
-        return sorted(out, key=lambda x: x[0])
-
-    def _band_start(self, day: date, hhmm: str) -> int:
-        """A band's start time on this broadcast day. A time earlier than the day's own start
-        belongs to the small hours at its end, so "00:30" on a day that opens at 08:00 is
-        tomorrow morning, not twenty-four hours ago."""
-        minute = hhmm_to_minutes(hhmm)
-        at = day + timedelta(days=1) if minute < self.day_start_min else day
-        return local_ts(at, hhmm, self.tz)
-
     def _band_filler(self, channel: dict[str, Any], day: date, todays: list[bands.Band],
                      rng: random.Random) -> bands.Filler:
         kinds = {k for b in todays for k in b.kinds}
@@ -501,74 +458,26 @@ class Builder:
     def _fill_band(self, channel: dict[str, Any], day_str: str, band: bands.Band, start: int, end: int,
                    filler: bands.Filler | None, emit: Callable[[Slot], None],
                    hard_end: int | None = None) -> int:
-        """Fill one band with items under its name; the guide shows them as one programme.
-
-        A band that opens with a feature and finds none, or whose feature ends early, fills the
-        rest with its own short items, as any band does: a "Concert" stretch with no concert to
-        show is still a music stretch. It runs to its timetabled end; the next band starts when
-        the timetable says, not when this one runs out."""
-        t = start
+        """Emit one band's items under its name (the guide shows them as one programme) and
+        return where it ended; see `bands.fill_band` for what goes in and why it may end early."""
         if filler is None:
-            emit(self._filler(channel, day_str, t, end, title=band.name, block=band.name))
+            emit(self._filler(channel, day_str, start, end, title=band.name, block=band.name))
             return end
-        want_feature = band.feature
-        steps = 0
-        while t < end and steps < MAX_STEPS_PER_DAY:
-            steps += 1
-            # A feature may run a little past its band rather than be dropped for being long.
-            opening_feature = want_feature
-            gap = ((hard_end - t) if hard_end is not None
-                   else (end - t + 20 * 60) if opening_feature else (end - t))
-            item = filler.pick(band, t, gap, feature=opening_feature)
-            want_feature = False
-            if item is None:
-                # Nothing suitable remains. Keep the band intact with its own caption: handing
-                # this time back to a bands-only channel would let unrelated/untagged clips leak
-                # into a strict genre or decade band and would make the guide lose the band.
-                emit(self._filler(channel, day_str, t, end, title=band.name, block=band.name))
-                return end
-            slot = self._programme_slot(channel, day_str, t, item, None, block=band.name)
-            emit(slot)
-            filler.note(item, t)
-            t = slot.end_ts
-            if opening_feature:
-                # "Concert" is one concert, not a concert and then whatever fits: what is left of
-                # the stretch is the channel's own time, and the guide names each item in it.
-                return t
+        placed, t = bands.fill_band(band, start, end, filler, hard_end)
+        for at, item in placed:
+            emit(self._programme_slot(channel, day_str, at, item, None, block=band.name))
         return t
 
     def _fill_free(self, channel: dict[str, Any], day_str: str, start: int, end: int,
                    filler: bands.Filler | None, day_bands: list[tuple[int, int, bands.Band]],
                    emit: Callable[[Slot], None]) -> int:
-        """Fill time between bands on a channel that has no pattern, with no band name on it.
-
-        A band that ends early (a concert shorter than its stretch) or a gap the timetable leaves
-        is ordinary airtime for that channel: the same kinds of item, held to the channel's own
-        decades, chosen the same way, but belonging to no band."""
+        """Emit the channel's own items over time its bands leave; see `bands.fill_free`."""
         if filler is None or start >= end:
             return start
-        kinds = tuple(sorted({k for _, _, b in day_bands for k in b.kinds})) or ("music",)
-        free = bands.Band(id=0, channel_id=channel["id"], name="", start="", minutes=None, days=(),
-                          kinds=kinds, genres=(), decades=self.select.channel_decades(channel), feature=False)
-        # A channel with only a handful of short items would play those same few over and over,
-        # so where it also holds long ones (a share of concert films, say) those carry the time
-        # and the short items fill around them. A well stocked channel never reaches for them.
-        thin = filler.short_items(free) < FREE_SHORT_ITEMS
-        t = start
-        steps = 0
-        while t < end and steps < MAX_STEPS_PER_DAY:
-            steps += 1
-            item = None
-            if thin and end - t >= FREE_FEATURE_SECONDS:
-                item = filler.pick(free, t, end - t, feature=True)
-            if item is None:
-                item = filler.pick(free, t, end - t, feature=False)
-            if item is None:
-                break
-            slot = self._programme_slot(channel, day_str, t, item, None)
-            emit(slot)
-            filler.note(item, t)
-            t = slot.end_ts
+        kinds = tuple(sorted({k for _, _, b in day_bands for k in b.kinds}))
+        placed, t = bands.fill_free(channel["id"], kinds, self.select.channel_decades(channel), start, end, filler)
+        for at, item in placed:
+            emit(self._programme_slot(channel, day_str, at, item, None))
         return t
 
     def _pad(self, channel: dict[str, Any], rng: random.Random, day_str: str, t: int, target: int,
