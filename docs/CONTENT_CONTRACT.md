@@ -28,7 +28,8 @@ contract, and anything it files reaches PiTV through the index like any other NA
 4. pitv_content works the manifest by priority and deadline: items with a NAS source are
    copied or transcoded into the cache; items without one are searched for online, fetched,
    encoded and cached. Remote-dependent scheduled items receive a 24-hour preparation boost;
-   urgent band-collection jobs run ahead of ordinary queued cache/index work.
+   an urgent band-collection job goes ahead of other catalogue runs, never of cache or index
+   work, since nothing fetched can be scheduled until an index names it.
 5. pitv_content reports each delivery with the file's path and properties. PiTV records the
    cache path, corrects slot lengths where the real duration differs, and creates catalogue
    entries for material fetched online.
@@ -269,9 +270,12 @@ younger than two hours, and does not evict while the marker is fresh.
 stops the active job (forcing an encoder down if necessary), then removes partial work,
 acquired/cache files, reports, indexes, source health/status
 and pipeline fingerprint databases. It preserves NAS/local source media, logs, job history,
-sources, provider configuration, catalogue choices and settings. PiTV clears its schedule,
-history, wanted rows and cache references only after this call succeeds, then requests a fresh
-index and rebuilds from the retained inputs.
+sources, provider configuration, catalogue choices and settings. The reply is `{"ok": true}`,
+or `{"ok": false, "failed": [paths]}` naming what could not be removed (a file still open, a
+busy mount) after everything else was; it is never a 500 for that. PiTV clears its schedule,
+history, derived wanted rows and cache references only when `ok` is true, then requests a
+fresh index and rebuilds from the retained inputs; when it is false PiTV keeps its rows and
+reports the paths, so the two sides never disagree about what exists.
 
 ## 6. Timing
 
@@ -361,8 +365,9 @@ POST {content_tool_url}/api/run
 - `max_minutes` (1 to 600) is the longest item the band can use as one of several.
 - `genres` (at most 12) are the band's, spelled as the index publishes them (section 1 and
   `GET /api/genres`); `years` is `[from, to]`, both 1900 to 2100, the band's decades.
-- `urgent` says the run should go ahead of ordinary queued cache and index work; PiTV sets it
-  when a band has nothing at all.
+- `urgent` says the run should go ahead of other queued catalogue runs; PiTV sets it when a
+  band has nothing at all. It never goes ahead of cache or index work: until an index names
+  what a run fetched, PiTV cannot schedule any of it, and tonight's copies come first.
 
 The run searches for material of those genres and years: its own catalogue of well-known
 titles that match, and open searches by genre and year ("disco 1979 official music video" and
@@ -375,12 +380,14 @@ not a band request: it is added in PiTV's admin and travels in the manifest's `w
 Replies: `{"ok": true, "job_id": "...", "status": "running" | "queued", "deduplicated":
 false}` (`deduplicated` is true only for a cache run that matched one already queued, whose
 id is returned instead): pitv_content queues
-requests and runs one job at a time, lowest priority number first (cache 0, index 10,
-catalogue 20; `urgent` puts a catalogue run at -10, ahead of the cache), ties in order of
-arrival. `400 {"errors"}` for a bad body (PiTV records the refusal and moves on); `503` or no
-answer when pitv_content is down, in which case the band keeps its turn. `GET /api/status`
-lists `active_job` and `queued_jobs`. PiTV submits every band that is short in one pass,
-identical bands as one request, and does not ask for a band again within six hours.
+requests and runs one job at a time, lowest priority number first (cache 0, index 10, urgent
+catalogue 15, catalogue 20, dry run 30), ties in order of arrival. A catalogue run started
+through the API republishes the index as it collects, at most every fifteen minutes, so what
+it has fetched reaches PiTV's next import rather than waiting for the run to finish.
+`400 {"errors"}` for a bad body (PiTV records the refusal and moves on); `503` or no answer
+when pitv_content is down, in which case the band keeps its turn. `GET /api/status` lists
+`active_job` and `queued_jobs`. PiTV submits every band that is short in one pass, identical
+bands as one request, and does not ask for a band again within six hours.
 
 ### Genre vocabulary
 

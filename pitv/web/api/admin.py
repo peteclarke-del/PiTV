@@ -778,7 +778,13 @@ def schedule_fresh_rebuild(request: Request):
             app.state.jobs.progress(job, "stopping pitv_content's work")
             status, reset = tool_client.request(tool_url(conn), "POST", "reset", body={}, timeout=30)
             if status != 200 or not isinstance(reset, dict) or not reset.get("ok"):
-                detail = reset.get("error") if isinstance(reset, dict) else f"HTTP {status}"
+                # Nothing of PiTV's is cleared: the two sides must agree about what exists, and
+                # pitv_content names what it could not remove.
+                if isinstance(reset, dict):
+                    detail = reset.get("error") or ("could not remove " + ", ".join(map(str, reset.get("failed") or []))
+                                                    if reset.get("failed") else "not ok")
+                else:
+                    detail = f"HTTP {status}"
                 raise RuntimeError(f"pitv_content reset failed: {detail}")
             app.state.jobs.progress(job, "asking pitv_content for a fresh index")
             imported = catalogue.refresh(conn, reindex=True)
