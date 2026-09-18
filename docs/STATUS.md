@@ -43,12 +43,12 @@ In the order that unblocks testing. Each was sent to its owner with the evidence
 | # | Item | Blocks | Done when |
 |---|---|---|---|
 | C1 | A listing source for named, dated, genre-labelled tracks (MusicBrainz first, then chart pages or Discogs), searched for by artist and title. Today a band gets only what the built-in track list holds: the first run asked for 60 and found 8, all from that list, and open searches add nothing because uploads rarely state their year | 3 | A band run for one genre and decade delivers at least 30 correctly labelled songs, and PiTV's import shows them live with that genre and years from the listing |
-| C2 | Cache delivery actually delivers. 5 of 519 files wanted for the next day were cached at the last look; each cache run spends its first seven minutes re-walking the NAS index | 2 | After one cache run, the manifest reports at least 95% `already_cached` for the next 24 hours and the player's status no longer reports NAS playback |
-| C3 | Stop downloading further uploads of a named track once one is filed (about half of a run's time) | 3, 4 | A run's log shows no "duplicate of" for a track it made earlier in the same run |
-| C4 | A mid-run index publish rescans only the fetched sources and merges the rest (seven minutes today, every fifteen) | 3, 4 | A mid-run publish takes under thirty seconds in the log |
-| C5 | Copy rather than re-encode fetched video that already fits the profile's copy rule (H.264, at most 864 lines); request at most 720 lines from the provider | 3, 4 | A typical music video is filed in under a minute on the development machine; PiTV times a run |
-| C6 | Identical band requests are one job: a request equal to a queued or running catalogue run returns that job with `deduplicated: true`; the stale duplicates are cancelled | 3 | Asking twice for the same band leaves one job in `GET /api/status`; contract section 9 updated |
-| C7 | Band runs worked in helpings of about ten items, the remainder requeued behind the other bands, so every band has something early | 3 | With several bands queued, each has new files before any has all of its count |
+| C2 | Cache delivery actually delivers. The cause was order, not speed: requests were worked by priority and deadline alone, so an hour-long remote episode to be searched for, downloaded and encoded sat ahead of 519 plain copies, and every interruption restarted the manifest. Fixed in pitv_content 3a0dd22 (copies first); awaiting a cache run, which is queued behind a band run that will not yield until it ends (see C7) | 2 | After one cache run, the manifest reports at least 95% `already_cached` for the next 24 hours and the player's status no longer reports NAS playback |
+| C3 | Stop downloading further uploads of a named track once one is filed (about half of a run's time). Landed in 217ba21; to be checked on the next band run's log | 3, 4 | A run's log shows no "duplicate of" for a track it made earlier in the same run |
+| C4 | A mid-run index publish rescans only the fetched sources and merges the rest (seven minutes before, every fifteen). Landed in 217ba21; to be checked on the next band run's log | 3, 4 | A mid-run publish takes under thirty seconds in the log |
+| C5 | Copy rather than re-encode fetched video that already fits the profile's copy rule (H.264, at most 864 lines). Agreed. How much it saves depends on the profile's `max_source_height`, which PiTV owns: at the present 1080 for a 576 line screen almost nothing fetched qualifies for the copy. Pete's decision, see P4 | 3, 4 | A typical music video is filed in under a minute on the development machine; PiTV times a run |
+| C7 | Band runs worked in helpings of about ten items, the remainder requeued behind the other bands, so every band has something early and cache work never waits more than one helping. Agreed; contract section 9 has the wording | 2, 3 | With several bands queued, each has new files before any has all of its count, and a queued cache run starts within one helping |
+| C12 | A cache run stops opening with a full walk of every share (seven minutes before any delivery, duplicating the nightly index job). Agreed; contract section 6 has the wording. The nightly timer queues the index as its own job | 2 | A cache run's log begins with deliveries |
 | C8 | Inside one job: searches and downloads run ahead of a single analyse-and-encode stage; one or two decode passes instead of four | 3, 4 | Timed by PiTV against C5's figure |
 | C9 | SIGTERM in a job cleans its temporary files, releases the run marker and reports what it had delivered | 5 | Stopping the service mid-run leaves no `encode-*` files and PiTV receives a report |
 | C10 | Catalogue runs take and refresh the running marker and ask PiTV to make room before fetching | 2, 5 | A long band run is visible to PiTV's eviction as running |
@@ -61,12 +61,16 @@ request; no invented "Music" genre; fetched concerts are flagged; Kodi extras ar
 `work_dir` is confined, yt-dlp options are checked on load, searches ignore user config, the
 API refuses a non-loopback bind; a reset names what it could not remove.
 
+Closed since: C6, identical band requests are one job (cbd9644, ee003aa), seen in
+`GET /api/status` as eight distinct band runs with the true duplicate cancelled.
+
 ## Open in PiTV
 
 | # | Item | Done when |
 |---|---|---|
 | P1 | Time a band run and a cache run as each of C1 to C8 lands, import, rebuild, and record the result here | Figures recorded against each item above |
 | P2 | The two bands of one decade play the same few songs at 08:00 and 15:30 while the library is thin. Acceptable for now; revisit when C1 has delivered, and decide with Pete whether a band should rather stay dark than repeat what aired earlier that day | Decision recorded |
+| P4 | `max_source_height` per display profile. pitv_content fetches the best source up to that ceiling because Pete asked it to; at 1080 for the 576 line CRT profile every fetch is a large download and a full re-encode. Lowering it to 720 lets most fetched video be copied. Pete's choice between source quality and speed | Decision recorded and the profile set |
 | P3 | Hardware verification on a Raspberry Pi 4: hardware decode of copied files, the cache drive, encode times with the Pi's presets, the player keeper under systemd | REQUIREMENTS.md rows marked "by hand" checked on the device |
 
 ## How a change is accepted

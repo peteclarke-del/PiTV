@@ -282,8 +282,11 @@ reports the paths, so the two sides never disagree about what exists.
 
 ## 6. Timing
 
-01:00 pitv_content main run (index, then manifest). 04:00 PiTV imports the index and extends
-the schedule. 05:00 pitv_content catch-up run. 06:00 and 07:00 PiTV readiness checks: anything
+01:00 pitv_content's nightly work, as two jobs: the manifest (a cache run, which copies
+before it fetches so nothing that only needs a copy waits behind a download) and a full index
+of every source. A cache run does not index the sources itself; when it has fetched something
+it republishes the fetched folders into the last index, as a catalogue run does. 04:00 PiTV
+imports the index and extends the schedule. 05:00 pitv_content catch-up run. 06:00 and 07:00 PiTV readiness checks: anything
 not playable from the cache (or the NAS, with fallback on) is replaced and logged as an error.
 
 ## 7. Host details
@@ -390,7 +393,17 @@ it has fetched reaches PiTV's next import rather than waiting for the run to fin
 `400 {"errors"}` for a bad body (PiTV records the refusal and moves on); `503` or no answer
 when pitv_content is down, in which case the band keeps its turn. `GET /api/status` lists
 `active_job` and `queued_jobs`. PiTV submits every band that is short in one pass, identical
-bands as one request, and does not ask for a band again within six hours.
+bands as one request, and does not ask for a band again within six hours. Asking again is
+harmless: a request whose kind, genres, years and `max_minutes` equal those of a catalogue run
+already queued or running returns that job's id with `deduplicated: true` (the counts may
+differ). `POST /api/cancel {"job_id"}` withdraws a queued request without touching the
+running job.
+
+A band run is worked in helpings: it collects about ten items, then goes back into the queue
+behind the other catalogue runs with the rest of its count, until the count is met or the
+search is exhausted. With several bands waiting, each has something to show within hours
+instead of the first taking everything, and cache and index work never waits longer than one
+helping for the job boundary.
 
 ### Genre vocabulary
 
