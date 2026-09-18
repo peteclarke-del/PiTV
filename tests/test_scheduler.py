@@ -55,7 +55,7 @@ def test_daily_show_limit_survives_preference_relaxation(tmp_path):
         c.execute("UPDATE shows SET excluded=1 WHERE id!=?", (keep,))
     builder = Builder(c, now=now)
     channel = next(ch for ch in builder.channels if ch["id"] == channel_id)
-    show = builder._free_shows[channel_id][0]
+    show = builder.library.free_shows[channel_id][0]
     choice = builder._choose_programme(channel, random.Random(1), now, 3600, "show",
                                        {show.id: builder.settings["show_daily_limit"]}, None,
                                        set(), relax=2)
@@ -638,9 +638,9 @@ def test_anchor_after_midnight_across_clock_change(conn):
     tz = tz_of(conn)
     builder = Builder(conn, seed=1)
     ch = builder.channels[0]
-    show = replace(builder._free_shows[ch["id"]][0], mode="strip", anchor_time="02:30",
+    show = replace(builder.library.free_shows[ch["id"]][0], mode="strip", anchor_time="02:30",
                    anchor_days=list(range(7)), resting_until=None)
-    builder._anchored[ch["id"]] = [show]
+    builder.library.anchored[ch["id"]] = [show]
     day = date(2026, 10, 24)
     anchors = builder._anchors_for(ch, day, local_ts(day, "08:00", tz), local_ts(date(2026, 10, 25), "04:00", tz))
     assert [ts for ts, _ in anchors] == [local_ts(date(2026, 10, 25), "02:30", tz)]
