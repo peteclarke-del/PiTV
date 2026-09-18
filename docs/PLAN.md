@@ -421,7 +421,11 @@ and it corrects itself, because the shortfall is what asks pitv_content for more
 import rebuilds the day from its first card. A band billed as a concert is one concert, chosen
 to end within `band_fit_minutes` (10) of the band's end where the library has one, and allowed
 `band_feature_overrun_minutes` (20) past it only when it has none. The card's first line is the
-setting `band_card_message`. The last item of a band may run over by up
+setting `band_card_message`. Where the index says which items of a kind are features (it flags
+concerts among music videos) a band's feature must be one of those; a kind it does not classify
+goes by length. The rule is read from the library and is the same for every kind, as every band
+rule is the same for every channel: nothing in the scheduler names a channel, a band or a kind
+of channel. The last item of a band may run over by up
 to `duration_tolerance_minutes` (5) and the next band starts when it ends, as programmes did on
 air; nothing runs over into a kept slot or an anchored programme. A rebuild part way through a
 band (or a locked slot or an anchor inside one) does not drop the band: it carries on around

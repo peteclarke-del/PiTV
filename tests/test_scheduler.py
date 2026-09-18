@@ -65,16 +65,28 @@ def test_daily_show_limit_holds_until_the_rules_relax(tmp_path):
     c.close()
 
 
-def test_music_feature_requires_concert_classification():
-    band = bands.Band(1, 5, "Concert", "20:30", None, (), ("music",), (), (), True)
-    long_clip = {"id": 1, "duration": 30 * 60, "concert": 0, "genres": [], "year": 1985}
-    concert = {"id": 2, "duration": 60 * 60, "concert": 1, "genres": [], "year": 1985}
-    filler = bands.Filler([band], [long_clip, concert], item_repeat=0, feature_repeat=0,
-                          rng=random.Random(1), last_placed={})
-    assert filler.pick(band, 0, 2 * 3600, feature=True) is concert
-    filler = bands.Filler([band], [long_clip], item_repeat=0, feature_repeat=0,
-                          rng=random.Random(1), last_placed={})
-    assert filler.pick(band, 0, 2 * 3600, feature=True) is None
+def test_a_bands_feature_follows_the_indexes_classification_for_any_kind():
+    """Where the index says which items of a kind are features (it flags concerts among music
+    videos), a band that opens with one takes only those: length alone would let a compilation
+    pass for a concert. A kind the index does not classify goes by length. The rule is the same
+    for every kind and is read from the library, not from a list of kinds in the code."""
+    band = bands.Band(1, 5, "Double Bill", "20:30", None, (), ("music", "movie"), (), (), True)
+    long_clip = {"id": 1, "kind": "music", "duration": 30 * 60, "concert": 0, "genres": [], "year": 1985}
+    concert = {"id": 2, "kind": "music", "duration": 60 * 60, "concert": 1, "genres": [], "year": 1985}
+    film = {"id": 3, "kind": "movie", "duration": 95 * 60, "concert": 0, "genres": [], "year": 1985}
+
+    def picks(pool):
+        filler = bands.Filler([band], pool, item_repeat=0, feature_repeat=0, rng=random.Random(1), last_placed={})
+        out = set()
+        for at in range(len(pool)):
+            item = filler.pick(band, at, 3 * 3600, feature=True, exclude=out)
+            if item is None:
+                break
+            out.add(item["id"])
+        return out
+
+    assert picks([long_clip, concert, film]) == {2, 3}, "the concert and the film, never the compilation"
+    assert picks([long_clip, film]) == {1, 3}, "with no music classified, music goes by length like any kind"
 
 
 def test_a_band_takes_its_own_genre_before_an_untagged_item_and_another_genre_last():

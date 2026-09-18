@@ -100,7 +100,7 @@ def clean(doc: Any) -> dict[str, Any]:
     kinds = [k for k in (as_text(x) for x in (fill.get("kinds") or [])) if k in KINDS]
     decades = sorted({d for d in (as_int(x) for x in (fill.get("decades") or [])) if d and 1900 <= d <= 2100})
     return {"name": name[:80], "start": start, "minutes": minutes, "days": days,
-            "fill": {"kinds": kinds or ["music"], "genres": genre_list(fill.get("genres")),
+            "fill": {"kinds": kinds or list(KINDS), "genres": genre_list(fill.get("genres")),
                      "decades": decades, "feature": bool(as_bool(fill.get("feature"))),
                      "fetch": (as_text(fill.get("fetch")) or "")[:40],
                      "only_matching": _tri(fill.get("only_matching")),
@@ -131,7 +131,7 @@ def _row_to_band(row: dict[str, Any]) -> Band:
     days = json.loads(days) if isinstance(days, str) and days else (days or [])
     return Band(id=row["id"], channel_id=row["channel_id"], name=row["name"], start=row["start"],
                 minutes=as_int(row.get("minutes")), days=tuple(int(d) for d in days),
-                kinds=tuple(k for k in (fill.get("kinds") or ["music"]) if k in KINDS) or ("music",),
+                kinds=tuple(k for k in (fill.get("kinds") or KINDS) if k in KINDS) or KINDS,
                 genres=tuple(genre_list(fill.get("genres"))),
                 decades=tuple(int(d) for d in (fill.get("decades") or [])),
                 feature=bool(fill.get("feature")), fetch=as_text(fill.get("fetch")) or "",
@@ -193,6 +193,10 @@ class Filler:
         self.last_placed = last_placed
         self.item_repeat = item_repeat
         self.feature_repeat = feature_repeat
+        # The kinds of item the index sorts into features and the rest (it flags a concert among
+        # music videos, for one). Found in the library, not written here, so the rule below is
+        # the same for every kind and needs no list of kinds that have one.
+        self.classified_kinds = {m.get("kind") for m in pool if m.get("concert")}
         self.used_today: set[int] = set()
         self.played_today: dict[int, int] = {}
         self.last_id: int | None = None
@@ -206,10 +210,11 @@ class Filler:
         decades, labels and genre, at one step of the widening."""
         if is_feature(m, band.max_minutes or self.item_minutes) != feature:
             return False
-        # A band billed as a concert is a concert slot, not a slot for any unusually long music
-        # file: the index's classification is the authority, or an unclassified compilation
-        # passes for a concert. The channel's own time has no such billing to live up to.
-        if feature and band.feature and band.kinds == ("music",) and not m.get("concert"):
+        # A band that opens with a feature is billed as one, and where the index says which
+        # items of a kind are features its word is the authority: length alone would let a
+        # compilation pass for a concert. A kind the index does not classify goes by length.
+        # The channel's own time has no such billing to live up to.
+        if feature and band.feature and m.get("kind") in self.classified_kinds and not m.get("concert"):
             return False
         dated = band.dated(m)
         if dated is False or (dated is None and (genres == "match" or strict)):
@@ -380,7 +385,7 @@ def fill_free(channel_id: int, kinds: tuple[str, ...], decades: tuple[int, ...],
     with few long items is not reduced to the same concert all day. The last item may run
     `overrun` seconds past `end`, as a band's may."""
     free = Band(id=0, channel_id=channel_id, name="", start="", minutes=None, days=(),
-                kinds=kinds or ("music",), genres=(), decades=decades, feature=False)
+                kinds=kinds or KINDS, genres=(), decades=decades, feature=False)
     placed: list[Placement] = []
     t = start
     for _ in range(MAX_STEPS):

@@ -119,10 +119,9 @@ class Library:
             m["kids"] = is_kids(m)
             m["lineup_pinned"] = m["id"] in pinned_movies
         self._era_pools()
-        self.music = self.playable("music")
         self.adverts = self.playable("advert")
         self.bands = bands.load(self.conn)
-        self._pools: dict[str, list[dict[str, Any]]] = {"music": self.music}
+        self._pools: dict[str, list[dict[str, Any]]] = {}
         self.idents = self.playable("ident")
         self._load_externals()
         # Line-ups are exclusive, so each channel's candidates are indexed once rather than
