@@ -107,8 +107,10 @@ still unrated were identified, but TMDb holds no UK or US certificate for them (
 films, documentaries, live shows; `NR` for some). They are scheduled as 15, after the
 watershed, until the owner sets one in the admin, which is what the note is for. No OMDb key is
 set on the development machine, so only TMDb was asked; with one, OMDb fills a certificate TMDb
-lacks (pitv_content 5b9a137 stops TMDb's `NR` blocking that). Whether to register the free key
-is Pete's decision.
+lacks (pitv_content 5b9a137 stops TMDb's `NR` blocking that). Pete entered an OMDb key on 19
+September; a forced check then rated five more films (43 to 38 on the list). OMDb has no
+rating for most of the rest either, so the 37 still unrated are for the owner's hand, less any
+that 5b9a137 frees when it is deployed.
 
 pitv_content 265cbda is committed and running on this machine but not pushed: the GitHub token
 here has expired and Pete has to sign in again.
