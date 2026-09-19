@@ -40,7 +40,7 @@ from .db import (
     update_row,
     write_data_file,
 )
-from .scheduler.rules import in_decades, parse_pattern
+from .scheduler.rules import in_decades, normalise_cert, parse_pattern
 from .scheduler.slots import slot_titles
 
 log = logging.getLogger("pitv.lineup")
@@ -187,16 +187,19 @@ def _insert(conn: sqlite3.Connection, channel_id: int, kind: str, key: str, titl
             show_id: int | None = None, media_id: int | None = None, genres: list[str] | None = None,
             source: str = "library", transient: int = 0, episode_minutes: int | None = None,
             pinned: int = 0, match: dict[str, str] | None = None, programme_type: str | None = None,
-            episode_count: int | None = None) -> int:
+            episode_count: int | None = None, certificate: str | None = None) -> int:
     conn.execute(
         "INSERT INTO lineup(channel_id, kind, show_id, media_id, key, title, year, genres, source, transient,"
-        " episode_minutes, pinned, match, programme_type, episode_count, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        " episode_minutes, pinned, match, programme_type, episode_count, certificate, created_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
         " ON CONFLICT(key) DO UPDATE SET channel_id = excluded.channel_id, pinned = excluded.pinned,"
         " match = COALESCE(excluded.match, lineup.match),"
         " programme_type = COALESCE(excluded.programme_type, lineup.programme_type),"
-        " episode_count = COALESCE(excluded.episode_count, lineup.episode_count), updated_at = excluded.created_at",
+        " episode_count = COALESCE(excluded.episode_count, lineup.episode_count),"
+        " certificate = COALESCE(excluded.certificate, lineup.certificate), updated_at = excluded.created_at",
         (channel_id, kind, show_id, media_id, key, title, year, json.dumps(genre_list(genres or [])), source, transient,
-         episode_minutes, pinned, json.dumps(match) if match else None, programme_type, episode_count, now_ts()))
+         episode_minutes, pinned, json.dumps(match) if match else None, programme_type, episode_count,
+         normalise_cert(certificate), now_ts()))
     return int(conn.execute("SELECT id FROM lineup WHERE key = ?", (key,)).fetchone()["id"])   # inserted or updated
 
 
@@ -290,11 +293,14 @@ def sync_home_channels(conn: sqlite3.Connection) -> None:
 def add(conn: sqlite3.Connection, channel_id: int | None, *, show_id: int | None = None, media_id: int | None = None,
         title: str | None = None, year: int | None = None, kind: str | None = None, genres: list[str] | None = None,
         transient: bool | None = None, episode_minutes: int | None = None, source: str = "manual",
-        match: Any = None, programme_type: str | None = None, episode_count: int | None = None) -> dict[str, Any]:
+        match: Any = None, programme_type: str | None = None, episode_count: int | None = None,
+        certificate: str | None = None) -> dict[str, Any]:
     """Add (or move) an entry. Library items are identified by show_id/media_id; anything else
     is an external entry that pitv_content will be asked to fetch. `programme_type` is the
     owner's word on what an external title is; without it the type is read from the genres.
     `episode_count` is how long a series ran, from the lookup; no episode past it is asked for.
+    `certificate` is the match's; without one a title nobody holds yet would be free to air at
+    any hour.
     Without a channel, an external entry goes where the generator would put that type."""
     if programme_type is not None and programme_type not in genre_rules.PROGRAMME_TYPES:
         raise ValueError(f"programme_type must be one of {', '.join(genre_rules.PROGRAMME_TYPES)}")
@@ -332,14 +338,14 @@ def add(conn: sqlite3.Connection, channel_id: int | None, *, show_id: int | None
             lid = _insert(conn, channel_id, kind, key, title.strip(), year, genres=genres or [], source=source,
                           transient=1 if transient is None else int(transient), episode_minutes=episode_minutes, pinned=1,
                           match=clean_match(match), programme_type=programme_type,
-                          episode_count=as_int(episode_count) if kind == "show" else None)
+                          episode_count=as_int(episode_count) if kind == "show" else None, certificate=certificate)
         sync_home_channels(conn)
     write_mirror(conn)
     return entry(conn, lid)
 
 
 _EDITABLE = {"channel_id", "enabled", "transient", "remove_after_airing", "episode_minutes", "next_episode", "notes",
-             "pinned", "year", "genres", "programme_type", "episode_count"}
+             "pinned", "year", "genres", "programme_type", "episode_count", "certificate"}
 _FLAGS = {"enabled", "transient", "remove_after_airing", "pinned"}
 
 
@@ -357,6 +363,8 @@ def update(conn: sqlite3.Connection, lineup_id: int, fields: dict[str, Any]) -> 
             v = json.dumps(genre_list(v))
         elif k == "notes":
             v = "" if v is None else str(v)
+        elif k == "certificate":
+            v = normalise_cert(str(v)) if v not in (None, "") else None
         elif k == "programme_type":
             v = str(v).strip().casefold() if v not in (None, "") else None     # empty: read it from the genres
             if v is not None and v not in genre_rules.PROGRAMME_TYPES:
@@ -480,7 +488,7 @@ def facets(conn: sqlite3.Connection) -> dict[str, Any]:
 # --- JSON mirror --------------------------------------------------------------------------------
 
 _EXPORTED = ("kind", "title", "year", "source", "transient", "remove_after_airing", "episode_minutes", "next_episode",
-             "enabled", "pinned", "notes", "genres", "match", "programme_type", "episode_count")
+             "enabled", "pinned", "notes", "genres", "match", "programme_type", "episode_count", "certificate")
 
 
 def export(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -526,7 +534,7 @@ def _import_entry(conn: sqlite3.Connection, channel_id: int, e: Any) -> bool:
                       transient=int(as_bool(e.get("transient"), True)), episode_minutes=as_int(e.get("episode_minutes")),
                       pinned=1, match=clean_match(e.get("match")),
                       programme_type=e.get("programme_type") if e.get("programme_type") in genre_rules.PROGRAMME_TYPES else None,
-                      episode_count=as_int(e.get("episode_count")))
+                      episode_count=as_int(e.get("episode_count")), certificate=as_text(e.get("certificate")))
     update_row(conn, "lineup", lid, {
         "enabled": int(as_bool(e.get("enabled"), True)), "remove_after_airing": int(as_bool(e.get("remove_after_airing"))),
         "next_episode": as_int(e.get("next_episode")) or 1, "notes": as_text(e.get("notes")) or ""})

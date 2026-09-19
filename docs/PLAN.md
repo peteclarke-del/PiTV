@@ -222,11 +222,17 @@ A remote series is asked for in order. Each new request takes the lowest episode
 yet asked for, from the entry's "next episode" up (`runs.next_episode_number`), so a rebuild
 fills the front of a run before it reaches further in. The entry keeps how many episodes the
 series ran to (`lineup.episode_count`): the add dialog takes it from the confirmed match, the
-online check learns it for entries added earlier (`catalogue.learn_episode_counts`), and the
+online check learns it for entries added earlier (`catalogue.learn_from_matches`), and the
 admin can set it. Nothing past it is asked for; once every episode has been, the entry offers
 nothing new and what arrived airs as the library series it has become. Continuing from the
 highest number ever raised, as this once did, let a week of rebuilds ask for episode 11 of a
 three-part series, which pitv_content filled with something else.
+
+A title nobody holds yet has no certificate of its own, and an unrated series is treated as PG,
+so without more a late-night comedy added by name could air at breakfast. The line-up entry
+therefore keeps the match's certificate (`lineup.certificate`): taken from the candidate when
+the title is added, learned by the online check for earlier entries, editable in the admin.
+A title tagged Adult with no certificate is scheduled as an 18.
 
 `catalogue.json` beside the database lists every series and film PiTV can schedule, where
 each comes from and whether it is cached, plus the custom line-up entries. It is rewritten

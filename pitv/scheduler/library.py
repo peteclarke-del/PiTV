@@ -16,7 +16,7 @@ import sqlite3
 from typing import Any
 
 from ..db import LIVE, effective, rows_to_dicts
-from ..genres import programme_type, scheduling_class
+from ..genres import matches, programme_type, scheduling_class
 from . import bands
 from .policy import SchedulerPolicy
 from .rules import era_spans, era_weight_spans, is_kids
@@ -222,6 +222,9 @@ class Library:
                 e["last_spec"] = {"kind": "episode", "lineup_id": lineup_id,
                                   "title": f"Episode {number}", "season": 1, "episode": number,
                                   "year": e.get("year"), "reuse": int(latest["id"])}
+            # Nobody holds it yet, so its certificate is the match's or the owner's. A title tagged
+            # Adult is kept after the watershed even when no source rated it.
+            e["certificate"] = e.get("certificate") or ("18" if matches(e["genres"], ("Adult",)) else None)
             e["duration"] = float(e.get("episode_minutes") or default_minutes) * 60
             e["category"] = scheduling_class("general", e["genres"])
             e["kind"] = "episode" if e["kind"] == "show" else "movie"

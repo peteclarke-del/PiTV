@@ -246,6 +246,7 @@ CREATE TABLE IF NOT EXISTS lineup (
     match TEXT,                    -- externals: the title as confirmed online in the admin (JSON; lineup.clean_match)
     programme_type TEXT,           -- externals: what the owner said the title is; NULL = read from its genres
     episode_count INTEGER,         -- externals: how many episodes the series ran to, from the lookup; NULL = unknown
+    certificate TEXT,              -- externals: from the online match or the owner; NULL = unknown
     created_at INTEGER NOT NULL,
     updated_at INTEGER
 );
@@ -591,6 +592,7 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("channels", "also_carries", "TEXT"),
     ("lineup", "programme_type", "TEXT"),
     ("lineup", "episode_count", "INTEGER"),
+    ("lineup", "certificate", "TEXT"),
     ("shows", "ids", "TEXT NOT NULL DEFAULT '{}'"),
     ("media", "ids", "TEXT NOT NULL DEFAULT '{}'"),
 ]

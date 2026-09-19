@@ -1252,7 +1252,8 @@ def lineup_add(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depe
                               transient=body.get("transient"), episode_minutes=body.get("episode_minutes"),
                               source="catalogue" if body.get("catalogue") else "manual", match=body.get("match"),
                               programme_type=body.get("programme_type") or None,
-                              episode_count=optional_int(body.get("episode_count"), "episode_count"))
+                              episode_count=optional_int(body.get("episode_count"), "episode_count"),
+                              certificate=optional_text(body.get("certificate"), "certificate"))
     except (KeyError, ValueError, TypeError) as exc:
         raise HTTPException(400, str(exc)) from exc
 

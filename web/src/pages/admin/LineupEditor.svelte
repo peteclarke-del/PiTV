@@ -3,6 +3,7 @@
   import { get, put, tryApi } from '../../lib/api.js';
   import { noteChange } from '../../lib/stores.svelte.js';
   import { num } from '../../lib/util.js';
+  import { CERTIFICATES } from '../../lib/format.js';
   import { guard } from '../../lib/guard.svelte.js';
   import Modal from '../../components/Modal.svelte';
   import GenrePicker from '../../components/GenrePicker.svelte';
@@ -13,7 +14,7 @@
   let f = $state({
     year: initial.year ?? '', genres: [...(initial.genres ?? [])], channel_id: initial.channel_id,
     episode_minutes: initial.episode_minutes ?? '', enabled: !!initial.enabled,
-    transient: !!initial.transient, next_episode: initial.next_episode ?? 1, episode_count: initial.episode_count ?? '',
+    transient: !!initial.transient, next_episode: initial.next_episode ?? 1, episode_count: initial.episode_count ?? '', certificate: initial.certificate ?? '',
   });
   onMount(async () => { facets = (await tryApi(get('/api/library/facets'))) ?? null; });
 
@@ -21,7 +22,7 @@
     const body = {
       year: num(f.year, { min: 1900, max: 2100, int: true }), genres: f.genres,
       channel_id: Number(f.channel_id), enabled: f.enabled, transient: f.transient,
-      next_episode: num(f.next_episode, { min: 1, int: true, fallback: 1 }),
+      next_episode: num(f.next_episode, { min: 1, int: true, fallback: 1 }), certificate: f.certificate || null,
     };
     if (entry.kind === 'show') body.episode_minutes = num(f.episode_minutes, { min: 1, max: 240, int: true });
     if (entry.kind === 'show') body.episode_count = num(f.episode_count, { min: 1, int: true });
@@ -38,6 +39,10 @@
     <p class="scope" style="margin:0">Edit the classification PiTV uses to choose where and when this added title airs.</p>
     <div class="form-grid">
       <label class="field">Year<input type="number" min="1900" max="2100" bind:value={f.year} /></label>
+      <label class="field">Certificate
+        <select bind:value={f.certificate}><option value="">(unknown)</option>{#each CERTIFICATES as c (c)}<option value={c}>{c}</option>{/each}</select>
+        <span class="help">From the online match. Until the files arrive this is all that keeps a late-night programme out of the daytime.</span>
+      </label>
       <label class="field">Channel<select bind:value={f.channel_id}>{#each channels as c (c.id)}<option value={c.id}>{c.number} {c.name}</option>{/each}</select></label>
       <div class="field wide genres">
         <span>Genres</span>

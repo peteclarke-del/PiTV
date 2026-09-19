@@ -563,38 +563,50 @@ def enrich_missing_metadata(conn: sqlite3.Connection, *, limit: int = 50, force:
     if replace:
         from . import lineup
         lineup.generate(conn)
-    counted = learn_episode_counts(conn, settings, limit=limit, progress=progress)
+    counted = learn_from_matches(conn, settings, limit=limit, progress=progress)
     if progress:
         progress(f"ratings: {found} found from {checked} checked", checked, len(items))
     return {"checked": checked, "found": found, "remaining": max(0, total - checked), "notes": notes,
             "episode_counts": counted,
             "summary": f"Filled in {found} title{'s' if found != 1 else ''} from {checked} online check{'s' if checked != 1 else ''}."
-                       + (f" Learned how long {counted} remote series ran." if counted else "")}
+                       + (f" Learned the length or certificate of {counted} remote title{'s' if counted != 1 else ''}." if counted else "")}
 
 
-def learn_episode_counts(conn: sqlite3.Connection, settings: dict[str, Any], *, limit: int = 50,
-                         progress: Any = None) -> int:
-    """How long each remote series ran, for entries added before the line-up kept it. The entry's
-    confirmed match names the programme, so the lookup is asked by title and only the candidate
-    with the same source and id is believed. Without a count PiTV cannot tell where a run ends,
-    and asks pitv_content for episodes that were never made."""
+def learn_from_matches(conn: sqlite3.Connection, settings: dict[str, Any], *, limit: int = 50,
+                       progress: Any = None) -> int:
+    """What the online match knows about each remote title that the line-up entry does not yet
+    hold: how long a series ran, and its certificate. The entry's confirmed match names the
+    programme, so the lookup is asked by title and only candidates for that programme are
+    believed (the same source and id, or the same IMDb id: the source with the episode list
+    often has no certificate and another has). Without the length PiTV asks for episodes never
+    made; without the certificate a late-night series nobody holds yet may air at breakfast."""
     entries = rows_to_dicts(conn.execute(
-        "SELECT id, title, year, match FROM lineup WHERE kind = 'show' AND source != 'library' AND episode_count IS NULL"
-        " AND match IS NOT NULL ORDER BY id LIMIT ?", (max(0, limit),)))
+        "SELECT id, kind, title, year, match, episode_count, certificate FROM lineup WHERE source != 'library'"
+        " AND match IS NOT NULL AND ((kind = 'show' AND episode_count IS NULL) OR certificate IS NULL)"
+        " ORDER BY certificate IS NOT NULL, id LIMIT ?", (max(0, limit),)))
     learned = 0
     for i, entry in enumerate(entries, 1):
         if progress:
-            progress(f"checking how long {entry['title']} ran", i - 1, len(entries))
+            progress(f"checking the online match for {entry['title']}", i - 1, len(entries))
         match = json.loads(entry["match"]) if isinstance(entry["match"], str) else (entry["match"] or {})
-        payload, _ = _ask_lookup(settings, {"kind": "show", "title": entry["title"], "year": entry["year"] or "", "limit": 8})
+        payload, _ = _ask_lookup(settings, {"kind": entry["kind"], "title": entry["title"], "year": entry["year"] or "", "limit": 8})
+        found: dict[str, Any] = {}
         for candidate in (payload or {}).get("candidates") or []:
             theirs = candidate.get("match") if isinstance(candidate, dict) else None
-            if (isinstance(theirs, dict) and theirs.get("source") == match.get("source")
-                    and str(theirs.get("id")) == str(match.get("id")) and (count := as_int(candidate.get("episodes")))):
-                with tx(conn):
-                    conn.execute("UPDATE lineup SET episode_count = ?, updated_at = ? WHERE id = ?", (count, now_ts(), entry["id"]))
-                learned += 1
-                break
+            if not isinstance(theirs, dict):
+                continue
+            same = ((theirs.get("source") == match.get("source") and str(theirs.get("id")) == str(match.get("id")))
+                    or (match.get("imdb") and theirs.get("imdb") == match.get("imdb")))
+            if not same:
+                continue
+            if entry["kind"] == "show" and entry["episode_count"] is None and (count := as_int(candidate.get("episodes"))):
+                found.setdefault("episode_count", count)
+            if entry["certificate"] is None and (cert := normalise_cert(as_text(candidate.get("certificate")))):
+                found.setdefault("certificate", cert)
+        if found:
+            with tx(conn):
+                update_row(conn, "lineup", entry["id"], {**found, "updated_at": now_ts()})
+            learned += 1
     return learned
 
 

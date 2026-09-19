@@ -700,3 +700,25 @@ def test_a_remote_series_is_asked_for_from_its_first_episode_and_not_past_its_la
     assert (after["status"], after["attempts"]) == ("queued", waiting["attempts"]), "asked again, no attempt used"
     assert c.execute("SELECT status FROM wanted WHERE id = ?", (last["id"],)).fetchone()[0] == "failed", "not asked again"
     c.close()
+
+
+def test_a_remote_title_keeps_its_match_certificate_and_obeys_it():
+    """A series nobody holds yet is unrated, and an unrated series is treated as PG: "The Benny
+    Hill Show" was scheduled at 08:30. The entry keeps the certificate of its online match, an
+    Adult tag stands in for a missing one, and the scheduler holds both to the watershed."""
+    c = dbm.connect(":memory:")
+    dbm.init_db(c)
+    ch = c.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
+    rated = lineup.add(c, ch, title="The Young Ones", year=1982, kind="show", genres=["Comedy"], episode_minutes=35, certificate="UK:15")
+    tagged = lineup.add(c, ch, title="The Benny Hill Show", year=1969, kind="show", genres=["Comedy", "Adult"], episode_minutes=60)
+    assert rated["certificate"] == "15" and tagged["certificate"] is None
+    with dbm.tx(c):
+        dbm.set_setting(c, "nas_only", False)
+        c.execute("UPDATE channels SET series_cadence_days = 1 WHERE id = ?", (ch,))
+    now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(c))
+    build_horizon(c, start_day=parse_day("2026-09-14"), days=5, now=now, seed=8, force=True)
+    slots = c.execute("SELECT s.title, CAST(strftime('%H', s.start_ts, 'unixepoch', 'localtime') AS INTEGER) AS hour FROM schedule s"
+                      " JOIN wanted w ON w.id = s.wanted_id WHERE s.channel_id = ? AND s.replay = 0", (ch,)).fetchall()
+    assert {r["title"] for r in slots} == {"The Young Ones", "The Benny Hill Show"}
+    assert all(r["hour"] >= 21 or r["hour"] < 6 for r in slots), [(r["title"], r["hour"]) for r in slots]
+    c.close()
