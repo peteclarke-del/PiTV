@@ -454,3 +454,15 @@ def test_the_manifest_never_asks_again_for_what_a_band_collection_found(tmp_path
     again = [i for i in manifest(c, days=1, now=now)["items"] if i["media_id"] == mid]
     assert len(again) == 1 and again[0]["action"] == "fetch"
     c.close()
+
+
+def test_a_story_about_sport_is_not_scheduled_as_sport():
+    """Sport changes the dayparts a series may air in and lets it run back to back at weekends.
+    A drama or comedy tagged Sport among its genres is none of that; the sports share is sport
+    whatever its files are tagged."""
+    from pitv import genres
+    assert genres.scheduling_class("general", ["Sport", "Snooker"]) == "sport"
+    assert genres.scheduling_class("general", ["Documentary", "Sport"]) == "sport"
+    assert genres.scheduling_class("general", ["Drama", "Comedy", "Sport"]) == "general"
+    assert genres.scheduling_class("general", ["Action", "Sci-Fi", "Sport", "Thriller"]) == "general"
+    assert genres.scheduling_class("sport", ["Drama"]) == "sport"

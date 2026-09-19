@@ -16,6 +16,7 @@ import sqlite3
 from typing import Any
 
 from ..db import LIVE, effective, rows_to_dicts
+from ..genres import scheduling_class
 from . import bands
 from .policy import SchedulerPolicy
 from .rules import era_spans, era_weight_spans, is_kids
@@ -198,7 +199,7 @@ class Library:
                                   "title": f"Episode {number}", "season": 1, "episode": number,
                                   "year": e.get("year"), "reuse": int(latest["id"])}
             e["duration"] = float(e.get("episode_minutes") or default_minutes) * 60
-            e["category"] = "sport" if any(str(g).casefold() == "sport" for g in e["genres"]) else "general"
+            e["category"] = scheduling_class("general", e["genres"])
             e["kind"] = "episode" if e["kind"] == "show" else "movie"
             self.externals.append(e)
 

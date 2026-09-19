@@ -53,6 +53,11 @@ ALIASES: dict[str, str] = {
 CHILDRENS = ("Animation", "Anime", "Children", "Family")
 CARTOONS = ("Animation", "Anime")
 SCHEDULING_CLASSES = ("general", "sport")
+# A story about sport is not sport. Metadata sites tag "Ted Lasso" and "Twisted Metal" as Sport
+# among their other genres; scheduled as sport they would fill a Saturday afternoon back to
+# back. A series carrying any of these is scripted, whatever else it is tagged.
+SCRIPTED = ("Drama", "Comedy", "Action", "Adventure", "Fantasy", "Science Fiction", "Thriller", "Crime",
+            "Mystery", "Horror", "Romance", "Soap", "Western", "War", "Supernatural", "Animation", "Anime")
 
 # Words that keep their own case inside a title-cased name.
 _LOWER = {"and", "of", "the", "in", "on", "de", "la"}
@@ -113,6 +118,11 @@ def scheduling_class(value: object, names: object = ()) -> str:
     Old databases and indexes used ``kids`` and ``cartoon`` as category values.  They are
     audience/genre facts and therefore collapse to general; sport remains distinct because it
     changes daypart weighting and back-to-back rules.
+
+    A source the owner set up for sport (the sports share) is sport whatever its files are
+    tagged. Elsewhere a Sport tag counts only on something that is not scripted.
     """
-    return "sport" if str(value or "").strip().casefold() == "sport" or matches(names, ("Sport",)) else "general"
+    if str(value or "").strip().casefold() == "sport":
+        return "sport"
+    return "sport" if matches(names, ("Sport",)) and not matches(names, SCRIPTED) else "general"
 
