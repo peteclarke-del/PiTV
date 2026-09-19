@@ -524,3 +524,26 @@ def test_the_schedule_promises_no_more_new_remote_material_a_day_than_the_ceilin
     assert per_day and all(r["n"] <= 2 for r in per_day), [tuple(r) for r in per_day]
     assert not conn.execute("SELECT 1 FROM schedule WHERE kind = 'filler' AND replay = 0 AND block IS NULL"
                             " AND end_ts - start_ts > 300").fetchone(), "the library fills what the ceiling holds back"
+
+
+def test_a_starved_channel_does_not_book_one_remote_episode_all_day():
+    """With nothing on disk and a single remote series, the last step before a holding card may
+    bring the series round again, but only up to the daily cap; the rest of the day is the
+    holding card. Uncapped, one unfetched episode was booked four times in a day and four more
+    in the small hours' replay of it. The replay is left out here: with one title in the day it
+    has nothing else to loop."""
+    c = dbm.connect(":memory:")
+    dbm.init_db(c)
+    ch = c.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
+    lineup.add(c, ch, title="Bullseye", year=1981, kind="show", genres=["Game Show"], episode_minutes=30)
+    with dbm.tx(c):
+        dbm.set_setting(c, "nas_only", False)
+    now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(c))
+    build_horizon(c, start_day=parse_day("2026-09-14"), days=4, now=now, seed=5, force=True)
+    cap = dbm.all_settings(c)["show_daily_limit"]
+    placed = c.execute("SELECT day, wanted_id, COUNT(*) AS n FROM schedule WHERE channel_id = ? AND wanted_id IS NOT NULL"
+                       " AND CAST(strftime('%H', start_ts, 'unixepoch', 'localtime') AS INTEGER) >= 8"
+                       " GROUP BY day, wanted_id", (ch,)).fetchall()
+    assert placed, "the remote series was never placed"
+    assert max(r["n"] for r in placed) <= cap, [tuple(r) for r in placed]
+    c.close()

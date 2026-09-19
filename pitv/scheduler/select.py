@@ -287,7 +287,10 @@ class Selector:
                              or e["id"] in barred or (e.get("show_id") and e["show_id"] in barred))
                 candidate = e
                 if held_back:
-                    if relax < 2 or not e.get("last_spec"):
+                    # The last step before a holding card may bring a remote title round again,
+                    # but never past the daily cap: without it one unfetched episode was booked
+                    # eight times in a day while series on disk waited for their week to pass.
+                    if relax < 2 or not e.get("last_spec") or times_today >= (daily_limit if episode else 1):
                         continue
                     candidate = {**e, "_external_repeat": True}
                     prior_run = self.library.external_short_runs.get(e["lineup_id"])
