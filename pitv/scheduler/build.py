@@ -673,6 +673,10 @@ class Builder:
             if wid is None:
                 if spec.get("reuse"):
                     wid = int(spec["reuse"])
+                    # A reused request may have been brought forward in its run (runs.external_slot).
+                    self.conn.execute("UPDATE wanted SET episode = ?, title = ?, updated_at = ? WHERE id = ? AND kind = 'episode'"
+                                      " AND status = 'queued' AND episode IS NOT ?",
+                                      (spec["episode"], spec["title"], now_ts(), wid, spec["episode"]))
                 else:
                     cur = self.conn.execute(
                         "INSERT INTO wanted(kind, title, year, season, episode, provider, lineup_id, transient, created_at)"

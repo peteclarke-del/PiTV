@@ -333,9 +333,22 @@ def _wanted_done(conn: sqlite3.Connection, wid: int, message: str, dest_path: st
                  " updated_at = ? WHERE id = ?", (dest_path, message, now_ts(), wid))
 
 
+# pitv_content's word that a series ends before the episode asked for, with the length it knows
+# (contract section 3): "no such episode: the series has 6".
+_NO_SUCH_EPISODE = re.compile(r"^no such episode\b\D*(\d{1,4})?", re.IGNORECASE)
+
+
 def _fail_wanted(conn: sqlite3.Connection, wid: int, message: str) -> None:
     msg = (message or "pitv_content failed")[:300]
-    if "bot check" in msg.lower() or "rate limit" in msg.lower():
+    if ended := _NO_SUCH_EPISODE.match(msg):
+        # Asking again cannot help, and the entry now knows where its run ends, so the scheduler
+        # stops asking past it (runs.next_episode_number).
+        conn.execute("UPDATE wanted SET status = 'failed', attempts = attempts + 1, message = ?, updated_at = ? WHERE id = ?",
+                     (msg, now_ts(), wid))
+        if ended.group(1):
+            conn.execute("UPDATE lineup SET episode_count = ?, updated_at = ? WHERE id = (SELECT lineup_id FROM wanted WHERE id = ?)",
+                         (int(ended.group(1)), now_ts(), wid))
+    elif "bot check" in msg.lower() or "rate limit" in msg.lower():
         # The provider, not the request, was the problem: retry without using up an attempt.
         conn.execute("UPDATE wanted SET status = 'queued', message = ?, updated_at = ? WHERE id = ?", (msg, now_ts(), wid))
     else:

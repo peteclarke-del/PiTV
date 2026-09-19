@@ -655,4 +655,20 @@ def test_a_remote_series_is_asked_for_from_its_first_episode_and_not_past_its_la
         build_horizon(c, start_day=parse_day("2026-09-14"), days=7, now=now, seed=seed, force=True)
     asked = sorted(r[0] for r in c.execute("SELECT episode FROM wanted WHERE lineup_id = ?", (entry["id"],)))
     assert asked == [1, 2, 3], asked
+
+    # An open request the old numbering left far into a run comes down to the front of it at the
+    # next rebuild, and pitv_content saying where a run ends is remembered.
+    from pitv.content import apply_report
+    other = lineup.add(c, ch, title="Ancient Aliens", year=2009, kind="show", genres=["Documentary"], episode_minutes=45)
+    build_horizon(c, start_day=parse_day("2026-09-14"), days=7, now=now, seed=4, force=True)
+    with dbm.tx(c):
+        c.execute("UPDATE wanted SET episode = episode + 7, title = 'Episode ' || (episode + 7) WHERE lineup_id = ?", (other["id"],))
+    build_horizon(c, start_day=parse_day("2026-09-14"), days=7, now=now, seed=4, force=True)
+    numbers = sorted(r[0] for r in c.execute("SELECT episode FROM wanted WHERE lineup_id = ?", (other["id"],)))
+    assert numbers and numbers == list(range(1, len(numbers) + 1)), numbers
+    last = c.execute("SELECT id, episode FROM wanted WHERE lineup_id = ? ORDER BY episode DESC LIMIT 1", (other["id"],)).fetchone()
+    apply_report(c, {"schema": 2, "items": [{"request_id": f"w:{last['id']}", "wanted_id": last["id"], "status": "failed",
+                                             "message": f"no such episode: the series has {last['episode'] - 1}", "file": None}]})
+    assert lineup.entry(c, other["id"])["episode_count"] == last["episode"] - 1
+    assert c.execute("SELECT status FROM wanted WHERE id = ?", (last["id"],)).fetchone()[0] == "failed", "not asked again"
     c.close()

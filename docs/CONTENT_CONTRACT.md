@@ -248,6 +248,12 @@ applies a report once: a dropped copy of one it already took over HTTP is recogn
 - Schema 1 reports (no `file` block) are still accepted during the transition: the path is
   recorded and the requested length is kept.
 
+- A request for an episode of a matched series that the source's episode list does not have
+  fails with a message beginning `no such episode`, followed by the length of the run when it
+  is known: `no such episode: the series has 6`. PiTV does not ask again, records the length
+  on the line-up entry and asks for nothing past it. Delivering a near match under the
+  number asked for is never right: PiTV airs it as that episode.
+
 ## 4. Sources
 
 pitv_content's API owns the source configuration; PiTV's admin Sources page is a view of it.
