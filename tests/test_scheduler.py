@@ -1300,7 +1300,11 @@ def test_the_days_series_are_kept_for_the_peak_hours_when_there_are_too_few(tmp_
         return {("kids " if p[0].get("kids") else "") + ("series" if p[1] is not None else "film") for p in picks if p}
     morning, evening = offered("10:00"), offered("19:30")
     assert "series" not in morning, morning          # a handful due, five peak hours to come
-    assert "series" in evening, evening
+    assert evening == {"series"}, evening            # and in the peak a film waits until no series is left
+    t = local_ts(day, "16:40", tz_of(c))             # fifty minutes before the peak, series waiting
+    films = [p[0] for p in (builder.select.programme(channel, rng, t, 4 * 3600, "show", {}, None, set(), relax=0, slack=300)
+                            for _ in range(200)) if p and p[1] is None and p[0]["id"] > 0]
+    assert all(f["duration"] <= (50 + 20) * 60 for f in films), "a film ran far into the peak hours"
     with dbm.tx(c):
         dbm.set_setting(c, "peak_from", "00:00")
         dbm.set_setting(c, "peak_until", "00:00")     # no peak hours: nothing is held back

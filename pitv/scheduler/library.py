@@ -223,8 +223,9 @@ class Library:
                                   "title": f"Episode {number}", "season": 1, "episode": number,
                                   "year": e.get("year"), "reuse": int(latest["id"])}
             # Nobody holds it yet, so its certificate is the match's or the owner's. A title tagged
-            # Adult is kept after the watershed even when no source rated it.
-            e["certificate"] = e.get("certificate") or ("18" if matches(e["genres"], ("Adult",)) else None)
+            # Adult is kept after the watershed even when no source rated it, or one rated it 12.
+            if matches(e["genres"], ("Adult",)) and e.get("certificate") not in ("15", "18"):
+                e["certificate"] = "18" if not e.get("certificate") else "15"     # a lenient match does not outrank the tag
             e["duration"] = float(e.get("episode_minutes") or default_minutes) * 60
             e["category"] = scheduling_class("general", e["genres"])
             e["kind"] = "episode" if e["kind"] == "show" else "movie"

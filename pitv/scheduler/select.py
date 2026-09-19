@@ -42,6 +42,8 @@ STAND_IN_IDENT_SECONDS = 10     # the shipped test signal's length (pitv/assets)
 # A channel borrows a type from another's shelf only where its daypart at least doubles that
 # type's weight: a children's daypart, not a teatime that merely tolerates children's programmes.
 BORROW_AT = 2.0
+# How far into the peak hours a film started before them may run while series wait for the peak.
+PEAK_OVERRUN_MINUTES = 20
 
 class Selector:
     def __init__(self, policy: SchedulerPolicy, settings: dict[str, Any], tz: ZoneInfo, library: Library) -> None:
@@ -78,6 +80,11 @@ class Selector:
             return bool(dp["peak"])
         start = hhmm_to_minutes(dp["start"])
         return hhmm_to_minutes(str(self.policy.value("peak_from"))) <= start < hhmm_to_minutes(str(self.policy.value("peak_until")))
+
+    def _minutes_to_peak(self, bday_min: int, dayparts: list[dict[str, Any]]) -> int | None:
+        """Minutes until the next peak daypart starts today, or None when none is to come."""
+        ahead = [start - bday_min for d in dayparts if self._is_peak(d) and (start := hhmm_to_minutes(d["start"])) > bday_min]
+        return min(ahead, default=None)
 
     def _series_kept_for_peak(self, channel: dict[str, Any], t: int, bday_min: int, day_ordinal: int,
                               dayparts: list[dict[str, Any]], placed_today: dict[int, int]) -> bool:
@@ -265,8 +272,11 @@ class Selector:
 
         tv_cands: list[tuple[float, dict[str, Any], Show | None]] = []
         movie_cands: list[tuple[float, dict[str, Any], Show | None]] = []
-        kept_for_peak = (not relax and not self._is_peak(dp)
+        in_peak = self._is_peak(dp)
+        kept_for_peak = (not relax and not in_peak
                          and self._series_kept_for_peak(channel, t, bday_min, day_ordinal, dayparts, placed_today))
+        # While series wait for the peak, a film started before it must not run far into it.
+        to_peak = self._minutes_to_peak(bday_min, dayparts) if kept_for_peak else None
 
         if token in ("show", "tv"):
             own = self.library.free_shows.get(channel["id"], ())
@@ -318,6 +328,8 @@ class Selector:
                 nearest = min((abs(t - x) for x in placements), default=None)
                 recent = nearest is not None and nearest < movie_repeat
                 if recent and (relax < 2 or nearest < 12 * 3600):
+                    continue
+                if to_peak is not None and float(m["duration"]) > (to_peak + PEAK_OVERRUN_MINUTES) * 60:
                     continue
                 w = common_weight(m, "movie")
                 if w <= 0:
@@ -391,6 +403,10 @@ class Selector:
             if unseen_movies and self.policy.external_prepared(t):
                 movie_cands = unseen_movies
 
+        if in_peak and not relax and tv_cands:
+            # The peak hours are what the day's series were kept for: a film takes a peak slot only
+            # when no series is left to offer.
+            movie_cands = []
         kinds: list[tuple[float, list[tuple[float, dict[str, Any], Show | None]]]] = []
         for kind, cands in (("tv", tv_cands), ("movie", movie_cands)):
             kind_weight = float(kind_weights.get(kind, 1.0))
