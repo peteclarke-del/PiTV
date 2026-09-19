@@ -909,7 +909,8 @@ directory.
 
 Request manifest (`GET /api/content/manifest`, or `pitv content-manifest --out file` when the
 web service is down). Every scheduled file from now through the end of the next broadcast day
-is a request, listed once however many slots or channels use it, ordered by `priority` (hours
+is a request (and every placeholder that must be fetched, for the whole built schedule, because
+a fetch needs days of notice where a copy needs minutes), listed once however many slots or channels use it, ordered by `priority` (hours
 ahead divided by four) and `deadline_ts` (15 minutes before air). A NAS item is `copy` when the Pi can
 play it as it is (section 5.3), otherwise `transcode` to `content_profile` (768x576 4:3, H.264, AAC, 4000 kbps, deinterlaced
 if interlaced); either way its `target` is `<cache>/<media_id>_<stem>.<ext>`. An item with no

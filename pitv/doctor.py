@@ -99,7 +99,9 @@ def _schedule(conn: sqlite3.Connection, now: int) -> dict[str, Any]:
 
 def _cache(conn: sqlite3.Connection, settings: dict[str, Any], now: int) -> dict[str, Any]:
     from .content import manifest
-    items = manifest(conn, days=1, now=now)["items"]
+    doc = manifest(conn, days=1, now=now)
+    # Fetches are listed for the whole schedule; the cache is judged on the manifest window.
+    items = [i for i in doc["items"] if i["first_air_ts"] < doc["horizon_ts"]]
     waiting: dict[str, int] = {}
     for item in items:
         if not item.get("already_cached"):

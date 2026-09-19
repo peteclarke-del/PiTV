@@ -24,7 +24,8 @@ contract, and anything it files reaches PiTV through the index like any other NA
    is added to the catalogue in PiTV's admin as line-up entries.
 3. PiTV builds the schedule from each channel's line-up and publishes the request manifest:
    every programme, advert, ident and music video it needs through the end of the next
-   broadcast day.
+   broadcast day, and everything that has to be fetched for as far ahead as the schedule is
+   built, since a fetch needs days of notice where a copy needs minutes.
 4. pitv_content works the manifest by priority and deadline: items with a NAS source are
    copied or transcoded into the cache; items without one are searched for online, fetched,
    encoded and cached. Remote-dependent scheduled items receive a 24-hour preparation boost;

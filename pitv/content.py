@@ -176,14 +176,18 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
             " ORDER BY s.start_ts", (now, horizon))):
         add(f"m:{r['id']}", r, lambda m: _media_request(m, cache, acquire))
 
-    # Placeholders: line-up material not on disk, requested by wanted row.
+    # Placeholders: line-up material not on disk, requested by wanted row. These are listed for
+    # the whole built schedule, not only the manifest window. A copy takes seconds and cache
+    # space, so it waits until the day before; a fetch takes pitv_content a good part of an
+    # hour, and told only a day ahead it was given sixty new episodes each morning and delivered
+    # three. Listed a week ahead with their air times, they are worked in the order they air.
     for r in rows_to_dicts(conn.execute(
             "SELECT s.start_ts, s.end_ts, c.number AS channel, w.*, l.title AS lineup_title, l.match AS lineup_match"
             " FROM schedule s"
             " JOIN wanted w ON w.id = s.wanted_id JOIN channels c ON c.id = s.channel_id"
             " LEFT JOIN lineup l ON l.id = w.lineup_id"
-            " WHERE s.media_id IS NULL AND s.end_ts > ? AND s.start_ts < ? AND w.status != 'done'"
-            " ORDER BY s.start_ts", (now, horizon))):
+            " WHERE s.media_id IS NULL AND s.end_ts > ? AND w.status != 'done'"
+            " ORDER BY s.start_ts", (now,))):
         add(f"w:{r['id']}", r, lambda w: {
             **_wanted_request(w, w["lineup_title"] if w["kind"] == "episode" else None, acquire),
             "duration": w["end_ts"] - w["start_ts"]})
