@@ -122,6 +122,8 @@ class Builder:
         self.policy = SchedulerPolicy(self.settings, self.now)
         self.seed = seed if seed is not None else 0
         self.log: list[str] = []
+        # (channel, band) -> minutes of holding card on each day built, reported as one note
+        self.band_short: dict[tuple[str, str], list[int]] = {}
         self.channels = enabled_channels(conn)
         # Minute of day the broadcast day starts (08:00 = 480); minutes before it belong to the
         # previous day and are counted past 1440 so comparisons stay monotonic.
@@ -501,6 +503,15 @@ class Builder:
         following = fixed_queue[0][2] if fixed_queue else None
         return tolerance if isinstance(following, tuple) and following[0] == "band" else 0
 
+    def notes(self) -> list[str]:
+        """What the build has to say: its log, and one line for each band short of material
+        however many days it was short on, so a week of thin bands is ten lines and not seventy."""
+        short = [f"{channel}: {band} is short of material on {len(minutes)} day(s), "
+                 f"{min(minutes)} to {max(minutes)} min of holding card" if len(minutes) > 1 else
+                 f"{channel}: {band} is {minutes[0]} min short of material"
+                 for (channel, band), minutes in self.band_short.items()]
+        return self.log + short
+
     def _fill_band(self, channel: dict[str, Any], day_str: str, band: bands.Band, start: int, end: int,
                    filler: bands.Filler | None, emit: Callable[[Slot], None],
                    hard_end: int | None = None, overrun: int = 0, shown: set[int] | None = None) -> int:
@@ -526,7 +537,7 @@ class Builder:
                               subtitle=f"{self.settings.get('band_card_message') or ''} {resumes}".strip()
                               if short else resumes))
             if short:
-                self.log.append(f"{channel['name']} {day_str}: {band.name} is {(end - t) // 60} min short of material")
+                self.band_short.setdefault((channel["name"], band.name), []).append((end - t) // 60)
             return end
         return max(t, end) if placed else end
 

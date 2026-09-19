@@ -47,10 +47,10 @@ def build_horizon(conn: sqlite3.Connection, *, start_day: date | None = None,
     built = 0
     programmes = 0
     notes: list[str] = []
+    builder: Builder | None = None
     try:
         builder = Builder(conn, now=now, seed=seed,
                           rebuild={c["id"]: (now, None) for c in channels} if force else None)
-        notes = builder.log
         for i in range(days):
             day = start_day + timedelta(days=i)
             for channel in channels:
@@ -64,9 +64,11 @@ def build_horizon(conn: sqlite3.Connection, *, start_day: date | None = None,
                 if progress:
                     progress(f"{day} {channel['name']}: {n} programmes")
         withdraw_orphaned_requests(conn)
+        notes = builder.notes()
     except Exception as exc:
         # Days saved before the failure stand (each is its own transaction); the run log must
         # not be left showing a build still running.
+        notes = builder.notes() if builder is not None else []
         run_log_finish(conn, run_id, "error", f"failed after {built} channel-days: {exc}", [*notes, repr(exc)])
         raise
     status = "ok" if not notes else "warning"
@@ -201,5 +203,6 @@ def rebuild_from(conn: sqlite3.Connection, channel_id: int, from_ts: int, *,
         builder.save(channel_id, day, slots)
     withdraw_orphaned_requests(conn)
     programmes = sum(1 for s in slots if s.kind == "programme" and not s.replay)
-    return {"status": "ok" if not builder.log else "warning", "programmes": programmes,
-            "summary": f"{programmes} programmes", "notes": builder.log}
+    notes = builder.notes()
+    return {"status": "ok" if not notes else "warning", "programmes": programmes,
+            "summary": f"{programmes} programmes", "notes": notes}
