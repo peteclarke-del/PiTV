@@ -87,15 +87,16 @@ class Selector:
     @staticmethod
     def _daypart_genre_weight(daypart: dict[str, Any], item_genres: list[str]) -> float:
         """What a daypart makes of a programme's genres: the largest of the weights it gives to
-        any of them, 1 when it names none of them. This is how a channel keeps its quiz at
-        teatime and its soap at half past seven; like every daypart weight it is a preference,
-        dropped when the rules relax."""
+        any of them, 1 when it names none of them, and 0 when it gives 0 to any of them, since a
+        0 says this kind of programme does not belong at this hour (a game show by day) whatever
+        else it is. This is how a channel keeps its quiz for the evening and its soap at half
+        past seven; like every daypart weight it goes when the rules relax."""
         weights = daypart.get("genres")
         if not weights or not item_genres:
             return 1.0
         have = {g.casefold() for g in canonical_all(item_genres)}
         found = [float(w) for name, w in weights.items() if (canonical(name) or name).casefold() in have]
-        return max(found) if found else 1.0
+        return 0.0 if found and min(found) <= 0 else max(found, default=1.0)
 
     def channel_decades(self, channel: dict[str, Any]) -> tuple[int, ...]:
         """The decades a channel plays; empty means any. Held as JSON on the channel row."""

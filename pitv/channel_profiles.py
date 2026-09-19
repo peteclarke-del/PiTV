@@ -40,7 +40,7 @@ def _dp(name: str, start: str, tv: float, movie: float, kids: float, sport: floa
 BBC_ONE = {
     "weekday": [
         _dp("Breakfast", "08:00", 1.0, 0.05, 1.0, 0.05, 40, Magazine=2.0, Informational=2.0, Children=1.5),
-        _dp("Daytime", "09:30", 1.0, 0.2, 0.6, 0.1, Education=2.0, Magazine=2.0, Game_Show=1.5),
+        _dp("Daytime", "09:30", 1.0, 0.2, 0.6, 0.1, Education=2.0, Magazine=2.0),
         _dp("Lunchtime", "12:30", 1.0, 0.1, 0.3, 0.2, 40, Magazine=2.0, Informational=1.5, Comedy=1.2),
         _dp("Afternoon", "13:45", 0.8, 1.6, 0.5, 0.3, Soap=1.5, Drama=1.3, Western=1.5),
         _dp("Children's BBC", "15:55", 1.0, 0.05, 7.0, 0.05, 35, Children=2.0, Animation=2.0, Family=1.5),
@@ -85,7 +85,7 @@ BBC_TWO = {
         _dp("Late", "22:30", 0.8, 2.0, 0.0, 2.5, Horror=1.5, Music=1.5, Thriller=1.3),
     ],
     "saturday": [
-        _dp("Open University", "08:00", 1.0, 0.2, 0.5, 0.05, 60, Education=3.0, Science=2.0, Technology=2.0),
+        _dp("Saturday morning", "08:00", 1.0, 0.2, 4.0, 0.05, 60, Children=2.0, Animation=2.0, Education=1.5),
         _dp("Saturday afternoon", "12:00", 0.6, 2.0, 0.3, 3.0),
         _dp("Saturday early evening", "17:30", 1.0, 0.4, 0.3, 1.5, Science_Fiction=2.0, Documentary=1.5, Music=1.5),
         _dp("Saturday evening", "19:00", 1.0, 0.8, 0.05, 1.0, Documentary=2.0, Drama=1.5, Music=1.5, History=1.5),
@@ -111,8 +111,8 @@ BBC_TWO = {
 ITV = {
     "weekday": [
         _dp("TV-am", "08:00", 1.0, 0.05, 1.5, 0.05, 40, Magazine=2.0, Informational=2.0, Children=1.5, Animation=1.5),
-        _dp("Morning", "09:30", 1.0, 0.2, 0.5, 0.1, Game_Show=2.0, Magazine=1.5, Soap=1.5, Education=1.2),
-        _dp("Lunchtime", "12:00", 1.0, 0.1, 1.5, 0.2, 40, Soap=2.5, Drama=1.5, Game_Show=1.5, Children=1.5),
+        _dp("Morning", "09:30", 1.0, 0.2, 0.5, 0.1, Magazine=1.5, Soap=1.5, Education=1.2),
+        _dp("Lunchtime", "12:00", 1.0, 0.1, 1.5, 0.2, 40, Soap=2.5, Drama=1.5, Children=1.5),
         _dp("Afternoon", "13:30", 1.0, 1.4, 0.4, 0.5, Soap=2.0, Drama=1.5),
         _dp("Children's ITV", "16:00", 1.0, 0.05, 7.0, 0.05, 35, Children=2.0, Animation=2.0),
         _dp("Teatime", "17:15", 1.0, 0.1, 0.4, 0.2, 40, Game_Show=3.0, Soap=3.0, Comedy=1.3),
@@ -132,7 +132,8 @@ ITV = {
         _dp("Sunday morning", "08:00", 1.0, 0.2, 2.5, 0.1, 60, Children=1.5, Animation=1.5),
         _dp("Sunday lunchtime", "12:00", 1.0, 0.3, 0.4, 0.5, Informational=1.5, Magazine=1.5, Documentary=1.5),
         _dp("The Big Match", "14:00", 0.5, 2.0, 0.3, 3.5),
-        _dp("Sunday teatime", "16:30", 1.0, 0.4, 1.0, 0.4, 50, Game_Show=3.0, Family=2.0, Drama=1.5, Adventure=1.5),
+        _dp("Sunday afternoon drama", "16:00", 1.0, 0.4, 1.0, 0.4, 50, Family=2.0, Drama=1.5, Adventure=1.5),
+        _dp("Sunday teatime", "17:00", 1.0, 0.3, 1.0, 0.3, 50, Game_Show=3.0, Family=2.0, Drama=1.5),
         _dp("Sunday night drama", "19:15", 1.0, 0.5, 0.05, 0.2, Drama=2.5, Comedy=2.0, Mini__series=2.0, Crime=1.8, Game_Show=1.3),
         _dp("Sunday post-watershed", "21:00", 1.0, 1.3, 0.0, 0.3, Drama=2.0, Crime=2.0, Thriller=1.5),
         _dp("Sunday late", "22:30", 0.6, 1.8, 0.0, 1.0, Comedy=1.5),
@@ -150,14 +151,14 @@ CHANNEL_4 = {
         _dp("Morning", "08:00", 1.0, 0.3, 0.4, 0.05, Education=2.0, Documentary=1.5, Comedy=1.2),
         _dp("Lunchtime", "12:00", 1.0, 0.6, 0.3, 0.1, Documentary=1.5, Magazine=1.5, Comedy=1.3),
         _dp("Matinee", "14:00", 0.6, 2.5, 0.3, 1.0, Western=1.5, War=1.3),
-        _dp("Teatime", "16:30", 1.0, 0.1, 1.5, 0.1, 40, Game_Show=3.0, Comedy=2.0, Animation=1.5, Family=1.5, Music=1.5),
+        _dp("Teatime", "16:30", 1.0, 0.1, 1.5, 0.1, 40, Comedy=2.0, Animation=1.5, Family=1.5, Music=1.5),
         _dp("Early evening", "18:00", 1.0, 0.2, 0.3, 0.2, 55, Comedy=2.0, Soap=2.0, Science_Fiction=1.5, Documentary=1.5),
         _dp("Eight o'clock", "20:00", 1.0, 0.5, 0.05, 0.2, Soap=2.0, Documentary=2.0, Drama=1.6, History=1.5, Science=1.5),
         _dp("Nine o'clock", "21:00", 1.0, 1.6, 0.0, 0.3, Comedy=2.5, Crime=2.0, Drama=1.8),
         _dp("Late", "22:30", 0.8, 2.2, 0.0, 0.5, Comedy=1.8, Horror=1.5, Music=1.5, Thriller=1.3),
     ],
     "saturday": [
-        _dp("Saturday morning", "08:00", 1.0, 0.3, 0.8, 0.05, 60, Education=1.5, Comedy=1.3),
+        _dp("Saturday morning", "08:00", 1.0, 0.3, 4.0, 0.05, 60, Children=2.0, Animation=2.0, Comedy=1.3),
         _dp("Racing and the double bill", "13:00", 0.5, 2.2, 0.3, 3.0),
         _dp("Saturday teatime", "17:00", 1.0, 0.3, 0.6, 0.2, Soap=3.0, Comedy=1.5, Music=1.5),
         _dp("Saturday evening", "19:00", 1.0, 1.0, 0.05, 0.2, Documentary=1.8, History=1.5, Music=1.5, Drama=1.5),
@@ -174,6 +175,16 @@ CHANNEL_4 = {
         _dp("Sunday late", "22:30", 0.6, 2.2, 0.0, 0.3, Comedy=1.5, Music=1.3),
     ],
 }
+
+# Quizzes, game shows and variety were evening television. By day a game show has no place on
+# any of the four, so every part of the day that starts before five bars it (a weight of 0 is a
+# bar, not a small preference) and the evening parts above are where it is favoured.
+EVENING_ONLY = ("Game Show", "Entertainment")
+for _profile in (BBC_ONE, BBC_TWO, ITV, CHANNEL_4):
+    for _rows in _profile.values():
+        for _row in _rows:
+            if _row["start"] < "17:00":
+                _row.setdefault("genres", {}).update({name: 0.0 for name in EVENING_ONLY})
 
 # The default channel each profile seeds, by the number it ships with.
 BY_DEFAULT_CHANNEL = {1: BBC_ONE, 2: BBC_TWO, 3: ITV, 4: CHANNEL_4}

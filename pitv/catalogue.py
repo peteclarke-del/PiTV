@@ -433,9 +433,13 @@ def enrich_missing_metadata(conn: sqlite3.Connection, *, limit: int = 50, force:
             if not force and checked >= cutoff:
                 continue
             items.append({"table": table, "kind": kind, "row": raw})
-    # Family material first: it suffers most from the conservative unknown-film fallback.
+    # Family material first: it suffers most from the conservative unknown-film fallback. Then
+    # series before films, since one answer settles hundreds of episodes, and a series the index
+    # knew nothing about (no genres) before one that only lacks a certificate: until it is
+    # identified it cannot even be given the right channel.
     items.sort(key=lambda i: (not (i["row"].get("kids") or genre_rules.is_childrens(i["row"].get("genres") or [])),
-                              i["kind"] != "movie", str(i["row"].get("title") or "").casefold()))
+                              i["kind"] == "movie", bool(genre_list(effective(i["row"]).get("genres"))),
+                              str(i["row"].get("title") or "").casefold()))
     total = len(items)
     items = items[:max(0, limit)]
     settings = all_settings(conn)

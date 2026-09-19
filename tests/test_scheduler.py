@@ -1097,6 +1097,12 @@ def test_each_general_channel_is_modelled_on_its_own_broadcaster(tmp_path):
     weekday_evening = [r["sport"] for r in profiles[2]["weekday"] if hhmm_to_minutes(r["start"]) >= 17 * 60]
     assert min(weekday_evening) >= 1.0, "snooker and darts ran through BBC Two's weekday evenings"
     assert max(r["sport"] for r in profiles[1]["weekday"] if hhmm_to_minutes(r["start"]) < 22 * 60) < 0.5
+    for number, profile in profiles.items():
+        assert profile["saturday"][0]["kids"] >= 3, f"Saturday morning was children's television on channel {number}"
+        for rows in profile.values():
+            for r in rows:
+                quiz = r.get("genres", {}).get("Game Show")
+                assert (quiz == 0) if r["start"] < "17:00" else (quiz is None or quiz > 0), (number, r["name"])
     # An upgrade: a channel with nothing of its own is seeded, one the owner has touched is not.
     mine = json.dumps([{"name": "All day", "start": "08:00", "tv": 1, "movie": 1, "kids": 1, "sport": 1}])
     with dbm.tx(c):
@@ -1118,3 +1124,7 @@ def test_a_daypart_can_favour_a_genre():
     assert Selector._daypart_genre_weight(teatime, ["Science Fiction"]) == 0.5
     assert Selector._daypart_genre_weight(teatime, ["Drama"]) == 1.0
     assert Selector._daypart_genre_weight({}, ["Game Show"]) == 1.0
+    # A weight of 0 is a bar: a game show by day is out whatever else it is tagged.
+    daytime = {"genres": {"Game Show": 0.0, "Comedy": 1.5}}
+    assert Selector._daypart_genre_weight(daytime, ["Comedy", "Game Show"]) == 0.0
+    assert Selector._daypart_genre_weight(daytime, ["Comedy"]) == 1.5
