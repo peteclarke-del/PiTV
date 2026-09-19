@@ -149,14 +149,15 @@ every request now asking from episode 1 (C21). Nothing had been delivered betwee
 P6, remote series asked for in order and never past their end (19 September, PiTV 45f895c,
 c672623, 5949fd9, 99150cb; pitv_content 20319c7, deployed 15:18): open requests went from a highest
 episode of 21 to 8 with every series asking from episode 1, the run length is known for 53 of 67
-remote series, and pitv_content refuses an episode its source does not list. Five files fetched
-before these fixes are still misfiled: "World's Greatest Motorcycle Rides" S01E01 is a YouTube
-video about a route in Wales, filed and tagged as the sport entry Motorcycle Racing because a
-matched series was looked up in pitv_content's own catalogue by keyword (fixed in its 3ff9ca3);
-and four from the old numbering (Science Britannica S01E10 and E11 are its episodes 3
-and 2, Planet Dinosaur S01E11 is its episode 5, How It Works S01E07 is an unrelated news clip);
-renaming three and setting the other two aside is pitv_content's to do and waits on Pete allowing
-it in that session.
+remote series, and pitv_content refuses an episode its source does not list. The five files fetched
+before these fixes are dealt with (20 September): Pete approved it in the pitv_content session,
+which renamed three to their real numbers (Science Britannica is now complete, 3 of 3) and set
+the Wales touring video aside in `pitv-set-aside` beside the cache; the How It Works news clip
+had already been evicted. PiTV imported the renamed index, its request records were corrected
+on the development database (backup `.dev/pitv-before-request-repair-*.db`), and first-season
+episodes on disk now count as asked for (20f781d), so a rename needs no repair again. The first
+two deliveries under pitv_content's episode-evidence rule (Space 1, Making the Most of the Micro
+1) were checked against their NFO source titles and are the episodes they claim to be.
 
 C22, the index passes on what the NFO knows (pitv_content 5bdcee5, PiTV fe225c9): `certificate` is
 the NFO's raw text, shows and items carry `ids`, and the lookup resolves by identifier. Verified
