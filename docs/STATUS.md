@@ -105,7 +105,10 @@ shows, PiTV imported the same counts, the raw text alone rated 5 films, and one 
 check identified 90 of 97 titles by identifier. The list went from 93 to 43. The 42 films
 still unrated were identified, but TMDb holds no UK or US certificate for them (television
 films, documentaries, live shows; `NR` for some). They are scheduled as 15, after the
-watershed, until the owner sets one in the admin, which is what the note is for.
+watershed, until the owner sets one in the admin, which is what the note is for. No OMDb key is
+set on the development machine, so only TMDb was asked; with one, OMDb fills a certificate TMDb
+lacks (pitv_content 5b9a137 stops TMDb's `NR` blocking that). Whether to register the free key
+is Pete's decision.
 
 pitv_content 265cbda is committed and running on this machine but not pushed: the GitHub token
 here has expired and Pete has to sign in again.

@@ -366,6 +366,11 @@ PiTV never contacts the sources itself, as all online access is pitv_content's.
   answer is 502 naming the key to set, and PiTV asks by title instead. PiTV's
   online check asks this way whenever the index gave it an identifier, and asks by title only
   when that finds nothing or names a programme more than two years from the library's.
+- A candidate's `certificate` is the United Kingdom's, else the United States', read across every
+  kind of release; no other country's is offered, since mapping one to a British certificate
+  would invent it. `NR`, `Not Rated`, `Unrated` and `N/A` are no certificate, and the field is
+  then absent. With both film keys set, OMDb fills what TMDb left empty, the certificate
+  included.
 - Candidates are ordered best first. Every field but `match`, `kind` and `title` may be
   missing or null. `summary` is plain text; `image` is an https URL the admin may show.
 - `sources` names what was asked; `errors` maps a source that failed to its message, so
