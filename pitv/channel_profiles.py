@@ -15,9 +15,10 @@ The shapes are checked against listings of the period (docs/research/uk-schedule
 Two departures are deliberate. Saturday morning is children's television on all four, as the
 owner remembers the decade, although the listings show BBC Two's children's strand on Sunday
 mornings (from 1987, so Two has both here) and Channel 4 not on the air on a Saturday morning
-until 1986. And game shows and variety are kept to the evening on every channel, although
-Countdown ran at half past four and ITV had afternoon quizzes; a channel's Dayparts table in
-the admin is where to let them back.
+until 1986. And game shows and variety are kept to the evening, with the two daytime slots the listings
+show most plainly let back in: Countdown's on Channel 4 and ITV's weekday afternoon quiz. ITV's
+morning game show (from 1987) and BBC One's Going for Gold are left out; a channel's Dayparts
+table in the admin is where to add them.
 
 The broadcast day here runs from 08:00 to midnight, so the hours before the real channels came
 on air are filled in keeping: BBC Two's Open University mornings, Channel 4's repeats and
@@ -121,7 +122,7 @@ ITV = {
         _dp("TV-am", "08:00", 1.0, 0.05, 1.5, 0.05, 40, Magazine=2.0, Informational=2.0, Children=1.5, Animation=1.5),
         _dp("Morning", "09:30", 1.0, 0.2, 0.5, 0.1, Magazine=1.5, Soap=1.5, Education=1.2),
         _dp("Lunchtime", "12:00", 1.0, 0.1, 1.5, 0.2, 40, Soap=2.5, Drama=1.5, Children=1.5),
-        _dp("Afternoon", "13:30", 1.0, 1.4, 0.4, 0.5, Soap=2.0, Drama=1.5),
+        _dp("Afternoon", "13:30", 1.0, 1.4, 0.4, 0.5, Soap=2.0, Drama=1.5, Game_Show=1.5),
         _dp("Children's ITV", "16:00", 1.0, 0.05, 7.0, 0.05, 35, Children=2.0, Animation=2.0),
         _dp("Teatime", "17:15", 1.0, 0.1, 0.4, 0.2, 40, Game_Show=3.0, Soap=3.0, Comedy=1.3),
         _dp("Prime time", "19:00", 1.0, 0.4, 0.05, 0.3, Soap=2.5, Comedy=2.0, Game_Show=2.0, Crime=1.8, Action=1.8, Drama=1.6),
@@ -159,7 +160,7 @@ CHANNEL_4 = {
         _dp("Morning", "08:00", 1.0, 0.3, 0.4, 0.05, Education=2.0, Documentary=1.5, Comedy=1.2),
         _dp("Lunchtime", "12:00", 1.0, 0.6, 0.3, 0.1, Documentary=1.5, Magazine=1.5, Comedy=1.3),
         _dp("Matinee", "14:00", 0.6, 2.5, 0.3, 1.0, Western=1.5, War=1.3),
-        _dp("Teatime", "16:30", 1.0, 0.1, 1.5, 0.1, 40, Comedy=2.0, Animation=1.5, Family=1.5, Music=1.5),
+        _dp("Teatime", "16:30", 1.0, 0.1, 1.5, 0.1, 40, Game_Show=3.0, Comedy=2.0, Animation=1.5, Family=1.5, Music=1.5),
         _dp("Early evening", "18:00", 1.0, 0.2, 0.3, 0.2, 55, Comedy=2.0, Soap=2.0, Science_Fiction=1.5, Documentary=1.5),
         _dp("Eight o'clock", "20:00", 1.0, 0.5, 0.05, 0.2, Soap=2.0, Documentary=2.0, Drama=1.6, History=1.5, Science=1.5),
         _dp("Nine o'clock", "21:00", 1.0, 1.6, 0.0, 0.3, Comedy=2.5, Crime=2.0, Drama=1.8),
@@ -184,15 +185,18 @@ CHANNEL_4 = {
     ],
 }
 
-# Quizzes, game shows and variety were evening television. By day a game show has no place on
-# any of the four, so every part of the day that starts before five bars it (a weight of 0 is a
-# bar, not a small preference) and the evening parts above are where it is favoured.
+# Quizzes, game shows and variety were evening television. By day a game show has no place, so
+# every part of a day that starts before five bars it (a weight of 0 is a bar, not a small
+# preference) unless the row above says otherwise. The listings give two such cases and both
+# are kept: Countdown at half past four on Channel 4, and ITV's weekday afternoon quizzes (Mr
+# and Mrs, University Challenge).
 EVENING_ONLY = ("Game Show", "Entertainment")
 for _profile in (BBC_ONE, BBC_TWO, ITV, CHANNEL_4):
     for _rows in _profile.values():
         for _row in _rows:
             if _row["start"] < "17:00":
-                _row.setdefault("genres", {}).update({name: 0.0 for name in EVENING_ONLY})
+                for _name in EVENING_ONLY:
+                    _row.setdefault("genres", {}).setdefault(_name, 0.0)
 
 # The default channel each profile seeds, by the number it ships with.
 BY_DEFAULT_CHANNEL = {1: BBC_ONE, 2: BBC_TWO, 3: ITV, 4: CHANNEL_4}

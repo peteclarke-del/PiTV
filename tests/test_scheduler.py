@@ -1102,7 +1102,8 @@ def test_each_general_channel_is_modelled_on_its_own_broadcaster(tmp_path):
         for rows in profile.values():
             for r in rows:
                 quiz = r.get("genres", {}).get("Game Show")
-                assert (quiz == 0) if r["start"] < "17:00" else (quiz is None or quiz > 0), (number, r["name"])
+                daytime_quiz = (number, r["name"]) in {(3, "Afternoon"), (4, "Teatime")}     # as the listings had them
+                assert (quiz == 0 or daytime_quiz) if r["start"] < "17:00" else (quiz is None or quiz > 0), (number, r["name"])
     # An upgrade: a channel with nothing of its own is seeded, one the owner has touched is not.
     mine = json.dumps([{"name": "All day", "start": "08:00", "tv": 1, "movie": 1, "kids": 1, "sport": 1}])
     with dbm.tx(c):
