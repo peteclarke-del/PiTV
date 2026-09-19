@@ -609,10 +609,14 @@ class Builder:
 
     def _overnight(self, channel: dict[str, Any], day: date, day_end: int, next_day_start: int,
                    day_slots: list[Slot]) -> list[Slot]:
-        """The replay of the day; see `overnight.replay`."""
+        """The replay of the day; see `overnight.replay`. What has been withdrawn since it aired
+        (excluded by the owner, or gone missing) is not repeated: the day happened, but the small
+        hours are still to come."""
         day_str = day.isoformat()
+        withdrawn = {r[0] for r in self.conn.execute(
+            "SELECT id FROM media WHERE excluded = 1 OR missing = 1")} if any(s.media_id for s in day_slots) else set()
         return overnight.replay(
-            channel, day, day_end, next_day_start, day_slots, policy=self.policy, tz=self.tz,
+            channel, day, day_end, next_day_start, day_slots, policy=self.policy, tz=self.tz, withdrawn=withdrawn,
             day_start_min=self.day_start_min,
             next_day_slots=lambda: self._next_day_slots(channel["id"], next_day_start),
             tomorrow_first=self._adjacent_show(channel["id"], next_day_start, before=False),

@@ -26,8 +26,10 @@ MAX_LOOPS = 12      # a thin day is replayed again until morning, but not foreve
 def replay(channel: dict[str, Any], day: date, day_end: int, next_day_start: int, day_slots: list[Slot], *,
            policy: SchedulerPolicy, tz: ZoneInfo, day_start_min: int,
            next_day_slots: Callable[[], list[Slot]], tomorrow_first: int | None,
-           caption: Callable[[int, int], Slot]) -> list[Slot]:
+           caption: Callable[[int, int], Slot], withdrawn: frozenset[int] | set[int] = frozenset()) -> list[Slot]:
     """Replay the day from the channel's `overnight_replay_from` until the next day starts.
+    `withdrawn` holds media the owner has excluded or that has gone since it aired; it is left
+    out of what is repeated.
 
     `next_day_slots` is consulted only when there is nothing to replay: a day built before the
     library had anything in it. Showing a caption until morning is worse than opening tomorrow
@@ -38,7 +40,7 @@ def replay(channel: dict[str, Any], day: date, day_end: int, next_day_start: int
     from_day = day + timedelta(days=1) if hhmm_to_minutes(replay_from) < day_start_min else day
     from_ts = local_ts(from_day, replay_from, tz)
     ordered = sorted(day_slots, key=lambda s: s.start_ts)
-    source = [s for s in ordered if s.start_ts >= from_ts and s.kind != "filler"]
+    source = [s for s in ordered if s.start_ts >= from_ts and s.kind != "filler" and s.media_id not in withdrawn]
     if not source:
         source = next_day_slots()
     # A break only makes sense attached to a programme. Starting a replay part-way through the

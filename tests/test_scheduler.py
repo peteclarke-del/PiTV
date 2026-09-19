@@ -1211,3 +1211,20 @@ def test_a_general_channel_borrows_cartoons_only_where_its_day_asks_for_them(tmp
                       " WHERE sh.home_channel_id = ? AND s.channel_id != ? AND s.replay = 0 GROUP BY 1, 2, 3 HAVING COUNT(*) > 1",
                       (toons, toons)).fetchall()
     assert not twice, "a borrowed episode aired twice in a day on one channel"
+
+
+def test_the_small_hours_do_not_repeat_what_has_been_withdrawn(tmp_path):
+    """A wrong delivery aired in the day and was then excluded. The replay of that day is still
+    to come, and must not carry it."""
+    c = make_library(tmp_path, 6)["conn"]
+    day = parse_day("2026-09-14")
+    build_horizon(c, start_day=day, days=1, now=local_ts(day, "07:00", tz_of(c)), seed=2, force=True)
+    aired = c.execute("SELECT s.channel_id, s.media_id FROM schedule s JOIN media m ON m.id = s.media_id WHERE s.replay = 1"
+                      " AND s.kind = 'programme' AND m.kind IN ('episode', 'movie') LIMIT 1").fetchone()
+    assert aired, "nothing was replayed to begin with"
+    with dbm.tx(c):
+        c.execute("UPDATE media SET excluded = 1 WHERE id = ?", (aired["media_id"],))
+    # Late in the evening: the day's airing is in the past and kept, the small hours are rebuilt.
+    build_horizon(c, start_day=day, days=1, now=local_ts(day, "23:30", tz_of(c)), seed=2, force=True)
+    assert not c.execute("SELECT 1 FROM schedule WHERE media_id = ? AND replay = 1 AND start_ts > ?",
+                         (aired["media_id"], local_ts(day, "23:30", tz_of(c)))).fetchone()
