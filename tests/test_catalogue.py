@@ -382,3 +382,41 @@ def test_every_british_certificate_is_recognised():
     assert normalise_cert("US:R / US:Rated R") == "15" and normalise_cert("Rated PG-13") == "12"
     assert normalise_cert("US:PG-13 / UK:15") == "15", "a British certificate wins wherever it stands"
     assert normalise_cert("NR") is None and normalise_cert("DE:16") is None
+
+
+def test_a_film_matches_despite_an_edition_note_or_a_subtitle_but_only_in_its_own_year():
+    """A library names the edition and a listing often gives a longer title. With the same year
+    those are the same film; without it, or with a different year, they are not."""
+    from pitv.catalogue import _compatible_candidate
+    assert _compatible_candidate("movie", "Alien (Directors Cut)", 1979, {"title": "Alien", "year": 1979})
+    assert _compatible_candidate("movie", "Rogue One", 2016, {"title": "Rogue One: A Star Wars Story", "year": 2016})
+    assert _compatible_candidate("movie", "Hotel Transylvania 3", 2018, {"title": "Hotel Transylvania 3: Summer Vacation", "year": 2018})
+    assert not _compatible_candidate("movie", "Rogue One", 2017, {"title": "Rogue One: A Star Wars Story", "year": 2016})
+    assert not _compatible_candidate("movie", "Alien", 1979, {"title": "Aliens", "year": 1986})
+    assert not _compatible_candidate("movie", "Seven", 1995, {"title": "Seven Samurai", "year": 1954})
+    assert not _compatible_candidate("show", "Bottom", 1991, {"title": "Bottom Live", "year": 1991}), "series keep the exact rule"
+
+
+def test_a_film_is_matched_despite_its_edition_note_or_a_shortened_title():
+    """A library names the edition and shortens titles; a listing does neither. With the exact
+    year, "Alien (Directors Cut)" is Alien and "Rogue One" is "Rogue One: A Star Wars Story";
+    without it, or for a different film, nothing is assumed."""
+    from pitv.catalogue import _compatible_candidate as same
+    assert same("movie", "Alien (Directors Cut)", 1979, {"title": "Alien", "year": 1979})
+    assert same("movie", "Star Wars: Episode IV - A New Hope (Original Theatrical Version)", 1977,
+                {"title": "Star Wars: Episode IV - A New Hope", "year": 1977})
+    assert same("movie", "Rogue One", 2016, {"title": "Rogue One: A Star Wars Story", "year": 2016})
+    assert same("movie", "Hotel Transylvania 3", 2018, {"title": "Hotel Transylvania 3: Summer Vacation", "year": 2018})
+    assert not same("movie", "Rogue One", 2015, {"title": "Rogue One: A Star Wars Story", "year": 2016}), "only with the exact year"
+    assert not same("movie", "Alien", 1979, {"title": "Aliens", "year": 1979}), "a short title does not open a longer one"
+    assert not same("movie", "Seven", 1995, {"title": "Seven Samurai", "year": 1995}), "too short a title to open another"
+    assert not same("show", "Minder", 1979, {"title": "Minder on the Orient Express", "year": 1979}), "films only"
+
+
+def test_attention_is_for_what_the_owner_can_act_on():
+    """A file the Pi cannot decode in hardware is transcoded by pitv_content when it is scheduled,
+    without anyone doing anything, so it is not something that needs a look."""
+    from pitv.catalogue import _attention
+    base = {"duration": 5400, "year": 1999, "kind": "movie", "certificate": "PG", "hwdec": 0, "height": 1080, "vcodec": "vp9"}
+    assert _attention(base) is None
+    assert "No certificate" in _attention({**base, "certificate": None})

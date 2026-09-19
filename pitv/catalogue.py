@@ -150,8 +150,6 @@ def _attention(fields: dict[str, Any]) -> str | None:
         notes.append("No year found")
     if fields["kind"] == "movie" and not fields["certificate"]:
         notes.append("No certificate (treated as 15, post-watershed)")
-    if not fields["hwdec"] and (fields["height"] or 0) >= 720:
-        notes.append(f"Software decode only ({fields['vcodec']}, {fields['height']}p): pitv_content transcodes it when scheduled")
     return "; ".join(notes) or None
 
 
@@ -362,15 +360,28 @@ def import_and_place(conn: sqlite3.Connection, doc: dict[str, Any], origin: str 
 
 
 def _title_key(value: Any) -> str:
-    return re.sub(r"[^a-z0-9]+", "", str(value or "").casefold())
+    """A title for comparing: case, punctuation and a bracketed note ("(Directors Cut)",
+    "(Original Theatrical Version)") aside, since a library names the edition and a listing
+    does not."""
+    return re.sub(r"[^a-z0-9]+", "", re.sub(r"\([^)]*\)", " ", str(value or "")).casefold())
+
+
+def _same_film(ours: str, theirs: str) -> bool:
+    """Whether two film titles of the same year name one film. Libraries and listings differ in
+    how much of a title they give ("Rogue One" and "Rogue One: A Star Wars Story", "Hotel
+    Transylvania 3" and "Hotel Transylvania 3: Summer Vacation"), so one may open the other,
+    provided the shorter is long enough to mean something. Only ever used with an exact year."""
+    a, b = sorted((_title_key(ours), _title_key(theirs)), key=len)
+    return bool(a) and (a == b or (len(a) >= 6 and b.startswith(a)))
 
 
 def _compatible_candidate(kind: str, title: str, year: int | None,
                           candidate: dict[str, Any]) -> bool:
     """Conservative automatic identity check: never enrich a merely fuzzy search result."""
-    if _title_key(candidate.get("title")) != _title_key(title):
-        return False
     found = as_int(candidate.get("year"))
+    if _title_key(candidate.get("title")) != _title_key(title):
+        if not (kind == "movie" and year and found == year and _same_film(title, as_text(candidate.get("title")) or "")):
+            return False
     if not year or not found:
         return True
     if kind == "movie":

@@ -14,7 +14,7 @@ from .. import genres as genre_rules
 from ..db import get_setting
 
 _CERTIFICATE_ALIASES = {
-    "U": "U", "UC": "U", "G": "U", "TV-Y": "U", "TV-Y7": "U", "TV-G": "U",
+    "U": "U", "UC": "U", "ALL": "U", "G": "U", "TV-Y": "U", "TV-Y7": "U", "TV-G": "U",
     "PG": "PG", "TV-PG": "PG", "APPROVED": "PG", "PASSED": "PG",
     "PG-13": "12", "TV-14": "12", "12": "12", "12A": "12A",
     "R": "15", "15": "15", "TV-MA": "18", "NC-17": "18", "18": "18",
