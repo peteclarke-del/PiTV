@@ -200,6 +200,10 @@ class Library:
             taken.setdefault(w["lineup_id"], set()).add(int(w["episode"] or 0))
             if w["status"] not in ("failed", "done"):
                 standing.setdefault(w["lineup_id"], []).append(w)
+        on_disk: dict[int, set[int]] = {}                 # show id -> first-season episode numbers held
+        for m in self.conn.execute(f"SELECT show_id, episode FROM media WHERE {LIVE} AND kind = 'episode'"
+                                   " AND show_id IS NOT NULL AND episode IS NOT NULL AND COALESCE(season, 1) = 1"):
+            on_disk.setdefault(m["show_id"], set()).add(int(m["episode"]))
         users: dict[int, list[sqlite3.Row]] = {}          # wanted id -> slots using it
         for sl in self.conn.execute("SELECT wanted_id, channel_id, start_ts, locked FROM schedule"
                                     " WHERE wanted_id IS NOT NULL"):
@@ -212,7 +216,10 @@ class Library:
             e["genres"] = json_field(e.get("genres")) or []
             e["kids"] = is_kids(e)
             # One set, shared with every copy of the entry a build makes, so a number is issued once.
-            e["taken"] = taken.get(lineup_id, set())
+            # What is already on disk of the series counts as asked for: a first season's episode
+            # numbers are its place in the run, which is how PiTV asks (later seasons are not, and
+            # pitv_content answers "already in the library" for those).
+            e["taken"] = taken.get(lineup_id, set()) | on_disk.get(e.get("show_id"), set())
             open_requests = standing.get(lineup_id, [])
             e["spare_wanted"] = [{"id": w["id"], "episode": w["episode"]} for w in open_requests
                                  if self._replaceable_request(users.get(w["id"], []))]

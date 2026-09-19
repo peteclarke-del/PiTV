@@ -722,3 +722,24 @@ def test_a_remote_title_keeps_its_match_certificate_and_obeys_it():
     assert {r["title"] for r in slots} == {"The Young Ones", "The Benny Hill Show"}
     assert all(r["hour"] >= 21 or r["hour"] < 6 for r in slots), [(r["title"], r["hour"]) for r in slots]
     c.close()
+
+
+def test_an_episode_already_on_disk_is_not_asked_for_again(tmp_path):
+    """A remote series linked to a show that holds some of its first season asks only for the
+    rest: an episode that arrived under another request, or was renamed to its real number, is
+    there all the same."""
+    ctx = make_library(tmp_path, max_episodes=3)
+    conn = ctx["conn"]
+    show = conn.execute("SELECT sh.id, sh.title, sh.year, l.channel_id FROM shows sh JOIN lineup l ON l.show_id = sh.id"
+                        " JOIN channels c ON c.id = l.channel_id WHERE c.content = 'general' AND sh.category != 'sport' LIMIT 1").fetchone()
+    held = {r[0] for r in conn.execute("SELECT episode FROM media WHERE show_id = ? AND COALESCE(season, 1) = 1 AND missing = 0", (show["id"],))}
+    assert held
+    with dbm.tx(conn):
+        dbm.set_setting(conn, "nas_only", False)
+        conn.execute("UPDATE channels SET series_cadence_days = 1 WHERE id = ?", (show["channel_id"],))
+        conn.execute("UPDATE lineup SET source = 'manual', transient = 0, episode_count = ? WHERE show_id = ?", (max(held) + 2, show["id"]))
+    now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(conn))
+    build_horizon(conn, start_day=parse_day("2026-09-14"), days=6, now=now, seed=6, force=True)
+    asked = {r[0] for r in conn.execute("SELECT w.episode FROM wanted w JOIN lineup l ON l.id = w.lineup_id WHERE l.show_id = ?", (show["id"],))}
+    assert asked and not asked & held, (asked, held)
+    assert asked <= {max(held) + 1, max(held) + 2}
