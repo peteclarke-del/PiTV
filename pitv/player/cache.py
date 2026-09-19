@@ -69,6 +69,24 @@ def _settled(p: Path) -> bool:
     return stat.S_ISREG(st.st_mode) and st.st_size > 0
 
 
+def tree_bytes(root: Path) -> int:
+    """Bytes held under `root`, symlinks not followed. The cap covers the whole cache drive
+    folder, fetched library included, which is how pitv_content measures it too."""
+    total = 0
+    stack = [root]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        total += entry.stat(follow_symlinks=False).st_size
+        except OSError:
+            continue
+    return total
+
+
 def _size(p: Path) -> int:
     """0 when the file vanished under us (pitv_content renaming a finished .part)."""
     try:
@@ -244,7 +262,10 @@ class MediaCache:
         except OSError as exc:
             log.warning("cannot inspect cache dir %s: %s", self.dir, exc)
             return 0
-        used = sum(e[2] for e in entries)
+        # The cap is on the whole folder, fetched material and index included, which is how
+        # pitv_content measures it before it delivers. Counting the copies alone, PiTV judged
+        # that a film still fitted, evicted nothing, and pitv_content went on refusing it.
+        used = tree_bytes(self.dir)
         now = time.time()
         protected = self._protected
         evicted = 0

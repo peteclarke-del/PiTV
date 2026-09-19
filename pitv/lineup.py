@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import shutil
 import sqlite3
@@ -677,24 +676,6 @@ def remove_aired_transients(conn: sqlite3.Connection, now: int | None = None) ->
     return len(expired)
 
 
-def _tree_bytes(root: Path) -> int:
-    """Bytes held under `root`, symlinks not followed. The cap covers the whole cache drive
-    folder, fetched library included, which is how pitv_content measures it too."""
-    total = 0
-    stack = [root]
-    while stack:
-        try:
-            with os.scandir(stack.pop()) as entries:
-                for entry in entries:
-                    if entry.is_dir(follow_symlinks=False):
-                        stack.append(Path(entry.path))
-                    elif entry.is_file(follow_symlinks=False):
-                        total += entry.stat(follow_symlinks=False).st_size
-        except OSError:
-            continue
-    return total
-
-
 def evict_fetched(conn: sqlite3.Connection, needed: int = 0, now: int | None = None) -> int:
     """Make room by deleting fetched material, oldest aired first, when evicting cache copies
     has not been enough. Returns how many items went.
@@ -705,7 +686,7 @@ def evict_fetched(conn: sqlite3.Connection, needed: int = 0, now: int | None = N
     go first, with a warning, until there is room. Nothing scheduled ahead is touched, nor
     anything that has not aired yet (it was fetched for an airing to come), nor anything
     outside the cache. The catalogue row is retired; the title can always be fetched again."""
-    from .player.cache import HEADROOM_BYTES, MediaCache
+    from .player.cache import HEADROOM_BYTES, MediaCache, tree_bytes
     now = now or now_ts()
     cache = MediaCache.from_settings(all_settings(conn))
     if not cache.enabled or not cache.dir:
@@ -715,7 +696,7 @@ def evict_fetched(conn: sqlite3.Connection, needed: int = 0, now: int | None = N
         free = shutil.disk_usage(root).free
     except OSError:
         return 0
-    short = max(_tree_bytes(root) + needed - cache.max_bytes, needed + HEADROOM_BYTES - free, 0)
+    short = max(tree_bytes(root) + needed - cache.max_bytes, needed + HEADROOM_BYTES - free, 0)
     if short <= 0:
         return 0
     rows = conn.execute(

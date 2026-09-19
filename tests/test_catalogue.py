@@ -460,3 +460,25 @@ def test_the_nfo_identifier_is_asked_before_the_title(ctx, monkeypatch):
     asked.clear()
     found, _ = catalogue._lookup_metadata({}, "movie", "Leon", 1962, ids=row["ids"])
     assert found is None and [("title" in q) for q in asked] == [False, True], "the wrong decade falls back to the title"
+
+
+def test_make_room_measures_the_whole_cache_folder(tmp_path):
+    """The cap covers the folder, fetched material included, which is how pitv_content measures it.
+    Counting only its own copies, PiTV judged that a delivery still fitted and evicted nothing,
+    while pitv_content, at the cap by its own count, refused every delivery."""
+    import os
+    import time
+    cache_dir = tmp_path / "cache"
+    (cache_dir / "acquired" / "tvshows").mkdir(parents=True)
+    (cache_dir / "acquired" / "tvshows" / "fetched.mp4").write_bytes(b"x" * 600)
+    old = time.time() - 3 * 3600
+    for n in (1, 2, 3):
+        copy = cache_dir / f"{n}_Film_{n}.mkv"
+        copy.write_bytes(b"x" * 400)
+        os.utime(copy, (old + n, old + n))
+    cache = MediaCache(cache_dir, max_bytes=2000)
+    # Copies are 1200 and a delivery of 300 would fit under 2000 by that count; the folder holds
+    # 1800, so it does not, and the least recently used copy goes.
+    cache.make_room(300)
+    assert sorted(p.name for p in cache_dir.glob("*.mkv")) == ["2_Film_2.mkv", "3_Film_3.mkv"]
+    assert (cache_dir / "acquired" / "tvshows" / "fetched.mp4").exists(), "fetched material is not a copy to evict"
