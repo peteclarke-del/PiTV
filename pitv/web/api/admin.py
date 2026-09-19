@@ -240,7 +240,7 @@ def catalogue_enrich(request: Request, body: dict[str, Any] = Body(default={})):
             return result
         finally:
             conn.close()
-    return state.jobs.submit("catalogue", "Check missing certificates online", run).public()
+    return state.jobs.submit("catalogue", "Fill in missing years, genres and certificates online", run).public()
 
 
 @router.post("/catalogue/import")

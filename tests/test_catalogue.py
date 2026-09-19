@@ -223,6 +223,32 @@ def test_missing_rating_enrichment_is_separate_and_below_admin_overrides(monkeyp
     conn.close()
 
 
+def test_a_series_the_index_knew_nothing_about_is_filled_in_and_given_its_channel(tmp_path, monkeypatch):
+    """A cartoon with no year, genres or certificate in the index is not known to be for
+    children, so it falls to a general channel and its episodes are flagged for their year. The
+    online check fills in what it can, even when it finds no certificate; the series then has a
+    year its episodes inherit, and is placed again, this time where cartoons go."""
+    from pitv import catalogue, lineup
+    ctx = make_library(tmp_path, max_episodes=2)
+    conn = ctx["conn"]
+    toons = conn.execute("SELECT id FROM channels WHERE content = 'cartoons'").fetchone()["id"]
+    show = conn.execute("SELECT id FROM shows WHERE home_channel_id = ? LIMIT 1", (toons,)).fetchone()["id"]
+    with dbm.tx(conn):
+        conn.execute("UPDATE shows SET year = NULL, genres = '[]', certificate = NULL, kids = 0, enriched = '{}',"
+                     " metadata_checked_at = NULL WHERE id = ?", (show,))
+        conn.execute("UPDATE media SET year = NULL, attention = 'No year found' WHERE show_id = ?", (show,))
+        conn.execute("DELETE FROM lineup WHERE show_id = ?", (show,))
+    lineup.generate(conn)
+    assert conn.execute("SELECT home_channel_id FROM shows WHERE id = ?", (show,)).fetchone()[0] != toons
+    monkeypatch.setattr(catalogue, "_lookup_metadata", lambda *a, **k: (
+        {"year": 1999, "genres": ["Animation", "Comedy", "Family"], "match": {"source": "tvmaze", "id": "1"}}, ""))
+    assert catalogue.enrich_missing_metadata(conn, limit=500, force=True)["found"] >= 1
+    row = dbm.effective(dbm.row_to_dict(conn.execute("SELECT * FROM shows WHERE id = ?", (show,)).fetchone()))
+    assert row["year"] == 1999 and row["kids"] == 1 and "Animation" in row["genres"] and not row.get("certificate")
+    assert row["home_channel_id"] == toons, "placed again now that its genres are known"
+    assert not conn.execute("SELECT 1 FROM media WHERE show_id = ? AND attention LIKE '%No year%'", (show,)).fetchone()
+
+
 def test_document_values_are_read_defensively():
     assert [dbm.as_int(v) for v in (3, "4", 5.9, True, "x", None, 2 ** 70, "inf")] == [3, 4, 5, None, None, None, None, None]
     assert [dbm.as_float(v) for v in ("2.5", float("nan"), [1])] == [2.5, None, None]

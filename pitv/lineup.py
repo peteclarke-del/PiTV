@@ -30,6 +30,7 @@ from .db import (
     as_int,
     as_text,
     data_path,
+    effective,
     genre_list,
     get_setting,
     now_ts,
@@ -186,17 +187,19 @@ def generate(conn: sqlite3.Connection, rebalance: bool = False) -> dict[str, int
         taken_films = {r[0] for r in conn.execute("SELECT media_id FROM lineup WHERE media_id IS NOT NULL")}
         load = _load_hours(conn, [c["id"] for c in channels])
         items: list[dict[str, Any]] = []
-        for r in conn.execute(
-                "SELECT s.id, s.title, s.year, s.genres, s.certificate, s.kids, s.category,"
+        # What the index did not say and an online check or the owner has since supplied counts
+        # here too (`effective`), or a series that arrived with no genres stays where it fell.
+        for row in conn.execute(
+                "SELECT s.*,"
                 " (SELECT COALESCE(SUM(duration), 0) FROM media m WHERE m.show_id = s.id AND m.missing = 0) AS secs"
                 " FROM shows s WHERE s.excluded = 0 AND s.missing = 0"):
+            r = effective(dict(row))
             if r["id"] not in taken_shows and r["secs"]:
                 items.append({"kind": "show", "id": r["id"], "title": r["title"], "year": r["year"],
                               "genres": _genre_set(r["genres"]), "secs": r["secs"], "cert": r["certificate"], "kids": r["kids"],
                               "bucket": _bucket(r["category"])})
-        for r in conn.execute(
-                "SELECT id, title, year, genres, certificate, duration FROM media"
-                f" WHERE kind = 'movie' AND {LIVE} AND duration IS NOT NULL"):
+        for row in conn.execute(f"SELECT * FROM media WHERE kind = 'movie' AND {LIVE} AND duration IS NOT NULL"):
+            r = effective(dict(row))
             if r["id"] not in taken_films:
                 items.append({"kind": "movie", "id": r["id"], "title": r["title"], "year": r["year"],
                               "genres": _genre_set(r["genres"]), "secs": r["duration"], "cert": r["certificate"], "kids": 0,

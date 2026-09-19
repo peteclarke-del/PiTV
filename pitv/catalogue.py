@@ -386,23 +386,39 @@ def _lookup_metadata(settings: dict[str, Any], kind: str, title: str,
     if status != 200 or not isinstance(payload, dict):
         reason = payload.get("error") if isinstance(payload, dict) else f"HTTP {status}"
         return None, str(reason or f"HTTP {status}")
+    # Sources know different things about the same title (one has the certificate, another the
+    # genres), so what the compatible matches say is put together: the first value found for
+    # each single fact, every genre any of them gives. A match with no certificate still fills
+    # a missing year and genres, which is what decides where a series belongs.
+    found: dict[str, Any] = {}
+    genres: list[str] = []
     for candidate in payload.get("candidates") or []:
         if not isinstance(candidate, dict) or not _compatible_candidate(kind, title, year, candidate):
             continue
-        cert = normalise_cert(as_text(candidate.get("certificate")))
-        if cert:
-            return {**candidate, "certificate": cert}, ""
+        found.setdefault("match", candidate.get("match"))
+        if (cert := normalise_cert(as_text(candidate.get("certificate")))) and "certificate" not in found:
+            found["certificate"] = cert
+        if (when := as_int(candidate.get("year"))) and "year" not in found:
+            found["year"] = when
+        if candidate.get("summary") and "summary" not in found:
+            found["summary"] = candidate["summary"]
+        genres += [g for g in (candidate.get("genres") or []) if isinstance(g, str)]
+    if found:
+        return {**found, "genres": genres}, ""
     errors = payload.get("errors") or {}
-    return None, "; ".join(f"{k}: {v}" for k, v in errors.items()) or "no unambiguous rated match"
+    return None, "; ".join(f"{k}: {v}" for k, v in errors.items()) or "no unambiguous match"
 
 
 def enrich_missing_metadata(conn: sqlite3.Connection, *, limit: int = 50, force: bool = False,
                             progress: Any = None) -> dict[str, Any]:
-    """Look up missing certificates through pitv_content and retain trusted matches.
+    """Look up what the index could not say (certificate, year, genres) through pitv_content and
+    retain trusted matches.
 
-    Shows are checked once (episodes inherit their series certificate); films are checked
-    individually.  Failed/ambiguous checks are dated so routine imports do not hammer providers,
-    while an explicit force run may retry them.
+    Shows are checked once (episodes inherit their series' certificate and year); films are
+    checked individually. Failed or ambiguous checks are dated so routine imports do not hammer
+    providers, while an explicit force run may retry them. A series that learns its genres is
+    given a channel again, since it was placed without them, and its episodes stop being flagged
+    for a year the series now has.
     """
     cutoff = now_ts() - METADATA_RECHECK_DAYS * 86400
     items: list[dict[str, Any]] = []
@@ -410,7 +426,8 @@ def enrich_missing_metadata(conn: sqlite3.Connection, *, limit: int = 50, force:
         where = "missing = 0" if table == "shows" else "missing = 0 AND kind = 'movie'"
         for row in conn.execute(f"SELECT * FROM {table} WHERE {where} ORDER BY title").fetchall():
             raw = row_to_dict(row) or {}
-            if normalise_cert(as_text(effective(raw).get("certificate"))):
+            known = effective(raw)
+            if normalise_cert(as_text(known.get("certificate"))) and known.get("year") and genre_list(known.get("genres")):
                 continue
             checked = as_int(raw.get("metadata_checked_at")) or 0
             if not force and checked >= cutoff:
@@ -423,6 +440,7 @@ def enrich_missing_metadata(conn: sqlite3.Connection, *, limit: int = 50, force:
     items = items[:max(0, limit)]
     settings = all_settings(conn)
     found = checked = 0
+    replace = False
     notes: list[str] = []
     for i, item in enumerate(items, 1):
         row, table, kind = item["row"], item["table"], item["kind"]
@@ -433,8 +451,12 @@ def enrich_missing_metadata(conn: sqlite3.Connection, *, limit: int = 50, force:
         now = now_ts()
         if candidate:
             enriched = row.get("enriched") if isinstance(row.get("enriched"), dict) else {}
+            had_genres = bool(genre_list(effective(row).get("genres")))
             genres = genre_list([*(effective(row).get("genres") or []), *(candidate.get("genres") or [])])
-            enriched = {**enriched, "certificate": candidate["certificate"]}
+            if candidate.get("certificate") and not normalise_cert(as_text(effective(row).get("certificate"))):
+                enriched = {**enriched, "certificate": candidate["certificate"]}
+            if candidate.get("year") and not effective(row).get("year"):
+                enriched = {**enriched, "year": candidate["year"]}
             if genres:
                 enriched["genres"] = genres
             if not effective(row).get("plot") and candidate.get("summary"):
@@ -447,16 +469,29 @@ def enrich_missing_metadata(conn: sqlite3.Connection, *, limit: int = 50, force:
                              (json.dumps(enriched), now, source, row["id"]))
                 if table == "media":
                     _refresh_attention(conn, row["id"])
+                else:
+                    if enriched.get("year"):
+                        # The series has a year now, which its episodes inherit when scheduled.
+                        conn.execute("UPDATE media SET attention = NULLIF(TRIM(REPLACE(REPLACE(attention, 'No year found; ', ''),"
+                                     " 'No year found', ''), '; '), '') WHERE show_id = ? AND attention LIKE '%No year found%'",
+                                     (row["id"],))
+                    if genres and not had_genres:
+                        # Placed when nothing was known about it; let the line-up place it again.
+                        conn.execute("DELETE FROM lineup WHERE show_id = ? AND pinned = 0 AND source = 'library'", (row["id"],))
+                        replace = True
             found += 1
         else:
             conn.execute(f"UPDATE {table} SET metadata_checked_at = ?, metadata_source = NULL WHERE id = ?",
                          (now, row["id"]))
             if len(notes) < REJECTS_KEPT:
                 notes.append(f"{row['title']}: {reason}")
+    if replace:
+        from . import lineup
+        lineup.generate(conn)
     if progress:
         progress(f"ratings: {found} found from {checked} checked", checked, len(items))
     return {"checked": checked, "found": found, "remaining": max(0, total - checked), "notes": notes,
-            "summary": f"Found {found} missing certificate{'s' if found != 1 else ''} from {checked} online check{'s' if checked != 1 else ''}."}
+            "summary": f"Filled in {found} title{'s' if found != 1 else ''} from {checked} online check{'s' if checked != 1 else ''}."}
 
 
 def refresh(conn: sqlite3.Connection, reindex: bool = False) -> dict[str, Any]:
