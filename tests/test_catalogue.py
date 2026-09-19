@@ -1,6 +1,7 @@
 """The library index import and where playback finds files."""
 
 import copy
+import json
 import random
 
 import pytest
@@ -246,6 +247,10 @@ def test_a_series_the_index_knew_nothing_about_is_filled_in_and_given_its_channe
     row = dbm.effective(dbm.row_to_dict(conn.execute("SELECT * FROM shows WHERE id = ?", (show,)).fetchone()))
     assert row["year"] == 1999 and row["kids"] == 1 and "Animation" in row["genres"] and not row.get("certificate")
     assert row["home_channel_id"] == toons, "placed again now that its genres are known"
+    assert not conn.execute("SELECT 1 FROM media WHERE show_id = ? AND attention LIKE '%No year%'", (show,)).fetchone()
+    # The next import recomputes every note from the index, where these episodes still have no
+    # year; they inherit the series' year, so the flags stay cleared.
+    catalogue.import_index(conn, json.loads(json.dumps(ctx["lib"]["index"]).replace('"year": 19', '"year_was": 19')))
     assert not conn.execute("SELECT 1 FROM media WHERE show_id = ? AND attention LIKE '%No year%'", (show,)).fetchone()
 
 

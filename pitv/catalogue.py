@@ -154,9 +154,18 @@ def _attention(fields: dict[str, Any]) -> str | None:
 
 
 def _refresh_attention(conn: sqlite3.Connection, media_id: int) -> None:
+    """Recompute an item's note from what is known about it now: the index, an online check and
+    the owner's edits. An episode with no year of its own takes its series' year, exactly as it
+    does when it is scheduled, so a series the online check has dated stops flagging every one
+    of its episodes at the next import."""
     row = row_to_dict(conn.execute("SELECT * FROM media WHERE id = ?", (media_id,)).fetchone())
-    if row:
-        conn.execute("UPDATE media SET attention = ? WHERE id = ?", (_attention(effective(row)), media_id))
+    if not row:
+        return
+    known = effective(row)
+    if known.get("year") is None and known.get("show_id"):
+        show = row_to_dict(conn.execute("SELECT * FROM shows WHERE id = ?", (known["show_id"],)).fetchone())
+        known = {**known, "year": effective(show).get("year") if show else None}
+    conn.execute("UPDATE media SET attention = ? WHERE id = ?", (_attention(known), media_id))
 
 
 def _save(conn: sqlite3.Connection, table: str, row_id: int | None, fields: dict[str, Any]) -> int:
