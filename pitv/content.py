@@ -387,6 +387,13 @@ def _apply_entry(conn: sqlite3.Connection, e: dict[str, Any]) -> tuple[str | Non
     wid, mid = as_int(e.get("wanted_id")) or 0, as_int(e.get("media_id")) or 0
     file = _file_block(e)
     message = as_text(e.get("message")) or ""
+    # How long the series ran, which pitv_content reads from the match's episode list and sends
+    # with a delivery or a "no such episode" failure. The line-up entry keeps it, and the
+    # scheduler asks for nothing past it.
+    total = as_int(e["meta"].get("episodes_total")) if isinstance(e.get("meta"), dict) else None
+    if wid and total and total > 0:
+        conn.execute("UPDATE lineup SET episode_count = ?, updated_at = ? WHERE episode_count IS NOT ?"
+                     " AND id = (SELECT lineup_id FROM wanted WHERE id = ?)", (total, now_ts(), total, wid))
     existing_uid = as_text(e.get("existing_uid"))
     if status == "failed" and wid and existing_uid:
         # pitv_content found the request is already in the library (on the NAS): the request is

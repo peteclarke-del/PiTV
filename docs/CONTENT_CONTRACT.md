@@ -231,8 +231,9 @@ applies a report once: a dropped copy of one it already took over HTTP is recogn
   the cache path and, when the duration differs from what was scheduled, resizes the slot and
   rebuilds the rest of that channel-day.
 - `meta` is required for fetched material, which PiTV has never seen; PiTV creates its
-  catalogue entry from it. For episodes `show_title`, `season` and `episode` echo the request
-  exactly, so the delivery is filed against it even when the fetched title differs.
+  catalogue entry from it. For episodes `show_title` echoes the request exactly, so the
+  delivery joins the series asked for even when the fetched title differs; `season` and
+  `episode` echo it too, except for a series with a confirmed match (below).
 - A `skipped` item still carries a `file` block measured from the existing target, except a
   skip whose message is "being written by another process": its file is incomplete, it has
   `"file": null`, and PiTV ignores it (no attempt used, no failure logged) until a later report
@@ -253,6 +254,15 @@ applies a report once: a dropped copy of one it already took over HTTP is recogn
   is known: `no such episode: the series has 6`. PiTV does not ask again, records the length
   on the line-up entry and asks for nothing past it. Delivering a near match under the
   number asked for is never right: PiTV airs it as that episode.
+- For a series with a confirmed `match`, PiTV always asks for season 1, episode N, meaning the
+  Nth regular episode of the whole run in broadcast order, because it does not know the season
+  structure of something it does not hold. pitv_content maps N through the match's episode
+  list and files the episode under its real season, number and title; `meta.season`,
+  `meta.episode` and `meta.title` are then the real ones, not an echo of the request, and the
+  delivery is bound to the request by `request_id`. `meta.episodes_total` (on a delivery, and
+  alone in `meta` on a "no such episode" failure) is the length of the run; PiTV keeps it on
+  the line-up entry. When the episode list cannot be read the request fails with a message
+  containing `rate limit`, which PiTV retries without using up an attempt.
 
 ## 4. Sources
 

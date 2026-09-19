@@ -670,5 +670,8 @@ def test_a_remote_series_is_asked_for_from_its_first_episode_and_not_past_its_la
     apply_report(c, {"schema": 2, "items": [{"request_id": f"w:{last['id']}", "wanted_id": last["id"], "status": "failed",
                                              "message": f"no such episode: the series has {last['episode'] - 1}", "file": None}]})
     assert lineup.entry(c, other["id"])["episode_count"] == last["episode"] - 1
+    apply_report(c, {"schema": 2, "items": [{"request_id": f"w:{last['id']}", "wanted_id": last["id"], "status": "failed",
+                                             "message": "no such episode", "meta": {"episodes_total": 5}, "file": None}]})
+    assert lineup.entry(c, other["id"])["episode_count"] == 5, "the structured count is read too"
     assert c.execute("SELECT status FROM wanted WHERE id = ?", (last["id"],)).fetchone()[0] == "failed", "not asked again"
     c.close()
