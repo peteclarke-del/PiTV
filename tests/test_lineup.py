@@ -666,6 +666,9 @@ def test_a_remote_series_is_asked_for_from_its_first_episode_and_not_past_its_la
     build_horizon(c, start_day=parse_day("2026-09-14"), days=7, now=now, seed=4, force=True)
     numbers = sorted(r[0] for r in c.execute("SELECT episode FROM wanted WHERE lineup_id = ?", (other["id"],)))
     assert numbers and numbers == list(range(1, len(numbers) + 1)), numbers
+    titles = {r[0] for r in c.execute("SELECT s.subtitle FROM schedule s JOIN wanted w ON w.id = s.wanted_id WHERE w.lineup_id = ?"
+                                      " AND s.subtitle != 'Episode ' || w.episode", (other["id"],))}
+    assert not titles, f"slots still titled by the old numbers: {titles}"
     last = c.execute("SELECT id, episode FROM wanted WHERE lineup_id = ? ORDER BY episode DESC LIMIT 1", (other["id"],)).fetchone()
     apply_report(c, {"schema": 2, "items": [{"request_id": f"w:{last['id']}", "wanted_id": last["id"], "status": "failed",
                                              "message": f"no such episode: the series has {last['episode'] - 1}", "file": None}]})

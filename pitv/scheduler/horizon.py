@@ -49,6 +49,7 @@ def build_horizon(conn: sqlite3.Connection, *, start_day: date | None = None,
     notes: list[str] = []
     builder: Builder | None = None
     try:
+        bring_requests_forward(conn)      # before the library reads them: a build reuses what it finds
         builder = Builder(conn, now=now, seed=seed,
                           rebuild={c["id"]: (now, None) for c in channels} if force else None)
         for i in range(days):
@@ -114,6 +115,35 @@ def fresh_rebuild_horizon(conn: sqlite3.Connection, *, start_day: date | None = 
     return {**result, "cleared_slots": cleared_slots, "cleared_history": cleared_history,
             "cleared_wanted": cleared_wanted, "kept_wanted": kept_wanted,
             "withdrawn_requests": cleared_wanted}
+
+
+def bring_requests_forward(conn: sqlite3.Connection) -> int:
+    """Open requests for a remote series take the lowest episode numbers still unasked, in order,
+    and the slots that use them are retitled. A request can be left far into a run (by numbering
+    that once continued from the highest ever raised, or by earlier ones being withdrawn), and
+    every way a build reuses it, as a spare or as the last resort's repeat, would keep it there:
+    the series would open on episode 8. Settled requests (delivered or given up) keep their
+    numbers. Returns how many moved."""
+    moved = 0
+    with tx(conn):
+        for entry in conn.execute("SELECT id, next_episode FROM lineup WHERE kind = 'show' AND source != 'library'").fetchall():
+            requests = conn.execute("SELECT id, episode, status FROM wanted WHERE lineup_id = ? AND kind = 'episode'"
+                                    " ORDER BY episode, id", (entry["id"],)).fetchall()
+            settled = {int(w["episode"] or 0) for w in requests if w["status"] != "queued"}
+            number = int(entry["next_episode"] or 1)
+            for w in (w for w in requests if w["status"] == "queued"):
+                while number in settled:
+                    number += 1
+                asked = int(w["episode"] or 0)
+                if number < asked:
+                    conn.execute("UPDATE wanted SET episode = ?, title = ?, updated_at = ? WHERE id = ?",
+                                 (number, f"Episode {number}", now_ts(), w["id"]))
+                    conn.execute("UPDATE schedule SET subtitle = ? WHERE wanted_id = ? AND media_id IS NULL",
+                                 (f"Episode {number}", w["id"]))
+                    moved += 1
+                    asked = number
+                number = max(number, asked + 1)
+    return moved
 
 
 def withdraw_orphaned_requests(conn: sqlite3.Connection) -> int:

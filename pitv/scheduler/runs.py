@@ -48,13 +48,6 @@ class Runs:
             elif e["spare_wanted"]:
                 spare = e["spare_wanted"].pop(0)
                 number, reuse = int(spare["episode"] or 1), int(spare["id"])
-                lowest = next_episode_number(e)
-                if lowest is not None and lowest < number:
-                    # An open request left far into the run comes down to the front of it, so
-                    # what airs first is what comes first. The builder renumbers the request.
-                    e["taken"].discard(number)
-                    e["taken"].add(lowest)
-                    number = lowest
                 spec = {"kind": "episode", "lineup_id": e["lineup_id"], "title": f"Episode {number}", "season": 1,
                         "episode": number, "year": e.get("year"), "reuse": reuse}
             else:
