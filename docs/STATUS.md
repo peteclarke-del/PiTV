@@ -106,6 +106,18 @@ pins. Nothing built from tomorrow airs off its own channel. The cartoon channel 
 daily (01bed32) and shows 23 hours a day from disk; a delivered file's slot takes its real
 length (65ae0b6); the last resort no longer books one remote episode all day (52d4888).
 
+The spread of a week (19 September, PiTV dcb86e5, ab299e9, 5def1e0), from Pete finding the same
+remote sport episode twice running on a Wednesday morning on PiTV One. Three causes: the last
+resort waived "never the same series back to back" for remote titles; placement ignored a
+channel's decades, so One (1960s to 1990s) held 23 series from 2000 on that it could never air
+and ran short; and with one episode a week every series came due on the same days. Placement
+now applies the decades, each series keeps to its own day of the week, and after a rebalance and
+rebuild there is no back-to-back repeat on any channel and no sport on a weekday morning on the
+general channels. One shows 0, 4, 1, 3, 5 and 7 library series a day over the coming week (it
+was 0, 0, 3, 0, 1, 15) and should level further as series settle onto their days. The library
+itself is mostly from 2000 on (about 700 of 1100 films, 115 of 195 series), which the era
+weights hold at 0.05: the period feel of the general channels rests on the titles Pete adds.
+
 Borrowing by type (19 September, PiTV 57081ce): on the development library the general channels
 carry cartoons from the cartoon channel's shelf on Sunday morning and in the weekday children's
 hour (One 12 slots, Two 15, Three 21 on 20 September; none outside those dayparts), and the
