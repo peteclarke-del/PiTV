@@ -113,8 +113,8 @@ cartoon channel's own day is unchanged. Rick and Morty arrived from its NFO as P
 animated, flagged for children; it is overridden to 15 and not children's, which is the kind
 of thing to look for when a borrowed cartoon turns up somewhere it should not.
 
-Still to measure after pitv_content's restarts of 19 September (20319c7 at 15:18, then cb8e672,
-which takes an upload for a matched series only when its title says it is the episode wanted):
+Still to measure after pitv_content's restarts of 19 September (20319c7 at 15:18, then 47abe13 at
+15:38, which takes an upload for a matched series only when its title says it is the episode wanted):
 a band helping against C5's under-a-minute figure, and series delivery over an evening with
 every request now asking from episode 1 (C21). Nothing had been delivered between 15:18 and
 15:37.
@@ -122,11 +122,14 @@ every request now asking from episode 1 (C21). Nothing had been delivered betwee
 P6, remote series asked for in order and never past their end (19 September, PiTV 45f895c,
 c672623, 5949fd9, 99150cb; pitv_content 20319c7, deployed 15:18): open requests went from a highest
 episode of 21 to 8 with every series asking from episode 1, the run length is known for 53 of 67
-remote series, and pitv_content refuses an episode its source does not list. Four files fetched
-under the old numbering are still misfiled (Science Britannica S01E10 and E11 are its episodes 3
+remote series, and pitv_content refuses an episode its source does not list. Five files fetched
+before these fixes are still misfiled: "World's Greatest Motorcycle Rides" S01E01 is a YouTube
+video about a route in Wales, filed and tagged as the sport entry Motorcycle Racing because a
+matched series was looked up in pitv_content's own catalogue by keyword (fixed in its 3ff9ca3);
+and four from the old numbering (Science Britannica S01E10 and E11 are its episodes 3
 and 2, Planet Dinosaur S01E11 is its episode 5, How It Works S01E07 is an unrelated news clip);
-renaming three and setting the fourth aside is pitv_content's to do and waits on Pete allowing it
-in that session.
+renaming three and setting the other two aside is pitv_content's to do and waits on Pete allowing
+it in that session.
 
 C22, the index passes on what the NFO knows (pitv_content 5bdcee5, PiTV fe225c9): `certificate` is
 the NFO's raw text, shows and items carry `ids`, and the lookup resolves by identifier. Verified
