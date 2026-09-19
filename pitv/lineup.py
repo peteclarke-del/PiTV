@@ -23,6 +23,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from . import genres as genre_rules
 from .db import (
     LIVE,
     all_settings,
@@ -76,25 +77,40 @@ def _genre_set(value: Any) -> set[str]:
     return {g.lower() for g in genre_list(value)}
 
 
-def channel_fit(channel: dict[str, Any], genres: set[str]) -> float | None:
+def claimed_types(channels: list[dict[str, Any]]) -> frozenset[str]:
+    """The programme types some themed channel among `channels` takes as its own. A type nobody
+    claims (sport with no sports channel, documentaries with no documentary channel) stays
+    with the general channels, so removing a themed channel never orphans its material."""
+    return frozenset(t for c in channels if (c.get("content") or "general") != "general"
+                     for t in genre_rules.THEME_TYPES.get(c.get("content") or "", ()))
+
+
+def channel_fit(channel: dict[str, Any], genres: set[str], ptype: str, *, kids: bool = False,
+                claimed: frozenset[str] = frozenset()) -> float | None:
     """How well an item suits a channel, or None when the channel must not carry it.
 
-    Both sides are read in PiTV's own genre spelling, so a series a provider tagged Kids reaches
-    a channel that lists Children, and one tagged cartoons reaches a channel that lists
-    Animation. Nothing is missed for being called by another name.
+    What the item is decides whether it belongs (docs/PLAN.md section 4.2): a themed channel
+    takes its own type and nothing else, whatever the item's genres say, and a children's
+    channel takes what is flagged for children. The general channels take films and series,
+    and any type no themed channel claims.
 
-    The score is the share of the channel's allowed genres the item matches, so a narrowly
-    defined channel attracts what it specialises in: an Animation/Children series fits a
-    channel allowing only cartoon genres (1 of 3) better than a general channel that also
-    allows Children (1 of 8). Items with no genre information (common with NFO-less files) are
-    accepted by general channels at a token score, so they are spread by load instead of being
-    dropped."""
-    allowed = {str(g).lower() for g in (channel.get("allowed_genres") or [])}
+    Genres only steer among the general channels. Both sides are read in PiTV's own genre
+    spelling. The score is the share of the channel's allowed genres the item matches, so a
+    drama goes to the general channel that specialises in drama; an item with no genre
+    information (common with NFO-less files) is accepted at a token score and spread by load.
+    A channel's excluded genres bar an item anywhere."""
     excluded = {str(g).lower() for g in (channel.get("excluded_genres") or [])}
     if excluded & genres:
         return None
+    theme = channel.get("content") or "general"
+    if theme != "general":
+        own = genre_rules.THEME_TYPES.get(theme)
+        return 1.0 if (ptype in own if own is not None else kids) else None
+    if ptype not in genre_rules.THEME_TYPES["general"] and ptype in claimed:
+        return None
+    allowed = {str(g).lower() for g in (channel.get("allowed_genres") or [])}
     if not genres:
-        return 0.01 if channel.get("content") == "general" else None
+        return 0.01
     if not allowed:
         return 0.05
     matched = len(allowed & genres)
@@ -149,11 +165,14 @@ def _cheapest(fits: list[tuple[dict[str, Any], float]], load: dict[tuple[int, st
     return min(fits, key=lambda cf: ((load[(cf[0]["id"], bucket)] + hours) / cf[1], cf[0]["number"]))[0]
 
 
-def best_channel(conn: sqlite3.Connection, genres: list[str] | None, hours: float = 1.0) -> int | None:
-    """The channel the generator would give a new item with these genres, or None when no
-    channel accepts them."""
+def best_channel(conn: sqlite3.Connection, genres: list[str] | None, hours: float = 1.0, *,
+                 ptype: str = "series", kids: bool = False) -> int | None:
+    """The channel the generator would give a new item of this type with these genres, or None
+    when no channel accepts it."""
     channels = programme_channels(conn)
-    fits = [(c, f) for c in channels if (f := channel_fit(c, _genre_set(genres))) is not None]
+    claimed = claimed_types(channels)
+    fits = [(c, f) for c in channels
+            if (f := channel_fit(c, _genre_set(genres), ptype, kids=kids, claimed=claimed)) is not None]
     if not fits:
         return None
     return _cheapest(fits, _load_hours(conn, [c["id"] for c in channels]), "general", hours)["id"]
@@ -162,14 +181,15 @@ def best_channel(conn: sqlite3.Connection, genres: list[str] | None, hours: floa
 def _insert(conn: sqlite3.Connection, channel_id: int, kind: str, key: str, title: str, year: int | None, *,
             show_id: int | None = None, media_id: int | None = None, genres: list[str] | None = None,
             source: str = "library", transient: int = 0, episode_minutes: int | None = None,
-            pinned: int = 0, match: dict[str, str] | None = None) -> int:
+            pinned: int = 0, match: dict[str, str] | None = None, programme_type: str | None = None) -> int:
     conn.execute(
         "INSERT INTO lineup(channel_id, kind, show_id, media_id, key, title, year, genres, source, transient,"
-        " episode_minutes, pinned, match, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        " episode_minutes, pinned, match, programme_type, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
         " ON CONFLICT(key) DO UPDATE SET channel_id = excluded.channel_id, pinned = excluded.pinned,"
-        " match = COALESCE(excluded.match, lineup.match), updated_at = excluded.created_at",
+        " match = COALESCE(excluded.match, lineup.match),"
+        " programme_type = COALESCE(excluded.programme_type, lineup.programme_type), updated_at = excluded.created_at",
         (channel_id, kind, show_id, media_id, key, title, year, json.dumps(genre_list(genres or [])), source, transient,
-         episode_minutes, pinned, json.dumps(match) if match else None, now_ts()))
+         episode_minutes, pinned, json.dumps(match) if match else None, programme_type, now_ts()))
     return int(conn.execute("SELECT id FROM lineup WHERE key = ?", (key,)).fetchone()["id"])   # inserted or updated
 
 
@@ -197,21 +217,25 @@ def generate(conn: sqlite3.Connection, rebalance: bool = False) -> dict[str, int
             if r["id"] not in taken_shows and r["secs"]:
                 items.append({"kind": "show", "id": r["id"], "title": r["title"], "year": r["year"],
                               "genres": _genre_set(r["genres"]), "secs": r["secs"], "cert": r["certificate"], "kids": r["kids"],
-                              "bucket": _bucket(r["category"])})
+                              "bucket": _bucket(r["category"]),
+                              "ptype": genre_rules.programme_type("show", r["genres"], r["category"], r.get("programme_type"))})
         for row in conn.execute(f"SELECT * FROM media WHERE kind = 'movie' AND {LIVE} AND duration IS NOT NULL"):
             r = effective(dict(row))
             if r["id"] not in taken_films:
                 items.append({"kind": "movie", "id": r["id"], "title": r["title"], "year": r["year"],
                               "genres": _genre_set(r["genres"]), "secs": r["duration"], "cert": r["certificate"], "kids": 0,
-                              "bucket": "general"})
+                              "bucket": "general",
+                              "ptype": genre_rules.programme_type("movie", r["genres"], None, r.get("programme_type"))})
         # Big items first so the hours balance out; kids and certificates alternate as a tie-break.
         order = {"U": 0, "PG": 1, "12": 2, "12A": 2, "15": 3, "18": 4}
         items.sort(key=lambda i: (-i["secs"], -int(i["kids"] or 0), order.get((i["cert"] or "PG").upper(), 1), i["title"]))
+        claimed = claimed_types(channels)
         for it in items:
-            fits = [(c, f) for c in channels if (f := channel_fit(c, it["genres"])) is not None]
+            fits = [(c, f) for c in channels
+                    if (f := channel_fit(c, it["genres"], it["ptype"], kids=bool(it["kids"]), claimed=claimed)) is not None]
             if not fits:
                 result["unmatched"] += 1
-                _flag(conn, it, f"No channel accepts its genres ({', '.join(sorted(it['genres'])) or 'none'})")
+                _flag(conn, it, f"No channel accepts a {it['ptype']} with its genres ({', '.join(sorted(it['genres'])) or 'none'})")
                 continue
             hours = it["secs"] / 3600
             b = it["bucket"]
@@ -225,6 +249,14 @@ def generate(conn: sqlite3.Connection, rebalance: bool = False) -> dict[str, int
         sync_home_channels(conn)
     write_mirror(conn)
     return result
+
+
+def place_again(conn: sqlite3.Connection, *, show_id: int | None = None, media_id: int | None = None) -> None:
+    """Give a library title its channel again after the owner has said what it is. The new type
+    is the owner's word on where it belongs, so it outranks an earlier pin."""
+    with tx(conn):
+        conn.execute("DELETE FROM lineup WHERE source = 'library' AND show_id IS ? AND media_id IS ?", (show_id, media_id))
+    generate(conn)
 
 
 def _flag(conn: sqlite3.Connection, item: dict[str, Any], note: str) -> None:
@@ -247,16 +279,20 @@ def sync_home_channels(conn: sqlite3.Connection) -> None:
 def add(conn: sqlite3.Connection, channel_id: int | None, *, show_id: int | None = None, media_id: int | None = None,
         title: str | None = None, year: int | None = None, kind: str | None = None, genres: list[str] | None = None,
         transient: bool | None = None, episode_minutes: int | None = None, source: str = "manual",
-        match: Any = None) -> dict[str, Any]:
+        match: Any = None, programme_type: str | None = None) -> dict[str, Any]:
     """Add (or move) an entry. Library items are identified by show_id/media_id; anything else
-    is an external entry that pitv_content will be asked to fetch. Without a channel, an
-    external entry goes where the generator would put it by its genres."""
+    is an external entry that pitv_content will be asked to fetch. `programme_type` is the
+    owner's word on what an external title is; without it the type is read from the genres.
+    Without a channel, an external entry goes where the generator would put that type."""
+    if programme_type is not None and programme_type not in genre_rules.PROGRAMME_TYPES:
+        raise ValueError(f"programme_type must be one of {', '.join(genre_rules.PROGRAMME_TYPES)}")
     if channel_id is None:
         if show_id is not None or media_id is not None:
             raise ValueError("a channel is required to move a library title")
-        channel_id = best_channel(conn, genres)
+        ptype = genre_rules.programme_type(kind, genres, None, programme_type)
+        channel_id = best_channel(conn, genres, ptype=ptype, kids=genre_rules.is_childrens(genres or []))
         if channel_id is None:
-            raise ValueError("no channel accepts these genres; choose one")
+            raise ValueError(f"no channel takes a {ptype} with these genres; choose one")
     with tx(conn):
         if show_id is not None:
             row = conn.execute("SELECT id, title, year, genres FROM shows WHERE id = ?", (show_id,)).fetchone()
@@ -276,14 +312,14 @@ def add(conn: sqlite3.Connection, channel_id: int | None, *, show_id: int | None
             key = f"ext:{kind}:{title.strip().lower()}:{year or ''}"
             lid = _insert(conn, channel_id, kind, key, title.strip(), year, genres=genres or [], source=source,
                           transient=1 if transient is None else int(transient), episode_minutes=episode_minutes, pinned=1,
-                          match=clean_match(match))
+                          match=clean_match(match), programme_type=programme_type)
         sync_home_channels(conn)
     write_mirror(conn)
     return entry(conn, lid)
 
 
 _EDITABLE = {"channel_id", "enabled", "transient", "remove_after_airing", "episode_minutes", "next_episode", "notes",
-             "pinned", "year", "genres"}
+             "pinned", "year", "genres", "programme_type"}
 _FLAGS = {"enabled", "transient", "remove_after_airing", "pinned"}
 
 
@@ -301,6 +337,10 @@ def update(conn: sqlite3.Connection, lineup_id: int, fields: dict[str, Any]) -> 
             v = json.dumps(genre_list(v))
         elif k == "notes":
             v = "" if v is None else str(v)
+        elif k == "programme_type":
+            v = str(v).strip().casefold() if v not in (None, "") else None     # empty: read it from the genres
+            if v is not None and v not in genre_rules.PROGRAMME_TYPES:
+                raise ValueError(f"programme_type must be one of {', '.join(genre_rules.PROGRAMME_TYPES)}")
         elif v is not None:
             v = int(v)
         sets[k] = v
@@ -420,7 +460,7 @@ def facets(conn: sqlite3.Connection) -> dict[str, Any]:
 # --- JSON mirror --------------------------------------------------------------------------------
 
 _EXPORTED = ("kind", "title", "year", "source", "transient", "remove_after_airing", "episode_minutes", "next_episode",
-             "enabled", "pinned", "notes", "genres", "match")
+             "enabled", "pinned", "notes", "genres", "match", "programme_type")
 
 
 def export(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -464,7 +504,8 @@ def _import_entry(conn: sqlite3.Connection, channel_id: int, e: Any) -> bool:
         lid = _insert(conn, channel_id, kind, f"ext:{kind}:{title.lower()}:{year or ''}", title, year,
                       genres=genre_list(e.get("genres")), source=source,
                       transient=int(as_bool(e.get("transient"), True)), episode_minutes=as_int(e.get("episode_minutes")),
-                      pinned=1, match=clean_match(e.get("match")))
+                      pinned=1, match=clean_match(e.get("match")),
+                      programme_type=e.get("programme_type") if e.get("programme_type") in genre_rules.PROGRAMME_TYPES else None)
     update_row(conn, "lineup", lid, {
         "enabled": int(as_bool(e.get("enabled"), True)), "remove_after_airing": int(as_bool(e.get("remove_after_airing"))),
         "next_episode": as_int(e.get("next_episode")) or 1, "notes": as_text(e.get("notes")) or ""})

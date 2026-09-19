@@ -128,3 +128,40 @@ def scheduling_class(value: object, names: object = ()) -> str:
         return "sport"
     return "sport" if matches(names, ("Sport",)) and not matches(names, SCRIPTED) else "general"
 
+
+
+# --- what a programme is ----------------------------------------------------------------------
+# A programme's type says what it is; its genres say what it is about. The type, and only the
+# type, decides which channel theme it belongs to: a crime drama is a series however many of a
+# documentary channel's subjects (Crime, History, Science) its genres happen to name.
+PROGRAMME_TYPES = ("film", "series", "documentary", "cartoon", "music", "sport")
+
+# The types a channel theme (`channels.content`) takes as its own. A theme that is not listed
+# (children's) is an audience, not a type, and is matched on the kids flag instead.
+THEME_TYPES: dict[str, tuple[str, ...]] = {
+    "general": ("film", "series"),
+    "films": ("film",),
+    "documentaries": ("documentary",),
+    "cartoons": ("cartoon",),
+    "music": ("music",),
+    "sport": ("sport",),
+}
+
+
+def programme_type(kind: object, names: object = (), category: object = None, chosen: object = None) -> str:
+    """What a programme is. `chosen` is the owner's word (an override, or the type picked when
+    the title was added) and wins. Otherwise: a music video is music; the sport class is sport;
+    a Documentary tag makes a documentary, even an animated one; Animation or Anime makes a
+    cartoon; anything else is a film or a series by what kind of file it is."""
+    if isinstance(chosen, str) and chosen.strip().casefold() in PROGRAMME_TYPES:
+        return chosen.strip().casefold()
+    kind = str(kind or "").casefold()
+    if kind == "music":
+        return "music"
+    if scheduling_class(category, names) == "sport":
+        return "sport"
+    if matches(names, ("Documentary",)):
+        return "documentary"
+    if matches(names, CARTOONS):
+        return "cartoon"
+    return "film" if kind == "movie" else "series"

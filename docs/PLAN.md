@@ -267,17 +267,32 @@ which programme belongs where, and every series or film belongs to exactly one c
 programme on one channel never appears on another. Adverts, idents and music videos are not
 programmes and stay shared by rule.
 
+- What a programme is, and what it is about. Every series and film has one type
+  (`genres.PROGRAMME_TYPES`: film, series, documentary, cartoon, music, sport) and any number
+  of genres. The type says what it is and alone decides which channel theme it belongs to.
+  Genres say what it is about (crime, history, musical) and never put it on a themed channel:
+  when membership went by any one matching genre, a documentary channel whose subjects
+  included Crime and History took Breaking Bad and RoboCop. The type is read from the title
+  (`genres.programme_type`): a music video is music, the sport class is sport, a Documentary
+  tag makes a documentary even of an animated film, Animation or Anime makes a cartoon, and
+  anything else is a film or a series by its kind of file. The owner's word outranks the tags:
+  "What it is" in the series and film editors (an override) and in Add to the catalogue (kept
+  on the line-up entry and in the mirror). Children's is an audience, not a type; it stays
+  the kids flag.
 - Generation. After every catalogue import, series and films that belong to no line-up are
-  placed on the enabled general or cartoon channel that suits them best. A channel accepts an
-  item when it has at least one of the channel's allowed genres and none of its excluded ones
-  (an empty allowed list accepts anything). Among the channels that accept it, the item goes
-  where load in hours, divided by how well it fits, is lowest. Sport and everything else are
-  balanced separately, so a channel that takes the long sport series still gets its share of
-  ordinary programmes; fit is the share of the channel's allowed genres the item matches, so
-  a narrowly defined channel attracts what it specialises in. Items the index gives no genres
-  are accepted by every general channel and spread by load. Items no channel accepts are
-  flagged in the catalogue's attention list. Rebalance redistributes everything that is not
-  pinned.
+  placed (`lineup.channel_fit`). A themed channel (`channels.content`) takes its own type and
+  nothing else: documentaries, cartoons, films, sport; a children's channel takes what is
+  flagged for children. The general channels take films and series, and any type that no
+  enabled themed channel claims, so sport stays with them until a sports channel exists and
+  removing a themed channel orphans nothing. Among the general channels genres steer: a
+  channel accepts an item with at least one of its allowed genres (an empty list accepts
+  anything), fit is the share of the allowed list the item matches, and the item goes where
+  load in hours divided by fit is lowest. Sport and everything else are balanced separately,
+  so a channel that takes the long sport series still gets its share of ordinary programmes.
+  Items with no genres are spread across the general channels by load. A channel's excluded
+  genres bar an item anywhere. Items no channel accepts are flagged in the attention list.
+  Rebalance redistributes everything that is not pinned. Changing what a title is places it
+  again, pinned or not, since that is the owner's word on where it belongs.
 - Editing. In the admin a channel's line-up can gain any series or film from a searchable
   list (catalogue titles, plus pitv_content's catalogue of fetchable titles when its API is
   up), lose entries, or move entries to another channel. A hand edit pins the entry so

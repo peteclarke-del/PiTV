@@ -8,6 +8,7 @@ from conftest import make_library
 
 from pitv import db as dbm
 from pitv import lineup
+from pitv.genres import programme_type
 from pitv.scheduler.horizon import build_horizon
 from pitv.scheduler.rules import local_ts, tz_of
 from pitv.scheduler.slots import parse_day
@@ -46,7 +47,10 @@ def test_generation_respects_channel_genres(conn):
         ch = channels[e["channel_id"]]
         assert ch["content"] in ("general", "cartoons")
         genres = {g.lower() for g in (e["genres"] or [])}
-        assert lineup.channel_fit(ch, genres) is not None, (e["title"], genres, ch["allowed_genres"])
+        # No sports channel here, so nothing claims sport and it stays general; cartoons are claimed.
+        ptype = "sport" if e.get("category") == "sport" else programme_type(e["kind"], e["genres"] or [])
+        assert lineup.channel_fit(ch, genres, ptype, claimed=frozenset({"cartoon"})) is not None, (e["title"], ptype, genres)
+        assert (ptype == "cartoon") == (ch["content"] == "cartoons"), (e["title"], ptype, ch["name"])
     toons = conn.execute("SELECT id FROM channels WHERE content = 'cartoons'").fetchone()["id"]
     titles = {e["title"] for e in lineup.entries(conn, channel_id=toons)}
     assert {"Danger Mouse", "Thundercats"} <= titles
@@ -387,7 +391,9 @@ def test_added_title_without_a_channel_goes_where_its_genres_fit(tmp_path):
     conn = ctx["conn"]
     e = lineup.add(conn, None, title="Count Duckula", kind="show", year=1988, genres=["Animation"])
     chosen = next(c for c in lineup.programme_channels(conn) if c["id"] == e["channel_id"])
-    assert lineup.channel_fit(chosen, {"animation"}) is not None
+    assert chosen["content"] == "cartoons", "an animated series is a cartoon and goes to the cartoon channel"
+    drama = lineup.add(conn, None, title="Edge of Darkness", kind="show", year=1985, genres=["Crime", "Drama"])
+    assert next(c for c in lineup.programme_channels(conn) if c["id"] == drama["channel_id"])["content"] == "general"
     with dbm.tx(conn):
         conn.execute("UPDATE channels SET excluded_genres = '[\"animation\"]'")
     with pytest.raises(ValueError):
@@ -420,7 +426,8 @@ def test_genres_are_one_spelling_everywhere(tmp_path):
     dbm.init_db(conn)
     assert dbm.row_to_dict(conn.execute("SELECT allowed_genres FROM channels WHERE id = ?",
                                         (toons,)).fetchone())["allowed_genres"] == ["Animation", "Children"]
-    added = lineup.add(conn, None, title="Jamie and the Magic Torch", kind="show", genres=["Kids"])
+    # "Kids" says who it is for, not what it is; the owner says it is a cartoon when adding it.
+    added = lineup.add(conn, None, title="Jamie and the Magic Torch", kind="show", genres=["Kids"], programme_type="cartoon")
     assert added["channel_id"] == toons and added["genres"] == ["Children"]
 
 
@@ -547,3 +554,60 @@ def test_a_starved_channel_does_not_book_one_remote_episode_all_day():
     assert placed, "the remote series was never placed"
     assert max(r["n"] for r in placed) <= cap, [tuple(r) for r in placed]
     c.close()
+
+
+def test_what_a_programme_is_decides_its_channel_not_its_genres():
+    """A documentary channel whose subjects include Crime and History once took Breaking Bad and
+    RoboCop, because one matching genre was enough. Membership of a themed channel is by type;
+    genres steer only among the general channels; a type no themed channel claims stays general;
+    and the owner's word on what a title is outranks its tags."""
+    from pitv.lineup import channel_fit, claimed_types
+    assert programme_type("show", ["Crime", "Drama", "Thriller"]) == "series"
+    assert programme_type("movie", ["Action", "Crime", "Science Fiction"]) == "film"
+    assert programme_type("show", ["Documentary", "History", "Music"]) == "documentary"
+    assert programme_type("movie", ["Documentary", "Animation"]) == "documentary", "a documentary about cartoons"
+    assert programme_type("show", ["Animation", "Comedy"]) == "cartoon"
+    assert programme_type("show", ["Darts"], "sport") == "sport"
+    assert programme_type("show", ["Sport", "Comedy", "Drama"]) == "series", "a story about sport is not sport"
+    assert programme_type("music", []) == "music"
+    assert programme_type("show", ["History"], None, "documentary") == "documentary", "the owner's word wins"
+    assert programme_type("show", ["History"], None, "nonsense") == "series"
+
+    docs = {"content": "documentaries", "allowed_genres": ["Crime", "History", "Documentary"]}
+    toons = {"content": "cartoons"}
+    one = {"content": "general", "allowed_genres": ["Drama", "Crime", "Sport"]}
+    two = {"content": "general", "allowed_genres": ["Comedy"]}
+    kids = {"content": "kids"}
+    claimed = claimed_types([docs, toons, one, two, kids])
+    assert claimed == {"documentary", "cartoon"}
+    fit = lambda ch, genres, ptype, **kw: channel_fit(ch, {g.lower() for g in genres}, ptype, claimed=claimed, **kw)
+    assert fit(docs, ["Crime", "Drama"], "series") is None and fit(one, ["Crime", "Drama"], "series")
+    assert fit(docs, ["Documentary", "Music"], "documentary") == 1.0
+    assert fit(one, ["Documentary", "Crime"], "documentary") is None, "claimed by the documentary channel"
+    assert fit(toons, ["Animation"], "cartoon") == 1.0 and fit(one, ["Animation", "Crime"], "cartoon") is None
+    assert fit(one, ["Sport"], "sport") and fit(docs, ["Sport"], "sport") is None, "no sports channel: sport stays general"
+    assert fit(two, ["Crime", "Drama"], "series") is None and fit(two, ["Comedy"], "film"), "genres steer among general channels"
+    assert fit(kids, ["Comedy"], "series", kids=True) == 1.0 and fit(kids, ["Comedy"], "series") is None
+    assert fit({**docs, "excluded_genres": ["Music"]}, ["Documentary", "Music"], "documentary") is None
+
+
+def test_a_retyped_title_moves_to_the_channel_that_takes_it(conn):
+    """The owner says a series its tags call a drama is a cartoon: it leaves its general channel
+    for the cartoon one, the admin's view of it says so, and taking the word back returns it."""
+    from pitv.web.api.deps import show_public
+    themed = conn.execute("SELECT id FROM channels WHERE content = 'cartoons'").fetchone()
+    show = conn.execute("SELECT s.* FROM shows s JOIN lineup l ON l.show_id = s.id JOIN channels c ON c.id = l.channel_id"
+                        " WHERE c.content = 'general' AND s.category != 'sport' LIMIT 1").fetchone()
+    assert show_public(show)["programme_type"] == "series" and not show_public(show)["programme_type_set"]
+    before = json.loads(show["overrides"] or "{}")
+    with dbm.tx(conn):
+        conn.execute("UPDATE shows SET overrides = ? WHERE id = ?", (json.dumps({**before, "programme_type": "cartoon"}), show["id"]))
+    lineup.place_again(conn, show_id=show["id"])
+    assert conn.execute("SELECT channel_id FROM lineup WHERE show_id = ?", (show["id"],)).fetchone()[0] == themed["id"]
+    after = conn.execute("SELECT * FROM shows WHERE id = ?", (show["id"],)).fetchone()
+    assert show_public(after)["programme_type"] == "cartoon" and show_public(after)["programme_type_set"]
+    with dbm.tx(conn):
+        conn.execute("UPDATE shows SET overrides = ? WHERE id = ?", (json.dumps(before), show["id"]))
+    lineup.place_again(conn, show_id=show["id"])
+    assert conn.execute("SELECT c.content FROM lineup l JOIN channels c ON c.id = l.channel_id WHERE l.show_id = ?",
+                        (show["id"],)).fetchone()[0] == "general"

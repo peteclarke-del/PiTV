@@ -105,6 +105,10 @@ export function safeColour(hex) {
 
 export const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 export const CERTIFICATES = ['U', 'PG', '12', '12A', '15', '18'];
+// What a programme is (pitv/genres.py PROGRAMME_TYPES): this, not its genres, decides its channel.
+export const PROGRAMME_TYPES = [['film', 'Film'], ['series', 'TV series'], ['documentary', 'Documentary'],
+                                ['cartoon', 'Cartoon'], ['music', 'Music'], ['sport', 'Sport']];
+export const programmeTypeLabel = (t) => PROGRAMME_TYPES.find(([v]) => v === t)?.[1] ?? t;
 export const PATTERN_TOKENS = ['show', 'tv', 'movie', 'ad', 'ident', 'break'];
 
 /** Whether the backend says this channel's scheduling pattern draws from a line-up. */

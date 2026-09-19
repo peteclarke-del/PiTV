@@ -1,7 +1,7 @@
 <script>
   import { untrack } from 'svelte';
   import { get, put, post, del, tryApi } from '../../lib/api.js';
-  import { fmtDuration, fmtDateTime, fmtEpisode, WEEKDAYS, CERTIFICATES } from '../../lib/format.js';
+  import { fmtDuration, fmtDateTime, fmtEpisode, WEEKDAYS, CERTIFICATES, PROGRAMME_TYPES, programmeTypeLabel } from '../../lib/format.js';
   import { num, splitList } from '../../lib/util.js';
   import { guard } from '../../lib/guard.svelte.js';
   import AppBadge from '../../components/AppBadge.svelte';
@@ -21,7 +21,7 @@
     show = s;
     form = {
       title: s.title ?? '', year: s.year ?? '', certificate: s.certificate ?? '', genres: (s.genres ?? []).join(', '),
-      plot: s.plot ?? '', kids: !!s.kids, category: s.category || 'general', home_channel_id: s.home_channel_id ?? '', mode: s.mode ?? 'auto',
+      plot: s.plot ?? '', kids: !!s.kids, programme_type: s.programme_type_set ? s.programme_type : '', category: s.category || 'general', home_channel_id: s.home_channel_id ?? '', mode: s.mode ?? 'auto',
       anchor_time: s.anchor_time ?? '', anchor_days: new Set(s.anchor_days ?? []), rest_weeks: s.rest_weeks ?? 4, excluded: !!s.excluded,
     };
     if (s.cursor) cursorForm = { season: s.cursor.next_season, episode: s.cursor.next_episode };
@@ -32,7 +32,7 @@
     const genres = splitList(form.genres);
     return {
       title: form.title, year: num(form.year, { min: 1900, max: 2100, int: true }), certificate: form.certificate || null,
-      genres: genres.length ? genres : null, plot: form.plot, kids: form.kids ? 1 : 0,
+      genres: genres.length ? genres : null, plot: form.plot, kids: form.kids ? 1 : 0, programme_type: form.programme_type || null,
       category: form.category, home_channel_id: form.home_channel_id === '' ? null : Number(form.home_channel_id), mode: form.mode,
       anchor_time: form.mode === 'auto' ? null : form.anchor_time || null,
       anchor_days: form.mode === 'auto' ? null : [...form.anchor_days].sort(),
@@ -44,7 +44,7 @@
     if (r) { show = r; onsaved?.(); }
   });
   const clearOverrides = guard(async () => {
-    const r = await tryApi(put(`/api/shows/${id}`, { title: null, year: null, certificate: null, genres: null, plot: null, kids: null }), { success: 'Overrides cleared' });
+    const r = await tryApi(put(`/api/shows/${id}`, { title: null, year: null, certificate: null, genres: null, plot: null, kids: null, programme_type: null }), { success: 'Overrides cleared' });
     if (r) { await load(); onsaved?.(); }
   });
   const setCursor = guard(async (season, episode) => {
@@ -85,6 +85,10 @@
           <span class="help">Indexed: {show.indexed?.certificate ?? 'none'}</span>
         </label>
         <label class="field">Genres<input bind:value={form.genres} placeholder="Comedy, Drama" /><span class="help">Comma separated</span></label>
+        <label class="field">What it is
+          <select bind:value={form.programme_type}><option value="">{programmeTypeLabel(show.programme_type)} (read from its genres)</option>{#each PROGRAMME_TYPES as [v, l] (v)}<option value={v}>{l}</option>{/each}</select>
+          <span class="help">Decides which channel theme it belongs to; genres only describe it. Changing this moves it to the right channel.</span>
+        </label>
         <label class="field wide">Plot<textarea bind:value={form.plot}></textarea></label>
         <label class="check"><input type="checkbox" bind:checked={form.kids} /> Children's programme</label>
         <label class="check"><input type="checkbox" bind:checked={form.excluded} /> Excluded from scheduling</label>

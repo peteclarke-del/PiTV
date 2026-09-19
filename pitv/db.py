@@ -243,6 +243,7 @@ CREATE TABLE IF NOT EXISTS lineup (
     pinned INTEGER NOT NULL DEFAULT 0,        -- set by hand; rebalance leaves it alone
     notes TEXT NOT NULL DEFAULT '',
     match TEXT,                    -- externals: the title as confirmed online in the admin (JSON; lineup.clean_match)
+    programme_type TEXT,           -- externals: what the owner said the title is; NULL = read from its genres
     created_at INTEGER NOT NULL,
     updated_at INTEGER
 );
@@ -478,7 +479,8 @@ DEFAULT_CHANNELS = [
      "decades": [1970, 1980, 1990, 2000], "fetch_kind": "music"},
     {"number": 6, "name": "PiTV Toons", "short_name": "Toons", "colour": "#ffb703", "ads_enabled": 1,
      "pattern": "show, show, ad, ad", "description": "Cartoons all day; child-friendly adverts only",
-     "kind_weights": {"tv": 1.0, "movie": 0.0}, "content": "cartoons", "family_safe_ads": 1, "kids_any_time": 1,
+     # Animated films are cartoons too and belong here, so they need some share of the day.
+     "kind_weights": {"tv": 0.85, "movie": 0.15}, "content": "cartoons", "family_safe_ads": 1, "kids_any_time": 1,
      "allowed_genres": ["Animation", "Cartoon", "Anime", "Children"], "fetch_kind": "cartoons"},
 ]
 
@@ -582,6 +584,7 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("media", "metadata_checked_at", "INTEGER"),
     ("media", "metadata_source", "TEXT"),
     ("channels", "series_cadence_days", "INTEGER"),
+    ("lineup", "programme_type", "TEXT"),
     ("shows", "ids", "TEXT NOT NULL DEFAULT '{}'"),
     ("media", "ids", "TEXT NOT NULL DEFAULT '{}'"),
 ]

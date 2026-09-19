@@ -1,7 +1,7 @@
 <script>
   import { untrack } from 'svelte';
   import { get, put, tryApi } from '../../lib/api.js';
-  import { fmtDuration, fmtBytes, fmtDateTime, CERTIFICATES } from '../../lib/format.js';
+  import { fmtDuration, fmtBytes, fmtDateTime, CERTIFICATES, PROGRAMME_TYPES, programmeTypeLabel } from '../../lib/format.js';
   import { num, splitList } from '../../lib/util.js';
   import { guard } from '../../lib/guard.svelte.js';
   import AppBadge from '../../components/AppBadge.svelte';
@@ -17,7 +17,7 @@
     if (!m) { onclose?.(); return; }
     item = m;
     form = { title: m.title ?? '', year: m.year ?? '', certificate: m.certificate ?? '', genres: (m.genres ?? []).join(', '),
-             plot: m.plot ?? '', excluded: !!m.excluded, artist: m.artist ?? '', concert: !!m.concert, family_safe: m.family_safe !== 0,
+             plot: m.plot ?? '', excluded: !!m.excluded, programme_type: m.programme_type_set ? m.programme_type : '', artist: m.artist ?? '', concert: !!m.concert, family_safe: m.family_safe !== 0,
              home_channel_id: m.home_channel_id ?? '' };
   }
   $effect(() => { id; untrack(load); });
@@ -26,6 +26,7 @@
     const genres = splitList(form.genres);
     const body = { title: form.title, year: num(form.year, { min: 1900, max: 2100, int: true }), certificate: form.certificate || null,
                    genres: genres.length ? genres : null, plot: form.plot, excluded: form.excluded };
+    if (item.kind === 'movie') body.programme_type = form.programme_type || null;
     if (item.kind === 'music') { body.artist = form.artist; body.concert = form.concert ? 1 : 0; }
     if (item.kind === 'advert') body.family_safe = form.family_safe ? 1 : 0;
     if (item.kind === 'movie' || item.kind === 'ident') body.home_channel_id = form.home_channel_id === '' ? null : Number(form.home_channel_id);
@@ -33,7 +34,7 @@
     if (r) { item = r; onsaved?.(); }
   });
   const clearOverrides = guard(async () => {
-    const r = await tryApi(put(`/api/media/${id}`, { title: null, year: null, certificate: null, genres: null, plot: null, artist: null }), { success: 'Overrides cleared' });
+    const r = await tryApi(put(`/api/media/${id}`, { title: null, year: null, certificate: null, genres: null, plot: null, artist: null, programme_type: null }), { success: 'Overrides cleared' });
     if (r) { await load(); onsaved?.(); }
   });
   let overridden = $derived(item ? Object.keys(item.overrides ?? {}) : []);
@@ -76,6 +77,12 @@
           <span class="help">Indexed: {item.indexed?.certificate ?? 'none'}</span>
         </label>
         <label class="field">Genres<input bind:value={form.genres} placeholder="Comedy, Drama" /></label>
+        {#if item.kind === 'movie'}
+        <label class="field">What it is
+          <select bind:value={form.programme_type}><option value="">{programmeTypeLabel(item.programme_type)} (read from its genres)</option>{#each PROGRAMME_TYPES as [v, l] (v)}<option value={v}>{l}</option>{/each}</select>
+          <span class="help">Decides which channel theme it belongs to; genres only describe it. Changing this moves it to the right channel.</span>
+        </label>
+        {/if}
         {#if item.kind === 'movie' || item.kind === 'ident'}
           <label class="field">{item.kind === 'ident' ? 'Channel' : 'Home channel'}
             <select bind:value={form.home_channel_id}><option value="">(unassigned)</option>{#each channels as c (c.id)}<option value={c.id}>{c.number} {c.name}</option>{/each}</select>

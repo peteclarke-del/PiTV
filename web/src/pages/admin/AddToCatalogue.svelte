@@ -2,12 +2,12 @@
   // Custom programming: a title that is not on the NAS joins the catalogue here, in two steps.
   // First pitv_content looks it up online (contract section 8) so the admin can confirm the
   // right one; then it is placed. A series or film becomes a line-up entry carrying that
-  // identity, on a chosen channel or the one its genres fit, and pitv_content fetches it before
+  // identity, on a chosen channel or the one that takes what it is, and pitv_content fetches it before
   // it airs. An advert or music video joins the wanted list, pinned to the chosen video.
   import { get, post, tryApi } from '../../lib/api.js';
   import { isOffline, toolGet } from '../../lib/toolapi.js';
   import { num } from '../../lib/util.js';
-  import { safeUrl } from '../../lib/format.js';
+  import { safeUrl, PROGRAMME_TYPES, programmeTypeLabel } from '../../lib/format.js';
   import { guard } from '../../lib/guard.svelte.js';
   import { noteChange } from '../../lib/stores.svelte.js';
   import Modal from '../../components/Modal.svelte';
@@ -17,7 +17,7 @@
 
   let { open = false, channels = [], onclose, onadded } = $props();
   const KINDS = [['show', 'Series'], ['movie', 'Film'], ['advert', 'Advert'], ['music', 'Music video']];
-  const blankForm = () => ({ kind: 'show', title: '', year: '', genres: [], channel: '', transient: false, minutes: '', artist: '', url: '' });
+  const blankForm = () => ({ kind: 'show', title: '', year: '', genres: [], programme_type: '', channel: '', transient: false, minutes: '', artist: '', url: '' });
   let f = $state(blankForm());
   let step = $state('search');        // search | place
   let found = $state(null);           // candidates, once looked up
@@ -40,6 +40,13 @@
   });
 
   let programme = $derived(f.kind === 'show' || f.kind === 'movie');
+  // What the title would be taken for and where it would go, asked of PiTV so the rule lives in one place.
+  let placement = $state(null);
+  $effect(() => {
+    if (!open || step !== 'place' || !programme) { placement = null; return; }
+    const ask = { kind: f.kind, genres: [...f.genres], programme_type: f.programme_type || null };
+    tryApi(post('/api/lineup/placement', ask)).then((p) => { placement = p ?? null; });
+  });
   // pitv_content's fetchable titles as suggestions; a title already on disk is flagged, not duplicated.
   let suggestions = $derived(options.filter((o) => !o.on_disk && o.type === f.kind));
   let existing = $derived(options.find((o) => o.on_disk && o.type === f.kind && o.title.toLowerCase() === f.title.trim().toLowerCase()));
@@ -73,7 +80,7 @@
     const year = num(f.year, { min: 1900, max: 2100, int: true });
     const r = programme
       ? await tryApi(post('/api/lineup', {
-          kind: f.kind, title: f.title.trim(), year, genres: f.genres, transient: f.transient,
+          kind: f.kind, title: f.title.trim(), year, genres: f.genres, programme_type: f.programme_type || null, transient: f.transient,
           channel_id: f.channel === '' ? null : Number(f.channel), match: chosen?.match ?? null,
           episode_minutes: f.kind === 'show' ? num(f.minutes, { min: 1, max: 240, int: true }) : null }))
       : await tryApi(post('/api/wanted', { kind: f.kind, title: f.title.trim(), year, artist: f.artist.trim() || null, ref: f.url.trim() || null }));
@@ -115,8 +122,13 @@
         <label class="field">Year<input type="number" class="narrow" min="1900" max="2100" bind:value={f.year} /></label>
         {#if programme}
           <div class="field"><span>Genres</span><GenrePicker value={f.genres} options={facets?.genres ?? {}} kinds={f.kind === 'show' ? ['episode'] : ['movie']} onchange={(v) => (f.genres = v)} label="Entry genres" empty="Choose genres" /><span class="help">The same programme genres used by Channel settings.</span></div>
+          <label class="field">What it is
+            <select bind:value={f.programme_type}><option value="">{placement ? `${programmeTypeLabel(placement.programme_type)} (read from its genres)` : 'Read from its genres'}</option>{#each PROGRAMME_TYPES as [v, l] (v)}<option value={v}>{l}</option>{/each}</select>
+            <span class="help">This decides which channel theme it belongs to. Genres only describe it.</span>
+          </label>
           <label class="field">Channel
-            <select bind:value={f.channel}><option value="">Choose by genres</option>{#each channels as c (c.id)}<option value={c.id}>{c.number} {c.name}</option>{/each}</select>
+            <select bind:value={f.channel}><option value="">{placement?.channel_name ? `Where it belongs: ${placement.channel_number} ${placement.channel_name}` : 'Where it belongs'}</option>{#each channels as c (c.id)}<option value={c.id}>{c.number} {c.name}</option>{/each}</select>
+            {#if placement && !placement.channel_id}<span class="help">No channel takes a {programmeTypeLabel(placement.programme_type).toLowerCase()} with these genres; choose one.</span>{/if}
           </label>
           {#if f.kind === 'show'}<label class="field">Episode length (minutes)<input type="number" class="narrow" min="1" max="240" bind:value={f.minutes} placeholder="default" /></label>{/if}
           <label class="check wide"><input type="checkbox" bind:checked={f.transient} /> Remove after it airs<span class="help">Normally left off: what is fetched is kept, so a later airing costs nothing, and the oldest goes first if the drive ever needs room.</span></label>

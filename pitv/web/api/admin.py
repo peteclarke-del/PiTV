@@ -65,10 +65,10 @@ from .settings_rules import HHMM, SECRET_SETTINGS, SettingError, check_setting
 log = logging.getLogger("pitv.web")
 router = APIRouter(prefix="/api", dependencies=[Depends(admin_conn)])
 
-SHOW_OVERRIDE_FIELDS = {"title", "year", "certificate", "genres", "plot", "kids"}
+SHOW_OVERRIDE_FIELDS = {"title", "year", "certificate", "genres", "plot", "kids", "programme_type"}
 SHOW_DIRECT_FIELDS = {"home_channel_id", "mode", "anchor_time", "anchor_days", "rest_weeks", "excluded", "category"}
 SHOW_CATEGORIES = genre_rules.SCHEDULING_CLASSES
-MEDIA_OVERRIDE_FIELDS = {"title", "year", "certificate", "genres", "plot", "season", "episode", "artist"}
+MEDIA_OVERRIDE_FIELDS = {"title", "year", "certificate", "genres", "plot", "season", "episode", "artist", "programme_type"}
 MEDIA_DIRECT_FIELDS = {"excluded", "concert", "family_safe", "home_channel_id"}
 CHANNEL_FIELDS = {"number", "name", "short_name", "colour", "enabled", "ads_enabled", "ads_per_break",
                   "pattern", "era_weights", "genre_weights", "kind_weights", "daypart_profile",
@@ -356,6 +356,11 @@ def _override_value(key: str, value: Any) -> Any:
         return genre_rules.canonical_all(value)
     if key == "kids":
         return int(bool(value))
+    if key == "programme_type":
+        chosen = str(value).strip().casefold()
+        if chosen not in genre_rules.PROGRAMME_TYPES:
+            raise HTTPException(400, f"programme_type must be one of {', '.join(genre_rules.PROGRAMME_TYPES)}")
+        return chosen
     if key == "certificate":
         cert = normalise_cert(optional_text(value, key))
         if cert is None:
@@ -376,6 +381,11 @@ def _merge_overrides(row: sqlite3.Row, body: dict[str, Any], fields: set[str]) -
         else:
             overrides[k] = v
     return overrides
+
+
+def _retyped(row: sqlite3.Row, overrides: dict[str, Any]) -> bool:
+    """Whether this edit changed what the owner says the title is, with its channel left alone."""
+    return overrides.get("programme_type") != json.loads(row["overrides"] or "{}").get("programme_type")
 
 
 def _update_row(conn: sqlite3.Connection, table: str, row_id: int, fields: dict[str, Any]) -> None:
@@ -409,9 +419,12 @@ def update_show(sid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Connec
         direct["rest_weeks"] = max(0, optional_int(direct["rest_weeks"], "rest_weeks") or 0)
     if "excluded" in direct:
         direct["excluded"] = int(bool(direct["excluded"]))
-    direct["overrides"] = json.dumps(_merge_overrides(row, body, SHOW_OVERRIDE_FIELDS))
+    overrides = _merge_overrides(row, body, SHOW_OVERRIDE_FIELDS)
+    direct["overrides"] = json.dumps(overrides)
     _update_row(conn, "shows", sid, direct)
-    if home:
+    if _retyped(row, overrides) and home in (None, row["home_channel_id"]):
+        lineup_mod.place_again(conn, show_id=sid)     # what it is decides where it belongs
+    elif home:
         lineup_mod.add(conn, home, show_id=sid)
     return get_show(sid, conn)
 
@@ -499,7 +512,9 @@ def update_media(mid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Conne
             ("certificate" in overrides and a.startswith("No certificate")))]
         direct["attention"] = "; ".join(att) or None
     _update_row(conn, "media", mid, direct)
-    if home and row["kind"] == "movie":
+    if row["kind"] == "movie" and _retyped(row, overrides) and home in (None, row["home_channel_id"]):
+        lineup_mod.place_again(conn, media_id=mid)
+    elif home and row["kind"] == "movie":
         lineup_mod.add(conn, home, media_id=mid)
     return get_media(mid, conn)
 
@@ -1176,6 +1191,22 @@ def lineup_options(conn: sqlite3.Connection = Depends(admin_conn), q: str = "", 
     return out
 
 
+@router.post("/lineup/placement")
+def lineup_placement(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
+    """What a title about to be added would be taken for, and the channel it would go to, so the
+    add dialog can show both before anything is added. The type is the owner's if given, else
+    read from the genres by the same rule placement uses."""
+    kind = body.get("kind")
+    if kind not in ("show", "movie"):
+        raise HTTPException(400, "kind must be show or movie")
+    genres = body.get("genres") if isinstance(body.get("genres"), list) else []
+    ptype = genre_rules.programme_type(kind, genres, None, body.get("programme_type"))
+    channel_id = lineup_mod.best_channel(conn, genres, ptype=ptype, kids=genre_rules.is_childrens(genres))
+    row = conn.execute("SELECT number, name FROM channels WHERE id = ?", (channel_id,)).fetchone() if channel_id else None
+    return {"programme_type": ptype, "channel_id": channel_id,
+            "channel_number": row["number"] if row else None, "channel_name": row["name"] if row else None}
+
+
 @router.get("/lineup/known")
 def lineup_known(kind: str = "show", conn: sqlite3.Connection = Depends(admin_conn)):
     """What the catalogue already holds of a kind, so the add dialog can grey out a search result
@@ -1214,7 +1245,8 @@ def lineup_add(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depe
         return lineup_mod.add(conn, optional_int(body.get("channel_id"), "channel_id"), show_id=body.get("show_id"), media_id=body.get("media_id"),
                               title=body.get("title"), year=body.get("year"), kind=body.get("kind"), genres=body.get("genres"),
                               transient=body.get("transient"), episode_minutes=body.get("episode_minutes"),
-                              source="catalogue" if body.get("catalogue") else "manual", match=body.get("match"))
+                              source="catalogue" if body.get("catalogue") else "manual", match=body.get("match"),
+                              programme_type=body.get("programme_type") or None)
     except (KeyError, ValueError, TypeError) as exc:
         raise HTTPException(400, str(exc)) from exc
 

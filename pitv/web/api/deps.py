@@ -131,6 +131,9 @@ def media_public(row: sqlite3.Row | dict[str, Any] | None, with_path: bool = Fal
     eff = effective(d)
     out = {k: eff.get(k) for k in MEDIA_PUBLIC if k in eff}
     out["indexed"] = {k: d.get(k) for k in ("title", "year", "certificate", "genres", "plot")}
+    # What it is, as placement reads it; `programme_type_set` says the owner chose it.
+    out["programme_type"] = genre_rules.programme_type(eff.get("kind"), eff.get("genres") or [], None, eff.get("programme_type"))
+    out["programme_type_set"] = bool(eff.get("programme_type"))
     out["enriched"] = d.get("enriched") or {}
     out["metadata_source"] = d.get("metadata_source")
     out["cached"] = bool(d.get("cache_path")) or d.get("origin") in ("cache", "online")
@@ -148,6 +151,8 @@ def show_public(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
             "source_id")
     out = {k: eff.get(k) for k in keys}
     out["cartoon"] = genre_rules.is_cartoon(eff.get("genres") or [])
+    out["programme_type"] = genre_rules.programme_type("show", eff.get("genres") or [], eff.get("category"), eff.get("programme_type"))
+    out["programme_type_set"] = bool(eff.get("programme_type"))
     out["indexed"] = {k: d.get(k) for k in ("title", "year", "certificate", "genres", "plot", "kids")}
     out["enriched"] = d.get("enriched") or {}
     out["metadata_source"] = d.get("metadata_source")
