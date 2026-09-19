@@ -53,8 +53,8 @@ BBC_ONE = {
         _dp("Saturday morning", "08:00", 1.0, 0.1, 6.0, 0.1, 60, Children=2.0, Animation=2.0),
         _dp("Grandstand", "12:15", 0.2, 0.2, 0.2, 9.0),
         _dp("Saturday teatime", "17:05", 1.0, 0.2, 1.5, 0.3, 50, Family=2.5, Game_Show=2.5, Science_Fiction=2.0, Adventure=2.0, Comedy=1.5),
-        _dp("Saturday night", "19:00", 1.0, 0.7, 0.05, 0.3, Game_Show=2.0, Comedy=2.0, Drama=1.5, Crime=1.3),
-        _dp("Saturday post-watershed", "21:00", 1.0, 1.3, 0.0, 0.5, Drama=1.5, Crime=1.5, Thriller=1.5),
+        _dp("Saturday night", "19:00", 1.0, 0.4, 0.05, 0.3, Game_Show=3.0, Comedy=2.5, Family=2.0, Drama=1.2),
+        _dp("Saturday post-watershed", "21:00", 1.0, 1.3, 0.0, 0.5, Comedy=1.8, Drama=1.5, Crime=1.5, Thriller=1.5),
         _dp("Match of the Day", "22:15", 0.6, 1.5, 0.0, 4.0),
     ],
     "sunday": [
