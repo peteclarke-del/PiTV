@@ -379,9 +379,9 @@ def _compatible_candidate(kind: str, title: str, year: int | None,
                           candidate: dict[str, Any]) -> bool:
     """Conservative automatic identity check: never enrich a merely fuzzy search result."""
     found = as_int(candidate.get("year"))
-    if _title_key(candidate.get("title")) != _title_key(title):
-        if not (kind == "movie" and year and found == year and _same_film(title, as_text(candidate.get("title")) or "")):
-            return False
+    same_film = kind == "movie" and year and found == year and _same_film(title, as_text(candidate.get("title")) or "")
+    if _title_key(candidate.get("title")) != _title_key(title) and not same_film:
+        return False
     if not year or not found:
         return True
     if kind == "movie":
