@@ -106,6 +106,11 @@ class SchedulerPolicy:
     def cadence_seconds(self) -> int:
         return self.integer("series_cadence_days") * DAY
 
+    def next_episode_due(self, last: int | None, at: int) -> bool:
+        """A series airs one episode a week, as it did on air: the next is due a week after the
+        last, give or take half a day so it may come round a little earlier in the same slot."""
+        return not last or at >= last + self.cadence_seconds - 12 * HOUR
+
     def cadence_factor(self, last: int | None, at: int, *, relaxed: bool = False) -> float:
         """Weight the next new episode towards the configured weekly slot."""
         if not last:

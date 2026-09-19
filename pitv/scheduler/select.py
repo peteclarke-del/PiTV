@@ -218,6 +218,13 @@ class Selector:
                 # going dark for the evening (docs/PLAN.md section 4.5).
                 if times_today >= daily_limit and not relaxed:
                     continue
+                # One episode a week. A series the owner made a strip or anchored keeps its own
+                # arrangement, and sport runs in blocks by its dayparts. Only at the last step
+                # before a holding card does a series come round early, and then with its next
+                # episode, never the last one again: the small hours are where repeats live.
+                weekly = show.mode == "auto" and show.category != "sport"
+                if weekly and relax < 2 and not self.policy.next_episode_due(self.library.show_last_placed.get(show.id), t):
+                    continue
                 ep = show.next_episode()
                 if ep is None:
                     continue
@@ -268,7 +275,9 @@ class Selector:
                 if token not in ("show", "tv" if episode else "movie"):
                     continue
                 times_today = placed_today.get(e["id"], 0)
-                held_back = (not prepared or times_today >= (daily_limit if episode else 1)
+                early = episode and not self.policy.next_episode_due(
+                    self.library.external_last_placed.get(e["lineup_id"]), t)     # one episode a week
+                held_back = (not prepared or early or times_today >= (daily_limit if episode else 1)
                              or e["id"] in barred or (e.get("show_id") and e["show_id"] in barred))
                 candidate = e
                 if held_back:
