@@ -1172,6 +1172,38 @@ def lineup_options(conn: sqlite3.Connection = Depends(admin_conn), q: str = "", 
     return out
 
 
+@router.get("/lineup/known")
+def lineup_known(kind: str = "show", conn: sqlite3.Connection = Depends(admin_conn)):
+    """What the catalogue already holds of a kind, so the add dialog can grey out a search result
+    instead of adding the same programme twice: line-up entries of every source with the
+    identity they were confirmed against, library titles no line-up carries, and for adverts and
+    music videos the wanted list and the library."""
+    if kind not in ("show", "movie", "advert", "music"):
+        raise HTTPException(400, "kind must be show, movie, advert or music")
+    if kind in ("show", "movie"):
+        rows = rows_to_dicts(conn.execute(
+            "SELECT l.title, l.year, l.match, l.source, c.number AS channel_number, c.name AS channel_name"
+            " FROM lineup l JOIN channels c ON c.id = l.channel_id WHERE l.kind = ?", (kind,)))
+        library = ("SELECT title, year FROM shows WHERE missing = 0 AND id NOT IN (SELECT show_id FROM lineup WHERE show_id IS NOT NULL)"
+                   if kind == "show" else
+                   "SELECT title, year FROM media WHERE kind = 'movie' AND missing = 0"
+                   " AND id NOT IN (SELECT media_id FROM lineup WHERE media_id IS NOT NULL)")
+        rows += [{**r, "source": "library"} for r in rows_to_dicts(conn.execute(library))]
+    else:
+        rows = [{**r, "source": "wanted"} for r in rows_to_dicts(conn.execute(
+            "SELECT title, year, artist, ref FROM wanted WHERE kind = ? AND status != 'failed'", (kind,)))]
+        rows += [{**r, "source": "library"} for r in rows_to_dicts(conn.execute(
+            "SELECT title, year, artist FROM media WHERE kind = ? AND missing = 0", (kind,)))]
+    for r in rows:
+        match = r.pop("match", None)
+        try:
+            match = json.loads(match) if isinstance(match, str) and match else match
+        except ValueError:
+            match = None
+        r["match"] = {"source": match.get("source"), "id": str(match.get("id"))} if isinstance(match, dict) and match.get("id") else None
+    return rows
+
+
 @router.post("/lineup")
 def lineup_add(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
     try:

@@ -732,3 +732,19 @@ def test_doctor_reports_the_whole_television_and_survives_a_broken_section(clien
     doc = client.get("/api/doctor").json()
     assert doc["library"] == {"error": "RuntimeError: no such table"} and doc["schedule"]["channel_days"]
     assert any("library section could not be gathered" in f for f in doc["findings"])
+
+
+def test_the_add_dialog_is_told_what_the_catalogue_already_holds(client):
+    """Search results for a title already in the catalogue are greyed out, so the same programme
+    is not added twice: line-up entries carry the identity they were confirmed against, and the
+    wanted list and library answer for adverts and music videos."""
+    shows = client.get("/api/lineup/known", params={"kind": "show"}).json()
+    assert shows and all({"title", "year", "source", "match"} <= set(r) for r in shows)
+    channel = client.get("/api/channels").json()[0]["id"]
+    added = client.post("/api/lineup", json={"kind": "show", "title": "The Tripods", "year": 1984, "channel_id": channel,
+                                            "match": {"source": "tvmaze", "id": 2203}}).json()
+    mine = [r for r in client.get("/api/lineup/known", params={"kind": "show"}).json() if r["title"] == "The Tripods"]
+    assert mine and mine[0]["match"] == {"source": "tvmaze", "id": "2203"} and mine[0]["channel_number"]
+    client.delete(f"/api/lineup/{added['id']}")
+    assert client.get("/api/lineup/known", params={"kind": "music"}).json()
+    assert client.get("/api/lineup/known", params={"kind": "series"}).status_code == 400

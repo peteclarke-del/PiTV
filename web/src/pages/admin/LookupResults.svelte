@@ -4,7 +4,23 @@
   // only, no referrer, links open in a new tab without access back to this page.
   import { fmtDuration, safeUrl } from '../../lib/format.js';
 
-  let { candidates = [], onpick } = $props();
+  let { candidates = [], known = [], onpick } = $props();
+
+  // A result already in the catalogue is greyed out, so the same programme is not added twice.
+  // The same confirmed identity is certain; failing that, the same title (ignoring case,
+  // punctuation and a leading article) with the same year, a year apart, or no year on one
+  // side. Music and adverts also need the same artist where both name one.
+  const plain = (s) => String(s ?? '').toLowerCase().replace(/^(the|a|an)\s+/, '').replace(/[^a-z0-9]+/g, '');
+  function already(c) {
+    return known.find((k) => {
+      if (k.match && c.match?.id != null && k.match.source === c.match.source && k.match.id === String(c.match.id)) return true;
+      if (plain(k.title) !== plain(c.title)) return false;
+      if (k.artist && c.artist && plain(k.artist) !== plain(c.artist)) return false;
+      return !k.year || !c.year || Math.abs(k.year - c.year) <= 1;
+    });
+  }
+  const where = (k) => k.channel_number ? `on channel ${k.channel_number} ${k.channel_name ?? ''}`.trim()
+    : k.source === 'wanted' ? 'on the wanted list' : 'in the library';
 
   function facts(c) {
     const years = c.year ? `${c.year}${c.end_year && c.end_year !== c.year ? `–${c.end_year}` : ''}` : null;
@@ -18,7 +34,8 @@
   {#each candidates as c, i (`${c.match?.source}:${c.match?.id}:${i}`)}
     {@const img = safeUrl(c.image, true)}
     {@const link = safeUrl(c.match?.url)}
-    <li>
+    {@const have = already(c)}
+    <li class:added={!!have}>
       {#if img}<img src={img} alt="" loading="lazy" referrerpolicy="no-referrer" />{:else}<span class="noimg" aria-hidden="true"></span>{/if}
       <div class="body">
         <b>{c.title}</b>
@@ -26,7 +43,8 @@
         {#if c.summary}<p class="small summary">{c.summary}</p>{/if}
         <div class="tiny muted">{c.match?.source}{#if link} · <a href={link} target="_blank" rel="noopener noreferrer">details ↗</a>{/if}</div>
       </div>
-      <button class="small primary" onclick={() => onpick(c)}>This one</button>
+      {#if have}<span class="tiny muted have">Already in the catalogue<br />{where(have)}</span>
+      {:else}<button class="small primary" onclick={() => onpick(c)}>This one</button>{/if}
     </li>
   {:else}
     <li class="muted small">Nothing found. Check the spelling or the year, or add it without a match.</li>
@@ -42,5 +60,7 @@
   .found li { display: grid; grid-template-columns: 48px 1fr auto; gap: .6rem; align-items: start; padding: .5rem; border: 1px solid var(--border); border-radius: var(--radius-sm); }
   .found img, .noimg { width: 48px; height: 68px; object-fit: cover; border-radius: 3px; background: var(--bg-sunken); }
   .body { min-width: 0; }
+  .found li.added { opacity: .5; }
+  .have { text-align: right; max-width: 9rem; }
   .summary { margin: .25rem 0; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 </style>

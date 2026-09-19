@@ -25,6 +25,12 @@
   let chosen = $state(null);          // the candidate confirmed, or null for "without a match"
   let options = $state([]);
   let facets = $state(null);
+  let known = $state([]);             // what the catalogue already holds of this kind, to grey out in the results
+  $effect(() => {
+    if (!open) return;
+    const kind = f.kind;
+    tryApi(get('/api/lineup/known', { kind })).then((rows) => { if (kind === f.kind) known = rows ?? []; });
+  });
   $effect(() => {
     if (!open) return;
     f = blankForm(); step = 'search'; found = null; lookupNote = ''; chosen = null;
@@ -95,7 +101,7 @@
         {#if f.kind === 'music'}<label class="field">Artist<input bind:value={f.artist} /></label>{/if}
       </div>
       {#if lookupNote}<div class="note small">{lookupNote}</div>{/if}
-      {#if found}<LookupResults candidates={found} onpick={pick} />{/if}
+      {#if found}<LookupResults candidates={found} {known} onpick={pick} />{/if}
     {:else}
       {#if chosen}
         <div class="note small">Matched: <b>{chosen.title}</b>{chosen.year ? ` (${chosen.year})` : ''} from {chosen.match?.source}. pitv_content fetches this one.
