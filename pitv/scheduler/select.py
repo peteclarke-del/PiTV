@@ -93,27 +93,41 @@ class Selector:
         them by lunchtime and gives the evening to films, the reverse of the television this
         models. So outside the peak hours a series is offered only while more are due than the
         peak still to come could hold; films and children's programmes carry the rest of the
-        day. Children's series and sport are outside this: their own dayparts place them."""
+        day. Children's series and sport are outside this: their own dayparts place them.
+
+        Only what could air when the peak opens is counted. A shelf of 15-rated drama cannot fill
+        an early evening, and counting it made a channel look well supplied, spend its few
+        family series in the morning, and reach seven o'clock with nothing but films. Remote
+        titles count only up to what the day's ceiling on new ones still allows."""
         starts = [hhmm_to_minutes(d["start"]) for d in dayparts]
-        peak = sum(max(0, end - max(start, bday_min)) for d, start, end in zip(dayparts, starts, [*starts[1:], 1440], strict=True)
-                   if self._is_peak(d)) * 60
+        parts = [(start, max(0, end - max(start, bday_min))) for d, start, end in zip(dayparts, starts, [*starts[1:], 1440], strict=True)
+                 if self._is_peak(d)]
+        peak = sum(minutes for _, minutes in parts) * 60
         if not peak:
             return False
+        opens = next(start for start, minutes in parts if minutes)      # the peak part on air, or the next to come
+        kids_rule = not channel.get("kids_any_time")
         threshold, target = self.policy.short_episode_seconds(channel)
         supply = 0.0
         for show in self.library.free_shows.get(channel["id"], ()):
             if show.mode != "auto" or show.category == "sport" or placed_today.get(show.id):
                 continue
             ep = show.next_episode()
-            if ep is None or ep.get("kids"):
+            if ep is None or ep.get("kids") or not allowed_at(ep, opens, self.settings, kids_rule=kids_rule):
                 continue
             if self.policy.series_due(channel, show.id, self.library.show_last(channel["id"], show), t, day_ordinal):
                 supply += max(float(ep["duration"]), target if threshold and ep["duration"] < threshold else 0)
+        day_key = broadcast_day_for(t, self.settings, self.tz).isoformat()
+        room = self.policy.integer("external_new_per_day") - self.library.external_per_day.get(day_key, 0)
         for e in self.library.externals_on.get(channel["id"], ()):
+            if room <= 0:
+                break
             if e["kind"] == "episode" and not e.get("kids") and e.get("category") != "sport" and not placed_today.get(e["id"]) \
+                    and allowed_at(e, opens, self.settings, kids_rule=kids_rule) \
                     and self.policy.external_prepared(t) and self.policy.series_due(
                         channel, e["lineup_id"], self.library.external_last_placed.get(e["lineup_id"]), t, day_ordinal):
                 supply += float(e["duration"])
+                room -= 1
         return supply <= peak
 
     def _borrowed(self, channel: dict[str, Any], dp: dict[str, Any], relax: int) -> list[Show]:
