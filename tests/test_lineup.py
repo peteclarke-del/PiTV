@@ -605,6 +605,12 @@ def test_what_a_programme_is_decides_its_channel_not_its_genres():
     assert fit(two, ["Crime", "Drama"], "series") is None and fit(two, ["Comedy"], "film"), "genres steer among general channels"
     assert fit(kids, ["Comedy"], "series", kids=True) == 1.0 and fit(kids, ["Comedy"], "series") is None
     assert fit({**docs, "excluded_genres": ["Music"]}, ["Documentary", "Music"], "documentary") is None
+    # A channel's decades bar what the scheduler would never air there; a series that ran into a
+    # listed decade counts, and an unknown year is not held against a title.
+    eighties = {**one, "decades": [1970, 1980]}
+    assert fit(eighties, ["Drama"], "series", year=1985) and fit(eighties, ["Drama"], "series", year=None)
+    assert fit(eighties, ["Drama"], "series", year=2007) is None
+    assert fit(eighties, ["Drama"], "series", year=1968, end_year=1972), "it ran into the seventies"
 
 
 def test_a_retyped_title_moves_to_the_channel_that_takes_it(conn):

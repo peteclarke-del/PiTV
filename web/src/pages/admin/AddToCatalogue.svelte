@@ -44,7 +44,7 @@
   let placement = $state(null);
   $effect(() => {
     if (!open || step !== 'place' || !programme) { placement = null; return; }
-    const ask = { kind: f.kind, genres: [...f.genres], programme_type: f.programme_type || null };
+    const ask = { kind: f.kind, genres: [...f.genres], programme_type: f.programme_type || null, year: num(f.year, { int: true }) };
     tryApi(post('/api/lineup/placement', ask)).then((p) => { placement = p ?? null; });
   });
   // pitv_content's fetchable titles as suggestions; a title already on disk is flagged, not duplicated.

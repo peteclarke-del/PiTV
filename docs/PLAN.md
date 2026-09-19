@@ -310,7 +310,8 @@ borrowed yet; with no film channel the general channels hold them all.
   load in hours divided by fit is lowest. Sport and everything else are balanced separately,
   so a channel that takes the long sport series still gets its share of ordinary programmes.
   Items with no genres are spread across the general channels by load. A channel's excluded
-  genres bar an item anywhere. Items no channel accepts are flagged in the attention list.
+  genres bar an item anywhere, and so do its decades, by the scheduler's own test
+  (`rules.in_decades`): a title the channel would never air is not put on its shelf. Items no channel accepts are flagged in the attention list.
   Rebalance redistributes everything that is not pinned. Changing what a title is places it
   again, pinned or not, since that is the owner's word on where it belongs.
 - Editing. In the admin a channel's line-up can gain any series or film from a searchable

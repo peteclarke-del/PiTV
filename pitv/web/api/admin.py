@@ -1205,7 +1205,8 @@ def lineup_placement(body: dict[str, Any] = Body(...), conn: sqlite3.Connection 
         raise HTTPException(400, "kind must be show or movie")
     genres = body.get("genres") if isinstance(body.get("genres"), list) else []
     ptype = genre_rules.programme_type(kind, genres, None, body.get("programme_type"))
-    channel_id = lineup_mod.best_channel(conn, genres, ptype=ptype, kids=genre_rules.is_childrens(genres))
+    channel_id = lineup_mod.best_channel(conn, genres, ptype=ptype, kids=genre_rules.is_childrens(genres),
+                                         year=optional_int(body.get("year"), "year"))
     row = conn.execute("SELECT number, name FROM channels WHERE id = ?", (channel_id,)).fetchone() if channel_id else None
     return {"programme_type": ptype, "channel_id": channel_id,
             "channel_number": row["number"] if row else None, "channel_name": row["name"] if row else None}

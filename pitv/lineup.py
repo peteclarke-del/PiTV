@@ -40,7 +40,7 @@ from .db import (
     update_row,
     write_data_file,
 )
-from .scheduler.rules import parse_pattern
+from .scheduler.rules import in_decades, parse_pattern
 from .scheduler.slots import slot_titles
 
 log = logging.getLogger("pitv.lineup")
@@ -86,7 +86,7 @@ def claimed_types(channels: list[dict[str, Any]]) -> frozenset[str]:
 
 
 def channel_fit(channel: dict[str, Any], genres: set[str], ptype: str, *, kids: bool = False,
-                claimed: frozenset[str] = frozenset()) -> float | None:
+                claimed: frozenset[str] = frozenset(), year: int | None = None, end_year: int | None = None) -> float | None:
     """How well an item suits a channel, or None when the channel must not carry it.
 
     What the item is decides whether it belongs (docs/PLAN.md section 4.2): a themed channel
@@ -98,9 +98,14 @@ def channel_fit(channel: dict[str, Any], genres: set[str], ptype: str, *, kids: 
     spelling. The score is the share of the channel's allowed genres the item matches, so a
     drama goes to the general channel that specialises in drama; an item with no genre
     information (common with NFO-less files) is accepted at a token score and spread by load.
-    A channel's excluded genres bar an item anywhere."""
+    A channel's excluded genres bar an item anywhere, and so do its decades: the scheduler never
+    airs what falls outside them (`rules.in_decades`, the same test), so a title placed there
+    would sit on the shelf unused while the channel ran short."""
     excluded = {str(g).lower() for g in (channel.get("excluded_genres") or [])}
     if excluded & genres:
+        return None
+    decades = [int(d) for d in (channel.get("decades") or []) if str(d).isdigit()]
+    if not in_decades(year, decades, end_year):
         return None
     theme = channel.get("content") or "general"
     if theme != "general":
@@ -166,13 +171,13 @@ def _cheapest(fits: list[tuple[dict[str, Any], float]], load: dict[tuple[int, st
 
 
 def best_channel(conn: sqlite3.Connection, genres: list[str] | None, hours: float = 1.0, *,
-                 ptype: str = "series", kids: bool = False) -> int | None:
+                 ptype: str = "series", kids: bool = False, year: int | None = None) -> int | None:
     """The channel the generator would give a new item of this type with these genres, or None
     when no channel accepts it."""
     channels = programme_channels(conn)
     claimed = claimed_types(channels)
     fits = [(c, f) for c in channels
-            if (f := channel_fit(c, _genre_set(genres), ptype, kids=kids, claimed=claimed)) is not None]
+            if (f := channel_fit(c, _genre_set(genres), ptype, kids=kids, claimed=claimed, year=year)) is not None]
     if not fits:
         return None
     return _cheapest(fits, _load_hours(conn, [c["id"] for c in channels]), "general", hours)["id"]
@@ -213,13 +218,16 @@ def generate(conn: sqlite3.Connection, rebalance: bool = False) -> dict[str, int
         # here too (`effective`), or a series that arrived with no genres stays where it fell.
         for row in conn.execute(
                 "SELECT s.*,"
-                " (SELECT COALESCE(SUM(duration), 0) FROM media m WHERE m.show_id = s.id AND m.missing = 0) AS secs"
+                " (SELECT COALESCE(SUM(duration), 0) FROM media m WHERE m.show_id = s.id AND m.missing = 0) AS secs,"
+                " (SELECT MAX(COALESCE(season, 1)) FROM media m WHERE m.show_id = s.id AND m.missing = 0) AS seasons"
                 " FROM shows s WHERE s.excluded = 0 AND s.missing = 0"):
             r = effective(dict(row))
             if r["id"] not in taken_shows and r["secs"]:
                 items.append({"kind": "show", "id": r["id"], "title": r["title"], "year": r["year"],
                               "genres": _genre_set(r["genres"]), "secs": r["secs"], "cert": r["certificate"], "kids": r["kids"],
                               "bucket": _bucket(r["category"]),
+                              # as the scheduler reckons it: first year plus a year a season
+                              "end_year": r["year"] + max(int(r["seasons"] or 1), 1) - 1 if r["year"] else None,
                               "ptype": genre_rules.programme_type("show", genre_list(r["genres"]), r["category"], r.get("programme_type"))})
         for row in conn.execute(f"SELECT * FROM media WHERE kind = 'movie' AND {LIVE} AND duration IS NOT NULL"):
             r = effective(dict(row))
@@ -234,7 +242,8 @@ def generate(conn: sqlite3.Connection, rebalance: bool = False) -> dict[str, int
         claimed = claimed_types(channels)
         for it in items:
             fits = [(c, f) for c in channels
-                    if (f := channel_fit(c, it["genres"], it["ptype"], kids=bool(it["kids"]), claimed=claimed)) is not None]
+                    if (f := channel_fit(c, it["genres"], it["ptype"], kids=bool(it["kids"]), claimed=claimed,
+                                         year=it["year"], end_year=it.get("end_year"))) is not None]
             if not fits:
                 result["unmatched"] += 1
                 _flag(conn, it, f"No channel accepts a {it['ptype']} with its genres ({', '.join(sorted(it['genres'])) or 'none'})")
@@ -293,7 +302,7 @@ def add(conn: sqlite3.Connection, channel_id: int | None, *, show_id: int | None
         if show_id is not None or media_id is not None:
             raise ValueError("a channel is required to move a library title")
         ptype = genre_rules.programme_type(kind, genres, None, programme_type)
-        channel_id = best_channel(conn, genres, ptype=ptype, kids=genre_rules.is_childrens(genres or []))
+        channel_id = best_channel(conn, genres, ptype=ptype, kids=genre_rules.is_childrens(genres or []), year=as_int(year))
         if channel_id is None:
             raise ValueError(f"no channel takes a {ptype} with these genres; choose one")
     if programme_type is None and show_id is None and media_id is None:
