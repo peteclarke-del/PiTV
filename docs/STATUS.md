@@ -98,6 +98,14 @@ flagged "No year found" at every import, because the note was computed from the 
 row; an episode now takes its series' year, as it does when scheduled (7cd8a1d). What remains
 was C22 and two films the library has no duration or year for.
 
+Line-ups by type (19 September, PiTV 34c52a0, 674a5d0, 8d5b85d): what a programme is decides its
+channel and its genres only describe it. After a rebalance on the development library every
+unpinned title sits on a channel of its own type (Toons 197 cartoons; Docs 59 documentaries; the
+general channels films, series and, with no sports channel, sport); the ten exceptions are all
+pins. Nothing built from tomorrow airs off its own channel. The cartoon channel runs its series
+daily (01bed32) and shows 23 hours a day from disk; a delivered file's slot takes its real
+length (65ae0b6); the last resort no longer books one remote episode all day (52d4888).
+
 C22, the index passes on what the NFO knows (pitv_content 5bdcee5, PiTV fe225c9): `certificate` is
 the NFO's raw text, shows and items carry `ids`, and the lookup resolves by identifier. Verified
 at 04:38 on 19 September: the full index published with ids on 1291 of 1294 films and 187 of 197
@@ -120,7 +128,8 @@ here has expired and Pete has to sign in again.
 | # | Item | Done when |
 |---|---|---|
 | P4 | The music channel's bands are short: 42 fetched songs on 19 September, 18 bands short over the next two days and 1106 minutes of holding card, by `pitv doctor`. The bands hold their configured times and show their own card, as configured; the cure is supply (C15, C18, C20) | The doctor reports no band short over two days |
-| P5 | The documentary channel has almost nothing to show: two library series, nine library films and fifteen remote series of which a handful of episodes have arrived. With nothing else eligible the last step before a holding card books the same unfetched episode again and again ("Classic Albums, Episode 1" eight times on 22 September). Two causes: 37 of the library's 42 documentary films sit on the general channels, placed before their genres were known, and only a rebalance moves them (Pete's decision, it moves every unpinned title); and the last resort has no limit on one item within a day | No item appears more than twice in a day on any channel, and the documentary channel's day is mostly material on disk |
+| P5 | The documentary channel leans on material that has not arrived: after the line-ups were put right it shows about ten hours a day from disk and waits on remote episodes for the other thirteen. Until they arrive the readiness check substitutes from a small shelf. The cure is supply (C21) and more documentary titles, not scheduling | The documentary channel's day is mostly material on disk |
+| P7 | A type may appear outside its themed channel in the cases Pete named: cartoons on the general channels on Saturday mornings, and films. Placement is now strictly by type, so the general channels hold no cartoons of their own. To build: a channel setting for the types it borrows, used at schedule time inside the dayparts that want them, with the episode cursor shared with the home channel | A general channel's Saturday morning carries cartoons from the cartoon channel's shelf, and nothing else of that type airs there |
 | P6 | A remote series' episodes are counted past the end of its run ("Planet Dinosaur, Episode 11" of a six-part series, which pitv_content then filled with something 27 minutes long). The line-up entry should carry the episode count from the lookup and stop, or wrap, there | No request is made for an episode beyond the run the lookup reports |
 | P1 | Time a band run and a cache run as each of C1 to C8 lands, import, rebuild, and record the result here | Figures recorded against each item above |
 | P3 | Hardware verification on a Raspberry Pi 4: hardware decode of copied files, the cache drive, encode times with the Pi's presets, the player keeper under systemd | REQUIREMENTS.md rows marked "by hand" checked on the device |
