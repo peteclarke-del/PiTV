@@ -56,6 +56,7 @@ class Show:
     end_year: int | None = None          # premiere year + seasons - 1 (approximation)
     category: str = "general"
     pinned: bool = False                 # explicitly assigned by the admin, not auto-routed
+    ptype: str = "series"                # what it is (genres.PROGRAMME_TYPES); decides who may borrow it
     next_index: int = 0
     resting_until: int | None = None
     held: list[int] = field(default_factory=list)   # episodes passed over by a run; offered first next time

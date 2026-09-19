@@ -16,7 +16,7 @@ import sqlite3
 from typing import Any
 
 from ..db import LIVE, effective, rows_to_dicts
-from ..genres import scheduling_class
+from ..genres import programme_type, scheduling_class
 from . import bands
 from .policy import SchedulerPolicy
 from .rules import era_spans, era_weight_spans, is_kids
@@ -113,6 +113,7 @@ class Library:
                 rest_weeks=int(s.get("rest_weeks") or self.policy.integer("series_rest_weeks")),
                 episodes=episodes, category=s.get("category") or "general",
                 pinned=s["id"] in pinned_shows,
+                ptype=programme_type("show", s.get("genres") or [], s.get("category"), s.get("programme_type")),
                 end_year=(s.get("year") + max((int(e.get("season") or 1) for e in episodes), default=1) - 1)
                 if s.get("year") else None)
         self.movies = self.playable("movie")
@@ -132,6 +133,11 @@ class Library:
         self.anchored: dict[int | None, list[Show]] = {}
         for show in self.shows.values():
             (self.anchored if show.anchored else self.free_shows).setdefault(show.home_channel_id, []).append(show)
+        # What a channel may borrow from the others' shelves (its `also_carries`), by type.
+        self.shows_of_type: dict[str, list[Show]] = {}
+        for show in self.shows.values():
+            if not show.anchored:
+                self.shows_of_type.setdefault(show.ptype, []).append(show)
         self.movies_on: dict[int | None, list[dict[str, Any]]] = {}
         for m in self.movies:
             self.movies_on.setdefault(m.get("home_channel_id"), []).append(m)
@@ -155,6 +161,22 @@ class Library:
         to it (`users`) is unlocked, still to come and inside a window being rebuilt."""
         return all(not sl["locked"] and sl["start_ts"] > self.now and self.rebuilt(sl["channel_id"], sl["start_ts"])
                    for sl in users)
+
+    def show_last(self, channel_id: int | None, show: Show) -> int | None:
+        """When the series last aired as far as this channel's cadence is concerned: on its own
+        channel, any airing there; on a channel that borrows it, that channel's own airings. A
+        cartoon channel running a series daily must not stop a general channel from carrying it
+        on a Saturday morning, nor the borrowing reset the cartoon channel's week."""
+        if channel_id is None or channel_id == show.home_channel_id:
+            return self.show_last_placed.get(show.id)
+        return self.borrowed_last.get((channel_id, show.id))
+
+    def note_show_placed(self, channel_id: int | None, show: Show, ts: int) -> None:
+        if channel_id is None or channel_id == show.home_channel_id:
+            self.show_last_placed[show.id] = max(self.show_last_placed.get(show.id, 0), ts)
+        else:
+            key = (channel_id, show.id)
+            self.borrowed_last[key] = max(self.borrowed_last.get(key, 0), ts)
 
     def _load_externals(self) -> None:
         """Line-up entries with no material on disk. Each becomes a candidate whose placement
@@ -257,6 +279,7 @@ class Library:
         # rule measures to the nearest in either direction.
         self.movie_placements: dict[int, list[int]] = {}
         self.show_last_placed: dict[int, int] = {}
+        self.borrowed_last: dict[tuple[int, int], int] = {}   # (borrowing channel, show) -> its last airing there
         self.external_last_placed: dict[int, int] = {}
         # broadcast day -> placeholders it already holds that nothing has delivered yet, which
         # is what the daily ceiling on new remote commitments counts against
@@ -265,13 +288,13 @@ class Library:
         media_show = {ep["id"]: show.id for show in self.shows.values() for ep in show.episodes}
         cursor_ts: dict[int, int] = {}
 
-        def placed(media_id: int, ts: int, for_cursor: bool = True) -> None:
+        def placed(media_id: int, ts: int, for_cursor: bool = True, channel_id: int | None = None) -> None:
             self.last_placed[media_id] = max(self.last_placed.get(media_id, 0), ts)
             if media_id in films:
                 self.movie_placements.setdefault(media_id, []).append(ts)
             show_id = media_show.get(media_id)
             if show_id is not None:
-                self.show_last_placed[show_id] = max(self.show_last_placed.get(show_id, 0), ts)
+                self.note_show_placed(channel_id, self.shows[show_id], ts)
             if for_cursor:
                 cursor_ts[media_id] = max(cursor_ts.get(media_id, 0), ts)
 
@@ -282,9 +305,9 @@ class Library:
                               " WHERE media_id IS NOT NULL AND replay = 0 AND kind = 'programme'"):
             window = self.rebuild.get(r["channel_id"])
             if r["locked"] or window is None or r["ts"] < window[0]:
-                placed(r["media_id"], r["ts"])
+                placed(r["media_id"], r["ts"], channel_id=r["channel_id"])
             elif not self.rebuilt(r["channel_id"], r["ts"]):
-                placed(r["media_id"], r["ts"], for_cursor=False)
+                placed(r["media_id"], r["ts"], for_cursor=False, channel_id=r["channel_id"])
 
         for r in conn.execute("SELECT w.lineup_id, s.start_ts, s.channel_id, s.locked, s.day, s.media_id FROM schedule s"
                               " JOIN wanted w ON w.id = s.wanted_id WHERE w.lineup_id IS NOT NULL"

@@ -75,7 +75,7 @@ CHANNEL_FIELDS = {"number", "name", "short_name", "colour", "enabled", "ads_enab
                   "overnight_replay_from", "idents_enabled", "description", "content", "family_safe_ads",
                   "allowed_genres", "excluded_genres", "nas_only", "kids_any_time", "decades", "bands",
                   "band_item_repeat_hours", "band_feature_repeat_days",
-                  "short_episode_minutes", "short_episode_run_minutes", "series_cadence_days", "fetch_kind",
+                  "short_episode_minutes", "short_episode_run_minutes", "series_cadence_days", "also_carries", "fetch_kind",
                   "band_item_max_minutes", "strict_matching"}
 JSON_CHANNEL_FIELDS = {"era_weights", "genre_weights", "kind_weights", "daypart_profile", "allowed_genres",
                        "excluded_genres", "decades"}
@@ -616,6 +616,10 @@ def _clean_channel_fields(body: dict[str, Any]) -> dict[str, Any]:
             fields[k] = optional_int(v, k)      # empty follows the global setting
             if fields[k] is not None and not 0 <= fields[k] <= 8760:
                 raise HTTPException(400, f"{k} out of range")
+        elif k == "also_carries":
+            if not isinstance(v, list) or any(t not in genre_rules.PROGRAMME_TYPES for t in v):
+                raise HTTPException(400, f"also_carries must be a list of {', '.join(genre_rules.PROGRAMME_TYPES)}")
+            fields[k] = json.dumps(sorted(set(v)))      # an empty list is the owner's word: borrow nothing
         elif k == "series_cadence_days":
             fields[k] = optional_int(v, k)      # empty follows the global setting
             if fields[k] is not None and not 1 <= fields[k] <= 28:

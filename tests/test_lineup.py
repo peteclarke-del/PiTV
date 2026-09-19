@@ -57,18 +57,29 @@ def test_generation_respects_channel_genres(conn):
 
 
 def test_week_never_shares_a_programme_across_channels(conn):
+    """A programme airs on the channel whose line-up holds it. The one exception is a type a
+    channel lists under "also carries": by default the general channels borrow cartoons, and
+    nothing else crosses."""
     now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(conn))
     build_horizon(conn, start_day=parse_day("2026-09-14"), days=7, now=now, seed=5)
-    rows = conn.execute(
-        "SELECT COALESCE(m.show_id, -m.id) AS prog, COUNT(DISTINCT s.channel_id) AS channels FROM schedule s"
-        " JOIN media m ON m.id = s.media_id WHERE s.kind = 'programme' AND m.kind IN ('episode', 'movie')"
-        " GROUP BY prog HAVING channels > 1").fetchall()
-    assert not rows, [dict(r) for r in rows]
+    away = conn.execute(
+        "SELECT s.channel_id, c.also_carries, COALESCE(sh.title, m.title) AS title, COALESCE(sh.genres, m.genres) AS genres, m.kind"
+        " FROM schedule s JOIN media m ON m.id = s.media_id LEFT JOIN shows sh ON sh.id = m.show_id"
+        " JOIN channels c ON c.id = s.channel_id WHERE s.kind = 'programme' AND m.kind IN ('episode','movie')"
+        " AND s.channel_id != COALESCE(sh.home_channel_id, m.home_channel_id)").fetchall()
+    for r in away:
+        ptype = programme_type("show" if r["kind"] == "episode" else "movie", json.loads(r["genres"] or "[]"))
+        assert ptype in json.loads(r["also_carries"] or "[]"), (r["title"], ptype, r["channel_id"])
+    with dbm.tx(conn):
+        conn.execute("UPDATE channels SET also_carries = '[]'")
+    build_horizon(conn, start_day=parse_day("2026-09-14"), days=7, now=now, seed=5, force=True)
     homes = conn.execute(
         "SELECT COUNT(*) FROM schedule s JOIN media m ON m.id = s.media_id LEFT JOIN shows sh ON sh.id = m.show_id"
-        " WHERE s.kind = 'programme' AND m.kind IN ('episode','movie')"
-        " AND s.channel_id != COALESCE(sh.home_channel_id, m.home_channel_id)").fetchone()[0]
-    assert homes == 0
+        " WHERE s.kind = 'programme' AND m.kind IN ('episode','movie') AND s.start_ts > ?"
+        " AND s.channel_id != COALESCE(sh.home_channel_id, m.home_channel_id)", (now,)).fetchone()[0]
+    assert homes == 0, "with nothing borrowed, nothing crosses"
+    with dbm.tx(conn):
+        conn.execute("UPDATE channels SET also_carries = '[\"cartoon\"]' WHERE content = 'general'")
 
 
 def test_move_and_remove_entries(conn, data_dir):

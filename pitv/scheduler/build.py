@@ -422,7 +422,7 @@ class Builder:
             w.emit(slot)
             if show is not None:
                 show.advance(w.t)
-                self.library.show_last_placed[show.id] = w.t
+                self.library.note_show_placed(channel["id"], show, w.t)
                 w.placed_today[show.id] = w.placed_today.get(show.id, 0) + 1
                 w.last_show_id = show.id
             else:

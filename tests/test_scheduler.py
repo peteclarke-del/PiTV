@@ -203,9 +203,13 @@ def test_watershed_respected(conn):
 
 def test_episodes_in_order_per_show(conn):
     rows = _programmes(conn)
+    # A series two channels share has one episode position between them, so neither sees every
+    # episode and a wrap can land anywhere; the borrowing test covers those. The rest are strict.
+    shared = {r["show_id"] for r in rows if r["show_id"]
+              and len({x["channel_id"] for x in rows if x["show_id"] == r["show_id"]}) > 1}
     by_show = {}
     for r in rows:
-        if r["show_id"]:
+        if r["show_id"] and r["show_id"] not in shared:
             by_show.setdefault(r["show_id"], []).append(r)
     checked = 0
     for sid, eps in by_show.items():
@@ -220,10 +224,15 @@ def test_episodes_in_order_per_show(conn):
 
 
 def test_show_stays_on_home_channel(conn):
-    rows = conn.execute("SELECT DISTINCT s.channel_id, m.show_id, sh.home_channel_id FROM schedule s"
-                        " JOIN media m ON m.id = s.media_id JOIN shows sh ON sh.id = m.show_id WHERE s.replay = 0").fetchall()
+    """A series airs on its own channel, or on one that borrows its type ("also carries")."""
+    from pitv.genres import programme_type
+    rows = conn.execute("SELECT DISTINCT s.channel_id, m.show_id, sh.home_channel_id, sh.genres, sh.category, c.also_carries"
+                        " FROM schedule s JOIN media m ON m.id = s.media_id JOIN shows sh ON sh.id = m.show_id"
+                        " JOIN channels c ON c.id = s.channel_id WHERE s.replay = 0").fetchall()
+    assert rows
     for r in rows:
-        assert r["channel_id"] == r["home_channel_id"]
+        borrowed = programme_type("show", json.loads(r["genres"] or "[]"), r["category"]) in json.loads(r["also_carries"] or "[]")
+        assert r["channel_id"] == r["home_channel_id"] or borrowed, dict(r)
 
 
 def test_movies_spread_evenly(conn):
@@ -1170,3 +1179,35 @@ def test_a_daypart_can_favour_a_genre():
     daytime = {"genres": {"Game Show": 0.0, "Comedy": 1.5}}
     assert Selector._daypart_genre_weight(daytime, ["Comedy", "Game Show"]) == 0.0
     assert Selector._daypart_genre_weight(daytime, ["Comedy"]) == 1.5
+
+
+def test_a_general_channel_borrows_cartoons_only_where_its_day_asks_for_them(tmp_path):
+    """Cartoons live on the cartoon channel. A general channel that lists them under "also
+    carries" shows some on a Saturday morning, when its dayparts ask for children's television,
+    and none in the evening or on a channel that borrows nothing; the cartoon channel's own
+    daily run is undisturbed."""
+    c = make_library(tmp_path, 12)["conn"]
+    toons = c.execute("SELECT id FROM channels WHERE content = 'cartoons'").fetchone()["id"]
+    general = [r["id"] for r in c.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number")]
+    assert all(json.loads(r["also_carries"]) == ["cartoon"] for r in c.execute("SELECT also_carries FROM channels WHERE content = 'general'"))
+    with dbm.tx(c):
+        c.execute("UPDATE channels SET also_carries = '[]' WHERE id = ?", (general[1],))     # this one borrows nothing
+    saturday = parse_day("2026-09-19")
+    now = local_ts(saturday, "06:00", tz_of(c))
+    build_horizon(c, start_day=saturday, days=2, now=now, seed=11, force=True)
+    borrowed = c.execute(
+        "SELECT s.channel_id, s.day, CAST(strftime('%H', s.start_ts, 'unixepoch', 'localtime') AS INTEGER) AS hour, m.title"
+        " FROM schedule s JOIN media m ON m.id = s.media_id JOIN shows sh ON sh.id = m.show_id"
+        " WHERE sh.home_channel_id = ? AND s.channel_id != ? AND s.replay = 0", (toons, toons)).fetchall()
+    assert borrowed, "no general channel carried a cartoon on Saturday morning"
+    assert all(r["channel_id"] != general[1] for r in borrowed), "a channel that borrows nothing carried one"
+    assert all(8 <= r["hour"] < 13 for r in borrowed), [(r["day"], r["hour"], r["title"]) for r in borrowed]
+    own = c.execute("SELECT COUNT(*) FROM schedule s JOIN media m ON m.id = s.media_id WHERE s.channel_id = ? AND m.show_id IS NOT NULL",
+                    (toons,)).fetchone()[0]
+    assert own > 10, "the cartoon channel still runs its own"
+    # One episode position between the channels: a borrower never shows the same episode twice
+    # in a day (the fixture's series are short enough to come round again within the two days).
+    twice = c.execute("SELECT s.channel_id, s.day, m.id FROM schedule s JOIN media m ON m.id = s.media_id JOIN shows sh ON sh.id = m.show_id"
+                      " WHERE sh.home_channel_id = ? AND s.channel_id != ? AND s.replay = 0 GROUP BY 1, 2, 3 HAVING COUNT(*) > 1",
+                      (toons, toons)).fetchall()
+    assert not twice, "a borrowed episode aired twice in a day on one channel"

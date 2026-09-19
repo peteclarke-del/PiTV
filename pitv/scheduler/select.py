@@ -38,6 +38,10 @@ from .slots import Show, Slot, json_field
 STAND_IN_IDENT_SECONDS = 10     # the shipped test signal's length (pitv/assets)
 
 
+# A channel borrows a type from another's shelf only where its daypart at least doubles that
+# type's weight: a children's daypart, not a teatime that merely tolerates children's programmes.
+BORROW_AT = 2.0
+
 class Selector:
     def __init__(self, policy: SchedulerPolicy, settings: dict[str, Any], tz: ZoneInfo, library: Library) -> None:
         self.policy = policy
@@ -65,6 +69,23 @@ class Selector:
         if ck not in self._channel_cols:
             self._channel_cols[ck] = json_field(channel.get(key))
         return self._channel_cols[ck]
+
+    def _borrowed(self, channel: dict[str, Any], dp: dict[str, Any], relax: int) -> list[Show]:
+        """Series from other channels' shelves that this channel may carry here and now. A type
+        belongs to its themed channel; a channel that lists it under `also_carries` borrows it,
+        but only in a daypart that asks for it by at least doubling its weight (children's
+        television on a Saturday morning for cartoons, the sport dayparts for sport, a daypart
+        weighted towards documentaries for those), and never as a way out when nothing else fits. The episode position is the
+        series' own, so the home channel carries on from wherever the borrower left it."""
+        if relax:
+            return []
+        out: list[Show] = []
+        for ptype in self.channel_json(channel, "also_carries") or []:
+            asks = (float(dp.get("kids", 1.0)) if ptype == "cartoon" else float(dp.get("sport", 1.0)) if ptype == "sport"
+                    else self._daypart_genre_weight(dp, ["Documentary"]) if ptype == "documentary" else 0.0)
+            if asks >= BORROW_AT:
+                out += [s for s in self.library.shows_of_type.get(ptype, ()) if s.home_channel_id != channel["id"]]
+        return out
 
     def _channel_setting(self, channel: dict[str, Any], key: str) -> Any:
         """A channel's own era/kind weights, falling back to the global setting."""
@@ -206,7 +227,8 @@ class Selector:
         movie_cands: list[tuple[float, dict[str, Any], Show | None]] = []
 
         if token in ("show", "tv"):
-            for show in self.library.free_shows.get(channel["id"], ()):
+            own = self.library.free_shows.get(channel["id"], ())
+            for show in (*own, *self._borrowed(channel, dp, relax)):
                 if show.id in barred:
                     sport_ok = (show.category == "sport" and weekend
                                 and self.policy.enabled("sport_back_to_back_weekends"))
@@ -226,7 +248,7 @@ class Selector:
                 # before a holding card does a series come round early, and then with its next
                 # episode, never the last one again: the small hours are where repeats live.
                 weekly = show.mode == "auto" and show.category != "sport"
-                if weekly and relax < 2 and not self.policy.next_episode_due(channel, self.library.show_last_placed.get(show.id), t):
+                if weekly and relax < 2 and not self.policy.next_episode_due(channel, self.library.show_last(channel["id"], show), t):
                     continue
                 ep = show.next_episode()
                 if ep is None:
@@ -241,7 +263,7 @@ class Selector:
                 if show.mode == "auto":
                     # Episodes only ever advance. The weekly cadence says when the next one is
                     # wanted, never that the last one is shown again in the meantime.
-                    w *= self.policy.cadence_factor(channel, self.library.show_last_placed.get(show.id), t, relaxed=relaxed)
+                    w *= self.policy.cadence_factor(channel, self.library.show_last(channel["id"], show), t, relaxed=relaxed)
                 tv_cands.append((w, ep, show))
         if token in ("show", "movie"):
             for m in self.library.movies_on.get(channel["id"], ()):

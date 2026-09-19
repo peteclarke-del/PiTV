@@ -79,6 +79,7 @@ CREATE TABLE IF NOT EXISTS channels (
     short_episode_minutes INTEGER,     -- short-episode runs; NULL follows the global settings
     short_episode_run_minutes INTEGER,
     series_cadence_days INTEGER,       -- days between a series' episodes here; NULL follows the global setting
+    also_carries TEXT,                 -- JSON list of programme types borrowed from other channels' shelves
     fetch_kind TEXT,                   -- what pitv_content should fetch for this channel's bands; NULL = nothing
     band_item_max_minutes INTEGER,     -- longest item its bands treat as one of their own; NULL = settings
     strict_matching INTEGER NOT NULL DEFAULT 0,   -- 1: only items whose genre and year are known and allowed
@@ -512,6 +513,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         _canonical_programme_classification(conn)
         _seed_channel_genres(conn)
         _seed_fetch_kinds(conn)
+        _seed_also_carries(conn)
         _seed_daypart_profiles(conn)
         assign_ident_channels(conn)
         conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
@@ -528,6 +530,7 @@ def init_db(conn: sqlite3.Connection) -> None:
                     "kids_any_time": ch.get("kids_any_time", 0), "decades": json.dumps(ch.get("decades") or []),
                     "allowed_genres": json.dumps(ch.get("allowed_genres") or []),
                     "fetch_kind": ch.get("fetch_kind"),
+                    "also_carries": json.dumps(ALSO_CARRIES_FOR_CONTENT.get(ch.get("content", "general"), [])),
                     "daypart_profile": json.dumps(BY_DEFAULT_CHANNEL[ch["number"]])
                     if ch["number"] in BY_DEFAULT_CHANNEL else None})
                 for band in ch.get("bands") or []:
@@ -585,6 +588,7 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("media", "metadata_checked_at", "INTEGER"),
     ("media", "metadata_source", "TEXT"),
     ("channels", "series_cadence_days", "INTEGER"),
+    ("channels", "also_carries", "TEXT"),
     ("lineup", "programme_type", "TEXT"),
     ("lineup", "episode_count", "INTEGER"),
     ("shows", "ids", "TEXT NOT NULL DEFAULT '{}'"),
@@ -851,6 +855,20 @@ def _seed_fetch_kinds(conn: sqlite3.Connection) -> None:
                          (kind, content))
 
 
+# What a channel of each content label borrows from the themed channels' shelves until its owner
+# says otherwise. The broadcasters the general channels model ran cartoons on Saturday mornings.
+ALSO_CARRIES_FOR_CONTENT = {"general": ["cartoon"]}
+
+
+def _seed_also_carries(conn: sqlite3.Connection) -> None:
+    """Channels created before line-ups went by programme type held their own cartoons. Placement
+    now gives every cartoon to the cartoon channel, so a channel that has never had the setting
+    (NULL; an owner's empty list is '[]') is given its theme's default."""
+    for content, types in ALSO_CARRIES_FOR_CONTENT.items():
+        conn.execute("UPDATE channels SET also_carries = ? WHERE content = ? AND also_carries IS NULL",
+                     (json.dumps(types), content))
+
+
 def _migrate_settings(conn: sqlite3.Connection) -> None:
     """Drop settings that no longer exist and fill in keys added to stored daypart rows."""
     # The old scheduler used calendar-day lead time and yesterday's slot. The replacement rules
@@ -924,7 +942,7 @@ def all_settings(conn: sqlite3.Connection) -> dict[str, Any]:
 
 # --- rows ----------------------------------------------------------------------------------
 
-_JSON_COLUMNS = ("genres", "enriched", "ids", "overrides", "anchor_days", "era_weights", "genre_weights",
+_JSON_COLUMNS = ("genres", "enriched", "ids", "overrides", "also_carries", "anchor_days", "era_weights", "genre_weights",
                  "kind_weights", "daypart_profile", "details", "allowed_genres", "excluded_genres",
                  "decades")
 

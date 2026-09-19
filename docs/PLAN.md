@@ -273,9 +273,19 @@ edited by hand. Weights and dayparts shape when those programmes air.
 ### 4.2 Line-ups
 
 A line-up is the list of series and films a channel carries. It is the source of truth for
-which programme belongs where, and every series or film belongs to exactly one channel, so a
-programme on one channel never appears on another. Adverts, idents and music videos are not
-programmes and stay shared by rule.
+which programme belongs where, and every series or film belongs to exactly one channel.
+Adverts, idents and music videos are not programmes and stay shared by rule.
+
+A programme airs on its own channel, with one exception the owner controls. A channel may list
+programme types it also carries (`channels.also_carries`; the general channels start with
+cartoons, as the broadcasters they model ran them on Saturday mornings). It then borrows
+series of that type from the channel that holds them, but only in a daypart whose weight for
+that type is 2 or more (`select.BORROW_AT`): the kids weight for cartoons, the sport weight for
+sport, a Documentary genre weight for documentaries. It never borrows to get out of a gap. The
+series has one episode position, so each channel carries on from wherever the other left it,
+and each channel keeps its own cadence for it (`Library.show_last`): the cartoon channel's
+daily run does not stop a general channel's Saturday airing, nor the reverse. Films are not
+borrowed yet; with no film channel the general channels hold them all.
 
 - What a programme is, and what it is about. Every series and film has one type
   (`genres.PROGRAMME_TYPES`: film, series, documentary, cartoon, music, sport) and any number
