@@ -392,6 +392,9 @@ def test_added_title_without_a_channel_goes_where_its_genres_fit(tmp_path):
     e = lineup.add(conn, None, title="Count Duckula", kind="show", year=1988, genres=["Animation"])
     chosen = next(c for c in lineup.programme_channels(conn) if c["id"] == e["channel_id"])
     assert chosen["content"] == "cartoons", "an animated series is a cartoon and goes to the cartoon channel"
+    # Put on the cartoon channel by hand with tags too thin to say so, it is a cartoon all the same.
+    by_hand = lineup.add(conn, chosen["id"], title="Mr. Benn", kind="show", year=1971, genres=["Children"])
+    assert by_hand["programme_type"] == "cartoon"
     drama = lineup.add(conn, None, title="Edge of Darkness", kind="show", year=1985, genres=["Crime", "Drama"])
     assert next(c for c in lineup.programme_channels(conn) if c["id"] == drama["channel_id"])["content"] == "general"
     with dbm.tx(conn):

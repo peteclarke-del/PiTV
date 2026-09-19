@@ -293,6 +293,13 @@ def add(conn: sqlite3.Connection, channel_id: int | None, *, show_id: int | None
         channel_id = best_channel(conn, genres, ptype=ptype, kids=genre_rules.is_childrens(genres or []))
         if channel_id is None:
             raise ValueError(f"no channel takes a {ptype} with these genres; choose one")
+    if programme_type is None and show_id is None and media_id is None:
+        # Put by hand on a channel with one type of its own, a title is that type unless the owner
+        # says otherwise: the tags of a title nobody holds yet are often too thin to tell.
+        theme = conn.execute("SELECT content FROM channels WHERE id = ?", (channel_id,)).fetchone()
+        own = genre_rules.THEME_TYPES.get(theme["content"] if theme else "", ())
+        if len(own) == 1 and genre_rules.programme_type(kind, genres) not in own:
+            programme_type = own[0]
     with tx(conn):
         if show_id is not None:
             row = conn.execute("SELECT id, title, year, genres FROM shows WHERE id = ?", (show_id,)).fetchone()
