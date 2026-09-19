@@ -563,10 +563,39 @@ def enrich_missing_metadata(conn: sqlite3.Connection, *, limit: int = 50, force:
     if replace:
         from . import lineup
         lineup.generate(conn)
+    counted = learn_episode_counts(conn, settings, limit=limit, progress=progress)
     if progress:
         progress(f"ratings: {found} found from {checked} checked", checked, len(items))
     return {"checked": checked, "found": found, "remaining": max(0, total - checked), "notes": notes,
-            "summary": f"Filled in {found} title{'s' if found != 1 else ''} from {checked} online check{'s' if checked != 1 else ''}."}
+            "episode_counts": counted,
+            "summary": f"Filled in {found} title{'s' if found != 1 else ''} from {checked} online check{'s' if checked != 1 else ''}."
+                       + (f" Learned how long {counted} remote series ran." if counted else "")}
+
+
+def learn_episode_counts(conn: sqlite3.Connection, settings: dict[str, Any], *, limit: int = 50,
+                         progress: Any = None) -> int:
+    """How long each remote series ran, for entries added before the line-up kept it. The entry's
+    confirmed match names the programme, so the lookup is asked by title and only the candidate
+    with the same source and id is believed. Without a count PiTV cannot tell where a run ends,
+    and asks pitv_content for episodes that were never made."""
+    entries = rows_to_dicts(conn.execute(
+        "SELECT id, title, year, match FROM lineup WHERE kind = 'show' AND source != 'library' AND episode_count IS NULL"
+        " AND match IS NOT NULL ORDER BY id LIMIT ?", (max(0, limit),)))
+    learned = 0
+    for i, entry in enumerate(entries, 1):
+        if progress:
+            progress(f"checking how long {entry['title']} ran", i - 1, len(entries))
+        match = json.loads(entry["match"]) if isinstance(entry["match"], str) else (entry["match"] or {})
+        payload, _ = _ask_lookup(settings, {"kind": "show", "title": entry["title"], "year": entry["year"] or "", "limit": 8})
+        for candidate in (payload or {}).get("candidates") or []:
+            theirs = candidate.get("match") if isinstance(candidate, dict) else None
+            if (isinstance(theirs, dict) and theirs.get("source") == match.get("source")
+                    and str(theirs.get("id")) == str(match.get("id")) and (count := as_int(candidate.get("episodes")))):
+                with tx(conn):
+                    conn.execute("UPDATE lineup SET episode_count = ?, updated_at = ? WHERE id = ?", (count, now_ts(), entry["id"]))
+                learned += 1
+                break
+    return learned
 
 
 def refresh(conn: sqlite3.Connection, reindex: bool = False) -> dict[str, Any]:

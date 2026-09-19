@@ -218,6 +218,16 @@ to fill a gap in a library series stays in that series; a series that is new to 
 show row of its own. Transient material is removed after airing (section 4.2), and removal
 only ever deletes inside the cache: a symlink goes as a link, never its target.
 
+A remote series is asked for in order. Each new request takes the lowest episode number not
+yet asked for, from the entry's "next episode" up (`runs.next_episode_number`), so a rebuild
+fills the front of a run before it reaches further in. The entry keeps how many episodes the
+series ran to (`lineup.episode_count`): the add dialog takes it from the confirmed match, the
+online check learns it for entries added earlier (`catalogue.learn_episode_counts`), and the
+admin can set it. Nothing past it is asked for; once every episode has been, the entry offers
+nothing new and what arrived airs as the library series it has become. Continuing from the
+highest number ever raised, as this once did, let a week of rebuilds ask for episode 11 of a
+three-part series, which pitv_content filled with something else.
+
 `catalogue.json` beside the database lists every series and film PiTV can schedule, where
 each comes from and whether it is cached, plus the custom line-up entries. It is rewritten
 after each import and after each delivery that creates an entry, and `GET

@@ -1045,13 +1045,13 @@ def test_external_repeat_reuses_request_without_advancing_episode():
     builder = Builder(c, now=local_ts(parse_day("2026-09-14"), "10:00", tz_of(c)))
     channel = dbm.row_to_dict(c.execute("SELECT * FROM channels WHERE number=1").fetchone())
     entry = {"id": -99, "lineup_id": 99, "kind": "episode", "title": "Remote Docs",
-             "duration": 1800, "year": 1995, "genres": ["Documentary"], "next_number": 4,
+             "duration": 1800, "year": 1995, "genres": ["Documentary"], "taken": {1, 2, 3},
              "spare_wanted": []}
     first = builder.runs.external_slot(channel["id"], "2026-09-14", builder.now, entry)
     repeat = builder.runs.external_slot(channel["id"], "2026-09-14", builder.now + 3600,
                                         {**entry, "_external_repeat": True})
     assert first.wanted_spec["episode"] == repeat.wanted_spec["episode"] == 4
-    assert entry["next_number"] == 5
+    assert entry["taken"] == {1, 2, 3, 4}, "the repeat took no number of its own"
     assert first.replay == 0 and repeat.replay == 1
     c.close()
 

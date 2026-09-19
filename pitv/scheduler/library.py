@@ -159,9 +159,10 @@ class Library:
     def _load_externals(self) -> None:
         """Line-up entries with no material on disk. Each becomes a candidate whose placement
         raises a wanted item for pitv_content. A request whose slots all fall inside the window
-        being rebuilt is reused first, so a rebuild keeps the same episode numbers; new episodes
-        continue from the highest request still standing, or from the entry's `next_episode`
-        when the admin has set a starting point."""
+        being rebuilt is reused first, so a rebuild keeps the same episode numbers. A new request
+        takes the lowest number never asked for, from the entry's `next_episode` up, and none
+        past the entry's `episode_count`: continuing from the highest ever raised let a week of
+        rebuilds ask for episode 11 of a three-part series while episodes 1 and 2 went unasked."""
         self.externals: list[dict[str, Any]] = []
         if not self.allow_external:
             return
@@ -170,11 +171,11 @@ class Library:
             " AND (kind = 'show' OR media_id IS NULL)"))
         if not entries:
             return
-        raised: dict[int, int] = {}                       # lineup_id -> highest episode requested
+        taken: dict[int, set[int]] = {}                   # lineup_id -> episode numbers already asked for
         standing: dict[int, list[sqlite3.Row]] = {}       # lineup_id -> requests still open
         for w in self.conn.execute("SELECT id, lineup_id, episode, status FROM wanted"
                                    " WHERE lineup_id IS NOT NULL ORDER BY lineup_id, episode, id"):
-            raised[w["lineup_id"]] = max(raised.get(w["lineup_id"], 0), int(w["episode"] or 0))
+            taken.setdefault(w["lineup_id"], set()).add(int(w["episode"] or 0))
             if w["status"] not in ("failed", "done"):
                 standing.setdefault(w["lineup_id"], []).append(w)
         users: dict[int, list[sqlite3.Row]] = {}          # wanted id -> slots using it
@@ -188,7 +189,8 @@ class Library:
             e["id"] = -lineup_id   # negative: never collides with a media id
             e["genres"] = json_field(e.get("genres")) or []
             e["kids"] = is_kids(e)
-            e["next_number"] = max(raised.get(lineup_id, 0), int(e.get("next_episode") or 1) - 1) + 1
+            # One set, shared with every copy of the entry a build makes, so a number is issued once.
+            e["taken"] = taken.get(lineup_id, set())
             open_requests = standing.get(lineup_id, [])
             e["spare_wanted"] = [{"id": w["id"], "episode": w["episode"]} for w in open_requests
                                  if self._replaceable_request(users.get(w["id"], []))]

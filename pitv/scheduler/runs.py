@@ -19,6 +19,16 @@ from .policy import SchedulerPolicy
 from .slots import Show, Slot, programme_slot, seconds
 
 
+def next_episode_number(entry: dict[str, Any]) -> int | None:
+    """The next episode of a remote series to ask for: the lowest number from the entry's starting
+    point that no request has taken, or None when the run is known to end before it."""
+    number = int(entry.get("next_episode") or 1)
+    while number in entry["taken"]:
+        number += 1
+    count = entry.get("episode_count")
+    return None if count and number > int(count) else number
+
+
 class Runs:
     def __init__(self, policy: SchedulerPolicy, library: Library) -> None:
         self.policy = policy
@@ -41,8 +51,10 @@ class Runs:
                 spec = {"kind": "episode", "lineup_id": e["lineup_id"], "title": f"Episode {number}", "season": 1,
                         "episode": number, "year": e.get("year"), "reuse": reuse}
             else:
-                number, reuse = e["next_number"], None
-                e["next_number"] += 1
+                number, reuse = next_episode_number(e), None
+                if number is None:
+                    raise ValueError(f"{e['title']}: nothing left to ask for")    # the selector does not offer it
+                e["taken"].add(number)
                 spec = {"kind": "episode", "lineup_id": e["lineup_id"], "title": f"Episode {number}", "season": 1,
                         "episode": number, "year": e.get("year"), "reuse": reuse}
             subtitle = f"Episode {number}"
@@ -78,7 +90,7 @@ class Runs:
         while t - first.start_ts < target and room >= int(entry["duration"]):
             if specs:
                 component = {**entry, "_external_repeat": True, "_repeat_spec": specs.pop(0)}
-            elif cached:
+            elif cached or (not fresh["spare_wanted"] and next_episode_number(fresh) is None):
                 break
             else:
                 component = fresh

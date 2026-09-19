@@ -32,6 +32,7 @@ from .rules import (
     in_decades,
     minutes_of_day,
 )
+from .runs import next_episode_number
 from .slots import Show, Slot, json_field
 
 STAND_IN_IDENT_SECONDS = 10     # the shipped test signal's length (pitv/assets)
@@ -283,7 +284,10 @@ class Selector:
                 times_today = placed_today.get(e["id"], 0)
                 early = episode and not self.policy.next_episode_due(
                     channel, self.library.external_last_placed.get(e["lineup_id"]), t)
-                held_back = (not prepared or not room or early or times_today >= (daily_limit if episode else 1)
+                # A series whose every episode has been asked for has nothing new to offer; what
+                # has arrived of it airs as the library series it has become.
+                finished = episode and not e["spare_wanted"] and next_episode_number(e) is None
+                held_back = (finished or not prepared or not room or early or times_today >= (daily_limit if episode else 1)
                              or e["id"] in barred or (e.get("show_id") and e["show_id"] in barred))
                 candidate = e
                 if held_back:

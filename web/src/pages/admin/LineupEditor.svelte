@@ -13,7 +13,7 @@
   let f = $state({
     year: initial.year ?? '', genres: [...(initial.genres ?? [])], channel_id: initial.channel_id,
     episode_minutes: initial.episode_minutes ?? '', enabled: !!initial.enabled,
-    transient: !!initial.transient, next_episode: initial.next_episode ?? 1,
+    transient: !!initial.transient, next_episode: initial.next_episode ?? 1, episode_count: initial.episode_count ?? '',
   });
   onMount(async () => { facets = (await tryApi(get('/api/library/facets'))) ?? null; });
 
@@ -24,6 +24,7 @@
       next_episode: num(f.next_episode, { min: 1, int: true, fallback: 1 }),
     };
     if (entry.kind === 'show') body.episode_minutes = num(f.episode_minutes, { min: 1, max: 240, int: true });
+    if (entry.kind === 'show') body.episode_count = num(f.episode_count, { min: 1, int: true });
     const r = await tryApi(put(`/api/lineup/${entry.id}`, body), { success: 'Catalogue entry saved' });
     if (!r) return;
     noteChange('library');
@@ -46,6 +47,7 @@
       {#if entry.kind === 'show'}
         <label class="field">Episode length (minutes)<input type="number" min="1" max="240" bind:value={f.episode_minutes} /></label>
         <label class="field">Next episode<input type="number" min="1" bind:value={f.next_episode} /></label>
+        <label class="field">Episodes in the series<input type="number" min="1" bind:value={f.episode_count} placeholder="unknown" /><span class="help">From the online match. Nothing past this is asked for.</span></label>
       {/if}
       <label class="check"><input type="checkbox" bind:checked={f.enabled} /> Included in scheduling</label>
       <label class="check"><input type="checkbox" bind:checked={f.transient} /> Remove fetched files after airing</label>

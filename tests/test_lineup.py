@@ -631,3 +631,28 @@ def test_the_generator_reads_a_titles_type_from_the_index_genres(tmp_path):
     assert conn.execute("SELECT channel_id FROM lineup WHERE media_id = ?", (film,)).fetchone()[0] == docs
     others = conn.execute("SELECT COUNT(*) FROM lineup WHERE channel_id = ? AND media_id != ?", (docs, film)).fetchone()[0]
     assert others == 0, "nothing that is not a documentary joins it"
+
+
+def test_a_remote_series_is_asked_for_from_its_first_episode_and_not_past_its_last():
+    """Requests once continued from the highest number ever raised, so after a week of rebuilds a
+    three-part series was asked for episodes 10 and 11 while 1 and 2 went unasked. A new request
+    takes the lowest number not yet asked for, and a series whose length is known is never asked
+    for an episode past it, however many times the week is rebuilt."""
+    c = dbm.connect(":memory:")
+    dbm.init_db(c)
+    ch = c.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
+    entry = lineup.add(c, ch, title="Science Britannica", year=2013, kind="show", genres=["Documentary"],
+                       episode_minutes=60, episode_count=3)
+    assert entry["episode_count"] == 3
+    with dbm.tx(c):
+        dbm.set_setting(c, "nas_only", False)
+        c.execute("UPDATE channels SET series_cadence_days = 1 WHERE id = ?", (ch,))   # room for the whole run in a week
+        # What the old numbering left behind: a high episode delivered, the first never asked for.
+        c.execute("INSERT INTO wanted(kind, title, season, episode, provider, lineup_id, status, created_at)"
+                  " VALUES ('episode', 'Episode 2', 1, 2, 'auto', ?, 'done', 0)", (entry["id"],))
+    now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(c))
+    for seed in (1, 2, 3):
+        build_horizon(c, start_day=parse_day("2026-09-14"), days=7, now=now, seed=seed, force=True)
+    asked = sorted(r[0] for r in c.execute("SELECT episode FROM wanted WHERE lineup_id = ?", (entry["id"],)))
+    assert asked == [1, 2, 3], asked
+    c.close()

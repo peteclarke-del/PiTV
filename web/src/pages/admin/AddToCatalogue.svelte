@@ -82,7 +82,8 @@
       ? await tryApi(post('/api/lineup', {
           kind: f.kind, title: f.title.trim(), year, genres: f.genres, programme_type: f.programme_type || null, transient: f.transient,
           channel_id: f.channel === '' ? null : Number(f.channel), match: chosen?.match ?? null,
-          episode_minutes: f.kind === 'show' ? num(f.minutes, { min: 1, max: 240, int: true }) : null }))
+          episode_minutes: f.kind === 'show' ? num(f.minutes, { min: 1, max: 240, int: true }) : null,
+          episode_count: f.kind === 'show' ? num(chosen?.episodes, { min: 1, int: true }) : null }))
       : await tryApi(post('/api/wanted', { kind: f.kind, title: f.title.trim(), year, artist: f.artist.trim() || null, ref: f.url.trim() || null }));
     if (!r) return;
     noteChange('library');
