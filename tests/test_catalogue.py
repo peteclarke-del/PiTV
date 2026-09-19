@@ -378,3 +378,7 @@ def test_every_british_certificate_is_recognised():
     assert [normalise_cert(c) for c in ("U", "u", "UK:U", "BBFC U", "Uc", "PG", "12", "12A", "15", "18")] == \
         ["U", "U", "U", "U", "U", "PG", "12", "12A", "15", "18"]
     assert normalise_cert("TV-Y7") == "U" and normalise_cert("R") == "15" and normalise_cert("nonsense") is None
+    # As media managers write them: a list, each with its country, sometimes spelt out.
+    assert normalise_cert("US:R / US:Rated R") == "15" and normalise_cert("Rated PG-13") == "12"
+    assert normalise_cert("US:PG-13 / UK:15") == "15", "a British certificate wins wherever it stands"
+    assert normalise_cert("NR") is None and normalise_cert("DE:16") is None

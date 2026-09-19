@@ -110,10 +110,18 @@ def era_weight_spans(year: int | None, spans: EraSpans, end_year: int | None = N
 def normalise_cert(cert: str | None) -> str | None:
     if not cert:
         return None
-    c = cert.strip().upper()
-    # NFOs commonly use ``UK:PG`` or ``BBFC PG``; online sources often return US ratings.
-    c = re.sub(r"^(?:UK|GB|BBFC)\s*[:/-]?\s*", "", c)
-    return _CERTIFICATE_ALIASES.get(c)
+    # NFOs commonly use ``UK:PG`` or ``BBFC PG``; media managers also write a list with the
+    # country on each (``US:R / US:Rated R``), and online sources often return US ratings. A
+    # British entry is preferred wherever it stands in the list, then the first that reads.
+    parts = [part.strip() for part in cert.upper().split("/") if part.strip()]
+    parts.sort(key=lambda part: not re.match(r"(?:UK|GB|BBFC)\b", part))
+    for part in parts:
+        # A country is set off by a colon; the British forms also by a space, a slash or a dash.
+        c = re.sub(r"^(?:(?:UK|GB|BBFC)\s*[:/-]?|[A-Z]{2}\s*:)\s*", "", part)
+        for reading in (part, c, re.sub(r"^RATED\s+", "", c).strip()):
+            if reading in _CERTIFICATE_ALIASES:
+                return _CERTIFICATE_ALIASES[reading]
+    return None
 
 
 def effective_cert(item: dict[str, Any], settings: dict[str, Any]) -> str:
