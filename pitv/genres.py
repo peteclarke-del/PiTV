@@ -150,18 +150,22 @@ THEME_TYPES: dict[str, tuple[str, ...]] = {
 
 def programme_type(kind: object, names: object = (), category: object = None, chosen: object = None) -> str:
     """What a programme is. `chosen` is the owner's word (an override, or the type picked when
-    the title was added) and wins. Otherwise: a music video is music; the sport class is sport;
-    a Documentary tag makes a documentary, even an animated one; Animation or Anime makes a
-    cartoon; anything else is a film or a series by what kind of file it is."""
+    the title was added) and wins. Otherwise: a music video is music; what comes from a sport
+    source is sport; a Documentary tag makes a documentary, of an animated film or of a
+    motorcycle race alike; an unscripted Sport tag makes sport; Animation or Anime makes a
+    cartoon; anything else is a film or a series by what kind of file it is. `names` is a list
+    of genre names, not a JSON column."""
     if isinstance(chosen, str) and chosen.strip().casefold() in PROGRAMME_TYPES:
         return chosen.strip().casefold()
     kind = str(kind or "").casefold()
     if kind == "music":
         return "music"
-    if scheduling_class(category, names) == "sport":
+    if scheduling_class(category) == "sport":
         return "sport"
     if matches(names, ("Documentary",)):
         return "documentary"
+    if scheduling_class(category, names) == "sport":
+        return "sport"
     if matches(names, CARTOONS):
         return "cartoon"
     return "film" if kind == "movie" else "series"

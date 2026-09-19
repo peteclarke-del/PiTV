@@ -218,14 +218,14 @@ def generate(conn: sqlite3.Connection, rebalance: bool = False) -> dict[str, int
                 items.append({"kind": "show", "id": r["id"], "title": r["title"], "year": r["year"],
                               "genres": _genre_set(r["genres"]), "secs": r["secs"], "cert": r["certificate"], "kids": r["kids"],
                               "bucket": _bucket(r["category"]),
-                              "ptype": genre_rules.programme_type("show", r["genres"], r["category"], r.get("programme_type"))})
+                              "ptype": genre_rules.programme_type("show", genre_list(r["genres"]), r["category"], r.get("programme_type"))})
         for row in conn.execute(f"SELECT * FROM media WHERE kind = 'movie' AND {LIVE} AND duration IS NOT NULL"):
             r = effective(dict(row))
             if r["id"] not in taken_films:
                 items.append({"kind": "movie", "id": r["id"], "title": r["title"], "year": r["year"],
                               "genres": _genre_set(r["genres"]), "secs": r["duration"], "cert": r["certificate"], "kids": 0,
                               "bucket": "general",
-                              "ptype": genre_rules.programme_type("movie", r["genres"], None, r.get("programme_type"))})
+                              "ptype": genre_rules.programme_type("movie", genre_list(r["genres"]), None, r.get("programme_type"))})
         # Big items first so the hours balance out; kids and certificates alternate as a tie-break.
         order = {"U": 0, "PG": 1, "12": 2, "12A": 2, "15": 3, "18": 4}
         items.sort(key=lambda i: (-i["secs"], -int(i["kids"] or 0), order.get((i["cert"] or "PG").upper(), 1), i["title"]))

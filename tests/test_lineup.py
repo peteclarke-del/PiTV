@@ -568,6 +568,8 @@ def test_what_a_programme_is_decides_its_channel_not_its_genres():
     assert programme_type("movie", ["Documentary", "Animation"]) == "documentary", "a documentary about cartoons"
     assert programme_type("show", ["Animation", "Comedy"]) == "cartoon"
     assert programme_type("show", ["Darts"], "sport") == "sport"
+    assert programme_type("show", ["Documentary", "Sport", "Motorsport"]) == "documentary", "a film about racing"
+    assert programme_type("show", ["Documentary"], "sport") == "sport", "the sports share is sport whatever its tags"
     assert programme_type("show", ["Sport", "Comedy", "Drama"]) == "series", "a story about sport is not sport"
     assert programme_type("music", []) == "music"
     assert programme_type("show", ["History"], None, "documentary") == "documentary", "the owner's word wins"
@@ -611,3 +613,18 @@ def test_a_retyped_title_moves_to_the_channel_that_takes_it(conn):
     lineup.place_again(conn, show_id=show["id"])
     assert conn.execute("SELECT c.content FROM lineup l JOIN channels c ON c.id = l.channel_id WHERE l.show_id = ?",
                         (show["id"],)).fetchone()[0] == "general"
+
+
+def test_the_generator_reads_a_titles_type_from_the_index_genres(tmp_path):
+    """Genres arrive from the index as a JSON column. Read as text they named no type, and a
+    documentary film whose genres nobody had since edited was placed as an ordinary film."""
+    ctx = make_library(tmp_path, max_episodes=1)
+    conn = ctx["conn"]
+    with dbm.tx(conn):
+        docs = conn.execute("INSERT INTO channels(number, name, short_name, pattern, content) VALUES (9, 'Docs', 'Docs', 'show', 'documentaries')").lastrowid
+        film = conn.execute("SELECT id FROM media WHERE kind = 'movie' AND missing = 0 LIMIT 1").fetchone()["id"]
+        conn.execute("UPDATE media SET genres = ?, enriched = '{}', overrides = '{}' WHERE id = ?", (json.dumps(["Documentary", "Biography"]), film))
+    lineup.generate(conn, rebalance=True)
+    assert conn.execute("SELECT channel_id FROM lineup WHERE media_id = ?", (film,)).fetchone()[0] == docs
+    others = conn.execute("SELECT COUNT(*) FROM lineup WHERE channel_id = ? AND media_id != ?", (docs, film)).fetchone()[0]
+    assert others == 0, "nothing that is not a documentary joins it"
