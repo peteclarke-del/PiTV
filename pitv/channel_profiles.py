@@ -11,6 +11,14 @@ a programme's length, and may weight genres (`genres`, read canonically): that l
 lets a channel keep its quiz at teatime and its soap at half past seven. A weight is relative
 to 1; sport at 3 or more forms a block in which sport follows sport (docs/PLAN.md section 4.6).
 
+The shapes are checked against listings of the period (docs/research/uk-schedules-1980-1992.md).
+Two departures are deliberate. Saturday morning is children's television on all four, as the
+owner remembers the decade, although the listings show BBC Two's children's strand on Sunday
+mornings (from 1987, so Two has both here) and Channel 4 not on the air on a Saturday morning
+until 1986. And game shows and variety are kept to the evening on every channel, although
+Countdown ran at half past four and ITV had afternoon quizzes; a channel's Dayparts table in
+the admin is where to let them back.
+
 The broadcast day here runs from 08:00 to midnight, so the hours before the real channels came
 on air are filled in keeping: BBC Two's Open University mornings, Channel 4's repeats and
 matinees before its teatime start. News, weather and regional programmes, which no library
@@ -59,8 +67,8 @@ BBC_ONE = {
     ],
     "sunday": [
         _dp("Sunday morning", "08:00", 1.0, 0.2, 2.0, 0.1, 60, Education=1.5, Children=1.5, Animation=1.5),
-        _dp("Sunday lunchtime", "12:00", 1.0, 0.3, 0.5, 0.4, Soap=2.5, Magazine=1.5, Informational=1.5),
-        _dp("Sunday afternoon", "14:00", 0.6, 2.0, 0.4, 1.0, Family=1.5, Western=1.5, Adventure=1.5),
+        _dp("Sunday lunchtime", "12:00", 1.0, 0.3, 0.5, 0.4, Magazine=1.5, Informational=1.5, Documentary=1.3),
+        _dp("Omnibus and the film", "14:00", 0.8, 1.8, 0.4, 1.0, Soap=2.5, Family=1.5, Western=1.5, Adventure=1.5),
         _dp("Sunday teatime", "16:30", 1.0, 0.4, 1.2, 0.3, 50, Drama=2.0, Family=2.0, Mini__series=2.0, History=1.5),
         _dp("Sunday evening", "19:15", 1.0, 0.5, 0.05, 0.2, Drama=2.5, Comedy=2.0, Mini__series=2.0, Game_Show=1.5),
         _dp("Sunday post-watershed", "21:00", 1.0, 1.3, 0.0, 0.3, Drama=2.0, Crime=1.5),
@@ -93,7 +101,7 @@ BBC_TWO = {
         _dp("Horror double bill", "22:30", 0.5, 2.5, 0.0, 2.0, Horror=2.0, Thriller=1.5),
     ],
     "sunday": [
-        _dp("Open University", "08:00", 1.0, 0.2, 0.5, 0.05, 60, Education=3.0, Science=2.0, Technology=2.0),
+        _dp("Sunday morning", "08:00", 1.0, 0.2, 3.0, 0.05, 60, Children=2.0, Animation=2.0, Education=2.0),
         _dp("Sunday lunchtime", "12:00", 1.0, 0.5, 0.3, 1.0, Documentary=1.5, Nature=1.5, Magazine=1.5),
         _dp("Sunday Grandstand", "14:00", 0.3, 0.8, 0.2, 7.0),
         _dp("Sunday early evening", "18:00", 1.0, 0.4, 0.2, 1.5, Nature=2.0, Documentary=2.0, Magazine=1.5),
@@ -122,7 +130,7 @@ ITV = {
     ],
     "saturday": [
         _dp("Saturday morning", "08:00", 1.0, 0.1, 6.0, 0.1, 60, Children=2.0, Animation=2.0),
-        _dp("World of Sport", "12:30", 0.2, 0.2, 0.2, 9.0, Wrestling=1.5),
+        _dp("World of Sport", "12:15", 0.2, 0.2, 0.2, 9.0, Wrestling=1.5),
         _dp("Saturday teatime", "17:00", 1.0, 0.2, 1.2, 0.3, 60, Action=3.0, Adventure=2.5, Game_Show=2.5, Family=2.0, Science_Fiction=1.5),
         _dp("Saturday night", "19:00", 1.0, 0.6, 0.05, 0.3, Game_Show=3.0, Comedy=2.0, Family=1.5, Crime=1.5, Drama=1.3),
         _dp("Saturday post-watershed", "21:00", 1.0, 1.4, 0.0, 0.5, Crime=2.0, Drama=1.8, Thriller=1.5),
