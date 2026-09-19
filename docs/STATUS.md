@@ -106,6 +106,15 @@ pins. Nothing built from tomorrow airs off its own channel. The cartoon channel 
 daily (01bed32) and shows 23 hours a day from disk; a delivered file's slot takes its real
 length (65ae0b6); the last resort no longer books one remote episode all day (52d4888).
 
+P6, remote series asked for in order and never past their end (19 September, PiTV 45f895c,
+c672623, 5949fd9, 99150cb; pitv_content 20319c7, deployed 15:18): open requests went from a highest
+episode of 21 to 8 with every series asking from episode 1, the run length is known for 53 of 67
+remote series, and pitv_content refuses an episode its source does not list. Four files fetched
+under the old numbering are still misfiled (Science Britannica S01E10 and E11 are its episodes 3
+and 2, Planet Dinosaur S01E11 is its episode 5, How It Works S01E07 is an unrelated news clip);
+renaming three and setting the fourth aside is pitv_content's to do and waits on Pete allowing it
+in that session.
+
 C22, the index passes on what the NFO knows (pitv_content 5bdcee5, PiTV fe225c9): `certificate` is
 the NFO's raw text, shows and items carry `ids`, and the lookup resolves by identifier. Verified
 at 04:38 on 19 September: the full index published with ids on 1291 of 1294 films and 187 of 197
@@ -130,7 +139,6 @@ here has expired and Pete has to sign in again.
 | P4 | The music channel's bands are short: 42 fetched songs on 19 September, 18 bands short over the next two days and 1106 minutes of holding card, by `pitv doctor`. The bands hold their configured times and show their own card, as configured; the cure is supply (C15, C18, C20) | The doctor reports no band short over two days |
 | P5 | The documentary channel leans on material that has not arrived: after the line-ups were put right it shows about ten hours a day from disk and waits on remote episodes for the other thirteen. Until they arrive the readiness check substitutes from a small shelf. The cure is supply (C21) and more documentary titles, not scheduling | The documentary channel's day is mostly material on disk |
 | P7 | A type may appear outside its themed channel in the cases Pete named: cartoons on the general channels on Saturday mornings, and films. Placement is now strictly by type, so the general channels hold no cartoons of their own. To build: a channel setting for the types it borrows, used at schedule time inside the dayparts that want them, with the episode cursor shared with the home channel | A general channel's Saturday morning carries cartoons from the cartoon channel's shelf, and nothing else of that type airs there |
-| P6 | A remote series' episodes are counted past the end of its run ("Planet Dinosaur, Episode 11" of a six-part series, which pitv_content then filled with something 27 minutes long). The line-up entry should carry the episode count from the lookup and stop, or wrap, there | No request is made for an episode beyond the run the lookup reports |
 | P1 | Time a band run and a cache run as each of C1 to C8 lands, import, rebuild, and record the result here | Figures recorded against each item above |
 | P3 | Hardware verification on a Raspberry Pi 4: hardware decode of copied files, the cache drive, encode times with the Pi's presets, the player keeper under systemd | REQUIREMENTS.md rows marked "by hand" checked on the device |
 

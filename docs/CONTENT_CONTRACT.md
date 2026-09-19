@@ -255,8 +255,9 @@ applies a report once: a dropped copy of one it already took over HTTP is recogn
   on the line-up entry and asks for nothing past it. Delivering a near match under the
   number asked for is never right: PiTV airs it as that episode.
 - For a series with a confirmed `match`, PiTV always asks for season 1, episode N, meaning the
-  Nth regular episode of the whole run in broadcast order, because it does not know the season
-  structure of something it does not hold. pitv_content maps N through the match's episode
+  Nth regular episode of the whole run in broadcast order (specials are left out), because it
+  does not know the season structure of something it does not hold. A season other than 1 in a
+  request is read as written. pitv_content maps N through the match's episode
   list and files the episode under its real season, number and title; `meta.season`,
   `meta.episode` and `meta.title` are then the real ones, not an echo of the request, and the
   delivery is bound to the request by `request_id`. `meta.episodes_total` (on a delivery, and
