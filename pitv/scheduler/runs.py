@@ -88,6 +88,8 @@ class Runs:
             if not cached:
                 run.append(dict(slot.wanted_spec or {}))
                 self.library.external_last_placed[entry["lineup_id"]] = t
+                # each episode of a run is one more thing to fetch, and counts against the day
+                self.library.external_per_day[day_str] = self.library.external_per_day.get(day_str, 0) + 1
             room -= slot.duration
             t = slot.end_ts
         if not cached:
