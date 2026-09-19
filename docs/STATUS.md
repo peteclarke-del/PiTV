@@ -6,7 +6,7 @@ and the wire between the two applications in [CONTENT_CONTRACT.md](CONTENT_CONTR
 page only tracks what is not yet true of them. An item leaves this page when its check has been
 run and passed, not when its owner reports it finished.
 
-Last reviewed 2026-09-19.
+Last reviewed 2026-09-20.
 
 ## The test this is working towards
 
@@ -105,6 +105,21 @@ general channels films, series and, with no sports channel, sport); the ten exce
 pins. Nothing built from tomorrow airs off its own channel. The cartoon channel runs its series
 daily (01bed32) and shows 23 hours a day from disk; a delivered file's slot takes its real
 length (65ae0b6); the last resort no longer books one remote episode all day (52d4888).
+
+The feel of a day (20 September, PiTV 10d1d6d, 3508b96, 0b923fc, e342c62). Measured on the
+general channels, weekday prime time (19:00 to 21:00) was 88 to 100 per cent film, because a day
+filled from the morning on spends its few due series by lunchtime. The day's series are now kept
+for the peak hours, a film does not run into them, the peak takes series first, and a remote
+title is held to its match's certificate (A Bit of Fry and Laurie had been at breakfast). Film
+share of weekday prime time is now 49 per cent on One and 37 on Three, with no holding card;
+Two (74) and Four (95) are short of material, not of rules: Two has 19 series that may air before
+nine and Four 14, against 52 and 47 on One and Three. More titles on those two is the cure.
+
+The cache deadlock (20 September, PiTV de88eab): PiTV counted only its copies against the cap and
+pitv_content the whole folder, so with 8 GB fetched PiTV judged that a film fitted and evicted
+nothing while pitv_content refused every delivery for room, with 184 GB evictable. make-room
+now measures the folder as the cap is defined. Deliveries had been blocked since about 15:40 on
+the 19th, so C21's delivery rate has still to be measured.
 
 The spread of a week (19 September, PiTV dcb86e5, ab299e9, 5def1e0), from Pete finding the same
 remote sport episode twice running on a Wednesday morning on PiTV One. Three causes: the last
