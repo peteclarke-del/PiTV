@@ -427,6 +427,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "acquire_fill_gaps": False,        # queue missing episodes between the ones on disk
     # line-ups: what each channel carries. NAS-only restricts scheduling to material on disk.
     "nas_only": True,
+    "external_new_per_day": 12,        # new remote episodes and films the scheduler may commit to per broadcast day
     "external_lead_hours": 23,         # nearer slots favour files already local/NAS
     "external_episode_minutes": 30,    # expected length when a line-up entry does not say
     "external_weight": 1.0,            # remote entries compete equally once there is time to fetch them

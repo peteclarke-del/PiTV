@@ -287,8 +287,9 @@ programmes and stay shared by rule.
   (a rebuilt database) is restored from the mirror on the next catalogue import.
 
 NAS-only. A global switch (`nas_only`, on by default), overridable per channel, limits
-scheduling to material already in the catalogue (on the NAS or in the cache). When it is off
-for a channel, its external entries may be placed like any other programme, but only on
+scheduling to material already in the catalogue (on the NAS or in the cache). for a channel, its external entries may be placed like any other programme (one episode a week,
+like any series, and no more new remote programmes in a day than `external_new_per_day`, 12,
+across all channels, so the schedule never promises more than can be fetched in time), but only on
 slots more than `external_lead_hours` (23) ahead, at equal footing with local material so variety
 wins when there is time to collect it. Nearer slots use local/NAS material.
 (0.7) relative to catalogue programmes, using `episode_minutes` or `external_episode_minutes`

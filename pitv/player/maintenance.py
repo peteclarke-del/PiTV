@@ -20,11 +20,11 @@ from typing import Any
 from .. import catalogue, tool_client
 from ..content import apply_report_files, protect_manifest
 from ..db import all_settings, connect, now_ts, tx
-from ..lineup import remove_aired_transients
+from ..lineup import evict_fetched, remove_aired_transients
 from ..readiness import check as readiness_check
 from ..scheduler.horizon import build_horizon, needs_rebuild, refill_empty_days
 from ..scheduler.rules import tz_of
-from ..wanted import band_needs, queue_gaps, request_all_band_material
+from ..wanted import band_needs, queue_gaps, request_all_band_material, withdraw_gaps
 from .cache import MediaCache
 
 log = logging.getLogger("pitv.maintenance")
@@ -146,6 +146,8 @@ class Maintenance:
             self.on_schedule_changed()
         if settings["acquire_fill_gaps"]:
             queue_gaps(conn)
+        elif withdrawn := withdraw_gaps(conn):
+            log.info("missing-episode requests are off: withdrew %d unanswered request(s)", withdrawn)
         # A band with no local pool depends on collection before its individual scheduled files
         # can even enter the cache manifest. Declare those top-ups first; pitv_content gives these
         # urgent catalogue jobs queue priority, while still running only one downloader at a time.
@@ -173,6 +175,7 @@ class Maintenance:
         if self.cache.enabled and not self.cache.content_tool_running():
             protect_manifest(conn, self.cache, now=now)
             self.cache.make_room()
+            evict_fetched(conn, now=now)
 
         # Readiness: is tomorrow (and the rest of today) actually playable? Once at each of
         # the configured hours (default 06:00 and 07:00), plus the first pass after boot.

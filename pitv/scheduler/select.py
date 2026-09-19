@@ -23,6 +23,7 @@ from .policy import SchedulerPolicy
 from .rules import (
     EraSpans,
     allowed_at,
+    broadcast_day_for,
     daypart_end_minutes,
     daypart_for,
     dayparts_for_weekday,
@@ -269,6 +270,10 @@ class Selector:
             # the last resort, a repeat of an episode already requested, since the shared wanted
             # row means it costs no further download and beats a holding card.
             prepared = self.policy.external_prepared(t)
+            # The schedule never promises more new remote material for a day than the ceiling:
+            # what pitv_content cannot fetch in time would only be replaced on the morning.
+            day_key = broadcast_day_for(t, self.settings, self.tz).isoformat()
+            room = self.library.external_per_day.get(day_key, 0) < self.policy.integer("external_new_per_day")
             ext_w = self.policy.external_weight(t)
             for e in externals:
                 episode = e["kind"] == "episode"
@@ -277,7 +282,7 @@ class Selector:
                 times_today = placed_today.get(e["id"], 0)
                 early = episode and not self.policy.next_episode_due(
                     self.library.external_last_placed.get(e["lineup_id"]), t)     # one episode a week
-                held_back = (not prepared or early or times_today >= (daily_limit if episode else 1)
+                held_back = (not prepared or not room or early or times_today >= (daily_limit if episode else 1)
                              or e["id"] in barred or (e.get("show_id") and e["show_id"] in barred))
                 candidate = e
                 if held_back:

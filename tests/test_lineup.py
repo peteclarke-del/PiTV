@@ -466,3 +466,53 @@ def test_a_story_about_sport_is_not_scheduled_as_sport():
     assert genres.scheduling_class("general", ["Drama", "Comedy", "Sport"]) == "general"
     assert genres.scheduling_class("general", ["Action", "Sci-Fi", "Sport", "Thriller"]) == "general"
     assert genres.scheduling_class("sport", ["Drama"]) == "sport"
+
+
+def test_fetched_material_is_kept_until_the_drive_needs_room_then_oldest_aired_goes_first(tmp_path):
+    """Fetched episodes stay after airing so a later airing costs nothing. When the cache folder
+    is over its cap the ones that aired longest ago go first, with a warning; nothing scheduled
+    ahead, nothing that has not aired and nothing outside the cache is touched."""
+    c = make_library(tmp_path, max_episodes=2)["conn"]
+    cache = tmp_path / "cache"
+    (cache / "acquired").mkdir(parents=True)
+    now = dbm.now_ts()
+    with dbm.tx(c):
+        dbm.set_setting(c, "cache_dir", str(cache))
+        dbm.set_setting(c, "cache_max_gb", 0.000002)             # about two kilobytes
+        ids = [r[0] for r in c.execute("SELECT id FROM media WHERE kind = 'episode' ORDER BY id LIMIT 4")]
+        for n, mid in enumerate(ids):
+            f = cache / "acquired" / f"ep{n}.mp4"
+            f.write_bytes(b"x" * 1000)
+            c.execute("UPDATE media SET origin = 'online', path = ?, cache_path = NULL WHERE id = ?", (str(f), mid))
+        # 0 aired long ago, 1 aired yesterday, 2 has not aired, 3 aired but is scheduled again
+        for mid, ago in ((ids[0], 30), (ids[1], 1), (ids[3], 20)):
+            c.execute("INSERT INTO history(channel_id, media_id, started_at, ended_at, title) VALUES (1, ?, ?, ?, 'x')",
+                      (mid, now - ago * 86400 - 1800, now - ago * 86400))
+        c.execute("DELETE FROM schedule")
+        c.execute("INSERT INTO schedule(channel_id, day, start_ts, end_ts, media_id, offset, kind, title)"
+                  " VALUES (1, '2030-01-01', ?, ?, ?, 0, 'programme', 'again')", (now + 3600, now + 5400, ids[3]))
+    assert lineup.evict_fetched(c, now=now) == 2, "4 KB held against a 2 KB cap: the two that have aired and are not due again"
+    left = {r["id"]: r["missing"] for r in c.execute(f"SELECT id, missing FROM media WHERE id IN ({','.join('?' * 4)})", ids)}
+    assert left == {ids[0]: 1, ids[1]: 1, ids[2]: 0, ids[3]: 0}
+    assert not (cache / "acquired" / "ep0.mp4").exists() and (cache / "acquired" / "ep2.mp4").exists()
+    assert lineup.evict_fetched(c, now=now) == 0, "nothing else has aired that may go"
+    c.close()
+
+
+def test_the_schedule_promises_no_more_new_remote_material_a_day_than_the_ceiling(conn):
+    """However many remote titles a channel has, a day commits to at most `external_new_per_day`
+    placeholders across all channels; the rest of the day comes from the library."""
+    channels = [r["id"] for r in conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number")]
+    for n, ch in enumerate(channels * 3):
+        lineup.add(conn, ch, title=f"Remote Series {n}", year=1984, kind="show", genres=["Drama"], episode_minutes=25)
+    now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(conn))
+    with dbm.tx(conn):
+        dbm.set_setting(conn, "nas_only", False)
+        dbm.set_setting(conn, "external_weight", 50.0)
+        dbm.set_setting(conn, "external_new_per_day", 2)
+    build_horizon(conn, start_day=parse_day("2026-09-14"), days=4, now=now, seed=5, force=True)
+    per_day = conn.execute("SELECT day, COUNT(*) AS n FROM schedule WHERE media_id IS NULL AND wanted_id IS NOT NULL"
+                           " AND replay = 0 GROUP BY day").fetchall()
+    assert per_day and all(r["n"] <= 2 for r in per_day), [tuple(r) for r in per_day]
+    assert not conn.execute("SELECT 1 FROM schedule WHERE kind = 'filler' AND replay = 0 AND block IS NULL"
+                            " AND end_ts - start_ts > 300").fetchone(), "the library fills what the ceiling holds back"

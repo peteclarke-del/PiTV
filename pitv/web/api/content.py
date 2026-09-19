@@ -13,6 +13,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
+from ... import lineup as lineup_mod
 from ... import tool_client
 from ...content import apply_report, manifest, protect_manifest
 from ...db import all_settings
@@ -54,7 +55,12 @@ def make_room(body: dict[str, Any] = Body(default={}), conn: sqlite3.Connection 
     except (TypeError, ValueError) as exc:
         raise HTTPException(400, "bytes must be a number") from exc
     protect_manifest(conn, cache)
-    return {"ok": True, "free_bytes": cache.make_room(needed)}
+    free = cache.make_room(needed)
+    # Copies first, since they can be made again in seconds; then fetched material that has
+    # aired, oldest first, which is the last thing that may go.
+    if lineup_mod.evict_fetched(conn, needed):
+        free = cache.make_room(needed)
+    return {"ok": True, "free_bytes": free}
 
 
 @router.post("/readiness")

@@ -194,6 +194,11 @@ FIELDS: tuple[dict[str, Any], ...] = (
        "A band runs several short things under one title, so anything this long counts as a feature"
        " instead: a film or a concert, which only a band that opens with one will take. It is also the"
        " longest thing fetched for a band. A channel or a single band may set its own.", min=1, max=600),
+    _f("external_new_per_day", "content", "standard", "New remote programmes a day", "int",
+       "The most new episodes and films not yet on disk that the schedule may promise for one day,"
+       " across all channels. Everything else comes from the library, so the schedule never depends"
+       " on more than pitv_content can fetch in time. A title airs once a week, so a few a day go a"
+       " long way.", min=0, max=200),
     _f("band_fit_minutes", "programming", "advanced", "A band is met within (minutes)", "int",
        "A concert or film is chosen to end within this many minutes of its band's end, where the"
        " library has one; the same goes for long items between bands.", min=0, max=60),

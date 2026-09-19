@@ -97,7 +97,6 @@ here has expired and Pete has to sign in again.
 | # | Item | Done when |
 |---|---|---|
 | P1 | Time a band run and a cache run as each of C1 to C8 lands, import, rebuild, and record the result here | Figures recorded against each item above |
-| P7 | Demand for remote material outruns any machine's supply: 48 added titles, every one marked "remove after it airs", so each airing is a fresh fetch and nothing accumulates; and 1434 series-gap requests (`acquire_fill_gaps`) queue behind them. Pete's decisions: keep fetched episodes (cache eviction already bounds the space) and whether gap filling waits until the pipeline can cope. Proposed for PiTV: a setting for how many new remote episodes a day the scheduler may commit to, so the schedule never promises more than can arrive | Decisions recorded; placeholders scheduled per day within what is delivered per day |
 | P3 | Hardware verification on a Raspberry Pi 4: hardware decode of copied files, the cache drive, encode times with the Pi's presets, the player keeper under systemd | REQUIREMENTS.md rows marked "by hand" checked on the device |
 
 ## How a change is accepted

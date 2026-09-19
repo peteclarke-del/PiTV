@@ -17,7 +17,7 @@
 
   let { open = false, channels = [], onclose, onadded } = $props();
   const KINDS = [['show', 'Series'], ['movie', 'Film'], ['advert', 'Advert'], ['music', 'Music video']];
-  const blankForm = () => ({ kind: 'show', title: '', year: '', genres: [], channel: '', transient: true, minutes: '', artist: '', url: '' });
+  const blankForm = () => ({ kind: 'show', title: '', year: '', genres: [], channel: '', transient: false, minutes: '', artist: '', url: '' });
   let f = $state(blankForm());
   let step = $state('search');        // search | place
   let found = $state(null);           // candidates, once looked up
@@ -119,7 +119,7 @@
             <select bind:value={f.channel}><option value="">Choose by genres</option>{#each channels as c (c.id)}<option value={c.id}>{c.number} {c.name}</option>{/each}</select>
           </label>
           {#if f.kind === 'show'}<label class="field">Episode length (minutes)<input type="number" class="narrow" min="1" max="240" bind:value={f.minutes} placeholder="default" /></label>{/if}
-          <label class="check wide"><input type="checkbox" bind:checked={f.transient} /> Remove after it airs<span class="help">Keep fetched files only in the cache and delete them once shown.</span></label>
+          <label class="check wide"><input type="checkbox" bind:checked={f.transient} /> Remove after it airs<span class="help">Normally left off: what is fetched is kept, so a later airing costs nothing, and the oldest goes first if the drive ever needs room.</span></label>
         {:else}
           {#if f.kind === 'music'}<label class="field">Artist<input bind:value={f.artist} /></label>{/if}
           <label class="field wide">Video{#if chosen} (from the match){/if}<input bind:value={f.url} placeholder="https://…" /><span class="help">A specific video for pitv_content to fetch instead of searching.</span></label>

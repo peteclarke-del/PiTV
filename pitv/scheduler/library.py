@@ -256,6 +256,9 @@ class Library:
         self.movie_placements: dict[int, list[int]] = {}
         self.show_last_placed: dict[int, int] = {}
         self.external_last_placed: dict[int, int] = {}
+        # broadcast day -> placeholders it already holds that nothing has delivered yet, which
+        # is what the daily ceiling on new remote commitments counts against
+        self.external_per_day: dict[str, int] = {}
         films = {m["id"] for m in self.movies}
         media_show = {ep["id"]: show.id for show in self.shows.values() for ep in show.episodes}
         cursor_ts: dict[int, int] = {}
@@ -281,7 +284,7 @@ class Library:
             elif not self.rebuilt(r["channel_id"], r["ts"]):
                 placed(r["media_id"], r["ts"], for_cursor=False)
 
-        for r in conn.execute("SELECT w.lineup_id, s.start_ts, s.channel_id, s.locked FROM schedule s"
+        for r in conn.execute("SELECT w.lineup_id, s.start_ts, s.channel_id, s.locked, s.day, s.media_id FROM schedule s"
                               " JOIN wanted w ON w.id = s.wanted_id WHERE w.lineup_id IS NOT NULL"
                               " AND s.replay = 0"):
             window = self.rebuild.get(r["channel_id"])
@@ -289,6 +292,8 @@ class Library:
             if survives:
                 lid = int(r["lineup_id"])
                 self.external_last_placed[lid] = max(self.external_last_placed.get(lid, 0), r["start_ts"])
+                if r["media_id"] is None:
+                    self.external_per_day[r["day"]] = self.external_per_day.get(r["day"], 0) + 1
 
         cursors = {r["show_id"]: r for r in conn.execute("SELECT * FROM show_cursor")}
         for show in self.shows.values():

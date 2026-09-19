@@ -54,6 +54,16 @@ BAND_ITEM_MINUTES = 4                  # rough length of a band item, for judgin
 BAND_ITEM_KINDS = {"music": ("music",), "episode": ("episode",), "movie": ("movie",)}
 
 
+def withdraw_gaps(conn: sqlite3.Connection) -> int:
+    """With "Request missing episodes" off, the requests it raised and nobody has answered are
+    withdrawn, so pitv_content is not left working through a list the owner has switched off.
+    They are derived from the library and come back the moment the setting does."""
+    with tx(conn):
+        cur = conn.execute("DELETE FROM wanted WHERE auto = 1 AND lineup_id IS NULL AND status IN ('queued', 'failed')"
+                           " AND id NOT IN (SELECT wanted_id FROM schedule WHERE wanted_id IS NOT NULL)")
+    return cur.rowcount
+
+
 def band_needs(conn: sqlite3.Connection, settings: dict[str, Any]) -> list[dict[str, Any]]:
     """Bands the library cannot fill, the next to air first.
 

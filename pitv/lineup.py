@@ -16,13 +16,16 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import shutil
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 from .db import (
     LIVE,
+    all_settings,
     as_bool,
     as_int,
     as_text,
@@ -598,3 +601,67 @@ def remove_aired_transients(conn: sqlite3.Connection, now: int | None = None) ->
     with tx(conn):
         conn.executemany("UPDATE media SET missing = 1 WHERE id = ?", [(r["id"],) for r in expired])
     return len(expired)
+
+
+def _tree_bytes(root: Path) -> int:
+    """Bytes held under `root`, symlinks not followed. The cap covers the whole cache drive
+    folder, fetched library included, which is how pitv_content measures it too."""
+    total = 0
+    stack = [root]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(Path(entry.path))
+                    elif entry.is_file(follow_symlinks=False):
+                        total += entry.stat(follow_symlinks=False).st_size
+        except OSError:
+            continue
+    return total
+
+
+def evict_fetched(conn: sqlite3.Connection, needed: int = 0, now: int | None = None) -> int:
+    """Make room by deleting fetched material, oldest aired first, when evicting cache copies
+    has not been enough. Returns how many items went.
+
+    Fetched episodes are kept after they air, so the library fills once and a later airing costs
+    nothing. That has to end somewhere: when the cache folder is over its cap, or the drive
+    cannot take what pitv_content is about to bring, the fetched items that aired longest ago
+    go first, with a warning, until there is room. Nothing scheduled ahead is touched, nor
+    anything that has not aired yet (it was fetched for an airing to come), nor anything
+    outside the cache. The catalogue row is retired; the title can always be fetched again."""
+    from .player.cache import HEADROOM_BYTES, MediaCache
+    now = now or now_ts()
+    cache = MediaCache.from_settings(all_settings(conn))
+    if not cache.enabled or not cache.dir:
+        return 0
+    root = cache.dir.resolve()
+    try:
+        free = shutil.disk_usage(root).free
+    except OSError:
+        return 0
+    short = max(_tree_bytes(root) + needed - cache.max_bytes, needed + HEADROOM_BYTES - free, 0)
+    if short <= 0:
+        return 0
+    rows = conn.execute(
+        "SELECT m.id, m.title, m.path, m.cache_path, MAX(h.ended_at) AS last_aired FROM media m"
+        " JOIN history h ON h.media_id = m.id WHERE m.origin IN ('cache', 'online') AND m.missing = 0"
+        " AND NOT EXISTS (SELECT 1 FROM schedule s WHERE s.media_id = m.id AND s.end_ts > ?)"
+        " GROUP BY m.id ORDER BY last_aired", (now,)).fetchall()
+    gone: list[int] = []
+    freed = 0
+    for r in rows:
+        if freed >= short:
+            break
+        paths = {r["path"], r["cache_path"]} - {None, ""}
+        size = sum(Path(p).stat().st_size for p in paths if Path(p).is_file())
+        if size and all(_remove_cache_file(p, root) for p in paths):
+            freed += size
+            gone.append(r["id"])
+    with tx(conn):
+        conn.executemany("UPDATE media SET missing = 1 WHERE id = ?", [(i,) for i in gone])
+    log.warning("the cache drive was short of %d MB: removed %d fetched item(s), oldest aired first, freeing %d MB%s",
+                short // 1024 ** 2, len(gone), freed // 1024 ** 2,
+                "" if freed >= short else "; still short, and nothing else has aired that may go")
+    return len(gone)

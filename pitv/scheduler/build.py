@@ -408,6 +408,7 @@ class Builder:
                 w.placed_today[item["id"]] = w.placed_today.get(item["id"], 0) + 1
                 if not item.get("_external_repeat"):
                     self.library.external_last_placed[item["lineup_id"]] = w.t
+                    self.library.external_per_day[day_str] = self.library.external_per_day.get(day_str, 0) + 1
                 w.last_show_id = item["id"] if item["kind"] == "episode" else None
                 w.last_programme_year = item.get("year")
                 w.t = slot.end_ts
