@@ -115,14 +115,32 @@ class SchedulerPolicy:
         cadence = self.cadence_seconds(channel)
         return not last or at >= last + cadence - min(12 * HOUR, cadence // 2)
 
-    def first_airing_day(self, channel: Any, key: int, day_ordinal: int) -> bool:
-        """Whether a series that has never aired may start on this broadcast day. Each takes one
-        day of the cadence as its own (by its id), so a week built from nothing opens a seventh
-        of the channel's series each day. Without it every series is due at once, the first
-        days of the week take them all, and since a series returns to its weekday the later
-        days stay thin for good."""
+    def own_day(self, channel: Any, key: int, day_ordinal: int) -> bool:
+        """Whether this broadcast day is the series' own day of the cadence, which it takes by its
+        id. A seventh of a weekly channel's series belong to each day."""
         days = max(1, self.channel_integer(channel, "series_cadence_days"))
         return days == 1 or day_ordinal % days == abs(int(key)) % days
+
+    def series_due(self, channel: Any, key: int, last: int | None, at: int, day_ordinal: int, relax: int = 0) -> bool:
+        """Whether a series may air its next episode now.
+
+        Going only by when it last aired, every series is due at once in a week built from
+        nothing, the first days take them all, and since each then returns a week later the
+        later days stay thin for good; a run of rebuilds leaves the same clump wherever history
+        put it. So a series airs on its own day: for the first time, and thereafter once at
+        least two fifths of the cadence has passed. One whose day was missed is due when it is
+        half a cadence overdue. It settles onto its day within a cadence or two and then returns
+        weekly. The first step of relaxation falls back to the plain interval, so a thin day
+        can still bring a series forward."""
+        cadence = self.cadence_seconds(channel)
+        if relax or cadence <= DAY:
+            return self.next_episode_due(channel, last, at)
+        if last is None:
+            return self.own_day(channel, key, day_ordinal)
+        since = at - last
+        if since >= cadence + cadence // 2:
+            return True
+        return since >= (cadence * 2) // 5 and self.own_day(channel, key, day_ordinal)
 
     def cadence_factor(self, channel: Any, last: int | None, at: int, *, relaxed: bool = False) -> float:
         """Weight the next new episode towards the same slot one cadence on."""

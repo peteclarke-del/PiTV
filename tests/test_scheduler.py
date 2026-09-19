@@ -1010,6 +1010,17 @@ def test_remote_cutoff_and_weekly_series_cadence_are_hour_accurate():
     assert policy.next_episode_due(channel, now, now + 7 * 86400 - 6 * 3600)
     # The cadence is the channel's to set: with a day, every series there is a daily strip, due
     # again the next day and wanted in the same slot, while other channels stay weekly.
+    # A series keeps to its own day of the week: early on that day is fine once two fifths of the
+    # week has passed, other days wait until it is half a week overdue, and a thin day (the
+    # first step of relaxation) goes by the plain interval.
+    ordinal = parse_day("2026-09-14").toordinal()
+    key = ordinal % 7                                     # a series whose own day is the 14th
+    assert policy.series_due(channel, key, None, now, ordinal) and not policy.series_due(channel, key + 1, None, now, ordinal)
+    assert policy.series_due(channel, key, now - 3 * 86400, now, ordinal), "its own day, three days on"
+    assert not policy.series_due(channel, key, now - 2 * 86400, now, ordinal), "too soon even on its own day"
+    assert not policy.series_due(channel, key + 1, now - 8 * 86400, now, ordinal), "not its day, not yet overdue"
+    assert policy.series_due(channel, key + 1, now - 11 * 86400, now, ordinal), "its day was missed"
+    assert policy.series_due(channel, key + 1, now - 7 * 86400, now, ordinal, relax=1), "a thin day brings it forward"
     daily = {**channel, "series_cadence_days": 1}
     assert policy.next_episode_due(daily, now, now + 86400 - 6 * 3600)
     assert not policy.next_episode_due(daily, now, now + 6 * 3600)

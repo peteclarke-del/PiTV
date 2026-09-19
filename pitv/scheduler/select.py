@@ -250,11 +250,7 @@ class Selector:
                 # episode, never the last one again: the small hours are where repeats live.
                 weekly = show.mode == "auto" and show.category != "sport"
                 last = self.library.show_last(channel["id"], show)
-                if weekly and relax < 2 and not self.policy.next_episode_due(channel, last, t):
-                    continue
-                # A series that has never aired waits for its own day of the week; the first step
-                # of relaxation lets a thin day bring one forward.
-                if weekly and not relax and last is None and not self.policy.first_airing_day(channel, show.id, day_ordinal):
+                if weekly and relax < 2 and not self.policy.series_due(channel, show.id, last, t, day_ordinal, relax):
                     continue
                 ep = show.next_episode()
                 if ep is None:
@@ -269,7 +265,9 @@ class Selector:
                 if show.mode == "auto":
                     # Episodes only ever advance. The weekly cadence says when the next one is
                     # wanted, never that the last one is shown again in the meantime.
-                    w *= self.policy.cadence_factor(channel, self.library.show_last(channel["id"], show), t, relaxed=relaxed)
+                    # On its own day a series is wanted even when that comes round early.
+                    w *= max(self.policy.cadence_factor(channel, last, t, relaxed=relaxed),
+                             1.0 if not relax and self.policy.own_day(channel, show.id, day_ordinal) else 0.0)
                 tv_cands.append((w, ep, show))
         if token in ("show", "movie"):
             for m in self.library.movies_on.get(channel["id"], ()):
@@ -311,9 +309,7 @@ class Selector:
                     continue
                 times_today = placed_today.get(e["id"], 0)
                 placed_before = self.library.external_last_placed.get(e["lineup_id"])
-                early = episode and (not self.policy.next_episode_due(channel, placed_before, t) or (
-                    not relax and placed_before is None
-                    and not self.policy.first_airing_day(channel, e["lineup_id"], day_ordinal)))
+                early = episode and not self.policy.series_due(channel, e["lineup_id"], placed_before, t, day_ordinal, relax)
                 # A series whose every episode has been asked for has nothing new to offer; what
                 # has arrived of it airs as the library series it has become.
                 finished = episode and not e["spare_wanted"] and next_episode_number(e) is None
@@ -335,7 +331,8 @@ class Selector:
                 if w <= 0:
                     continue
                 if episode and not held_back:
-                    w *= self.policy.cadence_factor(channel, self.library.external_last_placed.get(e["lineup_id"]), t, relaxed=relaxed)
+                    w *= max(self.policy.cadence_factor(channel, placed_before, t, relaxed=relaxed),
+                             1.0 if not relax and self.policy.own_day(channel, e["lineup_id"], day_ordinal) else 0.0)
                 (tv_cands if episode else movie_cands).append((w, candidate, None))
 
             # A configured remote title is part of the channel's catalogue, not an occasional
