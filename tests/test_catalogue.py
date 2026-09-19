@@ -351,3 +351,21 @@ def test_what_the_pi_can_play_is_copied_not_transcoded():
     assert not pi_can_play({"vcodec": "mpeg2video", "height": 576, "interlaced": 1})
     assert not pi_can_play({"vcodec": "mpeg4", "height": 720})
     assert not pi_can_play({"vcodec": "vp9", "height": 480}) and not pi_can_play({"vcodec": None})
+
+
+def test_a_title_shared_by_an_original_and_its_remake_is_read_as_the_original(monkeypatch):
+    """With no year in the index, "The Powerpuff Girls" matches the 1998 series and the 2016
+    one. Six seasons on disk rule out a three-year run, the original is preferred in any case,
+    and only that programme's matches are put together."""
+    from pitv import catalogue, tool_client
+    answer = {"candidates": [
+        {"title": "The Powerpuff Girls", "year": 2016, "end_year": 2019, "genres": ["Crime"], "match": {"source": "tvmaze", "id": 2}},
+        {"title": "The Powerpuff Girls", "year": 1998, "end_year": 2005, "genres": ["Animation"], "match": {"source": "tvmaze", "id": 1}},
+        {"title": "The Powerpuff Girls", "year": 1998, "end_year": 2005, "certificate": "U", "genres": ["Family"], "match": {"source": "tmdb-tv", "id": 9}},
+        {"title": "The Powerpuff Girls", "year": 2016, "end_year": 2019, "certificate": "12", "match": {"source": "tmdb-tv", "id": 8}},
+    ]}
+    monkeypatch.setattr(tool_client, "request", lambda *a, **k: (200, answer))
+    found, _ = catalogue._lookup_metadata({}, "show", "The Powerpuff Girls", None, seasons=6)
+    assert found["year"] == 1998 and found["certificate"] == "U" and found["genres"] == ["Animation", "Family"]
+    found, _ = catalogue._lookup_metadata({}, "show", "The Powerpuff Girls", 2017)
+    assert found["year"] == 2016 and found["certificate"] == "12", "a year in the index settles it"

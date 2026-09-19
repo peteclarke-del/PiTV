@@ -379,8 +379,8 @@ def _compatible_candidate(kind: str, title: str, year: int | None,
     return found - 1 <= year <= end + 1
 
 
-def _lookup_metadata(settings: dict[str, Any], kind: str, title: str,
-                     year: int | None) -> tuple[dict[str, Any] | None, str]:
+def _lookup_metadata(settings: dict[str, Any], kind: str, title: str, year: int | None,
+                     seasons: int = 0) -> tuple[dict[str, Any] | None, str]:
     query = urllib.parse.urlencode({"kind": kind, "title": title, "year": year or "", "limit": 8})
     status, payload = tool_client.request(tool_client.base_url(settings), "GET", "lookup", query=query, timeout=75)
     if status != 200 or not isinstance(payload, dict):
@@ -390,11 +390,22 @@ def _lookup_metadata(settings: dict[str, Any], kind: str, title: str,
     # genres), so what the compatible matches say is put together: the first value found for
     # each single fact, every genre any of them gives. A match with no certificate still fills
     # a missing year and genres, which is what decides where a series belongs.
+    # One title can be several programmes (an original and its remake). With no year to go by,
+    # a run too short for the seasons on disk is ruled out, and of what is left the earliest is
+    # taken, the original being what a library of period television is likelier to hold. Only
+    # matches for that one programme are put together; mixing them mixes two programmes' facts.
+    compatible = [c for c in payload.get("candidates") or []
+                  if isinstance(c, dict) and _compatible_candidate(kind, title, year, c)]
+    if not year:
+        def fits(c: dict[str, Any]) -> bool:
+            first, last = as_int(c.get("year")), as_int(c.get("end_year"))
+            return not (seasons > 1 and first and last and last - first + 2 < seasons)
+        dated = sorted({y for c in compatible if fits(c) and (y := as_int(c.get("year")))})
+        if dated:
+            compatible = [c for c in compatible if fits(c) and abs((as_int(c.get("year")) or dated[0]) - dated[0]) <= 1]
     found: dict[str, Any] = {}
     genres: list[str] = []
-    for candidate in payload.get("candidates") or []:
-        if not isinstance(candidate, dict) or not _compatible_candidate(kind, title, year, candidate):
-            continue
+    for candidate in compatible:
         found.setdefault("match", candidate.get("match"))
         if (cert := normalise_cert(as_text(candidate.get("certificate")))) and "certificate" not in found:
             found["certificate"] = cert
@@ -450,7 +461,9 @@ def enrich_missing_metadata(conn: sqlite3.Connection, *, limit: int = 50, force:
         row, table, kind = item["row"], item["table"], item["kind"]
         if progress:
             progress(f"checking ratings: {row['title']}", i - 1, len(items))
-        candidate, reason = _lookup_metadata(settings, kind, row["title"], as_int(row.get("year")))
+        seasons = (conn.execute("SELECT COUNT(DISTINCT season) FROM media WHERE show_id = ? AND missing = 0 AND season > 0",
+                                (row["id"],)).fetchone()[0] if table == "shows" else 0)
+        candidate, reason = _lookup_metadata(settings, kind, row["title"], as_int(row.get("year")), seasons)
         checked += 1
         now = now_ts()
         if candidate:
