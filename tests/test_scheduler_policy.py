@@ -29,7 +29,8 @@ def test_remote_lead_and_episode_cadence_are_named_policy_rules():
     assert rules.external_weight(rules.now + DAY) == 1.5
 
     last = rules.now
-    assert rules.cadence_factor(last, last + 7 * DAY) == 4.0
+    assert rules.cadence_factor({}, last, last + 7 * DAY) == 4.0
+    assert rules.cadence_factor({"series_cadence_days": 1}, last, last + DAY) == 4.0, "a channel may set its own"
 
 
 def test_policy_uses_authoritative_defaults_when_a_setting_is_absent():

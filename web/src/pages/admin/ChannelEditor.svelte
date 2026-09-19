@@ -43,6 +43,7 @@
     description: c.description ?? '', content: c.content ?? 'general',
     allowed_genres: c.allowed_genres ?? [], excluded_genres: c.excluded_genres ?? [], nas_only: c.nas_only ?? 'inherit',
     short_episode_minutes: c.short_episode_minutes ?? '', short_episode_run_minutes: c.short_episode_run_minutes ?? '',
+    series_cadence_days: c.series_cadence_days ?? '',
     fetch_kind: c.fetch_kind ?? '', band_item_max_minutes: c.band_item_max_minutes ?? '',
     strict_matching: c.strict_matching ?? false,
     decades: c.decades ?? [], kids_any_time: !!c.kids_any_time, bands: (c.bands ?? []).map((b) => ({ ...b, fill: { ...b.fill } })),
@@ -88,6 +89,7 @@
       allowed_genres: f.allowed_genres, excluded_genres: f.excluded_genres, nas_only: f.nas_only,
       short_episode_minutes: f.short_episode_minutes === '' ? null : Number(f.short_episode_minutes),
       short_episode_run_minutes: f.short_episode_run_minutes === '' ? null : Number(f.short_episode_run_minutes),
+      series_cadence_days: num(f.series_cadence_days, { min: 1, max: 28, int: true }),
       fetch_kind: f.fetch_kind || null, strict_matching: f.strict_matching,
       band_item_max_minutes: f.band_item_max_minutes === '' ? null : Number(f.band_item_max_minutes),
       decades: f.decades, kids_any_time: f.kids_any_time, bands: f.bands,
@@ -136,6 +138,7 @@
           <label class="field">Group episodes shorter than (minutes)<input type="number" class="narrow" min="0" max="60" bind:value={f.short_episode_minutes} placeholder="as Settings says" /><span class="help">Episodes shorter than a normal programme run together under the series title, with no advert break between them.</span></label>
           <label class="field">Run them together for (minutes)<input type="number" class="narrow" min="5" max="120" bind:value={f.short_episode_run_minutes} placeholder="as Settings says" /></label>
         {/if}
+        <label class="field">A series returns every (days)<input type="number" class="narrow" min="1" max="28" bind:value={f.series_cadence_days} placeholder="as Settings says" /><span class="help">How long a series waits between episodes on this channel. Seven is a weekly series, as the broadcasters ran them; one makes every series a daily strip, which suits a cartoon channel. Films fill whatever the series leave.</span></label>
         <label class="field wide">Fetch more material as
           <select bind:value={f.fetch_kind}>
             <option value="">nothing; this channel is not topped up</option>

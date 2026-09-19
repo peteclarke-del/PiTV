@@ -552,7 +552,12 @@ For each channel and day, walk from 08:00 to 00:00 following the pattern:
    daypart weight for its kind, kids and sport factors, the channel's genre weights, a
    penalty (`genre_repeat_penalty`, 0.4) when it shares a genre with the previous programme,
    a bonus (`series_cadence_bonus`, 4.0) when an ordinary series' following episode is close to
-   the same slot `series_cadence_days` (7) later, and a bonus for filling the gap within ten minutes. Certificate rules, duration
+   the same slot `series_cadence_days` (7) later, and a bonus for filling the gap within ten minutes.
+   The cadence is also a rule: a series is not due again until that long after its last episode
+   (half a day's grace), and only the last step before a holding card brings it round early. A
+   channel may set its own `series_cadence_days` (Channels, Programmes): the general channels
+   keep a week, as the broadcasters did, while a cartoon channel set to one day runs every
+   series as a daily strip and leaves films whatever the series do not fill. Certificate rules, duration
    (gap plus `duration_tolerance_minutes`, 5) and the same series back to back are hard
    limits. A show may air at most `show_daily_limit` (2) times a day per channel, each
    repeat weighted by `show_repeat_penalty` (0.3). Episodes only ever advance: the cadence

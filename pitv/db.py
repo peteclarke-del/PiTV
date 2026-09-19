@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS channels (
     band_feature_repeat_days INTEGER,
     short_episode_minutes INTEGER,     -- short-episode runs; NULL follows the global settings
     short_episode_run_minutes INTEGER,
+    series_cadence_days INTEGER,       -- days between a series' episodes here; NULL follows the global setting
     fetch_kind TEXT,                   -- what pitv_content should fetch for this channel's bands; NULL = nothing
     band_item_max_minutes INTEGER,     -- longest item its bands treat as one of their own; NULL = settings
     strict_matching INTEGER NOT NULL DEFAULT 0,   -- 1: only items whose genre and year are known and allowed
@@ -580,6 +581,7 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("media", "enriched", "TEXT NOT NULL DEFAULT '{}'"),
     ("media", "metadata_checked_at", "INTEGER"),
     ("media", "metadata_source", "TEXT"),
+    ("channels", "series_cadence_days", "INTEGER"),
     ("shows", "ids", "TEXT NOT NULL DEFAULT '{}'"),
     ("media", "ids", "TEXT NOT NULL DEFAULT '{}'"),
 ]

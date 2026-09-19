@@ -993,8 +993,45 @@ def test_remote_cutoff_and_weekly_series_cadence_are_hour_accurate():
     assert not nas_only_for(channel, builder.settings)
     policy = builder.policy
     assert policy.external_weight(now + 23 * 3600) < policy.external_weight(now + 23 * 3600 + 1)
-    assert policy.cadence_factor(now, now + 24 * 3600) < 0.1
-    assert policy.cadence_factor(now, now + 7 * 86400) == dbm.all_settings(c)["series_cadence_bonus"]
+    bonus = dbm.all_settings(c)["series_cadence_bonus"]
+    assert policy.cadence_factor(channel, now, now + 24 * 3600) < 0.1
+    assert policy.cadence_factor(channel, now, now + 7 * 86400) == bonus
+    assert not policy.next_episode_due(channel, now, now + 3 * 86400)
+    assert policy.next_episode_due(channel, now, now + 7 * 86400 - 6 * 3600)
+    # The cadence is the channel's to set: with a day, every series there is a daily strip, due
+    # again the next day and wanted in the same slot, while other channels stay weekly.
+    daily = {**channel, "series_cadence_days": 1}
+    assert policy.next_episode_due(daily, now, now + 86400 - 6 * 3600)
+    assert not policy.next_episode_due(daily, now, now + 6 * 3600)
+    assert policy.cadence_factor(daily, now, now + 86400) == bonus
+    c.close()
+
+
+def test_a_channel_with_a_daily_cadence_shows_its_series_every_day(tmp_path):
+    """A cartoon channel whose series waited a week between episodes filled its days with films.
+    With the channel's cadence set to a day, each series it holds airs on each day built. Left
+    alone, the same channel gives most series one day in the four (the fixture is small enough
+    that one or two come round early as the last step before a holding card)."""
+    c = make_library(tmp_path, 12)["conn"]
+    now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(c))
+    # The general channel with the most series, none of them the owner's strips or anchors.
+    channel = c.execute("SELECT l.channel_id FROM lineup l JOIN channels ch ON ch.id = l.channel_id"
+                        " WHERE l.show_id IS NOT NULL AND ch.number <= 4 GROUP BY 1 ORDER BY COUNT(*) DESC").fetchone()[0]
+
+    def days_aired() -> dict[int, int]:
+        build_horizon(c, start_day=parse_day("2026-09-14"), days=4, now=now, seed=3, force=True)
+        return {r[0]: r[1] for r in c.execute(
+            "SELECT m.show_id, COUNT(DISTINCT s.day) FROM schedule s JOIN media m ON m.id = s.media_id"
+            " JOIN shows sh ON sh.id = m.show_id WHERE s.channel_id = ? AND s.replay = 0 AND sh.category != 'sport'"
+            " GROUP BY 1", (channel,))}
+    weekly = days_aired()
+    assert weekly and min(weekly.values()) == 1 and sum(weekly.values()) < 4 * len(weekly), "weekly by default"
+    with dbm.tx(c):
+        c.execute("UPDATE channels SET series_cadence_days = 1 WHERE id = ?", (channel,))
+    daily = days_aired()
+    every_day = [show for show, days in daily.items() if days == 4]
+    assert set(daily) >= set(weekly) and sum(daily.values()) > sum(weekly.values()), (weekly, daily)
+    assert len(every_day) >= len(daily) - 1, daily     # a series kept to weekends, say, is the exception
     c.close()
 
 

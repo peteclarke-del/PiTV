@@ -220,12 +220,12 @@ class Selector:
                 # going dark for the evening (docs/PLAN.md section 4.5).
                 if times_today >= daily_limit and not relaxed:
                     continue
-                # One episode a week. A series the owner made a strip or anchored keeps its own
+                # One episode per cadence: a week unless the channel sets its own. A series the owner made a strip or anchored keeps its own
                 # arrangement, and sport runs in blocks by its dayparts. Only at the last step
                 # before a holding card does a series come round early, and then with its next
                 # episode, never the last one again: the small hours are where repeats live.
                 weekly = show.mode == "auto" and show.category != "sport"
-                if weekly and relax < 2 and not self.policy.next_episode_due(self.library.show_last_placed.get(show.id), t):
+                if weekly and relax < 2 and not self.policy.next_episode_due(channel, self.library.show_last_placed.get(show.id), t):
                     continue
                 ep = show.next_episode()
                 if ep is None:
@@ -240,7 +240,7 @@ class Selector:
                 if show.mode == "auto":
                     # Episodes only ever advance. The weekly cadence says when the next one is
                     # wanted, never that the last one is shown again in the meantime.
-                    w *= self.policy.cadence_factor(self.library.show_last_placed.get(show.id), t, relaxed=relaxed)
+                    w *= self.policy.cadence_factor(channel, self.library.show_last_placed.get(show.id), t, relaxed=relaxed)
                 tv_cands.append((w, ep, show))
         if token in ("show", "movie"):
             for m in self.library.movies_on.get(channel["id"], ()):
@@ -282,7 +282,7 @@ class Selector:
                     continue
                 times_today = placed_today.get(e["id"], 0)
                 early = episode and not self.policy.next_episode_due(
-                    self.library.external_last_placed.get(e["lineup_id"]), t)     # one episode a week
+                    channel, self.library.external_last_placed.get(e["lineup_id"]), t)
                 held_back = (not prepared or not room or early or times_today >= (daily_limit if episode else 1)
                              or e["id"] in barred or (e.get("show_id") and e["show_id"] in barred))
                 candidate = e
@@ -297,7 +297,7 @@ class Selector:
                 if w <= 0:
                     continue
                 if episode and not held_back:
-                    w *= self.policy.cadence_factor(self.library.external_last_placed.get(e["lineup_id"]), t, relaxed=relaxed)
+                    w *= self.policy.cadence_factor(channel, self.library.external_last_placed.get(e["lineup_id"]), t, relaxed=relaxed)
                 (tv_cands if episode else movie_cands).append((w, candidate, None))
 
             # A configured remote title is part of the channel's catalogue, not an occasional

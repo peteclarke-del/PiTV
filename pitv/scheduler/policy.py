@@ -102,20 +102,24 @@ class SchedulerPolicy:
         configured = max(1.0, self.number("external_weight"))
         return configured if self.external_prepared(at) else min(0.1, configured * 0.1)
 
-    @property
-    def cadence_seconds(self) -> int:
-        return self.integer("series_cadence_days") * DAY
+    def cadence_seconds(self, channel: Any) -> int:
+        """How long a series waits between episodes on this channel. A general channel runs a
+        series weekly, as the broadcasters did; a themed channel (cartoons, say) may set a day,
+        which makes every series a daily strip."""
+        return max(1, self.channel_integer(channel, "series_cadence_days")) * DAY
 
-    def next_episode_due(self, last: int | None, at: int) -> bool:
-        """A series airs one episode a week, as it did on air: the next is due a week after the
-        last, give or take half a day so it may come round a little earlier in the same slot."""
-        return not last or at >= last + self.cadence_seconds - 12 * HOUR
+    def next_episode_due(self, channel: Any, last: int | None, at: int) -> bool:
+        """A series airs one episode per cadence, as it did on air: the next is due that long after
+        the last, give or take half a day (less on a short cadence) so it may come round a little
+        earlier in the same slot."""
+        cadence = self.cadence_seconds(channel)
+        return not last or at >= last + cadence - min(12 * HOUR, cadence // 2)
 
-    def cadence_factor(self, last: int | None, at: int, *, relaxed: bool = False) -> float:
-        """Weight the next new episode towards the configured weekly slot."""
+    def cadence_factor(self, channel: Any, last: int | None, at: int, *, relaxed: bool = False) -> float:
+        """Weight the next new episode towards the same slot one cadence on."""
         if not last:
             return 1.0
-        target = last + self.cadence_seconds
+        target = last + self.cadence_seconds(channel)
         distance = abs(at - target)
         if at < target - 36 * HOUR:
             return 0.3 if relaxed else 0.05
