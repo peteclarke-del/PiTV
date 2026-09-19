@@ -57,7 +57,6 @@ In the order that unblocks testing. Each was sent to its owner with the evidence
 | C9 | SIGTERM in a job cleans its temporary files, releases the run marker and reports what it had delivered. Landed in pitv_content 832f9f0; to be checked the next time a job is stopped mid-run | 5 | Stopping the service mid-run leaves no `encode-*` files and PiTV receives a report |
 | C10 | Catalogue runs take and refresh the running marker and ask PiTV to make room before fetching | 2, 5 | A long band run is visible to PiTV's eviction as running |
 | C14 | The screen profile is defined once. pitv_content resolves the profile name PiTV pushes against a table of its own, so the 720p ceiling had to be changed in both repositories (pitv_content d49808a) and a catalogue run would otherwise have gone on fetching 1080p. PiTV should push the profile's values, or pitv_content read them from PiTV, so the two cannot drift | none | Changing a profile value in PiTV alone changes what a catalogue run fetches |
-| C22 | The index passes on what the NFO knows. Of 91 films PiTV still shows with no certificate, 79 have empty rating tags but carry an IMDb or TMDb id in the NFO, 10 carry rating text the index does not pass on in a readable form (`US:R / US:Rated R`, `UK:All`; `NR` is correctly unrated), and 2 have neither. Asked for, all additive: the raw certification text, an `ids` object per item and show, and `GET /api/lookup` by `imdb=`, `tmdb=` or `tvdb=`. Landed in pitv_content 5bdcee5 and PiTV fe225c9 (`certificate` is the NFO's raw text, `ids` per show and item, lookup by identifier asked first; contract sections 1 and 8 written); the ids reach the index at pitv_content's next full index run, and the check waits on that | none | The films with an id in their NFO leave the "needs attention" list after one online check |
 | C23 | The duplicate fingerprint is sensitive to where a fast-cut picture is cut. With the threshold at 10 bits of 64, the same music video cut 0.1 s later moves 15 bits and 0.25 s later moves 20, against about 31 for a different song, so two uploads of one video are often not seen as the same by fingerprint and C3's name matching is what stops them. Slower pictures move far less. Found by pitv_content while reworking the decode; to follow C8 | none | Two uploads of one fast-cut video, offset by up to half a second, are recognised as duplicates, and two different songs are not |
 | C19 | `pitv-content doctor` and `GET /api/doctor` on the loopback API: a read-only report, findings first in sentences (a job failing repeatedly, a provider refusing, sources unreadable, the cache at its cap, stale part-files, how long since a band helping last ran and last made anything, a chart or listing year being distrusted), then the sections. Sources by id and state, never by path; no credentials, token paths or manifest URLs, since it is meant to be pasted. PiTV's `pitv doctor` embeds it. Agreed, after C8 | none | PiTV's report carries pitv_content's findings |
 | C11 | The remaining review items: NFO written before the media is renamed into place, `Jobs.cancel` verifies the pid, blocking work out of request handlers, one year parser, rename debris, track and catalogue data out of code | none | Reviewed against the original list when the rest is done |
@@ -97,7 +96,16 @@ player has reported no NAS fallback since. Condition 2 holds on this machine.
 The "needs attention" list (19 September): 653 items to 93. 560 were episodes of dated series
 flagged "No year found" at every import, because the note was computed from the episode's own
 row; an episode now takes its series' year, as it does when scheduled (7cd8a1d). What remains
-is C22 and two films the library has no duration or year for.
+was C22 and two films the library has no duration or year for.
+
+C22, the index passes on what the NFO knows (pitv_content 5bdcee5, PiTV fe225c9): `certificate` is
+the NFO's raw text, shows and items carry `ids`, and the lookup resolves by identifier. Verified
+at 04:38 on 19 September: the full index published with ids on 1291 of 1294 films and 187 of 197
+shows, PiTV imported the same counts, the raw text alone rated 5 films, and one forced online
+check identified 90 of 97 titles by identifier. The list went from 93 to 43. The 42 films
+still unrated were identified, but TMDb holds no UK or US certificate for them (television
+films, documentaries, live shows; `NR` for some). They are scheduled as 15, after the
+watershed, until the owner sets one in the admin, which is what the note is for.
 
 pitv_content 265cbda is committed and running on this machine but not pushed: the GitHub token
 here has expired and Pete has to sign in again.
