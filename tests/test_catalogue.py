@@ -369,3 +369,12 @@ def test_a_title_shared_by_an_original_and_its_remake_is_read_as_the_original(mo
     assert found["year"] == 1998 and found["certificate"] == "U" and found["genres"] == ["Animation", "Family"]
     found, _ = catalogue._lookup_metadata({}, "show", "The Powerpuff Girls", 2017)
     assert found["year"] == 2016 and found["certificate"] == "12", "a year in the index settles it"
+
+
+def test_every_british_certificate_is_recognised():
+    """U was missing from the table of certificates, so every U film counted as unrated, was
+    treated as a 15 and kept off daytime television, and was looked up again at every import."""
+    from pitv.scheduler.rules import normalise_cert
+    assert [normalise_cert(c) for c in ("U", "u", "UK:U", "BBFC U", "Uc", "PG", "12", "12A", "15", "18")] == \
+        ["U", "U", "U", "U", "U", "PG", "12", "12A", "15", "18"]
+    assert normalise_cert("TV-Y7") == "U" and normalise_cert("R") == "15" and normalise_cert("nonsense") is None
