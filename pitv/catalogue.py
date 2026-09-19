@@ -64,6 +64,9 @@ CONCERT_MINUTES = 35          # a music item this long is a concert even when no
 UNSAFE_TAGS = {"alcohol", "tobacco", "adult", "gambling", "18"}
 REJECTS_KEPT = 50             # rejected records described in the run log; the rest are only counted
 METADATA_RECHECK_DAYS = 30
+# A re-release or a festival date moves a year by one or two; more than that between the library
+# and the programme an NFO's identifier names is a different programme.
+ID_YEAR_TOLERANCE = 2
 MIRROR = "catalogue.json"
 
 
@@ -249,7 +252,7 @@ def import_index(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, Any
             fields = {"source_id": src["id"], "path": uid, "title": as_text(sh.get("title")) or uid,
                       "year": year, "certificate": normalise_cert(as_text(sh.get("certificate"))), "genres": json.dumps(genres),
                       "plot": as_text(sh.get("plot")), "kids": kids, "category": category, "missing": 0,
-                      "updated_at": now}
+                      "ids": json.dumps(_online_ids(sh.get("ids"))), "updated_at": now}
             row_id = find_id(conn, "shows", "path", uid)
             if row_id is None:
                 # A series first seen before index uids (a scan-era folder path, or one fetched
@@ -295,7 +298,7 @@ def import_index(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, Any
                 "concert": int(as_bool(concert) if concert is not None
                                else kind == "music" and (duration or 0) >= CONCERT_MINUTES * 60),
                 "family_safe": family_safe(it, unsafe) if kind == "advert" else 1,
-                "missing": 0, "updated_at": now,
+                "ids": json.dumps(_online_ids(it.get("ids"))), "missing": 0, "updated_at": now,
             }
             fields["attention"] = _attention(fields)
             if src["location"] == "cache":
@@ -399,17 +402,62 @@ def _compatible_candidate(kind: str, title: str, year: int | None,
     return found - 1 <= year <= end + 1
 
 
-def _lookup_metadata(settings: dict[str, Any], kind: str, title: str, year: int | None,
-                     seasons: int = 0) -> tuple[dict[str, Any] | None, str]:
-    query = urllib.parse.urlencode({"kind": kind, "title": title, "year": year or "", "limit": 8})
-    status, payload = tool_client.request(tool_client.base_url(settings), "GET", "lookup", query=query, timeout=75)
+# What each identifier looks like (contract section 1). The index is a document another process
+# wrote and these values go back out in a query, so anything else is dropped on import.
+_ID_SHAPES = {"imdb": re.compile(r"tt\d{5,10}"), "tmdb": re.compile(r"\d{1,9}"), "tvdb": re.compile(r"\d{1,9}")}
+
+
+def _online_ids(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {key: str(value[key]) for key, shape in _ID_SHAPES.items()
+            if isinstance(value.get(key), (str, int)) and shape.fullmatch(str(value[key]))}
+
+
+def _ask_lookup(settings: dict[str, Any], params: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    status, payload = tool_client.request(tool_client.base_url(settings), "GET", "lookup",
+                                          query=urllib.parse.urlencode(params), timeout=75)
     if status != 200 or not isinstance(payload, dict):
         reason = payload.get("error") if isinstance(payload, dict) else f"HTTP {status}"
         return None, str(reason or f"HTTP {status}")
+    return payload, ""
+
+
+def _put_together(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """One programme's facts from every source that knows it: the first value found for each
+    single fact, every genre any of them gives."""
+    found: dict[str, Any] = {}
+    genres: list[str] = []
+    for candidate in candidates:
+        found.setdefault("match", candidate.get("match"))
+        if (cert := normalise_cert(as_text(candidate.get("certificate")))) and "certificate" not in found:
+            found["certificate"] = cert
+        if (when := as_int(candidate.get("year"))) and "year" not in found:
+            found["year"] = when
+        if candidate.get("summary") and "summary" not in found:
+            found["summary"] = candidate["summary"]
+        genres += [g for g in (candidate.get("genres") or []) if isinstance(g, str)]
+    return {**found, "genres": genres} if found else None
+
+
+def _lookup_metadata(settings: dict[str, Any], kind: str, title: str, year: int | None,
+                     seasons: int = 0, ids: dict[str, str] | None = None) -> tuple[dict[str, Any] | None, str]:
+    # The NFO's identifier names the programme outright, whatever the library calls it (an
+    # edition note, a translated or shortened title), so it is asked first and its answer needs
+    # no title matching. A year far from the library's means the NFO holds the wrong
+    # identifier, and the title search below is the safer reading.
+    if ids:
+        payload, _ = _ask_lookup(settings, {"kind": kind, **ids, "limit": 8})
+        named = [c for c in (payload or {}).get("candidates") or [] if isinstance(c, dict)
+                 and not (year and (theirs := as_int(c.get("year"))) and abs(theirs - year) > ID_YEAR_TOLERANCE)]
+        if named and (found := _put_together(named)):
+            return found, ""
+    payload, reason = _ask_lookup(settings, {"kind": kind, "title": title, "year": year or "", "limit": 8})
+    if payload is None:
+        return None, reason
     # Sources know different things about the same title (one has the certificate, another the
-    # genres), so what the compatible matches say is put together: the first value found for
-    # each single fact, every genre any of them gives. A match with no certificate still fills
-    # a missing year and genres, which is what decides where a series belongs.
+    # genres), so what the compatible matches say is put together. A match with no certificate
+    # still fills a missing year and genres, which is what decides where a series belongs.
     # One title can be several programmes (an original and its remake). With no year to go by,
     # a run too short for the seasons on disk is ruled out, and of what is left the earliest is
     # taken, the original being what a library of period television is likelier to hold. Only
@@ -423,19 +471,8 @@ def _lookup_metadata(settings: dict[str, Any], kind: str, title: str, year: int 
         dated = sorted({y for c in compatible if fits(c) and (y := as_int(c.get("year")))})
         if dated:
             compatible = [c for c in compatible if fits(c) and abs((as_int(c.get("year")) or dated[0]) - dated[0]) <= 1]
-    found: dict[str, Any] = {}
-    genres: list[str] = []
-    for candidate in compatible:
-        found.setdefault("match", candidate.get("match"))
-        if (cert := normalise_cert(as_text(candidate.get("certificate")))) and "certificate" not in found:
-            found["certificate"] = cert
-        if (when := as_int(candidate.get("year"))) and "year" not in found:
-            found["year"] = when
-        if candidate.get("summary") and "summary" not in found:
-            found["summary"] = candidate["summary"]
-        genres += [g for g in (candidate.get("genres") or []) if isinstance(g, str)]
-    if found:
-        return {**found, "genres": genres}, ""
+    if found := _put_together(compatible):
+        return found, ""
     errors = payload.get("errors") or {}
     return None, "; ".join(f"{k}: {v}" for k, v in errors.items()) or "no unambiguous match"
 
@@ -483,7 +520,8 @@ def enrich_missing_metadata(conn: sqlite3.Connection, *, limit: int = 50, force:
             progress(f"checking ratings: {row['title']}", i - 1, len(items))
         seasons = (conn.execute("SELECT COUNT(DISTINCT season) FROM media WHERE show_id = ? AND missing = 0 AND season > 0",
                                 (row["id"],)).fetchone()[0] if table == "shows" else 0)
-        candidate, reason = _lookup_metadata(settings, kind, row["title"], as_int(row.get("year")), seasons)
+        candidate, reason = _lookup_metadata(settings, kind, row["title"], as_int(row.get("year")), seasons,
+                                             ids=_online_ids(row.get("ids")))
         checked += 1
         now = now_ts()
         if candidate:

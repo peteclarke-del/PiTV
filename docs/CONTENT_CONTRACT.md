@@ -110,6 +110,16 @@ for the nightly index run.
 - `uid` is stable for as long as the file keeps its path: `nas:<source id>:<relpath>` for
   items and `show:<source id>:<folder>` for series. `path` is the absolute path on the Pi's
   read-only mount, used only for fallback playback.
+- `certificate` is the NFO's own text (`<certification>`, else `<mpaa>`), whitespace collapsed
+  and at most 120 characters: `PG`, `UK:12 / UK:12+`, `US:R / US:Rated R`, `UK:All`. PiTV reads
+  it (a British entry first when the text lists several) and owns that reading, so
+  pitv_content does not interpret it. `NR`, `Not Rated`, `Unrated`, `N/A` and an empty tag are
+  published as null.
+- `ids`, on a show or an item, holds the NFO's online identifiers, only the keys it has:
+  `{"imdb": "tt0080684", "tmdb": "1891", "tvdb": "76107"}` (`tt` and five to ten digits; one
+  to nine digits for the other two). The field is absent when the NFO has none. An episode's
+  `ids` are the episode's own; the show's `ids` identify the series. PiTV keeps what fits
+  those shapes and sends it with its online checks (section 8).
 - A `complete` index lists every item; PiTV marks anything absent from it as missing. An
   incomplete index (`"complete": false`) only adds and updates.
 - `sources` are pitv_content's NAS sources. PiTV shows them and edits them through
@@ -345,6 +355,14 @@ PiTV never contacts the sources itself, as all online access is pitv_content's.
   video site, `match.url` the video, and `duration_seconds`, `uploader`, `max_height` (the
   best resolution the video offers) and a thumbnail as `image` replace the series fields. A music candidate may carry `artist` and the release
   `year` from a music database.
+- `imdb=tt...`, `tmdb=N` and `tvdb=N` (any combination) ask for one programme by identifier;
+  `title`, `year` and `artist` are then ignored, and `kind` stays required because a TMDb
+  number names a film or a series depending on it. The reply has the same shape. A film is
+  resolved by TMDb, then OMDb (IMDb identifier only); a series by TVmaze and TMDb, so it may
+  come back once from each, as in a title search. An unknown identifier is 200 with no
+  candidates; a malformed one, or one given with kind `advert` or `music`, is 400. PiTV's
+  online check asks this way whenever the index gave it an identifier, and asks by title only
+  when that finds nothing or names a programme more than two years from the library's.
 - Candidates are ordered best first. Every field but `match`, `kind` and `title` may be
   missing or null. `summary` is plain text; `image` is an https URL the admin may show.
 - `sources` names what was asked; `errors` maps a source that failed to its message, so

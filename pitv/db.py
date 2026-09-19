@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS shows (
     excluded INTEGER NOT NULL DEFAULT 0,
     missing INTEGER NOT NULL DEFAULT 0,
     enriched TEXT NOT NULL DEFAULT '{}',    -- JSON: trusted online metadata, below admin overrides
+    ids TEXT NOT NULL DEFAULT '{}',         -- JSON: the NFO's imdb, tmdb and tvdb identifiers
     metadata_checked_at INTEGER,
     metadata_source TEXT,
     overrides TEXT NOT NULL DEFAULT '{}',   -- JSON: admin edits that beat indexed values
@@ -150,6 +151,7 @@ CREATE TABLE IF NOT EXISTS media (
     missing INTEGER NOT NULL DEFAULT 0,
     attention TEXT,                -- reason this item needs a look, or NULL
     enriched TEXT NOT NULL DEFAULT '{}',    -- JSON: trusted online metadata, below admin overrides
+    ids TEXT NOT NULL DEFAULT '{}',         -- JSON: the NFO's imdb, tmdb and tvdb identifiers
     metadata_checked_at INTEGER,
     metadata_source TEXT,
     overrides TEXT NOT NULL DEFAULT '{}',
@@ -578,6 +580,8 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("media", "enriched", "TEXT NOT NULL DEFAULT '{}'"),
     ("media", "metadata_checked_at", "INTEGER"),
     ("media", "metadata_source", "TEXT"),
+    ("shows", "ids", "TEXT NOT NULL DEFAULT '{}'"),
+    ("media", "ids", "TEXT NOT NULL DEFAULT '{}'"),
 ]
 
 
@@ -913,7 +917,7 @@ def all_settings(conn: sqlite3.Connection) -> dict[str, Any]:
 
 # --- rows ----------------------------------------------------------------------------------
 
-_JSON_COLUMNS = ("genres", "enriched", "overrides", "anchor_days", "era_weights", "genre_weights",
+_JSON_COLUMNS = ("genres", "enriched", "ids", "overrides", "anchor_days", "era_weights", "genre_weights",
                  "kind_weights", "daypart_profile", "details", "allowed_genres", "excluded_genres",
                  "decades")
 

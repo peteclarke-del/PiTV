@@ -425,3 +425,38 @@ def test_attention_is_for_what_the_owner_can_act_on():
     base = {"duration": 5400, "year": 1999, "kind": "movie", "certificate": "PG", "hwdec": 0, "height": 1080, "vcodec": "vp9"}
     assert _attention(base) is None
     assert "No certificate" in _attention({**base, "certificate": None})
+
+
+def test_the_nfo_identifier_is_asked_before_the_title(ctx, monkeypatch):
+    """An index item's `ids` are kept only in their documented shapes, and the online check asks
+    by identifier first: the library's "Leon" is "Léon: The Professional" to every source, which
+    no title search settles. An identifier whose programme is from another decade is not
+    believed, and the title is asked instead."""
+    from urllib.parse import parse_qs
+
+    from pitv import catalogue, tool_client
+    conn = ctx["conn"]
+    doc = copy.deepcopy(ctx["lib"]["index"])
+    film = next(i for i in doc["items"] if i["kind"] == "movie")
+    film.update(title="Leon", year=1994, certificate=None,
+                ids={"imdb": "tt0110413", "tmdb": 101, "tvdb": "x; DROP", "other": "1"})
+    import_index(conn, doc)
+    row = dbm.row_to_dict(conn.execute("SELECT * FROM media WHERE uid = ?", (film["uid"],)).fetchone())
+    assert row["ids"] == {"imdb": "tt0110413", "tmdb": "101"}
+
+    asked = []
+
+    def answer(base, method, path, query="", **kw):
+        q = {k: v[0] for k, v in parse_qs(query).items()}
+        asked.append(q)
+        if "imdb" in q:
+            return 200, {"candidates": [{"title": "Léon: The Professional", "year": 1994, "certificate": "18",
+                                         "genres": ["Crime"], "match": {"source": "tmdb", "id": "101"}}]}
+        return 200, {"candidates": []}
+    monkeypatch.setattr(tool_client, "request", answer)
+    found, _ = catalogue._lookup_metadata({}, "movie", "Leon", 1994, ids=row["ids"])
+    assert found["certificate"] == "18" and "title" not in asked[0] and asked[0]["imdb"] == "tt0110413"
+
+    asked.clear()
+    found, _ = catalogue._lookup_metadata({}, "movie", "Leon", 1962, ids=row["ids"])
+    assert found is None and [("title" in q) for q in asked] == [False, True], "the wrong decade falls back to the title"

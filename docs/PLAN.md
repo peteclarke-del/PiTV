@@ -155,9 +155,9 @@ pitv_content supplies the facts; PiTV applies admin overrides and its own schedu
 
 | Attribute | Source order | When unknown |
 |---|---|---|
-| Year | index, then override | scheduled at `unknown_year_weight` (0.2) and listed under "needs attention" |
-| Certificate | index, then override | films treated as 15 (post-watershed), TV as PG |
-| Genres | index, then override | none |
+| Year | index, then the online check, then override; an episode without one takes its series' | scheduled at `unknown_year_weight` (0.2) and listed under "needs attention" |
+| Certificate | index (the NFO's own text, read by `rules.normalise_cert`), then the online check, then override | films treated as 15 (post-watershed), TV as PG |
+| Genres | index with the online check's added, then override | none |
 | Kids | canonical Children, Family, Animation or Anime genre, or admin override | no |
 | Scheduling class | source/show class (`general` or `sport`); editable per show | general |
 | Family-safe (adverts) | pitv_content's `family_safe` flag; else its tags (alcohol, tobacco, adult, gambling or 18 make an advert unsafe); else `adult_advert_keywords` matched as whole words against the title and file name; editable per advert | safe |
@@ -167,9 +167,17 @@ The keyword list is only a fallback: pitv_content sees the files and their metad
 sees names. It matches whole words so that "ale" does not catch "sale" or "gin" catch
 "engineering", which would keep harmless adverts off the cartoon channel.
 
-The "needs attention" note flags items with no duration, no year, films with no certificate,
-and files of 720 lines or more that the Pi can only decode in software (pitv_content
-transcodes those when they are scheduled).
+The "needs attention" note flags what the owner can act on: items with no duration, no year
+(an episode is judged by its series' year) and films with no certificate. A file the Pi cannot
+decode in hardware is not flagged, since pitv_content transcodes it when it is scheduled.
+
+The online check (`catalogue.enrich_missing_metadata`, run after an import and from the admin)
+asks pitv_content's lookup for what the index could not say, series before films. When the
+index carried the NFO's IMDb, TMDb or TVDB identifier the check asks by identifier, which
+names the programme whatever the library calls it; it asks by title when there is none, when
+the identifier finds nothing, or when it names a programme more than two years from the
+library's. What it finds is stored apart from the index (`enriched`) and below any override,
+and a check that finds nothing is not repeated for thirty days unless forced.
 
 Genres have one spelling, PiTV wide (`pitv/genres.py`). Every genre read from anywhere, the
 index, a title added by hand, an override, a channel's allowed list, a band's fill, goes through
