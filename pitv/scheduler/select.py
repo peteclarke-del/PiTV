@@ -29,6 +29,7 @@ from .rules import (
     dayparts_for_weekday,
     era_spans,
     era_weight_spans,
+    hhmm_to_minutes,
     in_decades,
     minutes_of_day,
 )
@@ -69,6 +70,44 @@ class Selector:
         if ck not in self._channel_cols:
             self._channel_cols[ck] = json_field(channel.get(key))
         return self._channel_cols[ck]
+
+    def _is_peak(self, dp: dict[str, Any]) -> bool:
+        """Whether a daypart is one the day's series are kept for. It may say so itself (`peak`);
+        otherwise it is peak when it starts within the `peak_from` to `peak_until` hours."""
+        if dp.get("peak") is not None:
+            return bool(dp["peak"])
+        start = hhmm_to_minutes(dp["start"])
+        return hhmm_to_minutes(str(self.policy.value("peak_from"))) <= start < hhmm_to_minutes(str(self.policy.value("peak_until")))
+
+    def _series_kept_for_peak(self, channel: dict[str, Any], t: int, bday_min: int, day_ordinal: int,
+                              dayparts: list[dict[str, Any]], placed_today: dict[int, int]) -> bool:
+        """Whether the series still due today should wait for the peak hours. With one episode a
+        week there are rarely enough to fill a day, and a day filled from the morning on spends
+        them by lunchtime and gives the evening to films, the reverse of the television this
+        models. So outside the peak hours a series is offered only while more are due than the
+        peak still to come could hold; films and children's programmes carry the rest of the
+        day. Children's series and sport are outside this: their own dayparts place them."""
+        starts = [hhmm_to_minutes(d["start"]) for d in dayparts]
+        peak = sum(max(0, end - max(start, bday_min)) for d, start, end in zip(dayparts, starts, [*starts[1:], 1440], strict=True)
+                   if self._is_peak(d)) * 60
+        if not peak:
+            return False
+        threshold, target = self.policy.short_episode_seconds(channel)
+        supply = 0.0
+        for show in self.library.free_shows.get(channel["id"], ()):
+            if show.mode != "auto" or show.category == "sport" or placed_today.get(show.id):
+                continue
+            ep = show.next_episode()
+            if ep is None or ep.get("kids"):
+                continue
+            if self.policy.series_due(channel, show.id, self.library.show_last(channel["id"], show), t, day_ordinal):
+                supply += max(float(ep["duration"]), target if threshold and ep["duration"] < threshold else 0)
+        for e in self.library.externals_on.get(channel["id"], ()):
+            if e["kind"] == "episode" and not e.get("kids") and e.get("category") != "sport" and not placed_today.get(e["id"]) \
+                    and self.policy.external_prepared(t) and self.policy.series_due(
+                        channel, e["lineup_id"], self.library.external_last_placed.get(e["lineup_id"]), t, day_ordinal):
+                supply += float(e["duration"])
+        return supply <= peak
 
     def _borrowed(self, channel: dict[str, Any], dp: dict[str, Any], relax: int) -> list[Show]:
         """Series from other channels' shelves that this channel may carry here and now. A type
@@ -226,6 +265,8 @@ class Selector:
 
         tv_cands: list[tuple[float, dict[str, Any], Show | None]] = []
         movie_cands: list[tuple[float, dict[str, Any], Show | None]] = []
+        kept_for_peak = (not relax and not self._is_peak(dp)
+                         and self._series_kept_for_peak(channel, t, bday_min, day_ordinal, dayparts, placed_today))
 
         if token in ("show", "tv"):
             own = self.library.free_shows.get(channel["id"], ())
@@ -253,7 +294,7 @@ class Selector:
                 if weekly and relax < 2 and not self.policy.series_due(channel, show.id, last, t, day_ordinal, relax):
                     continue
                 ep = show.next_episode()
-                if ep is None:
+                if ep is None or (kept_for_peak and weekly and not ep.get("kids")):
                     continue
                 w = common_weight(ep, "tv", show.end_year)
                 if w <= 0:
@@ -315,6 +356,8 @@ class Selector:
                 finished = episode and not e["spare_wanted"] and next_episode_number(e) is None
                 if e["id"] in barred or (e.get("show_id") and e["show_id"] in barred):
                     continue     # never the same series back to back, last resort or not
+                if kept_for_peak and episode and not e.get("kids") and e.get("category") != "sport":
+                    continue
                 held_back = finished or not prepared or not room or early or times_today >= (daily_limit if episode else 1)
                 candidate = e
                 if held_back:

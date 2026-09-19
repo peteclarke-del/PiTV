@@ -399,6 +399,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "movie_repeat_days": 21,
     "series_cadence_days": 7,          # ordinary series aim for the same weekday next week
     "series_cadence_bonus": 4.0,       # preference near that target; strips/weekly anchors are explicit
+    "peak_from": "17:30",              # the hours a day's series are kept for when there are too few
+    "peak_until": "22:30",             # ... to go round (a daypart may say `peak` itself)
     "genre_repeat_penalty": 0.4,
     "duration_tolerance_minutes": 5,
     "start_rounding_minutes": 5,

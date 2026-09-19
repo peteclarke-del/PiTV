@@ -89,6 +89,11 @@ FIELDS: tuple[dict[str, Any], ...] = (
     _f("series_cadence_days", "programming", "standard", "Series cadence (days)", "int",
        "A series airs one episode, then returns to the same slot after this many days. A channel may set its own (Channels, Programmes); strips and anchors remain exact.",
        min=1, max=28),
+    _f("peak_from", "programming", "standard", "Peak hours from", "time",
+       "With one episode a week there are rarely enough series to fill a day. Those due are kept for the peak hours, "
+       "and films and children's programmes carry the rest, as the broadcasters ran their days."),
+    _f("peak_until", "programming", "standard", "Peak hours until", "time",
+       "Series are offered at other hours only while more are due than the peak hours still to come could hold."),
     _f("series_cadence_bonus", "programming", "advanced", "Series cadence bonus", "float",
        "Multiplier favouring the next episode close to its target weekday and time.",
        min=0, max=10, step=0.5),

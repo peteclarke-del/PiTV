@@ -603,7 +603,13 @@ For each channel and day, walk from 08:00 to 00:00 following the pattern:
    series so belong to each day, and the shelf settles into that within a week or two whatever
    its history. Going by the last airing alone, a week built from nothing spent every series
    by Tuesday, and every week after repeated the clump. The first step of relaxation goes by
-   the plain interval, so a thin day can bring a series forward. A
+   the plain interval, so a thin day can bring a series forward. The day's series are also kept
+   for the peak hours (`peak_from` 17:30 to `peak_until` 22:30, or a daypart's own `peak`): with
+   one episode a week there are rarely enough to fill a day, and a day filled from the morning
+   on spent them by lunchtime and gave prime time to films. Outside the peak a series is offered
+   only while more are due than the peak still to come could hold
+   (`Selector._series_kept_for_peak`); films and children's programmes, which are not held
+   back, carry the rest of the day, and the first step of relaxation lifts the hold. A
    channel may set its own `series_cadence_days` (Channels, Programmes): the general channels
    keep a week, as the broadcasters did, while a cartoon channel set to one day runs every
    series as a daily strip and leaves films whatever the series do not fill. Certificate rules, duration

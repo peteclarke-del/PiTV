@@ -1051,7 +1051,7 @@ def test_a_channel_with_a_daily_cadence_shows_its_series_every_day(tmp_path):
     with dbm.tx(c):
         c.execute("UPDATE channels SET series_cadence_days = 1 WHERE id = ?", (channel,))
     daily = days_aired()
-    every_day = [show for show, days in daily.items() if days == 4]
+    every_day = [show for show, days in daily.items() if days >= 3]    # the peak hours may not reach one on a given day
     # Which series a run happens to reach varies; the comparison is over those that aired in both.
     both = set(daily) & set(weekly)
     assert len(both) >= 4 and sum(daily[s] for s in both) > sum(weekly[s] for s in both), (weekly, daily)
@@ -1279,4 +1279,31 @@ def test_a_week_built_from_nothing_opens_its_series_across_the_week(tmp_path):
     builder.select.settings["nas_only"] = False
     again = builder.select.programme(channel, rng, t, 2 * 3600, "tv", {}, None, {-5}, relax=2, slack=300)
     assert again is None, "the same remote series straight after itself"
+    c.close()
+
+
+def test_the_days_series_are_kept_for_the_peak_hours_when_there_are_too_few(tmp_path):
+    """Filled from the morning on, a day spent its few due series by lunchtime and gave prime
+    time to films. Outside the peak hours a series is offered only while more are due than the
+    peak still to come could hold; children's series are not held back; and the peak hours
+    themselves take series as before."""
+    c = make_library(tmp_path, 6)["conn"]
+    day = parse_day("2026-09-14")
+    builder = Builder(c, now=local_ts(day, "07:00", tz_of(c)))
+    channel = next(ch for ch in builder.channels if ch["content"] == "general"
+                   and len(builder.library.free_shows.get(ch["id"], ())) >= 4)
+    rng = random.Random(4)
+
+    def offered(hhmm: str) -> set[str]:
+        t = local_ts(day, hhmm, tz_of(c))
+        picks = (builder.select.programme(channel, rng, t, 3 * 3600, "show", {}, None, set(), relax=0, slack=300) for _ in range(200))
+        return {("kids " if p[0].get("kids") else "") + ("series" if p[1] is not None else "film") for p in picks if p}
+    morning, evening = offered("10:00"), offered("19:30")
+    assert "series" not in morning, morning          # a handful due, five peak hours to come
+    assert "series" in evening, evening
+    with dbm.tx(c):
+        dbm.set_setting(c, "peak_from", "00:00")
+        dbm.set_setting(c, "peak_until", "00:00")     # no peak hours: nothing is held back
+    builder = Builder(c, now=local_ts(day, "07:00", tz_of(c)))
+    assert "series" in offered("10:00")
     c.close()
