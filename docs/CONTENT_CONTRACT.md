@@ -358,9 +358,12 @@ PiTV never contacts the sources itself, as all online access is pitv_content's.
 - `imdb=tt...`, `tmdb=N` and `tvdb=N` (any combination) ask for one programme by identifier;
   `title`, `year` and `artist` are then ignored, and `kind` stays required because a TMDb
   number names a film or a series depending on it. The reply has the same shape. A film is
-  resolved by TMDb, then OMDb (IMDb identifier only); a series by TVmaze and TMDb, so it may
-  come back once from each, as in a title search. An unknown identifier is 200 with no
-  candidates; a malformed one, or one given with kind `advert` or `music`, is 400. PiTV's
+  resolved by TMDb, then OMDb (IMDb identifier only); a series by TVmaze (`imdb=` or `tvdb=`;
+  it knows nothing of TMDb numbers) and by TMDb when a TMDb key is set, so it may come back
+  once from each, as in a title search. An unknown identifier is 200 with no candidates; a
+  malformed one, or one given with kind `advert` or `music`, is 400. When no configured source
+  can read the identifiers given (`tmdb=` alone with no TMDb key, for a series or a film) the
+  answer is 502 naming the key to set, and PiTV asks by title instead. PiTV's
   online check asks this way whenever the index gave it an identifier, and asks by title only
   when that finds nothing or names a programme more than two years from the library's.
 - Candidates are ordered best first. Every field but `match`, `kind` and `title` may be
