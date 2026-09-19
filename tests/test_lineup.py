@@ -182,6 +182,11 @@ def test_delivery_report_fills_placeholder(conn, tmp_path):
         conn.execute("INSERT INTO schedule(channel_id, day, start_ts, end_ts, media_id, offset, kind, title, subtitle, wanted_id)"
                      " VALUES (?, '2099-12-31', ?, ?, NULL, 0, 'programme', 'Pending Film', '', ?)",
                      (ch, start, start + 90 * 60, wid))
+        # A second airing of the same request two days on, marked as a repeat and sized, like the
+    # first, from the nominal length.
+        conn.execute("INSERT INTO schedule(channel_id, day, start_ts, end_ts, media_id, offset, kind, replay, title, subtitle, wanted_id)"
+                     " VALUES (?, '2100-01-02', ?, ?, NULL, 0, 'programme', 1, 'Pending Film', '', ?)",
+                     (ch, start + 2 * 86400, start + 2 * 86400 + 90 * 60, wid))
     film = tmp_path / "Pending Film (1983).mp4"
     film.write_bytes(b"x" * 10)
     counts = apply_report(conn, {"schema": 2, "items": [{
@@ -192,8 +197,11 @@ def test_delivery_report_fills_placeholder(conn, tmp_path):
     assert counts["wanted_done"] == 1 and counts["created"] == 1
     media = conn.execute("SELECT * FROM media WHERE uid = 'yt:pending'").fetchone()
     assert media["origin"] == "online" and media["cache_path"] == str(film) and media["transient"] == 1
-    slot = conn.execute("SELECT media_id, end_ts, start_ts FROM schedule WHERE wanted_id = ?", (wid,)).fetchone()
-    assert slot["media_id"] == media["id"] and slot["end_ts"] - slot["start_ts"] == 6420
+    slots = conn.execute("SELECT media_id, end_ts, start_ts FROM schedule WHERE wanted_id = ? ORDER BY start_ts", (wid,)).fetchall()
+    assert len(slots) == 2, "the first airing and its repeat"
+    for slot in slots:
+        # The repeat too: left at its nominal length, a shorter file ends and a card runs on.
+        assert slot["media_id"] == media["id"] and slot["end_ts"] - slot["start_ts"] == 6420
     e = lineup.entry(conn, entry["id"])
     assert e["media_id"] == media["id"] and e["external"] is False
     with dbm.tx(conn):

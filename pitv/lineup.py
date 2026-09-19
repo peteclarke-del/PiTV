@@ -521,9 +521,10 @@ def attach_delivery(conn: sqlite3.Connection, wanted_id: int, media_id: int) -> 
 
     A fetched film becomes an ordinary library entry. A fetched series stays external, so later
     placements keep requesting the next episode, but links to its show so the show is owned by
-    the entry's channel and never generated onto another one. Each bound slot takes the file's
-    real length (a film is never cut off). Returns {channel_id: earliest change} for the caller
-    to rebuild from."""
+    the entry's channel and never generated onto another one. Every bound slot, a repeat
+    included, takes the file's real length: a film is never cut off, and a slot sized from the
+    entry's nominal episode length does not run on as a holding card after a shorter file has
+    ended. Returns {channel_id: earliest change} for the caller to rebuild from."""
     w = conn.execute("SELECT lineup_id FROM wanted WHERE id = ?", (wanted_id,)).fetchone()
     media = dict(conn.execute("SELECT m.*, s.title AS show_title FROM media m LEFT JOIN shows s ON s.id = m.show_id"
                               " WHERE m.id = ?", (media_id,)).fetchone())
@@ -543,7 +544,7 @@ def attach_delivery(conn: sqlite3.Connection, wanted_id: int, media_id: int) -> 
     for sl in conn.execute("SELECT id, channel_id, start_ts, end_ts, replay FROM schedule WHERE wanted_id = ? AND media_id IS NULL",
                            (wanted_id,)).fetchall():
         end = sl["end_ts"]
-        if real and not sl["replay"] and sl["start_ts"] + real != end:
+        if real and sl["start_ts"] + real != end:
             at = min(end, sl["start_ts"] + real)
             end = sl["start_ts"] + real
             changed[sl["channel_id"]] = min(changed.get(sl["channel_id"], at), at)
