@@ -710,3 +710,25 @@ def test_source_login_is_relayed_not_kept(client, env):
     import sqlite3
     dump = "\n".join(sqlite3.connect(env.db_path).iterdump())
     assert "hunter2-secret" not in dump
+
+
+def test_doctor_reports_the_whole_television_and_survives_a_broken_section(client, monkeypatch):
+    """One read-only report: findings first, then a section each for services, player, schedule,
+    cache, bands, library, pitv_content, logs and disks. A section that cannot be gathered says so
+    and the rest still are, since the report matters most when something is broken."""
+    from pitv import doctor
+    doc = client.get("/api/doctor").json()
+    assert next(iter(doc)) == "findings" and isinstance(doc["findings"], list)
+    for section in ("host", "services", "player", "schedule", "cache", "bands", "library", "wanted", "runs",
+                    "content", "logs", "disks"):
+        assert section in doc, section
+    assert doc["schedule"]["channel_days"] and doc["cache"]["next_day_files"] > 0
+    assert doc["content"]["reachable"] is False and any("pitv_content is not reachable" in f for f in doc["findings"])
+    assert "Findings" in doctor.render(doc)
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("no such table")
+    monkeypatch.setattr(doctor, "_library", broken)
+    doc = client.get("/api/doctor").json()
+    assert doc["library"] == {"error": "RuntimeError: no such table"} and doc["schedule"]["channel_days"]
+    assert any("library section could not be gathered" in f for f in doc["findings"])

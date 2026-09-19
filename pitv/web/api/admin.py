@@ -1040,6 +1040,14 @@ def history(conn: sqlite3.Connection = Depends(admin_conn), limit: int = 100):
     return [dict(r) for r in rows]
 
 
+@router.get("/doctor")
+def doctor_report(request: Request, conn: sqlite3.Connection = Depends(admin_conn)):
+    """The `pitv doctor` report (pitv/doctor.py) for the admin: read-only, and behind the admin
+    session like everything else on this router."""
+    from ... import doctor
+    return doctor.report(conn, request.app.state.cfg)
+
+
 @router.get("/jobs")
 def list_jobs(request: Request):
     return request.app.state.jobs.recent(20)

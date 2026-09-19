@@ -1023,6 +1023,39 @@ seeds its sources on its first install. PiTV itself keeps only the cache setting
   fallback. The NAS shares are automounts that retry; with the cache in place a NAS outage
   only matters for programmes pitv_content has not yet delivered.
 
+### 10.1 Remote support
+
+Troubleshooting from another machine is done over SSH, and nothing else. Neither application
+carries a control channel of its own: a listener that accepts commands is a hole in software
+that holds the NAS credentials and sits on the home network, and one nobody can see being used.
+SSH is already there (the installer sets up OpenSSH with the owner's authorised keys, and its
+`upgrade` mode deploys over it with host key checking), it is authenticated by a key the owner
+can revoke, and every login is in the Pi's own log. A key added for support alone goes in
+`ssh_authorized_keys` in the installer's configuration and comes out the same way.
+
+The first thing to run once connected is `pitv doctor` (`pitv/doctor.py`): one read-only report
+that opens with its findings in plain sentences (a failed service, a player that is not
+answering or is playing from the NAS, holding cards outside any band, how much of the next day
+is in the cache, which bands are short and by how many minutes, runs that ended in error,
+pitv_content unreachable or reporting errors, a drive nearly full) and then gives each section
+in full, with the last day's warnings from every log. `--json` gives the whole document and
+`--out` writes it to a file to bring back; it exits 1 when anything needs attention, so a
+script can tell. The admin serves the same document at `GET /api/doctor`, behind the admin
+session. A section that cannot be gathered reports why and the rest still are.
+
+```sh
+ssh pete@pitv 'pitv doctor'                          # what is wrong, if anything
+ssh pete@pitv 'pitv doctor --json' > doctor.json     # the whole report, to read here
+ssh pete@pitv 'journalctl -u pitv-player -n 200'     # a service's own journal
+ssh -L 8081:127.0.0.1:8081 pete@pitv                 # pitv_content's API, which listens only on
+curl -s http://127.0.0.1:8081/api/status             #   the Pi itself, reached through the tunnel
+ssh pete@pitv 'sudo -n systemctl restart pitv-player.service'
+```
+
+The `pitv` user's sudo rights are the start, stop and restart of the PiTV and pitv_content
+units and nothing more (`setup/install.sh`), so a support session can restart a service and
+cannot do anything else as root. New code goes on with the installer's `upgrade`, not by hand.
+
 ## 11. Code layout
 
 ```
@@ -1034,6 +1067,7 @@ PiTV/
 │   ├── tool_client.py         HTTP client for pitv_content's local API (used by the admin and the maintenance thread)
 │   ├── content.py             PiTV's half of the contract: request manifest and delivery reports (section 7)
 │   ├── readiness.py           is everything through tomorrow playable; rebuild what is not
+│   ├── doctor.py              one read-only report on the whole television (`pitv doctor`, `GET /api/doctor`)
 │   ├── guide.py               "what's on" lookups shared by the OSD guide and the web API
 │   ├── lineup.py              channel line-ups: generation by genre, editing, JSON mirror, deliveries, transient clean-up
 │   ├── wanted.py              the wanted list (gap detection)

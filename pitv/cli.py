@@ -147,11 +147,29 @@ def cmd_readiness(cfg: Config, args: Args) -> int:
     return 0 if r["status"] != "error" else 1
 
 
+def cmd_doctor(cfg: Config, args: Args) -> int:
+    """The state of the whole television in one report; exit 1 when anything needs attention."""
+    from . import doctor
+    conn = _open(cfg)
+    doc = doctor.report(conn, cfg)
+    text = json.dumps(doc, indent=1, default=str) if args.json else doctor.render(doc)
+    if args.out:
+        Path(args.out).write_text(text + "\n")
+        print(f"Report written to {args.out} ({len(doc['findings'])} finding(s))")
+    else:
+        print(text)
+    return 1 if doc["findings"] else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pitv", description="PiTV: 1980s television for the Raspberry Pi")
     sub = p.add_subparsers(dest="command", required=True)
 
     sub.add_parser("init", help="create the database").set_defaults(func=cmd_init)
+    dr = sub.add_parser("doctor", help="one report on services, player, schedule, cache, bands, pitv_content and logs")
+    dr.add_argument("--json", action="store_true", help="the whole report as JSON rather than a summary")
+    dr.add_argument("--out", help="write the report to this file")
+    dr.set_defaults(func=cmd_doctor)
 
     f = sub.add_parser("fake-library", help="generate a tiny fake library and its library index for development")
     f.add_argument("dir")
