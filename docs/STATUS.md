@@ -106,6 +106,19 @@ pins. Nothing built from tomorrow airs off its own channel. The cartoon channel 
 daily (01bed32) and shows 23 hours a day from disk; a delivered file's slot takes its real
 length (65ae0b6); the last resort no longer books one remote episode all day (52d4888).
 
+Borrowing by type (19 September, PiTV 57081ce): on the development library the general channels
+carry cartoons from the cartoon channel's shelf on Sunday morning and in the weekday children's
+hour (One 12 slots, Two 15, Three 21 on 20 September; none outside those dayparts), and the
+cartoon channel's own day is unchanged. Rick and Morty arrived from its NFO as PG and, being
+animated, flagged for children; it is overridden to 15 and not children's, which is the kind
+of thing to look for when a borrowed cartoon turns up somewhere it should not.
+
+Still to measure after pitv_content's restarts of 19 September (20319c7 at 15:18, then cb8e672,
+which takes an upload for a matched series only when its title says it is the episode wanted):
+a band helping against C5's under-a-minute figure, and series delivery over an evening with
+every request now asking from episode 1 (C21). Nothing had been delivered between 15:18 and
+15:37.
+
 P6, remote series asked for in order and never past their end (19 September, PiTV 45f895c,
 c672623, 5949fd9, 99150cb; pitv_content 20319c7, deployed 15:18): open requests went from a highest
 episode of 21 to 8 with every series asking from episode 1, the run length is known for 53 of 67
