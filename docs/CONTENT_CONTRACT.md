@@ -264,6 +264,10 @@ applies a report once: a dropped copy of one it already took over HTTP is recogn
   alone in `meta` on a "no such episode" failure) is the length of the run; PiTV keeps it on
   the line-up entry. When the episode list cannot be read the request fails with a message
   containing `rate limit`, which PiTV retries without using up an attempt.
+- For such a series pitv_content takes an upload only when its own title says it is the episode
+  wanted (the episode's title, or its number), and refuses one that names another episode or
+  does not say. When nothing qualifies the failure begins `not found yet:`; PiTV keeps the
+  request queued with no attempt used, and the readiness check covers the slot meanwhile.
 
 ## 4. Sources
 

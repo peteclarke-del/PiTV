@@ -348,8 +348,9 @@ def _fail_wanted(conn: sqlite3.Connection, wid: int, message: str) -> None:
         if ended.group(1):
             conn.execute("UPDATE lineup SET episode_count = ?, updated_at = ? WHERE id = (SELECT lineup_id FROM wanted WHERE id = ?)",
                          (int(ended.group(1)), now_ts(), wid))
-    elif "bot check" in msg.lower() or "rate limit" in msg.lower():
-        # The provider, not the request, was the problem: retry without using up an attempt.
+    elif "bot check" in msg.lower() or "rate limit" in msg.lower() or msg.lower().startswith("not found yet"):
+        # The provider, not the request, was the problem, or nothing on offer today says it is the
+        # episode wanted (uploads are retitled and new ones appear): retry without using up an attempt.
         conn.execute("UPDATE wanted SET status = 'queued', message = ?, updated_at = ? WHERE id = ?", (msg, now_ts(), wid))
     else:
         conn.execute("UPDATE wanted SET status = CASE WHEN attempts + 1 >= ? THEN 'failed' ELSE 'queued' END,"
