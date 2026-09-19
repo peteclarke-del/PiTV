@@ -458,14 +458,51 @@ and BBC2 filled Saturday afternoons and midweek late slots with. Sport episodes 
 same order rule as everything else, by the season and episode numbers in the index. Each
 daypart carries a `sport` weight: below 0.5 sport is ineligible unless nothing else fits;
 3 and above forms a block in which sport programmes may follow each other, and at weekends
-the same sport series may follow itself (`sport_back_to_back_weekends`). The week is
-modelled on a mid-80s schedule:
+the same sport series may follow itself (`sport_back_to_back_weekends`). Settings hold one general
+mid-80s week, used by any channel with no dayparts of its own:
 
 - Weekdays: sport only in the late slot from 22:30 (Sportsnight territory).
 - Saturday: children's television all morning, a sport block from 12:30 to 17:15, family
   teatime, prime-time entertainment, sport again from 22:15 (the Match of the Day slot).
 - Sunday: quiet morning, an afternoon block from 14:00 or the Sunday film, teatime sport
   from 17:00, drama in the evening.
+
+The four general channels do not share that week. Each is modelled on a broadcaster of the
+1980s, which was the plan from the start: PiTV One on BBC One, PiTV Two on BBC Two, PiTV Three
+on ITV and PiTV Four on Channel 4 (`pitv/channel_profiles.py`). The models are seed data written
+to each channel's own daypart profile, where the admin shows and edits them (Channel,
+Dayparts); the scheduler knows only that a channel may have dayparts of its own. An upgrade
+seeds a shipped channel once, matched on number and unchanged name and only where it has none,
+so nothing the owner has set is overwritten.
+
+- BBC One: Breakfast Time and Pebble Mill by day, Children's BBC from 15:55, Wogan and
+  EastEnders in the early evening, sitcom and drama around the Nine O'Clock News, sport only
+  late on weekdays. Saturday is children's television, Grandstand from 12:15, the family
+  teatime, light entertainment and Match of the Day. Sunday has the omnibus, a film, the
+  classic serial and the evening drama.
+- BBC Two: Open University mornings, documentary by day, and the sport BBC One had no room
+  for, so sport is welcome on weekday afternoons and evenings as well as at weekends (weeks of
+  snooker and darts). Cult imports at six, the documentary and leisure strands, comedy at nine,
+  a late film; Sunday Grandstand, and the Saturday horror double bill.
+- ITV: TV-am, daytime quiz and soap, the lunchtime children's slot, Children's ITV at four,
+  the teatime quiz and soaps, Coronation Street, crime and action drama, films after News at
+  Ten. Saturday is World of Sport from 12:30 with the wrestling, The A-Team and the big game
+  shows; Sunday The Big Match, Bullseye at teatime and the Sunday night drama.
+- Channel 4: repeats, education and the afternoon matinee before its teatime start, Countdown
+  and American repeats at teatime, Brookside at eight, documentary, the imports and comedy at
+  nine and ten, Film on Four, a late night of cult films and music, racing on Saturday and
+  American football on Sunday evening.
+
+A daypart may also weight genres (`genres`, as in `{"Game Show": 3.0, "Soap": 2.5}`): a
+programme's chance is multiplied by the largest weight given to any of its genres, read
+canonically. It is what keeps the quiz at teatime and the soap at half past seven, and like
+every daypart weight it is a preference that goes when the rules relax. News, weather and
+regional programmes, which no library holds, leave their slots to what surrounded them.
+
+Sport is a scheduling class, not a tag. The sports share is sport whatever its files are
+tagged; elsewhere a Sport tag counts only on something that is not also drama, comedy, a game
+show or the like, because metadata sites tag a football sitcom and a darts quiz as sport and
+neither belongs in Grandstand.
 
 A programme that would overrun the end of its daypart by more than half an hour is heavily
 penalised (sport most of all), so a block never swallows the evening.
@@ -1067,6 +1104,7 @@ PiTV/
 │   ├── tool_client.py         HTTP client for pitv_content's local API (used by the admin and the maintenance thread)
 │   ├── content.py             PiTV's half of the contract: request manifest and delivery reports (section 7)
 │   ├── readiness.py           is everything through tomorrow playable; rebuild what is not
+│   ├── channel_profiles.py    the four general channels' weeks, after BBC One, BBC Two, ITV and Channel 4 (seed data)
 │   ├── doctor.py              one read-only report on the whole television (`pitv doctor`, `GET /api/doctor`)
 │   ├── guide.py               "what's on" lookups shared by the OSD guide and the web API
 │   ├── lineup.py              channel line-ups: generation by genre, editing, JSON mirror, deliveries, transient clean-up

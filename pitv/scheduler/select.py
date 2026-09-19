@@ -16,6 +16,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..db import DEFAULT_SETTINGS
+from ..genres import canonical, canonical_all
 from ..lineup import nas_only_for
 from .library import Library
 from .policy import SchedulerPolicy
@@ -81,6 +82,19 @@ class Selector:
         if not gw or not genres:
             return 1.0
         return max(float(gw.get(g, gw.get(g.lower(), 1.0))) for g in genres)
+
+    @staticmethod
+    def _daypart_genre_weight(daypart: dict[str, Any], item_genres: list[str]) -> float:
+        """What a daypart makes of a programme's genres: the largest of the weights it gives to
+        any of them, 1 when it names none of them. This is how a channel keeps its quiz at
+        teatime and its soap at half past seven; like every daypart weight it is a preference,
+        dropped when the rules relax."""
+        weights = daypart.get("genres")
+        if not weights or not item_genres:
+            return 1.0
+        have = {g.casefold() for g in canonical_all(item_genres)}
+        found = [float(w) for name, w in weights.items() if (canonical(name) or name).casefold() in have]
+        return max(found) if found else 1.0
 
     def channel_decades(self, channel: dict[str, Any]) -> tuple[int, ...]:
         """The decades a channel plays; empty means any. Held as JSON on the channel row."""
@@ -153,7 +167,7 @@ class Selector:
             if not allowed_at(item, start_min, self.settings, kids_rule=kids_rule):
                 return 0.0
             if not relaxed:
-                w *= float(dp.get(kind, 1.0))
+                w *= float(dp.get(kind, 1.0)) * self._daypart_genre_weight(dp, item.get("genres") or [])
             if item.get("kids"):
                 kw = float(dp.get("kids", 1.0))
                 if kids_breakfast:

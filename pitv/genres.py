@@ -53,11 +53,13 @@ ALIASES: dict[str, str] = {
 CHILDRENS = ("Animation", "Anime", "Children", "Family")
 CARTOONS = ("Animation", "Anime")
 SCHEDULING_CLASSES = ("general", "sport")
-# A story about sport is not sport. Metadata sites tag "Ted Lasso" and "Twisted Metal" as Sport
-# among their other genres; scheduled as sport they would fill a Saturday afternoon back to
-# back. A series carrying any of these is scripted, whatever else it is tagged.
+# A story about sport is not sport, and nor is a quiz played with darts. Metadata sites tag
+# "Ted Lasso" and "Twisted Metal" as Sport among their other genres, and "Bullseye" as Sports
+# and Game Show; scheduled as sport they would fill a Saturday afternoon back to back. A series
+# carrying any of these is something else, whatever it is also tagged.
 SCRIPTED = ("Drama", "Comedy", "Action", "Adventure", "Fantasy", "Science Fiction", "Thriller", "Crime",
-            "Mystery", "Horror", "Romance", "Soap", "Western", "War", "Supernatural", "Animation", "Anime")
+            "Mystery", "Horror", "Romance", "Soap", "Western", "War", "Supernatural", "Animation", "Anime",
+            "Game Show", "Reality TV")
 
 # Words that keep their own case inside a title-cased name.
 _LOWER = {"and", "of", "the", "in", "on", "de", "la"}

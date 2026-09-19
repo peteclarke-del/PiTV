@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from . import genres
+from .channel_profiles import BY_DEFAULT_CHANNEL
 
 log = logging.getLogger("pitv.db")
 
@@ -504,6 +505,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         _canonical_programme_classification(conn)
         _seed_channel_genres(conn)
         _seed_fetch_kinds(conn)
+        _seed_daypart_profiles(conn)
         assign_ident_channels(conn)
         conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
                      (str(SCHEMA_VERSION),))
@@ -518,7 +520,9 @@ def init_db(conn: sqlite3.Connection) -> None:
                     "content": ch.get("content", "general"), "family_safe_ads": ch.get("family_safe_ads", 0),
                     "kids_any_time": ch.get("kids_any_time", 0), "decades": json.dumps(ch.get("decades") or []),
                     "allowed_genres": json.dumps(ch.get("allowed_genres") or []),
-                    "fetch_kind": ch.get("fetch_kind")})
+                    "fetch_kind": ch.get("fetch_kind"),
+                    "daypart_profile": json.dumps(BY_DEFAULT_CHANNEL[ch["number"]])
+                    if ch["number"] in BY_DEFAULT_CHANNEL else None})
                 for band in ch.get("bands") or []:
                     conn.execute("INSERT INTO band(channel_id, name, start, minutes, days, fill, enabled, created_at)"
                                  " VALUES (?,?,?,?,?,?,1,?)",
@@ -806,6 +810,18 @@ def _seed_channel_genres(conn: sqlite3.Connection) -> None:
         if {g.lower() for g in genres} == old:
             conn.execute("UPDATE channels SET allowed_genres = ? WHERE id = ?",
                          (json.dumps([*genres, "Children"]), row["id"]))
+
+
+def _seed_daypart_profiles(conn: sqlite3.Connection) -> None:
+    """The four general channels are modelled on BBC One, BBC Two, ITV and Channel 4 of the
+    1980s (pitv/channel_profiles.py). Databases made before that had one generic week for all
+    four: give each shipped channel its own profile once, matched on number and unchanged name,
+    and only where it has no dayparts of its own, so nothing the owner set is overwritten."""
+    names = {ch["number"]: ch["name"] for ch in DEFAULT_CHANNELS}
+    conn.executemany("UPDATE channels SET daypart_profile = ? WHERE number = ? AND name = ?"
+                     " AND (daypart_profile IS NULL OR daypart_profile IN ('', 'null', '{}', '[]'))",
+                     [(json.dumps(profile), number, names[number])
+                      for number, profile in BY_DEFAULT_CHANNEL.items() if number in names])
 
 
 # What a channel of each content label would ask pitv_content to fetch for its bands. A seed for

@@ -307,17 +307,30 @@ def test_weekend_afternoons_carry_sport(conn):
         "SELECT DISTINCT l.channel_id FROM lineup l JOIN shows sh ON sh.id = l.show_id WHERE sh.category = 'sport'")]
     assert sport_channels, "no channel's line-up carries sport"
 
-    def share(days, hours):
+    def share(days, hours, channels=None):
+        channels = channels or sport_channels
         rows = conn.execute("SELECT s.start_ts, s.end_ts, sh.category FROM schedule s JOIN media m ON m.id = s.media_id"
                             " LEFT JOIN shows sh ON sh.id = m.show_id WHERE s.replay = 0 AND s.kind = 'programme'"
                             f" AND s.day IN ({','.join('?' * len(days))})"
-                            f" AND s.channel_id IN ({','.join('?' * len(sport_channels))})", (*days, *sport_channels)).fetchall()
+                            f" AND s.channel_id IN ({','.join('?' * len(channels))})", (*days, *channels)).fetchall()
         rows = [r for r in rows if hours[0] <= datetime.fromtimestamp(r["start_ts"], tz).hour < hours[1]]
         total = sum(r["end_ts"] - r["start_ts"] for r in rows) or 1
         return sum(r["end_ts"] - r["start_ts"] for r in rows if r["category"] == "sport") / total
 
     assert share(["2026-09-19", "2026-09-20"], (12, 17)) > 0.3
-    assert share(["2026-09-15", "2026-09-16"], (8, 22)) < 0.2
+    # Weekday daytime is quiet wherever the channel's own week says so. The channel modelled on
+    # BBC Two welcomes sport on weekday afternoons and evenings, as that channel did, and is
+    # judged by its own profile rather than by the others'.
+    def weekday_sport(channel_id):
+        profile = json.loads(conn.execute("SELECT daypart_profile FROM channels WHERE id = ?", (channel_id,)).fetchone()[0] or "{}")
+        rows = (profile.get("weekday") if isinstance(profile, dict) else None) or dbm.all_settings(conn)["dayparts"]
+        return max(r.get("sport", 0) for r in rows if r["start"] < "22:00")
+    quiet = [ch for ch in sport_channels if weekday_sport(ch) < 0.5]
+    busy = [ch for ch in sport_channels if ch not in quiet]
+    if quiet:
+        assert share(["2026-09-15", "2026-09-16"], (8, 22), quiet) < 0.2
+    if quiet and busy:
+        assert share(["2026-09-15", "2026-09-16"], (8, 22), busy) > share(["2026-09-15", "2026-09-16"], (8, 22), quiet)
 
 
 def _channel(conn, number):
@@ -1052,3 +1065,54 @@ def test_a_channels_decades_limit_what_it_shows(tmp_path):
     placed = [r["year"] for r in years if r["year"] is not None]
     assert placed, "the channel still has programmes"
     assert all(1980 <= y <= 1989 for y in placed), f"outside the 1980s: {sorted(placed)}"
+
+
+def test_each_general_channel_is_modelled_on_its_own_broadcaster(tmp_path):
+    """PiTV One to Four follow BBC One, BBC Two, ITV and Channel 4 of the 1980s. The models are
+    seed data on the channels, editable in the admin: each has its own weekday, Saturday and
+    Sunday, a well formed day, genre names the library can match, and sport where that
+    broadcaster had it. An upgrade seeds them once and never over what the owner has set."""
+    from pitv import genres
+    from pitv.channel_profiles import BY_DEFAULT_CHANNEL
+    from pitv.scheduler.rules import hhmm_to_minutes
+    c = dbm.connect(tmp_path / "p.db")
+    dbm.init_db(c)
+    profiles = {r["number"]: json.loads(r["daypart_profile"]) for r in
+                c.execute("SELECT number, daypart_profile FROM channels WHERE number <= 4")}
+    assert profiles == BY_DEFAULT_CHANNEL and len({json.dumps(p) for p in profiles.values()}) == 4
+    for profile in profiles.values():
+        assert set(profile) == {"weekday", "saturday", "sunday"}
+        for rows in profile.values():
+            starts = [hhmm_to_minutes(r["start"]) for r in rows]
+            assert starts[0] == 480 and starts == sorted(set(starts)), "the day opens at 08:00 and its parts are in order"
+            for r in rows:
+                assert all(genres.canonical(g) == g for g in r.get("genres", {})), r
+    def block(profile, part):
+        return max(r["sport"] for r in profile[part])
+
+    assert block(profiles[1], "saturday") >= 3 and block(profiles[3], "saturday") >= 3, "Grandstand and World of Sport"
+    assert block(profiles[2], "sunday") >= 3 and block(profiles[2], "saturday") >= 3, "BBC Two took the weekend overflow"
+    weekday_evening = [r["sport"] for r in profiles[2]["weekday"] if hhmm_to_minutes(r["start"]) >= 17 * 60]
+    assert min(weekday_evening) >= 1.0, "snooker and darts ran through BBC Two's weekday evenings"
+    assert max(r["sport"] for r in profiles[1]["weekday"] if hhmm_to_minutes(r["start"]) < 22 * 60) < 0.5
+    # An upgrade: a channel with nothing of its own is seeded, one the owner has touched is not.
+    mine = json.dumps([{"name": "All day", "start": "08:00", "tv": 1, "movie": 1, "kids": 1, "sport": 1}])
+    with dbm.tx(c):
+        c.execute("UPDATE channels SET daypart_profile = NULL WHERE number = 1")
+        c.execute("UPDATE channels SET daypart_profile = ? WHERE number = 2", (mine,))
+        c.execute("UPDATE channels SET daypart_profile = NULL, name = 'Pete One' WHERE number = 3")
+    dbm.init_db(c)
+    after = {r["number"]: r["daypart_profile"] for r in c.execute("SELECT number, daypart_profile FROM channels WHERE number <= 3")}
+    assert json.loads(after[1]) == BY_DEFAULT_CHANNEL[1] and after[2] == mine and after[3] is None
+    c.close()
+
+
+def test_a_daypart_can_favour_a_genre():
+    """What keeps the quiz at teatime: a daypart's genre weights multiply a programme's chance
+    by the largest weight given to any of its genres, read canonically, and leave others alone."""
+    from pitv.scheduler.select import Selector
+    teatime = {"genres": {"Game Show": 3.0, "Soap": 2.5, "Sci-Fi": 0.5}}
+    assert Selector._daypart_genre_weight(teatime, ["Comedy", "Game Show"]) == 3.0
+    assert Selector._daypart_genre_weight(teatime, ["Science Fiction"]) == 0.5
+    assert Selector._daypart_genre_weight(teatime, ["Drama"]) == 1.0
+    assert Selector._daypart_genre_weight({}, ["Game Show"]) == 1.0
