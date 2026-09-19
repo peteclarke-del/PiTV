@@ -590,6 +590,10 @@ For each channel and day, walk from 08:00 to 00:00 following the pattern:
    the same slot `series_cadence_days` (7) later, and a bonus for filling the gap within ten minutes.
    The cadence is also a rule: a series is not due again until that long after its last episode
    (half a day's grace), and only the last step before a holding card brings it round early. A
+   series that has never aired starts on its own day of the cadence (`policy.first_airing_day`,
+   by its id), so a week built from nothing opens a seventh of the channel's series each day
+   instead of spending them all by Tuesday and leaving the rest of every week thin; the first
+   step of relaxation lets a thin day bring one forward. A
    channel may set its own `series_cadence_days` (Channels, Programmes): the general channels
    keep a week, as the broadcasters did, while a cartoon channel set to one day runs every
    series as a daily strip and leaves films whatever the series do not fill. Certificate rules, duration

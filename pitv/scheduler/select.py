@@ -145,6 +145,7 @@ class Selector:
         start_min = minutes_of_day(t, self.tz)
         bday_min = self._bday_minutes(t)
         weekday_n = datetime.fromtimestamp(t, self.tz).weekday()
+        day_ordinal = broadcast_day_for(t, self.settings, self.tz).toordinal()
         dayparts = dayparts_for_weekday(weekday_n, self.settings, self.channel_json(channel, "daypart_profile"))
         dp = daypart_for(bday_min, dayparts)
         sport_block = float(dp.get("sport", 1.0)) >= 3.0   # docs/PLAN.md section 4.6: 3 and above forms a block
@@ -248,7 +249,12 @@ class Selector:
                 # before a holding card does a series come round early, and then with its next
                 # episode, never the last one again: the small hours are where repeats live.
                 weekly = show.mode == "auto" and show.category != "sport"
-                if weekly and relax < 2 and not self.policy.next_episode_due(channel, self.library.show_last(channel["id"], show), t):
+                last = self.library.show_last(channel["id"], show)
+                if weekly and relax < 2 and not self.policy.next_episode_due(channel, last, t):
+                    continue
+                # A series that has never aired waits for its own day of the week; the first step
+                # of relaxation lets a thin day bring one forward.
+                if weekly and not relax and last is None and not self.policy.first_airing_day(channel, show.id, day_ordinal):
                     continue
                 ep = show.next_episode()
                 if ep is None:
@@ -304,13 +310,16 @@ class Selector:
                 if token not in ("show", "tv" if episode else "movie"):
                     continue
                 times_today = placed_today.get(e["id"], 0)
-                early = episode and not self.policy.next_episode_due(
-                    channel, self.library.external_last_placed.get(e["lineup_id"]), t)
+                placed_before = self.library.external_last_placed.get(e["lineup_id"])
+                early = episode and (not self.policy.next_episode_due(channel, placed_before, t) or (
+                    not relax and placed_before is None
+                    and not self.policy.first_airing_day(channel, e["lineup_id"], day_ordinal)))
                 # A series whose every episode has been asked for has nothing new to offer; what
                 # has arrived of it airs as the library series it has become.
                 finished = episode and not e["spare_wanted"] and next_episode_number(e) is None
-                held_back = (finished or not prepared or not room or early or times_today >= (daily_limit if episode else 1)
-                             or e["id"] in barred or (e.get("show_id") and e["show_id"] in barred))
+                if e["id"] in barred or (e.get("show_id") and e["show_id"] in barred):
+                    continue     # never the same series back to back, last resort or not
+                held_back = finished or not prepared or not room or early or times_today >= (daily_limit if episode else 1)
                 candidate = e
                 if held_back:
                     # The last step before a holding card may bring a remote title round again,

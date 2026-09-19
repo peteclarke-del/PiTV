@@ -1228,3 +1228,44 @@ def test_the_small_hours_do_not_repeat_what_has_been_withdrawn(tmp_path):
     build_horizon(c, start_day=day, days=1, now=local_ts(day, "23:30", tz_of(c)), seed=2, force=True)
     assert not c.execute("SELECT 1 FROM schedule WHERE media_id = ? AND replay = 1 AND start_ts > ?",
                          (aired["media_id"], local_ts(day, "23:30", tz_of(c)))).fetchone()
+
+
+def test_a_week_built_from_nothing_opens_its_series_across_the_week(tmp_path):
+    """With one episode a week every series is due at once in a week built from nothing; the
+    first days took them all, and since a series returns to its weekday the later days stayed
+    thin for good. A series that has never aired is offered first on its own day of the week;
+    only when a day runs thin is another brought forward. A remote series is never offered
+    straight after itself, whatever the relaxation."""
+    c = make_library(tmp_path, 6)["conn"]
+    day = parse_day("2026-09-14")
+    now = local_ts(day, "07:00", tz_of(c))
+    builder = Builder(c, now=now)
+    channel = next(ch for ch in builder.channels if ch["content"] == "general")
+    own = {s.id for s in builder.library.free_shows.get(channel["id"], ()) if s.category != "sport"}
+    assert len(own) >= 4
+    rng = random.Random(3)
+    for offset in range(7):
+        t = local_ts(day + timedelta(days=offset), "19:30", tz_of(c))
+        ordinal = (day + timedelta(days=offset)).toordinal()
+        offered = set()
+        for _ in range(150):
+            pick = builder.select.programme(channel, rng, t, 2 * 3600, "tv", {}, None, set(), relax=0, slack=300)
+            if pick and pick[1] is not None and pick[1].id in own:
+                offered.add(pick[1].id)
+        assert all(sid % 7 == ordinal % 7 for sid in offered), (offset, offered)
+    brought_forward = {p[1].id for p in (builder.select.programme(channel, rng, t, 2 * 3600, "tv", {}, None, set(), relax=1, slack=300)
+                                         for _ in range(150)) if p and p[1] is not None}
+    assert len(brought_forward & own) > 1, "a thin day may bring others forward"
+
+    entry = {"id": -5, "lineup_id": 5, "kind": "episode", "title": "Remote", "duration": 1800, "year": 1985, "genres": ["Comedy"],
+             "taken": {1}, "spare_wanted": [], "channel_id": channel["id"], "pinned": 1, "kids": False, "category": "general",
+             "last_spec": {"kind": "episode", "lineup_id": 5, "title": "Episode 1", "season": 1, "episode": 1, "year": 1985, "reuse": None}}
+    builder.library.externals_on[channel["id"]] = [entry]
+    builder.library.free_shows[channel["id"]] = []
+    builder.library.movies_on[channel["id"]] = []
+    with dbm.tx(c):
+        dbm.set_setting(c, "nas_only", False)
+    builder.select.settings["nas_only"] = False
+    again = builder.select.programme(channel, rng, t, 2 * 3600, "tv", {}, None, {-5}, relax=2, slack=300)
+    assert again is None, "the same remote series straight after itself"
+    c.close()
