@@ -7,6 +7,14 @@ channel, and said it should be planned before any code changes. This page says w
 look like, what already exists, what is hard, and the order to find out in. Nothing here is
 built, and the single-box PiTV stays the supported shape throughout.
 
+## Decided
+
+Pete's decision, 20 September 2026: PiTV is to be built so that it runs all in one and also
+with a remote front end. Both are supported shapes of the same software, not a fork: the
+all-in-one install is the three roles below on one machine, and it keeps passing the same
+tests. From here on, nothing in the front end may assume a local database or local media, and
+nothing the front end needs may exist only in-process on the station.
+
 ## The short answer
 
 Feasible, and closer than it looks, because the hard half exists. PiTV already serves every
@@ -112,6 +120,41 @@ Several workers: new design, with these questions open.
 4. Providers ration by address. Several workers behind one household connection do not get
    more searches; they get the same allowance spent faster. More workers help encoding and
    copying, not finding.
+
+## The seam: what a front end asks of a station
+
+Measured in the code on 20 September. The player (`pitv/player/controller.py`, a thousand lines)
+touches the database in about twenty places, and they reduce to a short list. That list is the
+interface, `Station`, with two implementations: `LocalStation` over the database and files,
+which is today's behaviour exactly, and `RemoteStation` over the station's HTTP API and streams.
+
+| The front end asks | Local answer | Remote answer |
+|---|---|---|
+| Settings it needs (badge seconds, OSD scale, static on or off, timezone, day start) | `all_settings`, `tz_of` | `GET /api/receiver/config`, refreshed on the station's change event |
+| The channels, in order, with number, name, colour | `enabled_channels` | the same call |
+| What is on a channel at a moment, and its place in a band | `slot_at`, `block_entry` | `GET /api/now` |
+| What comes next | `next_programmes` | `GET /api/now` and `/api/schedule` |
+| The guide grid for a window | the guide query | `GET /api/schedule/day/<day>` |
+| What to play for a channel | the slot's cache copy, else the NAS original, else the card, at an offset | the channel's stream address; the station has already done all of that |
+| "This was watched" | a row in `history` | `POST /api/receiver/watched`, best effort |
+| "The schedule changed" | the control socket | `GET /api/events` |
+
+Two things move out of the player for good, in both shapes, because they are the station's
+work and only live in the player process by history: the maintenance pass (importing the index,
+applying delivery reports, asking for band material, eviction, readiness; `player/maintenance.py`)
+and the write side of the database. A station with no television attached must still do them,
+and a receiver must never.
+
+Build order for the seam, each step shippable on the single box:
+
+1. `Station` and `LocalStation`, with the controller's database calls routed through them. No
+   behaviour changes; the suite is the proof.
+2. The maintenance pass moves from the player to the web service (the station), which already
+   runs background jobs. The player keeps only what concerns the screen.
+3. The receiver endpoints on the station, versioned, and `RemoteStation` against them.
+4. `pitv receiver --station <address>`: the player started with `RemoteStation`, playing
+   streams. The same OSD, remote handling and static.
+5. Always-on streams on the station, and the transport decided by the measurements below.
 
 ## What is genuinely hard
 
