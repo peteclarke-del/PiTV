@@ -100,26 +100,56 @@ receiver needs no different software.
 
 ### Content workers
 
-One worker on another machine: already possible in principle. pitv_content talks to PiTV over
-HTTP (manifest, report, make-room) and to the cache over a filesystem. Moved to another host
-it needs the cache directory mounted read-write (NFS or SMB from the station, or the cache
-lives on the worker's disk and the station mounts it), its loopback-only API reached another
-way (PiTV's admin proxies to it today and the no-back-door rule stands: the answer is an SSH
-tunnel or a shared secret on a LAN-only listener, to be decided, not assumed), and `local`
-sources such as idents reached over the same mount.
+This section was corrected by pitv_content's session on 20 September, from its code.
 
-Several workers: new design, with these questions open.
+One worker on another machine: possible, with three things to settle.
 
-1. Who decides who does what. Today one process sorts the manifest and works it. With several,
-   either the station hands out work (a claim or lease per request: "worker B has w:1893 until
-   19:40") or the workers are given disjoint duties (one does delivery, one does bands, one
-   does encodes). Duties are far simpler and match how the load actually splits: encoding is
-   CPU, fetching is network and patience, copying is disk.
-2. One writer for the index and for the fingerprint store. Both are single-writer today.
+- The cache is reached over a mount (NFS or SMB from the station, or the cache lives on the
+  worker's disk and the station mounts it). Anything the worker indexes over a mount must be a
+  `nas` source with the share as its `remote`, never `local`. A `nas` root that is not mounted
+  is called unreachable and the index stays incomplete, so PiTV retires nothing; a `local`
+  folder has no such check by design, so a mount that failed and left an empty directory would
+  be read as "readable and empty", a complete index would be published, and PiTV would be told
+  that everything there had gone. `local` is for folders on the worker's own disk, which is
+  what idents are on a single box. On a split system the idents folder is either on the
+  worker's disk or a `nas` source.
+- Its API. `serve` refuses any bind that is not loopback, in code, not configuration. Reaching
+  it from another machine is therefore one of two things: an SSH tunnel, which needs nothing
+  from pitv_content at all and keeps the no-back-door rule as it stands, or authentication
+  added to pitv_content with a decision about how secrets are held, which is real work. The
+  tunnel is the default until there is a reason for the other.
+- The screen profile. pitv_content already encodes what it fetches to the profile PiTV gives
+  it, provided PiTV pushes the profile's values (`video_profile_values`, agreed in the review)
+  and they reach catalogue runs as well as cache runs. The cache's copies of NAS originals are
+  governed by PiTV's own copy rule (`pi_can_play`), which is what puts HEVC at 2160p in the
+  cache today. Making the cache safe for a small receiver is PiTV's lever: a receiver profile
+  whose copy rule admits H.264 up to the screen's size and sends everything else to be encoded
+  once.
+
+Several workers: closed today, and not only a matter of design.
+
+1. A cache run holds an exclusive file lock on the manifest's running marker for its whole
+   life, and a second run is refused: "another cache run is active". Delivery and encoding are
+   the same run, so splitting workers by duty needs the run split first. And a file lock is
+   the thing that travels worst over a mount: NFSv3 needs lockd, SMB semantics vary, and a lock
+   that silently fails to be exclusive is the failure the marker exists to prevent, since two
+   runs writing one cache is how half-written targets happen. With the cache on a mount the
+   marker should stop being something workers arbitrate among themselves and become something
+   the station hands out: a lease on the run.
+2. Shared knowledge, not only shared files. The index, the memory of what was not found and
+   the record of where each series was last found are each written whole and atomically, so
+   two workers would not corrupt them; they would lose each other's knowledge, last writer
+   winning. Each would search for the same missing episode because neither saw the other's
+   rest, and each would learn a provider's refusal separately, since the backoff and the
+   breaker live in the process.
 3. make-room and the cap are already the station's, which is right.
 4. Providers ration by address. Several workers behind one household connection do not get
-   more searches; they get the same allowance spent faster. More workers help encoding and
-   copying, not finding.
+   more searches; without shared state they find the same things twice and spend the ration
+   faster. More workers help encoding and copying, not finding.
+
+So the honest order for content is: one worker on another machine first (tunnel, mount, `nas`
+sources, pushed profile values); then, only if encoding proves to be the limit, split the run
+into delivery and encode stages with a station-held lease; and a second finder never.
 
 ## The seam: what a front end asks of a station
 
@@ -187,8 +217,10 @@ Each step is small, and the first two change no code.
 4. Receiver: the player's data source becomes an interface with two implementations, the
    database (today) and the station's API. Ship the single box on the interface first.
 5. Receiver image: mpv, the receiver agent, discovery, the holding pictures.
-6. One content worker on another machine: mounts, the API's reachability, the installer.
-7. Several workers by duty, only if 6 shows a need.
+6. One content worker on another machine: an SSH tunnel to its API, the cache on a mount, `nas`
+   sources for anything reached over one, the installer.
+7. An encode worker, only if 6 shows encoding is the limit: the run split into stages, with a
+   lease the station hands out in place of the file lock.
 
 ## What this does not change
 
