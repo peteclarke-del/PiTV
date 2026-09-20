@@ -31,11 +31,13 @@ from ..db import (
     now_ts,
     tx,
 )
+from ..genres import is_childrens
 from . import bands, overnight
 from .clock import bday_minutes
 from .library import Library, Rebuild
 from .policy import SchedulerPolicy, attempts
 from .rules import (
+    allowed_at,
     day_bounds,
     daypart_end_minutes,
     dayparts_for_weekday,
@@ -181,6 +183,15 @@ class Builder:
                 ts = local_ts(day + timedelta(days=1), show.anchor_time, self.tz)
             if day_start <= ts < day_end:
                 out.append((ts, show))
+                # The owner set this time and it is honoured. Where it puts a 15 before nine or a
+                # children's series after the cutoff, say so once: it is theirs to move.
+                ep = show.next_episode()
+                if ep is not None and not allowed_at(ep, minutes_of_day(ts, self.tz), self.settings,
+                                                     kids_rule=not channel.get("kids_any_time")):
+                    note = (f"{channel['name']}: {show.title} is anchored at {show.anchor_time}, outside the hours its "
+                            f"certificate or the children's cutoff allows")
+                    if note not in self.log:
+                        self.log.append(note)
         out.sort(key=lambda x: x[0])
         return out
 
@@ -479,7 +490,9 @@ class Builder:
                             strict=bool(channel.get("strict_matching")),
                             item_repeat=item_repeat, feature_repeat=feature_repeat,
                             fit_seconds=self.policy.integer("band_fit_minutes") * 60,
-                            feature_overrun=self.policy.integer("band_feature_overrun_minutes") * 60)
+                            feature_overrun=self.policy.integer("band_feature_overrun_minutes") * 60,
+                            may_air=lambda m, at: allowed_at(m, minutes_of_day(at, self.tz), self.settings,
+                                                             kids_rule=not channel.get("kids_any_time")))
 
     @staticmethod
     def _segments(start: int, end: int, taken: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -608,14 +621,24 @@ class Builder:
 
     def _overnight(self, channel: dict[str, Any], day: date, day_end: int, next_day_start: int,
                    day_slots: list[Slot]) -> list[Slot]:
-        """The replay of the day; see `overnight.replay`. What has been withdrawn since it aired
-        (excluded by the owner, or gone missing) is not repeated: the day happened, but the small
-        hours are still to come."""
+        """The replay of the day; see `overnight.replay`. Two things are not repeated. What has
+        been withdrawn since it aired (excluded by the owner, or gone missing): the day happened,
+        but the small hours are still to come. And, on a channel that keeps the children's cutoff,
+        children's programmes: every hour of the replay is past it."""
         day_str = day.isoformat()
         withdrawn = {r[0] for r in self.conn.execute(
             "SELECT id FROM media WHERE excluded = 1 OR missing = 1")} if any(s.media_id for s in day_slots) else set()
+        childrens: set[int] = set()
+        if not channel.get("kids_any_time"):
+            childrens = ({ep["id"] for show in self.library.shows.values() for ep in show.episodes if ep.get("kids")}
+                         | {m["id"] for m in self.library.movies if m.get("kids") and m.get("kind") != "movie"})
+
+        def leave_out(s: Slot) -> bool:
+            if s.media_id is not None:
+                return s.media_id in withdrawn or s.media_id in childrens
+            return not channel.get("kids_any_time") and s.kind == "programme" and is_childrens(s.genres)
         return overnight.replay(
-            channel, day, day_end, next_day_start, day_slots, policy=self.policy, tz=self.tz, withdrawn=withdrawn,
+            channel, day, day_end, next_day_start, day_slots, policy=self.policy, tz=self.tz, leave_out=leave_out,
             day_start_min=self.day_start_min,
             next_day_slots=lambda: self._next_day_slots(channel["id"], next_day_start),
             tomorrow_first=self._adjacent_show(channel["id"], next_day_start, before=False),

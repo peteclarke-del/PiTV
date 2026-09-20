@@ -576,7 +576,11 @@ maximum programme length.
 | 21:00 | Post-watershed | adult drama, 15 films |
 | 22:30 | Late | films, cult, sport |
 
-Certificate and kids rules override any daypart.
+Certificate and kids rules override any daypart, and everything else: a band takes nothing its
+hour forbids (its own card covers what is left), and the small-hours replay leaves out
+children's programmes on a channel that keeps the cutoff. The one thing they do not move is an
+anchor: the owner set that time, it is honoured, and the build notes say when it sits outside
+the hours the series' certificate allows.
 
 ### 4.8 Gap filling
 

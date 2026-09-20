@@ -1367,3 +1367,24 @@ def test_the_peak_count_sees_what_the_selector_sees(tmp_path):
     assert week(decades=json.dumps([1930])) <= 30 * 60, "series the channel's decades refuse were counted"
     assert week(rest=True, nas_only="yes") == 0, "series at rest were counted"
     c.close()
+
+
+def test_certificates_bind_bands_and_the_small_hours_too(tmp_path):
+    """PLAN 4.7 says certificates and the children's rules override everything. Two places did
+    not ask: a band took whatever matched its fill, and the small-hours replay repeated the day's
+    children's programmes hours after the cutoff."""
+    from pitv.scheduler.rules import allowed_at, minutes_of_day
+    c = make_library(tmp_path, 6)["conn"]
+    day = parse_day("2026-09-14")
+    build_horizon(c, start_day=day, days=2, now=local_ts(day, "07:00", tz_of(c)), seed=7, force=True)
+    settings, tz = dbm.all_settings(c), tz_of(c)
+    kids_any = {r["id"]: bool(r["kids_any_time"]) for r in c.execute("SELECT id, kids_any_time FROM channels")}
+    rows = c.execute("SELECT s.channel_id, s.start_ts, s.replay, s.block, m.kind, m.certificate, m.genres, sh.kids, sh.certificate AS scert"
+                     " FROM schedule s JOIN media m ON m.id = s.media_id LEFT JOIN shows sh ON sh.id = m.show_id"
+                     " WHERE s.kind = 'programme' AND (s.replay = 1 OR s.block IS NOT NULL)").fetchall()
+    assert rows
+    for r in rows:
+        item = {"kind": r["kind"], "certificate": r["certificate"] or r["scert"], "genres": json.loads(r["genres"] or "[]"),
+                "kids": bool(r["kids"])}
+        assert allowed_at(item, minutes_of_day(r["start_ts"], tz), settings, kids_rule=not kids_any[r["channel_id"]]), dict(r)
+    c.close()

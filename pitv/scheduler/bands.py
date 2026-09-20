@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import random
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -183,10 +184,12 @@ class Filler:
 
     def __init__(self, bands: list[Band], pool: list[dict[str, Any]], *, item_repeat: int, feature_repeat: int,
                  rng: random.Random, last_placed: dict[int, int], item_minutes: int = ITEM_MINUTES,
-                 strict: bool = False, fit_seconds: int = 600, feature_overrun: int = 1200) -> None:
+                 strict: bool = False, fit_seconds: int = 600, feature_overrun: int = 1200,
+                 may_air: Callable[[dict[str, Any], int], bool] | None = None) -> None:
         self.fit_seconds = fit_seconds            # settings band_fit_minutes and
         self.feature_overrun = feature_overrun    # band_feature_overrun_minutes, as the builder passes them
         self.pool = pool
+        self.may_air = may_air      # (item, at) -> bool: the certificate and children's rules, from the builder
         self.item_minutes = item_minutes
         self.strict = strict
         self.rng = rng
@@ -275,6 +278,8 @@ class Filler:
             for m in self.pool:
                 if float(m["duration"]) > gap or (exclude and m["id"] in exclude):
                     continue
+                if self.may_air is not None and not self.may_air(m, at):
+                    continue      # certificates override everything, a band included (PLAN 4.7)
                 if close and abs(fit - float(m["duration"])) > self.fit_seconds:
                     continue
                 if not self._suits(band, m, feature, genres, strict):
