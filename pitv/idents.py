@@ -1,9 +1,12 @@
 """Channel idents: a fifteen second film for each channel, made from its name and colour.
 
 An ident is ordinary library material (kind `ident`): pitv_content indexes a folder of them and
-the scheduler places them where a channel's pattern asks. This module only makes the files. It
-writes `<out>/ch<number>/<name> ident.mp4`, which is the layout pitv_content reads a channel
+the scheduler places them where a channel's pattern asks. This module only makes the files, in
+one of two layouts. `<out>/ch<number>/<name> ident.mp4` is the layout pitv_content reads a channel
 from, so an idents source pointed at `<out>` ties each film to its channel with no more said.
+Flat, `<out>/<name> ident.mp4`, is for a folder kept with other material (the `idents` folder of
+the adverts share): the path says nothing there, and PiTV gives the film to the channel its
+title begins with on import (`db.assign_ident_channels`).
 
 The picture is drawn frame by frame with Pillow and piped to ffmpeg: the four bars of the PiTV
 mark sweep in, the wordmark resolves over them, and the channel's name rises under it in the
@@ -210,19 +213,22 @@ def voice_for(channel: dict[str, Any], voices: Path | None) -> Path | None:
     return None
 
 
-def make(channel: dict[str, Any], out_dir: Path, width: int, height: int, voices: Path | None = None) -> Path:
-    """Render one channel's ident and return the file. Written beside its place and moved in when
-    whole, so an index run never meets half a film."""
+def make(channel: dict[str, Any], out_dir: Path, width: int, height: int, voices: Path | None = None,
+         *, flat: bool = False) -> Path:
+    """Render one channel's ident and return the file. It is encoded in a temporary folder, because
+    `+faststart` rewrites the file and a network mount may not allow the seek, then copied beside
+    its place and moved in when whole, so an index run never meets half a film."""
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         raise RuntimeError("ffmpeg is needed to make idents and is not installed")
-    folder = out_dir / f"ch{int(channel['number'])}"
+    folder = out_dir if flat else out_dir / f"ch{int(channel['number'])}"
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / f"{channel['name']} ident.mp4"
     voice = voice_for(channel, voices)
     with tempfile.TemporaryDirectory(prefix="pitv-ident-") as tmp:
         music = Path(tmp) / "sting.wav"
         sting(music, int(channel["number"]))
+        encoded = Path(tmp) / "ident.mp4"
         part = folder / f".{target.name}.part"
         cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
                "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}", "-r", str(FPS), "-i", "-",
@@ -236,7 +242,7 @@ def make(channel: dict[str, Any], out_dir: Path, width: int, height: int, voices
         else:
             cmd += ["-map", "0:v", "-map", "1:a"]
         cmd += ["-c:v", "libx264", "-preset", "slow", "-crf", "17", "-pix_fmt", "yuv420p", "-profile:v", "high",
-                "-c:a", "aac", "-b:a", "192k", "-t", str(SECONDS), "-movflags", "+faststart", "-f", "mp4", str(part)]
+                "-c:a", "aac", "-b:a", "192k", "-t", str(SECONDS), "-movflags", "+faststart", "-f", "mp4", str(encoded)]
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             assert proc.stdin is not None
@@ -248,20 +254,24 @@ def make(channel: dict[str, Any], out_dir: Path, width: int, height: int, voices
                 raise RuntimeError(f"ffmpeg could not encode {target.name}: {error.strip()[:400]}")
         except BaseException:
             proc.kill()
-            part.unlink(missing_ok=True)
             raise
         finally:
             if proc.stderr:
                 proc.stderr.close()
-        part.replace(target)
+        try:
+            shutil.copyfile(encoded, part)
+            part.replace(target)
+        except BaseException:
+            part.unlink(missing_ok=True)
+            raise
     log.info("made %s%s", target, " with a voiceover" if voice else "")
     return target
 
 
 def make_all(conn: sqlite3.Connection, out_dir: Path, voices: Path | None = None,
-             numbers: set[int] | None = None) -> list[Path]:
+             numbers: set[int] | None = None, *, flat: bool = False) -> list[Path]:
     """An ident for every enabled channel (or those in `numbers`), at the screen's own frame."""
     profile = display.profile(all_settings(conn))
     channels = rows_to_dicts(conn.execute("SELECT * FROM channels WHERE enabled = 1 ORDER BY number"))
-    return [make(c, out_dir, profile.width, profile.height, voices) for c in channels
+    return [make(c, out_dir, profile.width, profile.height, voices, flat=flat) for c in channels
             if numbers is None or int(c["number"]) in numbers]

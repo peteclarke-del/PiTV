@@ -152,12 +152,14 @@ def cmd_idents(cfg: Config, args: Args) -> int:
     from . import idents
     conn = _open(cfg)
     out = Path(args.out) if args.out else cfg.data_dir / "idents"
-    made = idents.make_all(conn, out, Path(args.voices) if args.voices else out / "voices",
-                           {int(n) for n in args.channel} if args.channel else None)
+    voices = Path(args.voices) if args.voices else cfg.data_dir / "idents" / "voices"
+    made = idents.make_all(conn, out, voices, {int(n) for n in args.channel} if args.channel else None, flat=args.flat)
     for path in made:
         print(path)
+    tie = ("each film's title begins with its channel's name, which is what ties it to the channel on import"
+           if args.flat else "each channel's folder (ch1, ch2, ...) is what ties a film to its channel")
     print(f"{len(made)} ident(s) in {out}. Point an idents source at that folder in Admin, Sources, and they are indexed "
-          f"with the rest; each channel's folder (ch1, ch2, ...) is what ties a film to its channel.")
+          f"with the rest; {tie}.")
     return 0
 
 
@@ -187,7 +189,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     idn = sub.add_parser("idents", help="make a 15 second ident for each channel from its name and colour")
     idn.add_argument("--out", help="folder to write ch<number>/<name> ident.mp4 into (default: <data>/idents)")
-    idn.add_argument("--voices", help="folder of voiceover recordings named <number>.wav or <short name>.wav (default: <out>/voices)")
+    idn.add_argument("--flat", action="store_true",
+                     help="write <name> ident.mp4 straight into --out, for a folder shared with other material "
+                          "such as the adverts share's idents folder")
+    idn.add_argument("--voices", help="folder of voiceover recordings named <number>.wav or <short name>.wav "
+                                      "(default: <data>/idents/voices, so recordings never sit inside a source)")
     idn.add_argument("--channel", action="append", help="only this channel number; may be given more than once")
     idn.set_defaults(func=cmd_idents)
 

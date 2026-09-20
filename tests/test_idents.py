@@ -52,3 +52,12 @@ def test_the_film_lands_where_pitv_content_reads_its_channel_from(tmp_path):
                                        "-of", "json", str(made)], check=True, capture_output=True, text=True).stdout)
     assert abs(float(probe["format"]["duration"]) - idents.SECONDS) < 0.2
     assert {(s["codec_type"], s["codec_name"]) for s in probe["streams"]} == {("video", "h264"), ("audio", "aac")}
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
+def test_a_flat_folder_takes_the_film_under_its_channels_name(tmp_path):
+    """The adverts share keeps its idents in one folder. The title is then all that names the
+    channel, so it must begin with the channel's name, which is what the import matches on."""
+    made = idents.make(CHANNEL, tmp_path / "idents", 160, 120, flat=True)
+    assert made == tmp_path / "idents" / "PiTV Three ident.mp4"
+    assert [p.name for p in (tmp_path / "idents").iterdir()] == ["PiTV Three ident.mp4"]

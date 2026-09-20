@@ -815,17 +815,22 @@ hardware.
 channel's name rises in the channel's colour, over a synthesised sting in a key of the
 channel's own. Frames are drawn with Pillow at the screen profile's size and piped to ffmpeg
 (H.264, 25 frames a second, stereo AAC, under a megabyte each). PiTV never invents a voice: a
-recording at `<out>/voices/<number>.wav` (or the channel's short name; .mp3, .flac, .ogg and
-.m4a too) is laid over the sting from the moment the name appears, with the music ducked under
-it. Files land in `<data>/idents/ch<number>/`, the folder layout pitv_content reads a channel
-from, so an idents source pointed at `<data>/idents` (type `ident`, location `nas`, with
-`local_root` set to the same path on a Pi, where that folder is not a mount) is all that ties a
-film to its channel. They are then ordinary library material, copied to the cache and placed
-where a channel's pattern asks. Idents kept flat in one folder (the `idents` folder of the adverts
-share, say) carry no channel in their path: one whose title begins with a channel's name is given to
-that channel on import (`db.assign_ident_channels`), and Channels, the channel, lists every ident so
-the owner can point the channel at its own; an ident that belongs to no channel is generic and any
-channel without its own may show it.
+recording at `<data>/idents/voices/<number>.wav` (or the channel's short name; .mp3, .flac, .ogg
+and .m4a too; `--voices` names another folder) is laid over the sting from the moment the name
+appears, with the music ducked under it. Each film is encoded in a temporary folder and copied
+into place whole, so the target may be a network share.
+
+Idents live in the `idents` folder of the adverts share, flat, beside the adverts they run with:
+`pitv idents --flat --out <adverts share>/idents` writes `<channel name> ident.mp4` there. In
+pitv_content that folder is a source of its own (type `ident`, location `nas`), nested inside the
+adverts source, which leaves it out of its own scan (contract section 4). A flat folder carries no
+channel in its path, so an ident whose title begins with a channel's name is given to that channel
+on import (`db.assign_ident_channels`, the longest name first so "PiTV Three" is never taken for
+"PiTV"), and Channels, the channel, lists every ident so the owner can point the channel at its
+own. An ident that belongs to no channel is generic and any channel without its own may show it.
+Without `--flat` the files land in `<out>/ch<number>/` (default `<data>/idents`), the layout
+pitv_content reads a channel from directly. Either way they are ordinary library material, copied
+to the cache and placed where a channel's pattern asks.
 
 A break carries one ident at most, before its adverts or after them, whether a pattern asks for it
 or a gap is being padded (`Walk.ident_shown`); two idents never run together.
