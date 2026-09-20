@@ -310,6 +310,14 @@ pitv_content's API owns the source configuration; PiTV's admin Sources page is a
   folders under the cache) or `local`: a read-only folder on the machine that is neither. PiTV's
   idents live in one (`<data>/idents`, type `ident`); the channel an ident belongs to is read
   from a folder in its path named `ch<n>`, `channel_<n>` or a bare number.
+- Sources may nest. A folder declared as another source's root belongs to that source and is
+  left out of the walk of the one it sits in; the claim holds whether or not the other source is
+  enabled, since disabling a source should not turn its files into another's. PiTV's idents
+  live this way on a NAS: an `ident` source, location `nas`, whose `root` is the `idents` folder
+  inside the adverts share, declared with no `remote` (pitv_content mounts a `remote` at its
+  `root`, which would mount the share inside itself). It is reached through the adverts
+  source's mount, and the mount check still holds through the subfolder: with the share away
+  the source is unreachable, never readable and empty.
 - Online providers stay on `GET/PUT /api/providers` as already agreed.
 
 ## 5. Shared cache rules
