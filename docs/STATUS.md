@@ -290,10 +290,21 @@ make again. The cap is what is wrong, and raising it is Pete's decision because 
 `pitv doctor` now reports this by itself rather than needing an evening of measurement: it
 totals the distinct files the next 24 hours needs and states the cap as days of schedule, with
 what it would want and what the drive has spare. The finding reads "The cache holds only 1.2
-days of the schedule (270 GB against 222 GB a day), so copies are evicted before their slot
-comes round and those programmes play from the NAS. It wants about 333 GB; the drive has 13 GB
-free." A delivery report could never have shown it, because a run only ever sees what is missing
-now.
+days of the schedule (270 GiB against 223 GiB a day), so copies are evicted before their slot
+comes round and those programmes play from the NAS. It wants about 335 GiB; the drive has 12 GiB
+spare." A delivery report could never have shown it, because a run only ever sees what is
+missing now.
+
+Sizes are GiB throughout, the unit `cache_max_gb` is set in and `df -h` prints. This was worth
+stating because the two applications appeared to disagree about the cap: PiTV read 270 and
+pitv_content 289.9, and they are the same 289,910,292,480 bytes in the two conventions. Nothing
+was misconfigured, but Pete would have been freeing disk against whichever figure he read last.
+
+The doctor also watches what the cache is meant to grow by. Fetched episodes are kept so a later
+airing costs nothing, and a cap that holds the schedule while leaving less room than those
+episodes already occupy is about to start evicting them. Tonight it leaves 47 GiB against 23 GiB
+kept, so the finding is quiet; at the present rate of fetching pitv_content puts it at days
+rather than weeks before it is not.
 
 Where an ident belongs, from Pete on the 20th: it always comes after a show, and a break carries
 only one. The ident closes the programme that has ended and hands over to the break, so it heads

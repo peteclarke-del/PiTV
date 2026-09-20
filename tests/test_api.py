@@ -834,10 +834,26 @@ def test_doctor_says_when_the_cache_cannot_hold_the_schedule():
     doc = {"cache": {"next_day_files": 520, "cached_percent": 100, "cap_holds_days": 1.2,
                      "schedule_day_bytes": 222 * gb, "usage": {"max": 270 * gb, "free": 13 * gb}}}
     finding = next(f for f in doctor._findings(doc) if "holds only" in f)
-    assert "1.2 days" in finding and "270 GB against 222 GB a day" in finding
+    assert "1.2 days" in finding and "270 GiB against 222 GiB a day" in finding
     assert "play from the NAS" in finding
-    assert "wants about 333 GB" in finding and "13 GB free" in finding
+    assert "wants about 333 GiB" in finding and "13 GiB spare" in finding
 
     roomy = {"cache": {"next_day_files": 520, "cached_percent": 100, "cap_holds_days": 3.0,
-                       "schedule_day_bytes": 100 * gb, "usage": {"max": 300 * gb, "free": 500 * gb}}}
+                       "schedule_day_bytes": 100 * gb, "room_for_kept_bytes": 200 * gb, "kept_bytes": 25 * gb,
+                       "usage": {"max": 300 * gb, "free": 500 * gb}}}
     assert not [f for f in doctor._findings(roomy) if "holds only" in f]
+
+
+def test_doctor_says_when_what_is_kept_is_about_to_be_evicted():
+    """Fetched episodes are kept so a later airing costs nothing, so they are the part of the
+    cache meant to grow. A cap that holds the schedule but leaves less room than they already
+    occupy is about to start evicting them, which no count of days would show."""
+    from pitv import doctor
+    gb = 1024 ** 3
+    doc = {"cache": {"next_day_files": 520, "cached_percent": 100, "cap_holds_days": 1.2,
+                     "schedule_day_bytes": 222 * gb, "room_for_kept_bytes": 48 * gb, "kept_bytes": 23 * gb,
+                     "usage": {"max": 270 * gb, "free": 13 * gb}}}
+    assert not [f for f in doctor._findings(doc) if "start being evicted" in f], "48 GiB spare holds 23 GiB kept"
+    doc["cache"]["room_for_kept_bytes"] = 18 * gb
+    finding = next(f for f in doctor._findings(doc) if "start being evicted" in f)
+    assert "18 GiB left" in finding and "already hold 23 GiB" in finding

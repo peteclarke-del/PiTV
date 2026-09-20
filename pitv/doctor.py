@@ -121,14 +121,25 @@ def _cap_against_schedule(conn: sqlite3.Connection, cap: int, now: int) -> dict[
     slots play from the NAS, which is the designed fallback. It is expensive and invisible,
     though, because each of those copies is made again the next time its slot comes round, and
     nothing in a delivery report shows it: a run only ever sees what is missing now. Stated as
-    days, it answers the question a person actually has, which is whether to find more disk."""
+    days, it answers the question a person actually has, which is whether to find more disk.
+
+    What is left after a day of schedule matters as much as the number of days, because fetched
+    episodes are kept so that a later airing costs nothing: that is the one part of the cache
+    meant to grow. A cap that holds the schedule but leaves less room than the kept material
+    already occupies is about to start evicting the very thing it was keeping.
+
+    Sizes are GiB throughout, the unit `cache_max_gb` is set in and `df -h` prints."""
     day = conn.execute(
         "SELECT COALESCE(SUM(size), 0) FROM (SELECT DISTINCT m.id, m.size FROM schedule s"
         " JOIN media m ON m.id = s.media_id WHERE s.start_ts BETWEEN ? AND ? AND m.size > 0)",
         (now, now + DAY)).fetchone()[0]
+    kept = conn.execute(
+        "SELECT COALESCE(SUM(size), 0) FROM media WHERE origin IN ('cache', 'online')"
+        " AND missing = 0 AND size > 0").fetchone()[0]
     if not cap or not day:
         return {}
-    return {"schedule_day_bytes": int(day), "cap_holds_days": round(cap / day, 1)}
+    return {"schedule_day_bytes": int(day), "kept_bytes": int(kept), "cap_holds_days": round(cap / day, 1),
+            "room_for_kept_bytes": int(cap - day)}
 
 
 def _bands(conn: sqlite3.Connection, settings: dict[str, Any], now: int) -> dict[str, Any]:
@@ -244,15 +255,21 @@ def _findings(doc: dict[str, Any]) -> list[str]:
         out.append(f"Only {cache['cached_percent']}% of the next day's {cache['next_day_files']} files are in the cache"
                    f" (waiting: {cache.get('waiting_by_action')})")
     holds = cache.get("cap_holds_days")
-    if holds is not None and holds < CAP_DAYS_TARGET:
+    if holds is not None:
         usage = cache.get("usage") or {}
-        gb = 1024 ** 3
-        want = int(CAP_DAYS_TARGET * cache["schedule_day_bytes"] / gb)
+        gib = 1024 ** 3
         free = usage.get("free")
-        room = (f"; the drive has {free // gb} GB free" if isinstance(free, int) else "")
-        out.append(f"The cache holds only {holds} days of the schedule ({usage.get('max', 0) // gb} GB against"
-                   f" {cache['schedule_day_bytes'] // gb} GB a day), so copies are evicted before their slot comes"
-                   f" round and those programmes play from the NAS. It wants about {want} GB{room}")
+        drive = f"; the drive has {free // gib} GiB spare" if isinstance(free, int) else ""
+        if holds < CAP_DAYS_TARGET:
+            want = int(CAP_DAYS_TARGET * cache["schedule_day_bytes"] / gib)
+            out.append(f"The cache holds only {holds} days of the schedule ({usage.get('max', 0) // gib} GiB against"
+                       f" {cache['schedule_day_bytes'] // gib} GiB a day), so copies are evicted before their slot"
+                       f" comes round and those programmes play from the NAS. It wants about {want} GiB{drive}")
+        # Fetched episodes are kept so a later airing is free; they are what the cache grows by.
+        spare, kept = cache.get("room_for_kept_bytes", 0), cache.get("kept_bytes", 0)
+        if kept and spare < kept:
+            out.append(f"After a day of schedule the cache has {max(spare, 0) // gib} GiB left for fetched episodes,"
+                       f" which already hold {kept // gib} GiB, so what is kept will start being evicted{drive}")
     cards = (doc.get("bands") or {}).get("holding_cards_next_two_days") or []
     if cards:
         minutes = sum(c["card_minutes"] for c in cards)
