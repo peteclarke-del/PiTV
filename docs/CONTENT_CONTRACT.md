@@ -316,9 +316,15 @@ reports the paths, so the two sides never disagree about what exists.
 
 ## 6. Timing
 
-01:00 pitv_content's nightly work, as two jobs: the manifest (a cache run, which copies
-before it fetches so nothing that only needs a copy waits behind a download) and a full index
-of every source. A cache run does not index the sources itself; when it has fetched something
+01:00 pitv_content's nightly work, as two jobs: the manifest (a cache run) and a full index
+of every source. A cache run works the manifest in slices, each in this order: what is about
+to air (within three hours, exempt from every limit), then the fetches' share, then copies,
+then one transcode. The share is up to four things looked for (a series' other scheduled
+episodes ride along with the one asked for) within a third of the slice and never less than
+ten minutes, and a slice takes it even when what is about to air has used the slice up. The
+order is deliberate: a copy that is late leaves the player on the NAS for that programme,
+which is what the fallback is for, while a fetch that is late leaves a gap. With fetches
+last, behind transcodes that end a slice, no episode was reached for a week. A cache run does not index the sources itself; when it has fetched something
 it republishes the fetched folders into the last index, as a catalogue run does. 04:00 PiTV
 imports the index and extends the schedule. 05:00 pitv_content catch-up run. 06:00 and 07:00 PiTV readiness checks: anything
 not playable from the cache (or the NAS, with fallback on) is replaced and logged as an error.

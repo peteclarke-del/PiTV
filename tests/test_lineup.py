@@ -743,3 +743,35 @@ def test_an_episode_already_on_disk_is_not_asked_for_again(tmp_path):
     asked = {r[0] for r in conn.execute("SELECT w.episode FROM wanted w JOIN lineup l ON l.id = w.lineup_id WHERE l.show_id = ?", (show["id"],))}
     assert asked and not asked & held, (asked, held)
     assert asked <= {max(held) + 1, max(held) + 2}
+
+
+def test_a_matched_series_episode_is_filed_under_its_real_number_and_title(conn, tmp_path):
+    """PiTV asks for "episode 14" of a matched series; pitv_content reports what that really is
+    (S02E11 "Break Step Bridge"). The catalogue takes the real season, number and title, the
+    request keeps its place in the run, and an unmatched series is still filed as asked."""
+    from pitv.content import apply_report
+    ch = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
+    matched = lineup.add(conn, ch, title="MythBusters Test", year=2003, kind="show", genres=["Documentary"], episode_minutes=45,
+                         match={"source": "tvmaze", "id": "527", "url": "https://www.tvmaze.com/shows/527/mythbusters"})
+    plain = lineup.add(conn, ch, title="Unmatched Test", year=1984, kind="show", genres=["Comedy"], episode_minutes=30)
+    out = {}
+    for entry, asked in ((matched, 14), (plain, 3)):
+        with dbm.tx(conn):
+            wid = conn.execute("INSERT INTO wanted(kind, title, year, season, episode, provider, lineup_id, transient, created_at)"
+                               " VALUES ('episode', ?, ?, 1, ?, 'auto', ?, 0, 0)", (f"Episode {asked}", entry["year"], asked, entry["id"])).lastrowid
+        f = tmp_path / f"{entry['title']}.mp4"
+        f.write_bytes(b"x" * 10)
+        apply_report(conn, {"schema": 2, "items": [{
+            "request_id": f"w:{wid}", "wanted_id": wid, "status": "done",
+            "file": {"path": str(f), "duration": 2600.0, "vcodec": "h264", "height": 576, "size": 10},
+            "meta": {"kind": "episode", "show_title": entry["title"], "title": "Break Step Bridge", "season": 2, "episode": 11,
+                     "year": entry["year"], "genres": [], "uid": f"test:{wid}", "episodes_total": 273}}]})
+        out[entry["title"]] = (dict(conn.execute("SELECT season, episode, title FROM media WHERE uid = ?", (f"test:{wid}",)).fetchone()),
+                               conn.execute("SELECT episode FROM wanted WHERE id = ?", (wid,)).fetchone()[0])
+    assert out["MythBusters Test"] == ({"season": 2, "episode": 11, "title": "Break Step Bridge"}, 14)
+    assert out["Unmatched Test"] == ({"season": 1, "episode": 3, "title": "Episode 3"}, 3)
+    assert lineup.entry(conn, matched["id"])["episode_count"] == 273
+    for entry in (matched, plain):
+        with dbm.tx(conn):
+            conn.execute("DELETE FROM media WHERE uid LIKE 'test:%'")
+        lineup.remove(conn, entry["id"])

@@ -292,8 +292,11 @@ def _fetched_show(conn: sqlite3.Connection, w: dict[str, Any], meta: dict[str, A
 def _deliver_fetched(conn: sqlite3.Connection, wid: int, file: dict[str, Any], meta: dict[str, Any]) -> dict[int, int]:
     """Material fetched online: create its catalogue entry from the report, then hand it to the
     line-up and the placeholder slots that asked for it. For an episode the request's season and
-    episode win over the report's, so it is filed against what was asked for. An advert's family
-    safety follows the same rule as on import."""
+    episode win over the report's, so it is filed against what was asked for, except for a series
+    with a confirmed match: PiTV asked for "the Nth episode" of something whose seasons it does not
+    know, and pitv_content reports the real season, number and title from the episode list
+    (contract section 3). The request keeps its N; the catalogue takes what is real. An advert's
+    family safety follows the same rule as on import."""
     w = row_to_dict(conn.execute("SELECT * FROM wanted WHERE id = ?", (wid,)).fetchone())
     if w is None:
         return {}
@@ -301,12 +304,18 @@ def _deliver_fetched(conn: sqlite3.Connection, wid: int, file: dict[str, Any], m
     year = as_int(meta.get("year")) or w.get("year")
     path = file["path"]
     title = w["title"] if kind == "episode" else (as_text(meta.get("title")) or w["title"])
+    season, episode = w.get("season"), w.get("episode")
+    matched = kind == "episode" and w.get("lineup_id") and conn.execute(
+        "SELECT 1 FROM lineup WHERE id = ? AND match IS NOT NULL", (w["lineup_id"],)).fetchone()
+    if matched and as_int(meta.get("season")) is not None and as_int(meta.get("episode")) is not None:
+        season, episode = as_int(meta.get("season")), as_int(meta.get("episode"))
+        title = as_text(meta.get("title")) or title
     vcodec = as_text(file.get("vcodec"))
     fields = {
         "uid": as_text(meta.get("uid")) or f"fetched:{wid}", "source_id": None, "kind": kind,
         "show_id": _fetched_show(conn, w, meta, year) if kind == "episode" else None,
-        "season": w["season"] if w.get("season") is not None else as_int(meta.get("season")),
-        "episode": w["episode"] if w.get("episode") is not None else as_int(meta.get("episode")),
+        "season": season if season is not None else as_int(meta.get("season")),
+        "episode": episode if episode is not None else as_int(meta.get("episode")),
         "title": title, "year": year, "origin": "online", "path": path, "cache_path": path, "size": as_int(file.get("size")),
         "duration": as_float(file.get("duration")), "vcodec": vcodec, "acodec": as_text(file.get("acodec")),
         "width": as_int(file.get("width")), "height": as_int(file.get("height")),
