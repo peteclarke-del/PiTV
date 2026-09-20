@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 from ..db import DEFAULT_SETTINGS
 from ..genres import canonical, canonical_all
 from ..lineup import nas_only_for
+from .clock import bday_minutes
 from .library import Library
 from .policy import SchedulerPolicy
 from .rules import (
@@ -62,9 +63,7 @@ class Selector:
         self._decades: dict[int, tuple[int, ...]] = {}
 
     def _bday_minutes(self, ts: int) -> int:
-        """A local minute of day on the broadcast day's clock: +1440 after midnight."""
-        minute = minutes_of_day(ts, self.tz)
-        return minute if minute >= self.day_start_min else minute + 1440
+        return bday_minutes(minutes_of_day(ts, self.tz), self.day_start_min)
 
     def channel_json(self, channel: dict[str, Any], key: str) -> Any:
         """A channel's JSON column, parsed once per build rather than once per candidate."""

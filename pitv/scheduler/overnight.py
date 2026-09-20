@@ -11,13 +11,13 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from . import bands
+from .clock import broadcast_ts
 from .policy import SchedulerPolicy
-from .rules import hhmm_to_minutes, local_ts
 from .slots import Slot
 
 MAX_LOOPS = 12      # a thin day is replayed again until morning, but not forever
@@ -37,8 +37,7 @@ def replay(channel: dict[str, Any], day: date, day_end: int, next_day_start: int
     on. `caption` makes the closedown card for whatever is left."""
     day_str = day.isoformat()
     replay_from = channel.get("overnight_replay_from") or policy.day_start
-    from_day = day + timedelta(days=1) if hhmm_to_minutes(replay_from) < day_start_min else day
-    from_ts = local_ts(from_day, replay_from, tz)
+    from_ts = broadcast_ts(day, replay_from, day_start_min, tz)
     ordered = sorted(day_slots, key=lambda s: s.start_ts)
     source = [s for s in ordered if s.start_ts >= from_ts and s.kind != "filler" and s.media_id not in withdrawn]
     if not source:

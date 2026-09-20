@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from .policy import WEEK
+from .clock import WEEK
 
 FILLER_TITLE = "Programmes will continue shortly"
 

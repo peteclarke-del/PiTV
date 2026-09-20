@@ -32,6 +32,7 @@ from ..db import (
     tx,
 )
 from . import bands, overnight
+from .clock import bday_minutes
 from .library import Library, Rebuild
 from .policy import SchedulerPolicy
 from .rules import (
@@ -140,8 +141,7 @@ class Builder:
         self._requests: dict[tuple[int, int | None], int] = {}
 
     def _bday(self, minute: int) -> int:
-        """A local minute of day on the broadcast day's clock: +1440 after midnight."""
-        return minute if minute >= self.day_start_min else minute + 1440
+        return bday_minutes(minute, self.day_start_min)
 
     def _bday_minutes(self, ts: int) -> int:
         return self._bday(minutes_of_day(ts, self.tz))

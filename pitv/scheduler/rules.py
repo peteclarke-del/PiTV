@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import logging
 import re
-import sqlite3
-from datetime import date, datetime, timedelta
-from functools import lru_cache
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from .. import genres as genre_rules
-from ..db import get_setting
+from .clock import (  # noqa: F401  (re-exported: the web API, the player and the tests import them here)
+    bday_minutes,
+    broadcast_day_for,
+    day_bounds,
+    hhmm_to_minutes,
+    local_ts,
+    minutes_of_day,
+    tz_of,
+)
 
 _CERTIFICATE_ALIASES = {
     "U": "U", "UC": "U", "ALL": "U", "G": "U", "TV-Y": "U", "TV-Y7": "U", "TV-G": "U",
@@ -21,61 +25,6 @@ _CERTIFICATE_ALIASES = {
 }
 PATTERN_TOKENS = frozenset({"show", "tv", "movie", "ad", "ident", "break"})
 log = logging.getLogger("pitv.rules")
-
-
-def tz_of(conn: sqlite3.Connection) -> ZoneInfo:
-    """The configured broadcast timezone; every wall-clock rule is evaluated in it."""
-    name = get_setting(conn, "timezone", "Europe/London")
-    try:
-        return ZoneInfo(name)
-    except (KeyError, ValueError, OSError):  # ZoneInfoNotFoundError is a KeyError
-        log.warning("unknown timezone %r; using Europe/London", name)
-        return ZoneInfo("Europe/London")
-
-
-@lru_cache(maxsize=1024)
-def hhmm_to_minutes(value: str) -> int:
-    """Cached: the scheduler asks this for the same handful of setting strings per candidate."""
-    h, m = value.strip().split(":")
-    return int(h) * 60 + int(m)
-
-
-def local_ts(day: date, hhmm: str, tz: ZoneInfo) -> int:
-    """UNIX timestamp of a local wall-clock time on a calendar day."""
-    minutes = hhmm_to_minutes(hhmm)
-    dt = datetime(day.year, day.month, day.day, tzinfo=tz) + timedelta(minutes=minutes)
-    return int(dt.timestamp())
-
-
-def minutes_of_day(ts: float, tz: ZoneInfo) -> int:
-    dt = datetime.fromtimestamp(ts, tz)
-    return dt.hour * 60 + dt.minute
-
-
-def day_bounds(day: date, settings: dict[str, Any], tz: ZoneInfo) -> tuple[int, int, int]:
-    """(day_start, day_end, next_day_start) timestamps for a broadcast day.
-
-    With the defaults, a broadcast day runs 08:00 to 00:00 and the overnight replay fills
-    00:00 to 08:00 of the following calendar day.
-    """
-    start_hhmm = settings.get("day_start", "08:00")
-    end_hhmm = settings.get("day_end", "00:00")
-    day_start = local_ts(day, start_hhmm, tz)
-    end_minutes = hhmm_to_minutes(end_hhmm)
-    if end_minutes <= hhmm_to_minutes(start_hhmm):
-        day_end = local_ts(day + timedelta(days=1), end_hhmm, tz)
-    else:
-        day_end = local_ts(day, end_hhmm, tz)
-    next_day_start = local_ts(day + timedelta(days=1), start_hhmm, tz)
-    return day_start, day_end, next_day_start
-
-
-def broadcast_day_for(ts: float, settings: dict[str, Any], tz: ZoneInfo) -> date:
-    """The broadcast day a timestamp belongs to (early mornings belong to the previous day)."""
-    dt = datetime.fromtimestamp(ts, tz)
-    if dt.hour * 60 + dt.minute < hhmm_to_minutes(settings.get("day_start", "08:00")):
-        return (dt - timedelta(days=1)).date()
-    return dt.date()
 
 
 EraSpans = tuple[tuple[int, int, float], ...]
@@ -157,7 +106,7 @@ def allowed_at(item: dict[str, Any], start_minutes: int, settings: dict[str, Any
     day_start = hhmm_to_minutes(settings.get("day_start", "08:00"))
 
     def late(minute: int) -> int:
-        return minute if minute >= day_start else minute + 1440
+        return bday_minutes(minute, day_start)
 
     start = late(start_minutes)
     earliest = cert_earliest_minutes(effective_cert(item, settings), settings, item.get("kind") or "movie")

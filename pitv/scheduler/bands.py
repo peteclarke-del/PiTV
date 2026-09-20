@@ -16,12 +16,12 @@ import json
 import random
 import sqlite3
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..db import as_bool, as_int, as_text, genre_list, rows_to_dicts
-from .rules import hhmm_to_minutes, local_ts
+from .clock import broadcast_ts
 from .slots import seconds
 
 ITEM_MINUTES = 15             # default longest item a band treats as one of its own; see is_feature
@@ -301,12 +301,8 @@ class Filler:
 # --- placing bands in a day --------------------------------------------------------------
 
 def band_start(band: Band, day: date, day_start_min: int, tz: ZoneInfo) -> int:
-    """A band's start time on this broadcast day. A time earlier than the day's own start
-    belongs to the small hours at its end, so "00:30" on a day that opens at 08:00 is tomorrow
-    morning, not twenty-four hours ago."""
-    minute = hhmm_to_minutes(band.start)
-    at = day + timedelta(days=1) if minute < day_start_min else day
-    return local_ts(at, band.start, tz)
+    """A band's start time on this broadcast day (`clock.broadcast_ts`)."""
+    return broadcast_ts(day, band.start, day_start_min, tz)
 
 
 def timetable(todays: list[Band], day: date, day_start: int, day_end: int, next_day_start: int,

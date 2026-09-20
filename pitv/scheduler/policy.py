@@ -15,12 +15,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..db import DEFAULT_SETTINGS
-from .rules import hhmm_to_minutes
-
-MINUTE = 60
-HOUR = 60 * MINUTE
-DAY = 24 * HOUR
-WEEK = 7 * DAY
+from .clock import (
+    DAY,
+    HOUR,
+    MINUTE,
+    WEEK,
+    hhmm_to_minutes,
+)
 
 
 def _field(row: Any, key: str) -> Any:
