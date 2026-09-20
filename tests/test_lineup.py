@@ -151,19 +151,31 @@ def test_external_entry_scheduled_ahead_and_requested(conn):
         dbm.set_setting(conn, "external_weight", 1.0)
 
 
-def test_every_unseen_remote_title_gets_a_variety_slot(conn):
-    """A healthy local library must not starve configured remote catalogue entries."""
+REMOTE_TITLES = ("Remote History One", "Remote History Two", "Remote History Three")
+
+
+def _schedule_remote_titles(conn) -> int:
+    """Three remote series on the first general channel and three days built around them. The
+    module shares one database, so this adds only what is not there yet; each test that needs
+    remote placeholders in the schedule calls it and can then run on its own."""
     ch = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
-    titles = ("Remote History One", "Remote History Two", "Remote History Three")
-    for n, title in enumerate(titles, 1):
-        lineup.add(conn, ch, title=title, year=1985, kind="show", genres=["Documentary"],
-                   episode_minutes=25, match={"source": "manual", "id": f"remote-{n}"})
+    have = {r["title"] for r in conn.execute("SELECT title FROM lineup WHERE channel_id = ?", (ch,))}
+    for n, title in enumerate(REMOTE_TITLES, 1):
+        if title not in have:
+            lineup.add(conn, ch, title=title, year=1985, kind="show", genres=["Documentary"],
+                       episode_minutes=25, match={"source": "manual", "id": f"remote-{n}"})
     with dbm.tx(conn):
         dbm.set_setting(conn, "nas_only", False)
         dbm.set_setting(conn, "external_weight", 1.0)
-
     now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(conn))
     build_horizon(conn, start_day=parse_day("2026-09-14"), days=3, now=now, seed=17, force=True)
+    return ch
+
+
+def test_every_unseen_remote_title_gets_a_variety_slot(conn):
+    """A healthy local library must not starve configured remote catalogue entries."""
+    ch = _schedule_remote_titles(conn)
+    titles = REMOTE_TITLES
     scheduled = {r["title"] for r in conn.execute(
         "SELECT DISTINCT s.title FROM schedule s JOIN wanted w ON w.id = s.wanted_id"
         " WHERE s.channel_id = ? AND s.replay = 0", (ch,))}
@@ -172,6 +184,7 @@ def test_every_unseen_remote_title_gets_a_variety_slot(conn):
 
 def test_readiness_substitutes_unfetched_placeholders(conn):
     from pitv.readiness import check
+    _schedule_remote_titles(conn)
     placeholder = conn.execute("SELECT * FROM schedule WHERE wanted_id IS NOT NULL AND media_id IS NULL AND replay = 0 ORDER BY start_ts LIMIT 1").fetchone()
     assert placeholder is not None
     now = placeholder["start_ts"] - 6 * 3600
@@ -526,6 +539,30 @@ def test_fetched_material_is_kept_until_the_drive_needs_room_then_oldest_aired_g
     assert left == {ids[0]: 1, ids[1]: 1, ids[2]: 0, ids[3]: 0}
     assert not (cache / "acquired" / "ep0.mp4").exists() and (cache / "acquired" / "ep2.mp4").exists()
     assert lineup.evict_fetched(c, now=now) == 0, "nothing else has aired that may go"
+    c.close()
+
+
+def test_a_fetched_file_that_cost_an_encode_outlasts_one_filed_as_found(tmp_path):
+    """Both have aired and either would make the room. The one pitv_content re-encoded aired
+    longer ago, and still stays: it is the dearer of the two to get back."""
+    c = make_library(tmp_path, max_episodes=2)["conn"]
+    cache = tmp_path / "cache"
+    (cache / "acquired").mkdir(parents=True)
+    now = dbm.now_ts()
+    with dbm.tx(c):
+        dbm.set_setting(c, "cache_dir", str(cache))
+        dbm.set_setting(c, "cache_max_gb", 0.0000015)            # room for one of the two
+        ids = [r[0] for r in c.execute("SELECT id FROM media WHERE kind = 'episode' ORDER BY id LIMIT 2")]
+        for n, (mid, encoded, ago) in enumerate(zip(ids, (1, 0), (30, 1), strict=True)):
+            f = cache / "acquired" / f"ep{n}.mp4"
+            f.write_bytes(b"x" * 1000)
+            c.execute("UPDATE media SET origin = 'cache', path = ?, cache_path = ?, encoded = ? WHERE id = ?",
+                      (str(f), str(f), encoded, mid))
+            c.execute("INSERT INTO history(channel_id, media_id, started_at, ended_at, title) VALUES (1, ?, ?, ?, 'x')",
+                      (mid, now - ago * 86400 - 1800, now - ago * 86400))
+        c.execute("DELETE FROM schedule")
+    assert lineup.evict_fetched(c, now=now) == 1
+    assert (cache / "acquired" / "ep0.mp4").exists() and not (cache / "acquired" / "ep1.mp4").exists()
     c.close()
 
 

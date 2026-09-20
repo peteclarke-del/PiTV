@@ -140,6 +140,7 @@ CREATE TABLE IF NOT EXISTS media (
     height INTEGER,
     interlaced INTEGER NOT NULL DEFAULT 0,
     hwdec INTEGER NOT NULL DEFAULT 0,   -- 1 if the Pi 4 can hardware decode it
+    encoded INTEGER,               -- fetched material: 1 if pitv_content re-encoded it, 0 if it was filed as found; NULL = not said
     certificate TEXT,
     genres TEXT,                   -- JSON list
     plot TEXT,
@@ -574,6 +575,7 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("media", "cache_path", "TEXT"),
     ("media", "cache_vcodec", "TEXT"),
     ("media", "cache_interlaced", "INTEGER"),
+    ("media", "encoded", "INTEGER"),
     ("lineup", "match", "TEXT"),
     ("channels", "kids_any_time", "INTEGER NOT NULL DEFAULT 0"),
     ("channels", "decades", "TEXT"),

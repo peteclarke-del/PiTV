@@ -683,7 +683,11 @@ def evict_fetched(conn: sqlite3.Connection, needed: int = 0, now: int | None = N
     Fetched episodes are kept after they air, so the library fills once and a later airing costs
     nothing. That has to end somewhere: when the cache folder is over its cap, or the drive
     cannot take what pitv_content is about to bring, the fetched items that aired longest ago
-    go first, with a warning, until there is room. Nothing scheduled ahead is touched, nor
+    go first, with a warning, until there is room. Those pitv_content filed as it found them go
+    before those it had to re-encode (the index's `encoded`), for the reason copies go before
+    encodes in `MediaCache.make_room`: getting one back costs a download, the other a download
+    and most of an hour's encoding. `pi_can_play` cannot tell them apart, since a file encoded
+    to the screen plays as readily as one that never needed it. Nothing scheduled ahead is touched, nor
     anything that has not aired yet (it was fetched for an airing to come), nor anything
     outside the cache. The catalogue row is retired; the title can always be fetched again."""
     from .player.cache import HEADROOM_BYTES, MediaCache, tree_bytes
@@ -703,7 +707,7 @@ def evict_fetched(conn: sqlite3.Connection, needed: int = 0, now: int | None = N
         "SELECT m.id, m.title, m.path, m.cache_path, MAX(h.ended_at) AS last_aired FROM media m"
         " JOIN history h ON h.media_id = m.id WHERE m.origin IN ('cache', 'online') AND m.missing = 0"
         " AND NOT EXISTS (SELECT 1 FROM schedule s WHERE s.media_id = m.id AND s.end_ts > ?)"
-        " GROUP BY m.id ORDER BY last_aired", (now,)).fetchall()
+        " GROUP BY m.id ORDER BY COALESCE(m.encoded, 0), last_aired", (now,)).fetchall()
     gone: list[int] = []
     freed = 0
     for r in rows:

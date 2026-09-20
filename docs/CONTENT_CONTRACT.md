@@ -120,6 +120,9 @@ for the nightly index run.
   to nine digits for the other two). The field is absent when the NFO has none. An episode's
   `ids` are the episode's own; the show's `ids` identify the series. PiTV keeps what fits
   those shapes and sends it with its online checks (section 8).
+- `encoded`, on an item pitv_content fetched, says whether it re-encoded the file (`true`) or
+  filed it as found (`false`). It is absent on NAS material, where PiTV's own `pi_can_play`
+  answers the same question. PiTV keeps it for eviction (section 5).
 - A `complete` index lists every item; PiTV marks anything absent from it as missing. An
   incomplete index (`"complete": false`) only adds and updates.
 - `sources` are pitv_content's NAS sources. PiTV shows them and edits them through
@@ -347,7 +350,9 @@ reports the paths, so the two sides never disagree about what exists.
 
 - PiTV evicts least recently used first, but plain copies before anything pitv_content had to
   re-encode (what `pi_can_play` refuses as it is): a copy is seconds to make again, a two hour
-  concert is most of an hour in which nothing else is delivered.
+  concert is most of an hour in which nothing else is delivered. Fetched material goes only
+  when copies have not made enough room, oldest aired first, and by the same reasoning what
+  was filed as found goes before what was re-encoded, told by the index's `encoded`.
 
 - Two rules decide copy or encode, each for its own material. `pi_can_play` (PiTV) sets `copy`
   or `transcode` for NAS material in the manifest. pitv_content's own test decides whether what

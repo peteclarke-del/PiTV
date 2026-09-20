@@ -90,7 +90,9 @@ definition screen, as section 2 says; `meta.title` for a matched series is the e
 ## Decisions taken
 
 - The vocabulary, profile, copy-rule, numbering and length-window authorities above.
-- pitv_content publishes `encoded` per item; PiTV's eviction reads it for fetched material.
+- pitv_content publishes `encoded` per item; PiTV's eviction reads it for fetched material. Done on
+  both sides: PiTV keeps the flag on import and `lineup.evict_fetched` takes what was filed as found
+  before what was re-encoded, oldest aired first within each.
 - pitv_content folds its three year readers and two placeholder-title patterns into
   `episodes.py`, and its ordering constants into the head of `cache.py`, as a change of its own
   after this review.

@@ -292,6 +292,7 @@ def import_index(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, Any
                 "duration": duration, "vcodec": vcodec, "acodec": as_text(it.get("acodec")),
                 "width": as_int(it.get("width")), "height": as_int(it.get("height")),
                 "interlaced": int(as_bool(it.get("interlaced"))), "hwdec": int((vcodec or "") in PI_HW_CODECS),
+                "encoded": None if it.get("encoded") is None else int(as_bool(it.get("encoded"))),
                 "certificate": normalise_cert(as_text(it.get("certificate"))), "genres": json.dumps(genre_list(it.get("genres"))),
                 "plot": as_text(it.get("plot")), "channel_hint": as_int(it.get("channel_hint")),
                 "artist": as_text(it.get("artist")),
