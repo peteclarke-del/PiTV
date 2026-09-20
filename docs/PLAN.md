@@ -783,6 +783,28 @@ of programme to re-encode, of files the Pi plays in hardware. The admin Catalogu
 what is on air was considered and dropped: it competes with the decoder for the same
 hardware.
 
+### 5.3b Idents and the static between channels
+
+`pitv idents` makes a fifteen second ident for each enabled channel from its name and colour
+(`pitv/idents.py`): the four bars of the PiTV mark sweep in, the wordmark resolves, and the
+channel's name rises in the channel's colour, over a synthesised sting in a key of the
+channel's own. Frames are drawn with Pillow at the screen profile's size and piped to ffmpeg
+(H.264, 25 frames a second, stereo AAC, under a megabyte each). PiTV never invents a voice: a
+recording at `<out>/voices/<number>.wav` (or the channel's short name; .mp3, .flac, .ogg and
+.m4a too) is laid over the sting from the moment the name appears, with the music ducked under
+it. Files land in `<data>/idents/ch<number>/`, the folder layout pitv_content reads a channel
+from, so an idents source pointed at `<data>/idents` (type `ident`, location `nas`, with
+`local_root` set to the same path on a Pi, where that folder is not a mount) is all that ties a
+film to its channel. They are then ordinary library material, copied to the cache and placed
+where a channel's pattern asks.
+
+The snow over a channel change is animated. The renderer draws several frames once per screen
+size (boiling grain, line structure, a dark hum bar rolling down the tube, thin bands torn
+sideways) into one file, as many as a 32 MB budget allows and never fewer than three, and a
+short thread steps mpv's overlay through them by offset at 25 frames a second for 0.45 s. The
+main loop turns twice a second and could not animate it; a second change mid-burst starts a
+new burst and the old thread stands down.
+
 ### 5.4 Remote control
 
 The OSMC RF remote (2.4 GHz USB dongle) presents itself as a USB keyboard, so there is no IR

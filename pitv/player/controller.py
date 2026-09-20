@@ -17,6 +17,7 @@ import logging
 import queue
 import signal
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -58,6 +59,8 @@ CLOCK_JUMP_SECONDS = 60    # a wall-clock step larger than this rejoins live at 
 SETTINGS_RELOAD_SECONDS = 60
 HEALTH_SECONDS = 300
 GUIDE_REFRESH_SECONDS = 30
+STATIC_SECONDS = 0.45           # how long the snow covers a channel change
+STATIC_FRAME_SECONDS = 1 / 25   # a new frame of it every television frame
 STATE_POLL_TIMEOUT = 1.0   # mpv property reads for the published state; a hung mpv must not stall it
 MAX_PENDING_INPUT = 32     # queued key and web commands beyond this are dropped, not buffered
 
@@ -123,6 +126,7 @@ class Player:
         self.guide_rows: dict[int, list[dict[str, Any]]] = {}
         self.guide_loaded_at = 0.0              # monotonic; 0 forces a reload
         self.osd_expiry: dict[int, float] = {}  # overlay id -> monotonic expiry
+        self._static_burst = 0                  # the latest channel-change burst; an older one's thread stands down
         self.last_key: dict[str, Any] | None = None
         self.last_error: str | None = None
         self.history_id: int | None = None
@@ -514,7 +518,7 @@ class Player:
         self._unpause()
         if switching and self.settings["channel_switch_static"]:
             self._sync_osd_size()
-            self._overlay(OVERLAY_STATIC, self.renderer.static(), ttl=0.35)
+            self._play_static()
         self.play_live()
         self._save_state()
         if show_badge:
@@ -863,6 +867,31 @@ class Player:
             w, h = self.mpv.get("osd-width"), self.mpv.get("osd-height")
         if w and h:
             self.renderer.resize(int(w), int(h))
+
+    def _play_static(self) -> None:
+        """Snow over the seek of a channel change, animated: a short thread steps mpv's overlay
+        through the frames the renderer keeps (`Renderer.static`) at the television's frame rate
+        and takes it away after `STATIC_SECONDS`. The main loop turns twice a second, far too
+        slowly to animate anything. A second change before the first burst ends starts a new one
+        and the old thread, seeing it is no longer the latest, stops without touching the screen."""
+        (path, w, h, x, y), frames, frame_bytes = self.renderer.static()
+        self._static_burst += 1
+        burst = self._static_burst
+        self.osd_expiry.pop(OVERLAY_STATIC, None)
+
+        def run() -> None:
+            ends = time.monotonic() + STATIC_SECONDS
+            n = 0
+            try:
+                while time.monotonic() < ends and burst == self._static_burst and not self.stopping:
+                    self.mpv.overlay_add(OVERLAY_STATIC, x, y, path, w, h, offset=(n % frames) * frame_bytes)
+                    n += 1
+                    time.sleep(STATIC_FRAME_SECONDS)
+                if burst == self._static_burst:
+                    self.mpv.overlay_remove(OVERLAY_STATIC)
+            except MpvError as exc:
+                log.warning("static overlay failed: %s", exc)
+        threading.Thread(target=run, name="pitv-static", daemon=True).start()
 
     def _overlay(self, oid: int, rendered: Rendered, ttl: float | None) -> None:
         path, w, h, x, y = rendered

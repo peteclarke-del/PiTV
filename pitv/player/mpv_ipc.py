@@ -219,8 +219,9 @@ class Mpv:
 
     # --- overlays ---------------------------------------------------------------------------
 
-    def overlay_add(self, overlay_id: int, x: int, y: int, path: str, w: int, h: int) -> None:
-        self.command("overlay-add", overlay_id, x, y, path, 0, "bgra", w, h, w * 4)
+    def overlay_add(self, overlay_id: int, x: int, y: int, path: str, w: int, h: int, offset: int = 0) -> None:
+        """`offset` is where in the file the frame starts, so one file can hold several."""
+        self.command("overlay-add", overlay_id, x, y, path, offset, "bgra", w, h, w * 4)
 
     def overlay_remove(self, overlay_id: int) -> None:
         try:

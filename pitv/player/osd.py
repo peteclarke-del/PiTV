@@ -3,12 +3,13 @@ into BGRA files that mpv composites with `overlay-add`."""
 
 from __future__ import annotations
 
+import random
 from datetime import datetime, tzinfo
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 FONT_CANDIDATES = [
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
@@ -25,6 +26,8 @@ MARGIN_RANGE = (0.0, 0.2)
 TEXT_SCALE_RANGE = (0.5, 3.0)
 
 Rendered = tuple[str, int, int, int, int]   # (file, width, height, x, y) for overlay-add
+STATIC_FRAMES = 8                       # frames of snow kept for a channel change, where memory allows
+STATIC_BUDGET_BYTES = 32 * 1024 * 1024  # a 1080p screen keeps three frames, a standard definition one all eight
 
 
 def _clamp(value: float, bounds: tuple[float, float]) -> float:
@@ -130,17 +133,45 @@ class Renderer:
 
     # --- static ---------------------------------------------------------------------------
 
-    def static(self) -> Rendered:
-        """Full-screen analogue 'snow', shown for a moment when changing channel. Drawn once per
-        screen size: a third of a second of noise looks no different for being the same frame,
-        and channel changes are quicker without rendering and writing a full frame each time."""
+    def static(self) -> tuple[Rendered, int, int]:
+        """Full-screen analogue snow for a channel change, as (overlay, frames, bytes per frame).
+
+        A detuned set is never one still picture: the grain boils, a dark hum bar rolls down the
+        tube, the line structure shows and the picture tears sideways where sync slips. Several
+        frames are drawn once per screen size into one file, and the player steps mpv's overlay
+        through them by offset, so a channel change costs no rendering. The frame count is what
+        `STATIC_BUDGET_BYTES` allows at this screen size, never fewer than three; they sit in
+        the run directory, which is memory on the Pi."""
+        frame_bytes = self.width * self.height * 4
+        frames = max(3, min(STATIC_FRAMES, STATIC_BUDGET_BYTES // frame_bytes))
         if self._static is None or not Path(self._static[0]).exists():
-            small = Image.effect_noise((self.width // 3, self.height // 3), 90).convert("L")
-            noise = small.resize((self.width, self.height), Image.Resampling.NEAREST)
-            img = Image.merge("RGBA", (noise, noise, noise, Image.new("L", noise.size, 255)))
-            path, w, h = self._save(img, "static")
-            self._static = (path, w, h, 0, 0)
-        return self._static
+            rng = random.Random(self.width * 10007 + self.height)      # the same snow for the same screen
+            grain = (max(1, self.width // 3), max(1, self.height // 3))
+            lines = Image.new("L", grain, 255)
+            draw = ImageDraw.Draw(lines)
+            for y in range(0, grain[1], 2):
+                draw.line([(0, y), (grain[0], y)], fill=205)          # every other line a little darker
+            path = self.run_dir / "static.bgra"
+            with path.open("wb") as out:
+                for n in range(frames):
+                    snow = Image.effect_noise(grain, rng.uniform(70, 100)).convert("L")
+                    snow = ImageChops.multiply(snow, lines)
+                    # The hum bar: a soft dark band, a fifth of the screen tall, rolling downwards.
+                    bar_h = max(4, grain[1] // 5)
+                    top = int((n / frames) * (grain[1] + bar_h)) - bar_h
+                    shade = Image.new("L", grain, 255)
+                    band = Image.linear_gradient("L").resize((grain[0], bar_h)).point(lambda v: 150 + abs(v - 128) * 105 // 128)
+                    shade.paste(band, (0, top))
+                    snow = ImageChops.multiply(snow, shade)
+                    # Tearing: two or three thin bands pulled sideways, in a new place each frame.
+                    for _ in range(rng.randint(2, 3)):
+                        y, h = rng.randrange(grain[1]), rng.randint(2, max(3, grain[1] // 40))
+                        strip = snow.crop((0, y, grain[0], min(grain[1], y + h)))
+                        snow.paste(ImageChops.offset(strip, rng.randint(grain[0] // 12, grain[0] // 4), 0), (0, y))
+                    full = snow.resize((self.width, self.height), Image.Resampling.NEAREST)
+                    out.write(Image.merge("RGBA", (full, full, full, Image.new("L", full.size, 255))).tobytes("raw", "BGRA"))
+            self._static = (str(path), self.width, self.height, 0, 0)
+        return self._static, frames, frame_bytes
 
     # --- badge ---------------------------------------------------------------------------
 

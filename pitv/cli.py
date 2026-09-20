@@ -147,6 +147,20 @@ def cmd_readiness(cfg: Config, args: Args) -> int:
     return 0 if r["status"] != "error" else 1
 
 
+def cmd_idents(cfg: Config, args: Args) -> int:
+    """Make a fifteen second ident for each channel from its name and colour (pitv/idents.py)."""
+    from . import idents
+    conn = _open(cfg)
+    out = Path(args.out) if args.out else cfg.data_dir / "idents"
+    made = idents.make_all(conn, out, Path(args.voices) if args.voices else out / "voices",
+                           {int(n) for n in args.channel} if args.channel else None)
+    for path in made:
+        print(path)
+    print(f"{len(made)} ident(s) in {out}. Point an idents source at that folder in Admin, Sources, and they are indexed "
+          f"with the rest; each channel's folder (ch1, ch2, ...) is what ties a film to its channel.")
+    return 0
+
+
 def cmd_doctor(cfg: Config, args: Args) -> int:
     """The state of the whole television in one report; exit 1 when anything needs attention."""
     from . import doctor
@@ -170,6 +184,12 @@ def build_parser() -> argparse.ArgumentParser:
     dr.add_argument("--json", action="store_true", help="the whole report as JSON rather than a summary")
     dr.add_argument("--out", help="write the report to this file")
     dr.set_defaults(func=cmd_doctor)
+
+    idn = sub.add_parser("idents", help="make a 15 second ident for each channel from its name and colour")
+    idn.add_argument("--out", help="folder to write ch<number>/<name> ident.mp4 into (default: <data>/idents)")
+    idn.add_argument("--voices", help="folder of voiceover recordings named <number>.wav or <short name>.wav (default: <out>/voices)")
+    idn.add_argument("--channel", action="append", help="only this channel number; may be given more than once")
+    idn.set_defaults(func=cmd_idents)
 
     f = sub.add_parser("fake-library", help="generate a tiny fake library and its library index for development")
     f.add_argument("dir")
