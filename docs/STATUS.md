@@ -144,7 +144,12 @@ of rebuilds had filled it), so the fetches would still not have been reached. pi
 for, within a third of the slice and never less than ten minutes, taken even when what is about
 to air has used the slice up), then copies, then the transcode. The trade is deliberate and
 agreed: a late copy leaves the player on the NAS for that programme, a late fetch leaves a gap.
-Episode delivery is to be read from 03:28; contract section 6 is to say so.
+A third restart followed at 04:38 (pitv_content 56c14a1): the share was kept for an over-long
+slice only when a fetch was the very next request, and in a real manifest the rest of what is
+about to air lies between; the 03:48 slice transcoded a concert for 35 minutes and ended without
+looking for anything. A slice out of time with its share untaken now passes over what lies
+between, takes its four fetches within the time box, and ends. Episode delivery is to be read
+from 04:38; contract section 6 is to describe the order.
 
 The spread of a week (19 September, PiTV dcb86e5, ab299e9, 5def1e0), from Pete finding the same
 remote sport episode twice running on a Wednesday morning on PiTV One. Three causes: the last
