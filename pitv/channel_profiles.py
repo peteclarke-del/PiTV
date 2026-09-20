@@ -48,32 +48,34 @@ def _dp(name: str, start: str, tv: float, movie: float, kids: float, sport: floa
 # quiet until the omnibus, a film, the classic serial at teatime and drama in the evening.
 BBC_ONE = {
     "weekday": [
-        _dp("Breakfast", "08:00", 1.0, 0.05, 1.0, 0.05, 40, Magazine=2.0, Informational=2.0, Children=1.5),
+        _dp("Breakfast", "08:00", 1.0, 0.05, 0.3, 0.05, 40, Magazine=2.0, Informational=2.0),
         _dp("Daytime", "09:30", 1.0, 0.2, 0.6, 0.1, Education=2.0, Magazine=2.0),
         _dp("Lunchtime", "12:30", 1.0, 0.1, 0.3, 0.2, 40, Magazine=2.0, Informational=1.5, Comedy=1.2),
         _dp("Afternoon", "13:45", 0.8, 1.6, 0.5, 0.3, Soap=1.5, Drama=1.3, Western=1.5),
         _dp("Children's BBC", "15:55", 1.0, 0.05, 7.0, 0.05, 35, Children=2.0, Animation=2.0, Family=1.5),
-        _dp("Early evening", "17:35", 1.0, 0.1, 0.4, 0.2, 40, Soap=3.0, Game_Show=2.5, Comedy=1.5, Family=1.5, Magazine=1.5),
-        _dp("Prime time", "19:00", 1.0, 0.5, 0.05, 0.3, Comedy=2.0, Drama=1.6, Game_Show=1.5, Family=1.5, Adventure=1.3),
-        _dp("After the Nine O'Clock News", "21:00", 1.0, 1.2, 0.0, 0.4, Drama=2.0, Crime=1.6, Thriller=1.4),
+        _dp("Early evening", "17:35", 1.0, 0.1, 0.4, 0.2, 40, Magazine=2.5, Informational=2.0, Soap=2.0, Family=1.5, Comedy=1.3, Documentary=1.3),
+        _dp("Prime time", "19:00", 1.0, 0.3, 0.05, 0.3, Soap=2.5, Comedy=2.0, Game_Show=1.8, Drama=1.6, Family=1.5, Entertainment=1.5,
+            Music=1.3, Adventure=1.3),
+        _dp("After the Nine O'Clock News", "21:00", 1.0, 1.2, 0.0, 0.4, Drama=2.0, Crime=1.6, Thriller=1.4, Documentary=1.4),
         _dp("Late", "22:30", 0.8, 1.6, 0.0, 2.0, Comedy=1.2),
     ],
     "saturday": [
         _dp("Saturday morning", "08:00", 1.0, 0.1, 6.0, 0.1, 60, Children=2.0, Animation=2.0),
         _dp("Grandstand", "12:15", 0.2, 0.2, 0.2, 9.0),
-        _dp("Saturday teatime", "17:05", 1.0, 0.2, 1.5, 0.3, 50, Family=2.5, Game_Show=2.5, Science_Fiction=2.0, Adventure=2.0, Comedy=1.5),
-        _dp("Saturday night", "19:00", 1.0, 0.4, 0.05, 0.3, Game_Show=3.0, Comedy=2.5, Family=2.0, Drama=1.2),
+        _dp("Saturday teatime", "17:05", 1.0, 0.2, 1.5, 0.3, 50, Family=2.5, Game_Show=2.5, Entertainment=2.0, Science_Fiction=2.0,
+            Adventure=2.0, Comedy=1.5),
+        _dp("Saturday night", "19:00", 1.0, 0.4, 0.05, 0.3, Game_Show=3.0, Entertainment=2.5, Comedy=2.5, Family=2.0, Drama=1.6, Crime=1.5),
         _dp("Saturday post-watershed", "21:00", 1.0, 1.3, 0.0, 0.5, Comedy=1.8, Drama=1.5, Crime=1.5, Thriller=1.5),
         _dp("Match of the Day", "22:15", 0.6, 1.5, 0.0, 4.0),
     ],
     "sunday": [
-        _dp("Sunday morning", "08:00", 1.0, 0.2, 2.0, 0.1, 60, Education=1.5, Children=1.5, Animation=1.5),
+        _dp("Sunday morning", "08:00", 1.0, 0.2, 2.0, 0.1, 60, Education=2.0, Children=1.5, Animation=1.5, Documentary=1.3),
         _dp("Sunday lunchtime", "12:00", 1.0, 0.3, 0.5, 0.4, Magazine=1.5, Informational=1.5, Documentary=1.3),
         _dp("Omnibus and the film", "14:00", 0.8, 1.8, 0.4, 1.0, Soap=2.5, Family=1.5, Western=1.5, Adventure=1.5),
         _dp("Sunday teatime", "16:30", 1.0, 0.4, 1.2, 0.3, 50, Drama=2.0, Family=2.0, Mini__series=2.0, History=1.5),
         _dp("Sunday evening", "19:15", 1.0, 0.5, 0.05, 0.2, Drama=2.5, Comedy=2.0, Mini__series=2.0, Game_Show=1.5),
         _dp("Sunday post-watershed", "21:00", 1.0, 1.3, 0.0, 0.3, Drama=2.0, Crime=1.5),
-        _dp("Sunday late", "22:30", 0.6, 1.4, 0.0, 0.5),
+        _dp("Sunday late", "22:30", 0.8, 0.8, 0.0, 0.5, Documentary=2.0, History=1.5, Science=1.3),
     ],
 }
 
@@ -81,13 +83,14 @@ BBC_ONE = {
 # BBC One had no room for, and the evenings ran snooker and darts for weeks at a time, so sport
 # is welcome here on weekday afternoons and evenings as well as at weekends. Cult imports at
 # six, the documentary and leisure strands at seven and eight, comedy at nine, Newsnight and
-# a film. Sunday Grandstand came here in 1981; Saturday night ended in the horror double bill.
+# a film. Sunday Grandstand came here in 1981; Saturday night ends in a late film, a horror
+# double bill in the summers that had one (1975 to 1981 and 1983).
 BBC_TWO = {
     "weekday": [
-        _dp("Open University", "08:00", 1.0, 0.1, 0.3, 0.05, 40, Education=3.0, Science=2.0, Technology=2.0, Documentary=1.5),
-        _dp("Daytime", "11:00", 1.0, 0.4, 0.3, 0.3, Documentary=1.5, Education=1.5, Nature=1.5, History=1.5),
+        _dp("Daytime on Two", "08:00", 1.0, 0.1, 0.5, 0.05, 40, Education=3.0, Science=2.0, Technology=2.0, Documentary=1.5, Children=1.3),
+        _dp("Daytime", "11:00", 1.0, 0.3, 0.3, 0.3, Education=2.5, Documentary=1.5, Nature=1.5, History=1.5),
         _dp("Afternoon", "14:00", 0.7, 1.6, 0.3, 2.0, Western=1.3),
-        _dp("Six o'clock", "17:30", 1.0, 0.2, 0.5, 1.0, 55, Science_Fiction=3.0, Comedy=1.8, Fantasy=1.5, Adventure=1.5),
+        _dp("Six o'clock", "17:30", 1.0, 0.8, 0.5, 1.0, Science_Fiction=2.0, Comedy=1.8, Western=1.5, Family=1.5, Adventure=1.5, Fantasy=1.3),
         _dp("Evening", "19:00", 1.0, 0.4, 0.05, 1.2, Documentary=2.0, Technology=2.0, Science=2.0, Nature=2.0,
             Magazine=1.8, Informational=1.8, History=1.5),
         _dp("Nine o'clock", "21:00", 1.0, 1.0, 0.0, 1.5, Comedy=2.5, Drama=1.6, Documentary=1.5),
@@ -96,18 +99,18 @@ BBC_TWO = {
     "saturday": [
         _dp("Saturday morning", "08:00", 1.0, 0.2, 4.0, 0.05, 60, Children=2.0, Animation=2.0, Education=1.5),
         _dp("Saturday afternoon", "12:00", 0.6, 2.0, 0.3, 3.0),
-        _dp("Saturday early evening", "17:30", 1.0, 0.4, 0.3, 1.5, Science_Fiction=2.0, Documentary=1.5, Music=1.5),
+        _dp("Saturday early evening", "17:30", 1.0, 0.4, 0.3, 1.5, Documentary=2.0, Music=1.5, History=1.5, Nature=1.3),
         _dp("Saturday evening", "19:00", 1.0, 0.8, 0.05, 1.0, Documentary=2.0, Drama=1.5, Music=1.5, History=1.5),
-        _dp("Saturday nine o'clock", "21:00", 1.0, 1.5, 0.0, 1.5, Comedy=2.0, Drama=1.5),
+        _dp("Saturday nine o'clock", "21:00", 0.8, 2.2, 0.0, 1.5, Drama=1.5, Comedy=1.2),
         _dp("Horror double bill", "22:30", 0.5, 2.5, 0.0, 2.0, Horror=2.0, Thriller=1.5),
     ],
     "sunday": [
         _dp("Sunday morning", "08:00", 1.0, 0.2, 3.0, 0.05, 60, Children=2.0, Animation=2.0, Education=2.0),
         _dp("Sunday lunchtime", "12:00", 1.0, 0.5, 0.3, 1.0, Documentary=1.5, Nature=1.5, Magazine=1.5),
-        _dp("Sunday Grandstand", "14:00", 0.3, 0.8, 0.2, 7.0),
-        _dp("Sunday early evening", "18:00", 1.0, 0.4, 0.2, 1.5, Nature=2.0, Documentary=2.0, Magazine=1.5),
+        _dp("Sunday Grandstand", "13:00", 0.3, 0.8, 0.2, 7.0),
+        _dp("Sunday early evening", "18:30", 1.0, 0.4, 0.2, 1.0, Nature=2.0, Documentary=2.0, Magazine=1.5),
         _dp("Sunday evening", "19:30", 1.0, 0.8, 0.05, 0.5, Drama=1.5, Music=1.5, Documentary=1.5, Comedy=1.5),
-        _dp("Sunday nine o'clock", "21:00", 1.0, 1.5, 0.0, 0.5, Comedy=1.8, Drama=1.5),
+        _dp("Sunday nine o'clock", "21:00", 1.0, 1.5, 0.0, 0.8, Drama=1.8, Music=1.5, Documentary=1.3, Comedy=1.2),
         _dp("Sunday late", "22:30", 0.6, 2.2, 0.0, 1.0),
     ],
 }
@@ -115,12 +118,12 @@ BBC_TWO = {
 # ITV: TV-am, daytime quiz and soap, the lunchtime children's slot and Crown Court, Children's
 # ITV at four, Blockbusters and the teatime soaps, Coronation Street at half past seven, action
 # and crime drama, films after News at Ten and Midweek Sports Special. Saturday is Tiswas or
-# No. 73, World of Sport from half past twelve with the wrestling at four, The A-Team and the
+# No. 73, World of Sport from a quarter past twelve with the wrestling at four, The A-Team and the
 # big game shows. Sunday has The Big Match, Bullseye at teatime and the Sunday night drama.
 ITV = {
     "weekday": [
         _dp("TV-am", "08:00", 1.0, 0.05, 1.5, 0.05, 40, Magazine=2.0, Informational=2.0, Children=1.5, Animation=1.5),
-        _dp("Morning", "09:30", 1.0, 0.2, 0.5, 0.1, Magazine=1.5, Soap=1.5, Education=1.2),
+        _dp("Morning", "09:30", 1.0, 0.2, 0.5, 0.1, Education=2.5, Documentary=1.5, Magazine=1.3, Soap=1.2),
         _dp("Lunchtime", "12:00", 1.0, 0.1, 1.5, 0.2, 40, Soap=2.5, Drama=1.5, Children=1.5),
         _dp("Afternoon", "13:30", 1.0, 1.4, 0.4, 0.5, Soap=2.0, Drama=1.5, Game_Show=1.5),
         _dp("Children's ITV", "16:00", 1.0, 0.05, 7.0, 0.05, 35, Children=2.0, Animation=2.0),
@@ -133,19 +136,22 @@ ITV = {
         _dp("Saturday morning", "08:00", 1.0, 0.1, 6.0, 0.1, 60, Children=2.0, Animation=2.0),
         _dp("World of Sport", "12:15", 0.2, 0.2, 0.2, 9.0, Wrestling=1.5),
         _dp("Saturday teatime", "17:00", 1.0, 0.2, 1.2, 0.3, 60, Action=3.0, Adventure=2.5, Game_Show=2.5, Family=2.0, Science_Fiction=1.5),
-        _dp("Saturday night", "19:00", 1.0, 0.6, 0.05, 0.3, Game_Show=3.0, Comedy=2.0, Family=1.5, Crime=1.5, Drama=1.3),
-        _dp("Saturday post-watershed", "21:00", 1.0, 1.4, 0.0, 0.5, Crime=2.0, Drama=1.8, Thriller=1.5),
+        _dp("Saturday night", "19:00", 1.0, 0.4, 0.05, 0.3, Game_Show=3.0, Entertainment=2.5, Comedy=2.0, Family=1.5),
+        _dp("Saturday action hour", "20:00", 1.0, 0.6, 0.05, 0.3, Crime=2.5, Action=2.5, Adventure=1.5, Drama=1.3, Game_Show=0.8),
+        _dp("Saturday post-watershed", "21:00", 0.9, 2.0, 0.0, 0.5, Crime=2.0, Drama=1.8, Thriller=1.5),
         _dp("Saturday late", "22:30", 0.6, 2.0, 0.0, 2.0, Horror=1.5),
     ],
     "sunday": [
-        _dp("Sunday morning", "08:00", 1.0, 0.2, 2.5, 0.1, 60, Children=1.5, Animation=1.5),
-        _dp("Sunday lunchtime", "12:00", 1.0, 0.3, 0.4, 0.5, Informational=1.5, Magazine=1.5, Documentary=1.5),
+        _dp("Sunday morning", "08:00", 1.0, 0.2, 2.5, 0.1, 60, Children=1.5, Animation=1.5, Education=1.5),
+        _dp("Sunday lunchtime", "12:00", 1.0, 0.3, 0.4, 0.5, Informational=1.5, Magazine=1.5, Documentary=1.5, Adventure=1.3, Action=1.3),
         _dp("The Big Match", "14:00", 0.5, 2.0, 0.3, 3.5),
         _dp("Sunday afternoon drama", "16:00", 1.0, 0.4, 1.0, 0.4, 50, Family=2.0, Drama=1.5, Adventure=1.5),
         _dp("Sunday teatime", "17:00", 1.0, 0.3, 1.0, 0.3, 50, Game_Show=3.0, Family=2.0, Drama=1.5),
-        _dp("Sunday night drama", "19:15", 1.0, 0.5, 0.05, 0.2, Drama=2.5, Comedy=2.0, Mini__series=2.0, Crime=1.8, Game_Show=1.3),
+        _dp("Sunday night", "19:15", 1.0, 0.5, 0.05, 0.2, Drama=2.5, Entertainment=2.0, Comedy=2.0, Mini__series=2.0, Crime=1.8, Action=1.5,
+            Game_Show=1.3),
         _dp("Sunday post-watershed", "21:00", 1.0, 1.3, 0.0, 0.3, Drama=2.0, Crime=2.0, Thriller=1.5),
-        _dp("Sunday late", "22:30", 0.6, 1.8, 0.0, 1.0, Comedy=1.5),
+        _dp("Sunday ten o'clock", "22:00", 1.0, 0.3, 0.0, 0.2, 35, Comedy=2.5),
+        _dp("Sunday late", "22:30", 0.8, 1.5, 0.0, 1.0, Documentary=1.5, Music=1.5),
     ],
 }
 
@@ -158,10 +164,10 @@ ITV = {
 CHANNEL_4 = {
     "weekday": [
         _dp("Morning", "08:00", 1.0, 0.3, 0.4, 0.05, Education=2.0, Documentary=1.5, Comedy=1.2),
-        _dp("Lunchtime", "12:00", 1.0, 0.6, 0.3, 0.1, Documentary=1.5, Magazine=1.5, Comedy=1.3),
+        _dp("Lunchtime", "12:00", 1.0, 0.6, 1.0, 0.1, Documentary=1.5, Magazine=1.5, Children=1.3, Comedy=1.3),
         _dp("Matinee", "14:00", 0.6, 2.5, 0.3, 1.0, Western=1.5, War=1.3),
         _dp("Teatime", "16:30", 1.0, 0.1, 1.5, 0.1, 40, Game_Show=3.0, Comedy=2.0, Animation=1.5, Family=1.5, Music=1.5),
-        _dp("Early evening", "18:00", 1.0, 0.2, 0.3, 0.2, 55, Comedy=2.0, Soap=2.0, Science_Fiction=1.5, Documentary=1.5),
+        _dp("Early evening", "18:00", 1.0, 0.2, 0.3, 0.2, 55, Comedy=2.0, Documentary=2.0, Informational=1.5, Science_Fiction=1.5, Music=1.3),
         _dp("Eight o'clock", "20:00", 1.0, 0.5, 0.05, 0.2, Soap=2.0, Documentary=2.0, Drama=1.6, History=1.5, Science=1.5),
         _dp("Nine o'clock", "21:00", 1.0, 1.6, 0.0, 0.3, Comedy=2.5, Crime=2.0, Drama=1.8),
         _dp("Late", "22:30", 0.8, 2.2, 0.0, 0.5, Comedy=1.8, Horror=1.5, Music=1.5, Thriller=1.3),
@@ -176,11 +182,11 @@ CHANNEL_4 = {
     ],
     "sunday": [
         _dp("Sunday morning", "08:00", 1.0, 0.3, 1.0, 0.05, 60, Education=1.5, Animation=1.3),
-        _dp("Sunday lunchtime", "12:00", 1.0, 0.6, 0.4, 0.1, Documentary=1.5, Family=1.5, Comedy=1.3, Western=1.3),
+        _dp("Sunday lunchtime", "12:00", 1.0, 0.6, 0.4, 0.1, Family=2.0, Documentary=1.5, Drama=1.3, Comedy=1.3, Western=1.3),
         _dp("Sunday matinee", "14:00", 0.5, 2.8, 0.3, 0.3),
         _dp("American football", "17:00", 0.8, 0.5, 0.3, 2.5, Family=1.3),
         _dp("Sunday evening", "19:00", 1.0, 0.8, 0.05, 0.2, Documentary=1.8, Drama=1.6, Comedy=1.5, History=1.5, Nature=1.5),
-        _dp("Film on Four", "21:00", 0.8, 2.0, 0.0, 0.2, Drama=2.0, Comedy=1.5),
+        _dp("Sunday film", "21:00", 0.8, 2.0, 0.0, 0.2, Drama=2.0, Comedy=1.5),
         _dp("Sunday late", "22:30", 0.6, 2.2, 0.0, 0.3, Comedy=1.5, Music=1.3),
     ],
 }

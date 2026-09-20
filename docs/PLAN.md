@@ -537,7 +537,7 @@ so nothing the owner has set is overwritten.
   a late film; Sunday Grandstand, and the Saturday horror double bill.
 - ITV: TV-am, daytime quiz and soap, the lunchtime children's slot, Children's ITV at four,
   the teatime quiz and soaps, Coronation Street, crime and action drama, films after News at
-  Ten. Saturday is World of Sport from 12:30 with the wrestling, The A-Team and the big game
+  Ten. Saturday is World of Sport from 12:15 with the wrestling, The A-Team and the big game
   shows; Sunday The Big Match, Bullseye at teatime and the Sunday night drama.
 - Channel 4: repeats, education and the afternoon matinee before its teatime start, Countdown
   and American repeats at teatime, Brookside at eight, documentary, the imports and comedy at
