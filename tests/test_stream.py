@@ -1,4 +1,6 @@
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from pitv.stream import Streams, _Channel, ffmpeg_command
 from pitv.web.api.stream import _viewer_playlist
@@ -116,3 +118,63 @@ def test_closing_one_browser_keeps_other_viewer_streaming(tmp_path, monkeypatch)
 
     assert stopped == []
     assert channel.viewers == {"127.0.0.1#other-tab": 11}
+
+
+class _Exited:
+    """A finished ffmpeg run."""
+
+    def __init__(self, code: int = 0) -> None:
+        self.returncode = code
+
+    def poll(self) -> int:
+        return self.returncode
+
+
+def test_a_finished_run_is_not_repackaged_until_its_media_has_played(tmp_path):
+    """ffmpeg writes a slot faster than it plays, so it exits with the viewer still watching what
+    it wrote. Packaging the next item then re-read the same slot from a few seconds earlier: the
+    end of a programme came round again and a fifteen second ident arrived in pieces."""
+    streams = Streams(type("Cfg", (), {"run_dir": tmp_path})())
+    ch = _Channel(number=1, channel_id=1, dir=tmp_path / "ch1", proc=_Exited(), seq=0)
+    ch.dir.mkdir(parents=True)
+    (ch.dir / "s00000.ts").touch()          # the run wrote its segments
+    ch.until = time.monotonic() + 30        # and they are half a minute of viewing
+    assert streams._played_out(ch) is False
+    ch.until = time.monotonic() - 0.1       # once they have been watched, the next item may start
+    assert streams._played_out(ch) is True
+
+
+def test_a_failed_or_empty_run_is_not_waited_for(tmp_path):
+    """Waiting on media that was never written would freeze the stream, so only a run that wrote
+    something and ended cleanly is given its time. A file that yields nothing is set aside so the
+    card fills the slot rather than the same question being asked every second."""
+    streams = Streams(type("Cfg", (), {"run_dir": tmp_path})())
+    failed = _Channel(number=1, channel_id=1, dir=tmp_path / "ch1", proc=_Exited(1), seq=0)
+    failed.dir.mkdir(parents=True)
+    failed.until = time.monotonic() + 30
+    assert streams._played_out(failed) is True
+
+    empty = _Channel(number=2, channel_id=2, dir=tmp_path / "ch2", proc=_Exited(), seq=0, slot_id=77)
+    empty.dir.mkdir(parents=True)
+    empty.until = time.monotonic() + 30
+    assert streams._played_out(empty) is True and empty.exhausted == 77
+
+
+def test_a_run_is_never_asked_for_more_than_the_file_has_left(tmp_path):
+    """The slot outlasting the file is what made the last seconds repeat. The run is cut to what
+    the file holds, and once that is spent the rest of the slot is the continuity card."""
+    streams = Streams(type("Cfg", (), {"run_dir": tmp_path})())
+    source = tmp_path / "programme.mp4"
+    source.touch()
+    cache = SimpleNamespace(locate=lambda media, fallback: (str(source), "cache"))
+    slot = {"id": 5, "start_ts": 1000, "end_ts": 1600, "title": "Short Film", "offset": 0}
+    media = {"duration": 300.0}
+
+    path, where, start, seconds, _ = streams._source(slot, media, cache, {}, now=1000)
+    assert (path, where, start, seconds) == (source, "cache", 0.0, 300), "the file, not the slot"
+
+    _, where, _, seconds, _ = streams._source(slot, media, cache, {}, now=1300)
+    assert where == "card" and seconds == 60, "the file is spent: the card holds the slot"
+
+    _, where, _, _, _ = streams._source(slot, media, cache, {}, now=1000, exhausted=5)
+    assert where == "card", "a file that gave nothing is not asked again"

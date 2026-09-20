@@ -254,6 +254,21 @@ delivery runs alone; pitv_content now takes `state` from its queue (its c3c52b6,
 this move was checked). `pitv doctor` was not misled, since its idle finding reads `active_job`
 and `queued_by_mode`, but it prints `state`.
 
+From Pete watching over the web interface, late on the 20th: the end of a programme came round
+again for about ten seconds, then the ident arrived in pieces, its end first and sometimes its
+start, jerky and never whole. The cause was in the streams, not the television. A packaging run
+writes its slot faster than the slot plays, because the opening seconds are read flat out and
+`-t` stops ffmpeg once it has written the media rather than when the clock reaches the end of
+it. The supervisor started the next item the moment the process exited, so it packaged the same
+slot again from a few seconds earlier, and again, halving what was left each time: the log shows
+a fifteen second ident packaged six times. Each pass appended to the live playlist while
+`delete_segments` took segments the viewer had not fetched yet, which is what made it jerk.
+
+The next item now waits for the media already written to be played out, a run is never asked for
+more than the file has left to give (a file that ends before its slot leaves the continuity card
+for the rest, as the television does), and the opening burst is kept for the cold start it was
+written for, since reading ahead mid-stream only spends the margin the viewer has.
+
 From Pete watching the documentary channel on the evening of the 20th. Two idents ran in one
 break: padding a gap could add two of its own beside the pattern's, and the small-hours replay
 closed two breaks up wherever it left a programme out (six idents once). A break now carries one

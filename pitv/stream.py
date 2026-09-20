@@ -55,7 +55,9 @@ class _Channel:
     playing: str = ""                 # what the current ffmpeg is packaging, for the admin
     error: str = ""
     viewers: dict[str, float] = field(default_factory=dict)   # address -> when it last asked
-    until: float = 0.0                # when the current run is due to end, so an early exit shows up
+    until: float = 0.0                # monotonic: when the media this run wrote has been played out
+    slot_id: int = 0                  # the slot being packaged, so a spent file is not asked for twice
+    exhausted: int = 0                # a slot whose file gave nothing more; the card fills the rest
 
 
 @lru_cache(maxsize=1)
@@ -326,17 +328,37 @@ class Streams:
                     self._stop_channel(ch)
                     self._channels.pop(ch.number, None)
                 continue
-            if ch.proc is None or ch.proc.poll() is not None:
-                if ch.proc is not None:
-                    self._report_exit(ch)
+            if ch.proc is None or (ch.proc.poll() is not None and self._played_out(ch)):
                 self._next_programme(ch, conn, settings, cache)
         with self._lock:
             return bool(self._channels)
 
+    def _played_out(self, ch: _Channel) -> bool:
+        """Whether the item just packaged has been watched through, so the next may start.
+
+        A run writes its media faster than it plays: the opening seconds are read flat out, and
+        `-t` stops ffmpeg once it has written the slot, not once the clock reaches the end of it.
+        Starting the next item the moment the process exits therefore packaged the same slot
+        again from a few seconds earlier, over and over until the slot really ended. On screen
+        the end of a programme came round again and a fifteen second ident arrived in pieces.
+        So the next item waits for the media already written to run out. A run that failed, or
+        that wrote no segment at all, is not waited for."""
+        if ch.proc is None:
+            return True
+        if ch.proc.returncode != 0:
+            self._report_exit(ch)
+            return True
+        if self._next_sequence(ch) <= ch.seq:
+            # Nothing was written, so the file holds less than the catalogue says. Fill the rest
+            # of the slot with the card instead of asking it the same question every second.
+            ch.exhausted = ch.slot_id
+            return True
+        return time.monotonic() >= ch.until
+
     def _report_exit(self, ch: _Channel) -> None:
-        """Say why a packaging run ended when it ended before its programme did. ffmpeg writes
-        its complaint and nothing else (loglevel error), so the log is empty on a clean run."""
-        if ch.proc is None or time.monotonic() >= ch.until - 2:
+        """Say why a packaging run failed. ffmpeg writes its complaint and nothing else
+        (loglevel error), so the log is empty on a clean run."""
+        if ch.proc is None:
             return
         code = ch.proc.returncode
         try:
@@ -353,21 +375,24 @@ class Streams:
         media = None
         if slot and slot.get("media_id"):
             media = dbm.row_to_dict(conn.execute("SELECT * FROM media WHERE id = ?", (slot["media_id"],)).fetchone())
-        path, where, start, seconds, label = self._source(slot, media, cache, settings, now)
+        path, where, start, seconds, label = self._source(slot, media, cache, settings, now, ch.exhausted)
         profile = display.content_profile(settings)
         encoder = settings.get("stream_encoder") or ("h264_v4l2m2m" if is_raspberry_pi() else "libx264")
         ch.seq = self._next_sequence(ch)
+        # The burst is for the viewer waiting on a first segment. Once the playlist has depth,
+        # reading ahead only spends the margin `delete_segments` leaves them.
         cmd = ffmpeg_command(path, start=start, seconds=seconds, out_dir=ch.dir, seq=ch.seq,
                              segment_seconds=int(settings.get("stream_segment_seconds", 4)),
                              media=media if where != "card" else None, where=where, profile=profile,
                              encoder=encoder, loop=where == "card", silent_audio=where == "card",
-                             burst=BURST_SECONDS)
+                             burst=BURST_SECONDS if ch.seq == 0 else 0)
         try:
             ch.dir.mkdir(parents=True, exist_ok=True)   # a stream that was stopped took its folder with it
             with (ch.dir / FFMPEG_LOG).open("wb") as errors:
                 ch.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                            stderr=errors)
             ch.playing, ch.error = label, ""
+            ch.slot_id = slot["id"] if slot else 0
             ch.until = time.monotonic() + seconds
             log.info("stream ch%s: %s from %s (%s, %ss)", ch.number, label, where, path.name, seconds)
         except OSError as exc:
@@ -376,17 +401,23 @@ class Streams:
             log.error("stream ch%s: %s", ch.number, ch.error)
 
     def _source(self, slot: dict[str, Any] | None, media: dict[str, Any] | None, cache: MediaCache,
-                settings: dict[str, Any], now: int) -> tuple[Path, str, float, int, str]:
+                settings: dict[str, Any], now: int, exhausted: int = 0) -> tuple[Path, str, float, int, str]:
         """The file to package next: the programme on air, else the test signal, with where to
-        start, how long to run and what to call it."""
-        if slot and media:
+        start, how long to run and what to call it.
+
+        A run is never asked for more than the file has left to give, so the time the media
+        covers is known and the next item can be timed from it. A file that runs out before its
+        slot does leaves the continuity card for the rest, which is what the television shows."""
+        left = min(MAX_PROGRAMME_SECONDS, max(1, slot["end_ts"] - now)) if slot else CARD_SECONDS
+        if slot and media and slot["id"] != exhausted:
             path, where = cache.locate(media, bool(settings.get("nas_fallback", True)))
             if path:
                 start = max(0.0, now - slot["start_ts"] + float(slot.get("offset") or 0))
-                seconds = min(MAX_PROGRAMME_SECONDS, max(1, slot["end_ts"] - now))
-                return Path(path), where, start, seconds, slot.get("title") or Path(path).stem
-        seconds = CARD_SECONDS if not slot else min(CARD_SECONDS, max(1, slot["end_ts"] - now))
-        return TEST_SIGNAL, "card", 0.0, seconds, (slot or {}).get("title") or "Programmes will continue shortly"
+                duration = float(media.get("duration") or 0)
+                file_left = int(duration - start) if duration else left
+                if file_left >= 1:
+                    return Path(path), where, start, min(left, file_left), slot.get("title") or Path(path).stem
+        return TEST_SIGNAL, "card", 0.0, min(CARD_SECONDS, left), (slot or {}).get("title") or "Programmes will continue shortly"
 
     def _next_sequence(self, ch: _Channel) -> int:
         """Carry on from the highest segment written, so appending never overwrites one a player
