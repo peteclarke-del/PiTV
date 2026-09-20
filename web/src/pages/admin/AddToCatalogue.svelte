@@ -16,6 +16,10 @@
   import GenrePicker from '../../components/GenrePicker.svelte';
 
   let { open = false, channels = [], onclose, onadded } = $props();
+  // pitv_content joins its sources' answers and cuts the list at the limit, so a low one drops a whole
+  // source: at 8 a common title came back as one catalogue entry and seven from TVmaze, with nothing
+  // from TMDb, and the ones already held are greyed out of those.
+  const LOOKUP_LIMIT = 25;
   const KINDS = [['show', 'Series'], ['movie', 'Film'], ['advert', 'Advert'], ['music', 'Music video']];
   const blankForm = () => ({ kind: 'show', title: '', year: '', genres: [], programme_type: '', channel: '', transient: false, minutes: '', artist: '', url: '' });
   let f = $state(blankForm());
@@ -55,7 +59,7 @@
     found = null; lookupNote = '';
     try {
       const r = await toolGet('lookup', { kind: f.kind, title: f.title.trim(), year: num(f.year, { int: true }) ?? undefined,
-                                          artist: f.artist.trim() || undefined, limit: 8 });
+                                          artist: f.artist.trim() || undefined, limit: LOOKUP_LIMIT });
       found = Array.isArray(r?.candidates) ? r.candidates : [];
       const failed = Object.entries(r?.errors ?? {});
       if (failed.length) lookupNote = `Not every source answered: ${failed.map(([s, m]) => `${s}: ${m}`).join('; ')}`;

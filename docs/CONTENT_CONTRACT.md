@@ -392,7 +392,7 @@ the platform is `null`.
 
 ## 8. Lookup (PiTV's admin asks, pitv_content answers)
 
-`GET {content_tool_url}/api/lookup?kind=show|movie|advert|music&title=...&year=1988&artist=...&limit=8`
+`GET {content_tool_url}/api/lookup?kind=show|movie|advert|music&title=...&year=1988&artist=...&limit=25`
 searches the internet for what the admin is about to add, so the right title is added and
 later fetched. PiTV's admin calls it through PiTV's proxy (`/api/content/tool/api/lookup`);
 PiTV never contacts the sources itself, as all online access is pitv_content's.
