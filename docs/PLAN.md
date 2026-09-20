@@ -631,6 +631,7 @@ For each channel and day, walk from 08:00 to 00:00 following the pattern:
    | Daypart kind, genre and kids weights; the length and overrun penalties | yes | no | no |
    | Daypart bars (a weight of 0: no game show before the evening) | yes | yes | no |
    | Borrowing from other channels' shelves | yes | no | no |
+   | A remote title that has never aired takes its first turn ahead of everything else | yes | no | no |
    | The peak hold, and series before films in the peak | yes | no | no |
    | A series' own day of the week (else the plain interval) | yes | no | no |
    | The daily cap on a library series | yes | no | no |

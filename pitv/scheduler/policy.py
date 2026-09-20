@@ -47,6 +47,7 @@ class Relaxation:
     daypart_preferences: bool = True   # daypart kind, genre and kids weights, and the length and overrun penalties, shape the choice
     daypart_bars: bool = True          # a daypart weight of 0 bars (no game show before the evening, no children's after nine)
     borrowing: bool = True             # types from other channels' shelves, where the daypart asks (it needs the preferences)
+    unseen_remote_first: bool = True   # a remote title that has never aired takes its first turn ahead of everything else
     peak_hold: bool = True             # the day's series wait for the peak hours, and the peak takes series before films
     own_day: bool = True               # a series keeps to its own day of the cadence; off, the plain interval decides
     daily_cap: bool = True             # a library series airs at most `show_daily_limit` times a day
@@ -62,9 +63,10 @@ class Relaxation:
 # keeps every bar. The third is the last step before a holding card.
 LADDER: tuple[Relaxation, ...] = (
     Relaxation("the rules"),
-    Relaxation("preferences set aside", daypart_preferences=False, borrowing=False, peak_hold=False,
-               own_day=False, daily_cap=False),
-    Relaxation("last resort", daypart_preferences=False, daypart_bars=False, borrowing=False, peak_hold=False,
+    Relaxation("preferences set aside", daypart_preferences=False, borrowing=False, unseen_remote_first=False,
+               peak_hold=False, own_day=False, daily_cap=False),
+    Relaxation("last resort", daypart_preferences=False, daypart_bars=False, borrowing=False,
+               unseen_remote_first=False, peak_hold=False,
                own_day=False, daily_cap=False, cadence=False, resting=False, film_repeat_gap=False,
                sport_dayparts=False, remote_repeat=True),
 )

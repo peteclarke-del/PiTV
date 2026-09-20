@@ -432,10 +432,11 @@ class Selector:
                          if c[1]["id"] < 0 and c[1]["lineup_id"] not in self.library.external_last_placed]
             unseen_movies = [c for c in movie_cands
                              if c[1]["id"] < 0 and c[1]["lineup_id"] not in self.library.external_last_placed]
-            if unseen_tv and self.policy.external_prepared(t):
-                tv_cands = unseen_tv
-            if unseen_movies and self.policy.external_prepared(t):
-                movie_cands = unseen_movies
+            # A preference, so it belongs to the rules alone: on a later rung it narrowed the choice
+            # to remote titles whose daypart bar had just lifted, ahead of series on disk.
+            if level.unseen_remote_first and self.policy.external_prepared(t):
+                tv_cands = unseen_tv or tv_cands
+                movie_cands = unseen_movies or movie_cands
 
         if in_peak and level.peak_hold and tv_cands:
             # The peak hours are what the day's series were kept for: a film takes a peak slot only
