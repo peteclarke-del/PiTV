@@ -194,7 +194,11 @@ FIELDS: tuple[dict[str, Any], ...] = (
        "A band with too little of its own genres and decades in the library asks pitv_content to"
        " fetch some. All known shortfalls are queued up front and downloaded one at a time."),
     _f("band_fetch_hours", "content", "advanced", "Hours it may fetch for bands", "hours",
-       "Hours when PiTV may queue band top-ups. pitv_content downloads them one at a time."),
+       "Hours when PiTV may queue band top-ups. All of them by default: pitv_content delivers what is scheduled first "
+       "and collects for bands in the turns between, so it is never idle while a band could use more."),
+    _f("band_stock_days", "content", "standard", "Days a band can run without a repeat", "int",
+       "A band is topped up until it holds enough of its own material to run this many days without repeating an item. "
+       "Past that, nothing more is asked for it.", min=1, max=60),
     _f("band_item_max_minutes", "programming", "standard", "Band items are under (minutes)", "int",
        "A band runs several short things under one title, so anything this long counts as a feature"
        " instead: a film or a concert, which only a band that opens with one will take. It is also the"

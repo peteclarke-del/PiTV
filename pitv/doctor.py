@@ -201,6 +201,11 @@ def _findings(doc: dict[str, Any]) -> list[str]:
         out.append(f"pitv_content is not reachable: {content.get('detail')}")
     for error in content.get("errors") or []:
         out.append(f"pitv_content reports: {error}")
+    # pitv_content is never to be idle while anything is left to fetch.
+    waiting = sum(r["n"] for r in doc.get("wanted") or [] if isinstance(r, dict) and r.get("status") == "queued")
+    short = sum(1 for b in doc.get("bands") or [] if isinstance(b, dict) and (b.get("have") or 0) < (b.get("want") or 0))
+    if content.get("reachable") and not content.get("active_job") and not content.get("queued_by_mode") and (waiting or short):
+        out.append(f"pitv_content is idle with work outstanding: {waiting} request(s) queued and {short} band(s) under stock")
     schedule = doc.get("schedule") or {}
     if schedule.get("days_ahead", 0) < 2:
         out.append(f"The schedule runs only {schedule.get('days_ahead', 0)} days ahead")

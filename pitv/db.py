@@ -387,12 +387,13 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "short_episode_minutes": 20,       # anything shorter than a normal slot joins following episodes
     "short_episode_run_minutes": 20,   # ... until the run reaches about this length
     "band_fetch": True,                # ask pitv_content for material when a band has too little
-    "band_fetch_hours": [1, 2, 3, 4, 5],   # hours it may queue top-ups; pitv_content serialises the work
+    "band_fetch_hours": list(range(24)),   # hours it may queue top-ups: all of them, since pitv_content puts delivery first
+    "band_stock_days": 7,              # a band is topped up until it can run this many days without repeating an item
     "band_item_max_minutes": 15,       # a band runs several short items; anything this long is a feature
     "band_fit_minutes": 10,            # an item "meets" a stretch when it ends within this of the stretch's end
     "band_feature_overrun_minutes": 20,  # how far past its band a feature may run when nothing closer fits
     "band_card_message": "More is on its way.",  # first line of a band's holding card when it is short of material
-    "band_fetch_gap_hours": 6,         # leave this long before asking for the same band again
+    "band_fetch_gap_hours": 1,         # leave this long before asking for the same band again
     "band_fetch_min": 20,              # the fewest items a top-up asks for: a run costs a search either way
     "band_fetch_max": 60,              # and the most, so one band cannot take the whole night
     "content_fetch_kinds": [],         # what pitv_content said it can fetch, kept for when it is down
@@ -875,6 +876,14 @@ def _seed_also_carries(conn: sqlite3.Connection) -> None:
 
 def _migrate_settings(conn: sqlite3.Connection) -> None:
     """Drop settings that no longer exist and fill in keys added to stored daypart rows."""
+    # pitv_content is never to sit idle while anything is left to fetch. Band top-ups were once
+    # confined to the small hours and spaced six hours apart, which stopped collection for most of
+    # every day. Where those two still hold the old defaults they take the new; an owner's own
+    # choice stands.
+    for key, old in (("band_fetch_hours", [1, 2, 3, 4, 5]), ("band_fetch_gap_hours", 6)):
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        if row is not None and json.loads(row["value"]) == old:
+            conn.execute("UPDATE settings SET value = ? WHERE key = ?", (json.dumps(DEFAULT_SETTINGS[key]), key))
     # The old scheduler used calendar-day lead time and yesterday's slot. The replacement rules
     # are hour-accurate and target the following week. Preserve a customised bonus value, but the
     # 23-hour fetch boundary is deliberate rather than a conversion of the former two-day default.

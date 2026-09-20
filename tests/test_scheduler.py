@@ -1095,7 +1095,9 @@ def test_a_band_short_of_material_asks_for_more(tmp_path, monkeypatch):
     needs = wanted.band_needs(conn, settings)
     assert [(n["channel"]["id"], n["band"].name) for n in needs] == [(toons, "Saturday Morning")]
     need = next(n for n in needs if n["channel"]["id"] == toons)
-    assert need["want"] == 60, "a daily two-hour band needs two days for its 36-hour repeat gap"
+    assert need["want"] == 210, "a daily two-hour band is stocked for a week: thirty items a day, seven days"
+    lean = next(n for n in wanted.band_needs(conn, {**settings, "band_stock_days": 1}) if n["channel"]["id"] == toons)
+    assert lean["want"] == 60, "and never for less than the two days its 36-hour repeat gap spans"
 
     sent = {}
     def fake_request(base, method, path, query="", body=None, timeout=15):
@@ -1387,4 +1389,44 @@ def test_certificates_bind_bands_and_the_small_hours_too(tmp_path):
         item = {"kind": r["kind"], "certificate": r["certificate"] or r["scert"], "genres": json.loads(r["genres"] or "[]"),
                 "kids": bool(r["kids"])}
         assert allowed_at(item, minutes_of_day(r["start_ts"], tz), settings, kids_rule=not kids_any[r["channel_id"]]), dict(r)
+    c.close()
+
+
+def test_a_band_is_asked_for_at_any_hour_and_old_defaults_are_migrated(tmp_path):
+    """pitv_content is never to sit idle while anything is left to fetch. Band top-ups were once
+    asked for only in the small hours and six hours apart, so collection stopped for most of
+    every day. The old defaults are migrated; an owner's own hours are not."""
+    c = make_library(tmp_path, 3)["conn"]
+    settings = dbm.all_settings(c)
+    assert settings["band_fetch_hours"] == list(range(24)) and settings["band_fetch_gap_hours"] == 1 and settings["band_stock_days"] == 7
+    with dbm.tx(c):
+        dbm.set_setting(c, "band_fetch_hours", [1, 2, 3, 4, 5])      # what every database held before
+        dbm.set_setting(c, "band_fetch_gap_hours", 6)
+    dbm.init_db(c)
+    assert dbm.all_settings(c)["band_fetch_hours"] == list(range(24)) and dbm.all_settings(c)["band_fetch_gap_hours"] == 1
+    with dbm.tx(c):
+        dbm.set_setting(c, "band_fetch_hours", [22, 23])             # an owner's own choice
+    dbm.init_db(c)
+    assert dbm.all_settings(c)["band_fetch_hours"] == [22, 23]
+    c.close()
+
+
+def test_a_break_never_carries_two_idents(tmp_path):
+    """One ident belongs between two programmes, before the adverts or after them. Padding a gap
+    could add two of its own, and beside a pattern that asks for one a channel showed two running."""
+    c = make_library(tmp_path, 6)["conn"]
+    with dbm.tx(c):
+        c.execute("UPDATE channels SET pattern = 'show, ad, ad, ident' WHERE ads_enabled = 1 AND pattern != ''")
+        c.execute("UPDATE channels SET pattern = 'ident, show' WHERE ads_enabled = 0 AND pattern != ''")
+    day = parse_day("2026-09-14")
+    build_horizon(c, start_day=day, days=2, now=local_ts(day, "07:00", tz_of(c)), seed=12, force=True)
+    assert c.execute("SELECT COUNT(*) FROM schedule WHERE kind = 'ident'").fetchone()[0] > 10
+    for channel in (r[0] for r in c.execute("SELECT DISTINCT channel_id FROM schedule")):
+        since_programme = 0
+        for kind, start in c.execute("SELECT kind, start_ts FROM schedule WHERE channel_id = ? AND replay = 0 ORDER BY start_ts", (channel,)):
+            if kind in ("programme", "filler"):
+                since_programme = 0
+            elif kind == "ident":
+                since_programme += 1
+                assert since_programme == 1, f"channel {channel}: a second ident in one break at {start}"
     c.close()

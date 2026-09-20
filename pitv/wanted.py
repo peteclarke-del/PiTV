@@ -113,10 +113,13 @@ def band_needs(conn: sqlite3.Connection, settings: dict[str, Any]) -> list[dict[
                     repeat_hours = settings.get("band_item_repeat_hours", 36)
                 # One airing's worth guarantees that a daily band repeats itself tomorrow even
                 # though its configured repeat gap says it should not. Prepare enough distinct
-                # material for every occurrence inside that gap. A weekly band still needs one set.
-                want = items_per_airing * _airings_within(int(repeat_hours), band)
+                # material for every occurrence inside that gap, and then keep going until the band
+                # could run `band_stock_days` without a repeat: the repeat gap is the least a band
+                # can live on, not the point at which collecting for it should stop.
+                stock_hours = int(settings.get("band_stock_days", 7)) * 24
+                want = items_per_airing * _airings_within(max(int(repeat_hours), stock_hours), band)
                 have = _matching_items(conn, band, item_kinds, minutes * 60)
-            if have < want and now - (band.last_fetch_at or 0) >= int(settings.get("band_fetch_gap_hours", 6)) * 3600:
+            if have < want and now - (band.last_fetch_at or 0) >= int(settings.get("band_fetch_gap_hours", 1)) * 3600:
                 out.append({"band": band, "channel": channel, "kind": kind, "have": have, "want": want,
                             "minutes": minutes, "next_ts": min(start for start, _ in mine)})
     # Preparation follows the timetable: the next band to air is more urgent than a larger

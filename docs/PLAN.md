@@ -439,6 +439,13 @@ topped up, however thin its bands. The request carries the band's genres, its de
 range and the length limit (contract section 2); results arrive in the next index like anything
 else. Admin, Channels, Bands has a button to ask at once rather than wait for the night.
 
+pitv_content is never to sit idle while anything is left to fetch, so a band is asked for at any
+hour (`band_fetch_hours`, all of them by default; pitv_content puts delivery first and collects
+for bands in the turns between), an hour apart (`band_fetch_gap_hours`), and not merely until it
+can get through its repeat gap: it is topped up until it could run `band_stock_days` (7) without
+repeating an item. Past that, nothing more is asked for it. `pitv doctor` reports pitv_content
+idle with requests queued or a band under stock as a finding.
+
 ### 4.5 Bands
 
 A band is a stretch of a channel's day under one title, filled with several items: an hour of
@@ -803,6 +810,9 @@ from, so an idents source pointed at `<data>/idents` (type `ident`, location `na
 `local_root` set to the same path on a Pi, where that folder is not a mount) is all that ties a
 film to its channel. They are then ordinary library material, copied to the cache and placed
 where a channel's pattern asks.
+
+A break carries one ident at most, before its adverts or after them, whether a pattern asks for it
+or a gap is being padded (`Walk.ident_shown`); two idents never run together.
 
 The snow over a channel change is animated. The renderer draws several frames once per screen
 size (boiling grain, line structure, a dark hum bar rolling down the tube, thin bands torn

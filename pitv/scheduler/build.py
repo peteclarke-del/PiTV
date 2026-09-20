@@ -92,6 +92,17 @@ class Walk:
         self.all_slots.append(slot)
         self.prev = slot
 
+    def ident_shown(self) -> bool:
+        """Whether this break already has its ident. A break is what lies between two programmes:
+        one ident belongs in it, before the adverts or after, and never a second, whether the
+        pattern asks for one or a gap is being padded."""
+        for s in reversed(self.all_slots):
+            if s.kind == "ident":
+                return True
+            if s.kind in ("programme", "filler"):
+                return False
+        return False
+
     def break_state(self) -> tuple[int, int]:
         """Seconds and number of adverts in the consecutive break currently under way.
 
@@ -375,7 +386,8 @@ class Builder:
                     w.t = slot.end_ts
                 continue
             if token == "ident":
-                ident = self.select.ident(channel, rng, boundary - w.t) or self.select.stand_in_ident(channel, boundary - w.t)
+                ident = None if w.ident_shown() else (
+                    self.select.ident(channel, rng, boundary - w.t) or self.select.stand_in_ident(channel, boundary - w.t))
                 if ident is not None:
                     slot = self._media_slot(channel, day_str, w.t, ident, "ident")
                     w.emit(slot)
@@ -390,7 +402,8 @@ class Builder:
                 room = w.break_room()
                 if 0 < target - w.t <= w.break_cap and target < boundary and room > 0:
                     w.t = self._pad(channel, rng, day_str, w.t, min(target, w.t + room), w.last_programme_year,
-                                    w.emit, advert_room=room, advert_limit=w.advert_count_room())
+                                    w.emit, advert_room=room, advert_limit=w.advert_count_room(),
+                                    ident_allowed=not w.ident_shown())
                     gap = boundary - w.t
             slack = 0
             if not fixed_queue:
@@ -477,7 +490,8 @@ class Builder:
         """Close the gap up to `target` with adverts or idents, then a caption, so the
         channel-day stays contiguous (the guide and the player both rely on that)."""
         w.t = self._pad(w.channel, w.rng, w.day_str, w.t, target, w.last_programme_year, w.emit,
-                        advert_room=w.break_room(), advert_limit=w.advert_count_room())
+                        advert_room=w.break_room(), advert_limit=w.advert_count_room(),
+                        ident_allowed=not w.ident_shown())
         if w.t < target:
             if note and target - w.t > 120:
                 self.log.append(f"{w.channel['name']} {w.day_str}: filler {(target - w.t) // 60} min at {self._hhmm(w.t)}")
@@ -579,14 +593,16 @@ class Builder:
 
     def _pad(self, channel: dict[str, Any], rng: random.Random, day_str: str, t: int, target: int,
              near_year: int | None, emit: Callable[[Slot], None], advert_room: int | None = None,
-             advert_limit: int | None = None) -> int:
+             advert_limit: int | None = None, ident_allowed: bool = True) -> int:
         """Fill t..target with adverts (ad channels) or idents; returns the new t.
 
         A break is a break, not a filibuster: adverts stop when `advert_room` (what is left of
         `max_break_minutes` after the adverts already running) is used up, however wide the
         gap, because a channel that fills twenty minutes with adverts is unwatchable and no
-        station ever did it. Idents are continuity clips, so at most two run together; whatever
-        is left after both becomes filler, which the caller adds."""
+        station ever did it. A break carries one ident at most, before its adverts or after
+        them: padding adds one only where the break has none yet (`ident_allowed`, from
+        `Walk.ident_shown`), and never a second. Whatever is left becomes filler, which the
+        caller adds."""
         guard = 0
         idents = 0
         adverts = 0
@@ -601,7 +617,7 @@ class Builder:
             if (channel.get("ads_enabled") and t < break_end
                     and (advert_limit is None or adverts < advert_limit)):
                 item = self.select.advert(channel, rng, t, min(gap, break_end - t), near_year)
-            if item is None and idents < 2:
+            if item is None and ident_allowed and idents < 1:
                 item = self.select.ident(channel, rng, gap)
                 kind = "ident"
                 idents += 1
