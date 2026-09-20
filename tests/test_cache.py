@@ -59,3 +59,28 @@ def test_usage_counts_only_settled_copies(tmp_path):
     _file(cache_dir / "notes.txt")
     usage = MediaCache(cache_dir, max_bytes=10 ** 9).usage()
     assert usage["files"] == 1 and usage["used"] == 1000 and usage["tool_running"] is False
+
+
+def test_make_room_keeps_what_was_encoded_until_the_copies_have_gone(tmp_path):
+    """A concert re-encoded for the cache costs pitv_content most of an hour; a copied film costs
+    seconds. Least recently used alone threw the concert out first, and it was made again for
+    its next airing while every other request waited."""
+    import os
+    import time
+
+    from pitv.player.cache import MediaCache
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    old = time.time() - 5 * 3600
+    for name, age in (("1_Concert.mp4", 0), ("2_Film.mkv", 60), ("3_Film.mkv", 120)):   # the concert is the least recently used
+        f = cache_dir / name
+        f.write_bytes(b"x" * 500)
+        os.utime(f, (old + age, old + age))
+    cache = MediaCache(cache_dir, max_bytes=1200)
+    cache.costly({"1_Concert.mp4"})
+    cache.make_room(0)
+    assert sorted(p.name for p in cache_dir.iterdir()) == ["1_Concert.mp4", "3_Film.mkv"]
+    cache.make_room(600)      # the other film goes before the concert, and then there is room
+    assert sorted(p.name for p in cache_dir.iterdir()) == ["1_Concert.mp4"]
+    cache.make_room(900)      # only now, with nothing cheaper left, does the concert go
+    assert not list(cache_dir.iterdir())

@@ -101,6 +101,7 @@ class MediaCache:
         self.max_bytes = max_bytes
         self.enabled = bool(cache_dir)
         self._protected: frozenset[str] = frozenset()
+        self._costly: frozenset[str] = frozenset()
         self._lock = threading.Lock()
         self._listing: list[Path] = []
         self._listed_at = 0.0
@@ -238,8 +239,15 @@ class MediaCache:
         """File names (targets in the current manifest) that eviction must leave alone."""
         self._protected = frozenset(names)
 
+    def costly(self, names: set[str]) -> None:
+        """File names that took pitv_content an encode to make. A copy is seconds to make again;
+        a two hour concert re-encoded is most of an hour, in which pitv_content does nothing
+        else. They are the last to go."""
+        self._costly = frozenset(names)
+
     def make_room(self, needed: int = 0) -> int:
-        """Evict least-recently-used cache copies until the copies are under the cap and the
+        """Evict least-recently-used cache copies (plain copies before anything that was encoded,
+        see `costly`) until the folder is under the cap and the
         drive has `needed` bytes (plus headroom) free. Returns the free space afterwards. Copies
         still being written count towards the cap but are never evicted.
 
@@ -269,7 +277,8 @@ class MediaCache:
         now = time.time()
         protected = self._protected
         evicted = 0
-        for _, written, size, p in sorted(entries, key=lambda e: e[0]):
+        costly = self._costly
+        for _, written, size, p in sorted(entries, key=lambda e: (e[3].name in costly, e[0])):
             if used + needed <= self.max_bytes and free > needed + HEADROOM_BYTES:
                 break
             if p.name in protected or _is_part(p.name) or size == 0 or now - written < MIN_AGE_SECONDS:

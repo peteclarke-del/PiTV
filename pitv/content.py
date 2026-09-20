@@ -210,8 +210,13 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
 
 
 def protect_manifest(conn: sqlite3.Connection, cache: MediaCache, now: int | None = None) -> None:
-    """Keep eviction away from everything in the current manifest (contract section 5)."""
+    """Keep eviction away from everything in the current manifest (contract section 5), and tell
+    it which cached files pitv_content had to re-encode (those `pi_can_play` refuses as they
+    are), so that plain copies go first."""
     cache.protect({Path(i["target"]).name for i in manifest(conn, days=1, now=now)["items"] if i.get("target")})
+    cache.costly({Path(m["cache_path"]).name for m in rows_to_dicts(conn.execute(
+        "SELECT cache_path, vcodec, height, interlaced FROM media WHERE cache_path IS NOT NULL AND origin = 'nas'"))
+        if not pi_can_play(m)})
 
 
 def _search_hints(w: dict[str, Any], show_title: str | None) -> list[str]:

@@ -314,14 +314,20 @@ history, derived wanted rows and cache references only when `ok` is true, then r
 fresh index and rebuilds from the retained inputs; when it is false PiTV keeps its rows and
 reports the paths, so the two sides never disagree about what exists.
 
+- PiTV evicts least recently used first, but plain copies before anything pitv_content had to
+  re-encode (what `pi_can_play` refuses as it is): a copy is seconds to make again, a two hour
+  concert is most of an hour in which nothing else is delivered.
+
 ## 6. Timing
 
 01:00 pitv_content's nightly work, as two jobs: the manifest (a cache run) and a full index
 of every source. A cache run works the manifest in slices, each in this order: what is about
 to air (within three hours, exempt from every limit), then the fetches' share, then copies,
-then one transcode. The share is up to four things looked for (a series' other scheduled
-episodes ride along with the one asked for) within a third of the slice and never less than
-ten minutes, and a slice takes it even when what is about to air has used the slice up. The
+then one transcode. The share is half the slice and never less than fifteen minutes, with time
+its only limit; requested fetches come first in it, and a series' next episodes are looked
+ahead for only with what time is left. A slice takes its share even when what is about to air
+has used the slice up. A run's summary says how many requested fetches it left waiting (`N to
+fetch`), and while that is not none delivery takes two turns to a band helping's one. The
 order is deliberate: a copy that is late leaves the player on the NAS for that programme,
 which is what the fallback is for, while a fetch that is late leaves a gap. With fetches
 last, behind transcodes that end a slice, no episode was reached for a week. A cache run does not index the sources itself; when it has fetched something
