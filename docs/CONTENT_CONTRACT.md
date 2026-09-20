@@ -266,7 +266,11 @@ applies a report once: a dropped copy of one it already took over HTTP is recogn
   containing `rate limit`, which PiTV retries without using up an attempt.
 - For such a series pitv_content takes an upload only when its own title says it is the episode
   wanted (the episode's title, or its number), and refuses one that names another episode or
-  does not say. When nothing qualifies the failure begins `not found yet:`; PiTV keeps the
+  does not say. Where the sources list another series of the same name, a number is not
+  evidence, since it is true of both: the upload must carry the episode's own title or a year
+  inside the series' run. A year an upload names is judged, within `year_tolerance`, against the
+  episode's own year from the episode list, not the request's `year`, which is the year the
+  series began. When nothing qualifies the failure begins `not found yet:`; PiTV keeps the
   request queued with no attempt used, and the readiness check covers the slot meanwhile.
 
 ## 4. Sources
@@ -317,6 +321,13 @@ reports the paths, so the two sides never disagree about what exists.
 - PiTV evicts least recently used first, but plain copies before anything pitv_content had to
   re-encode (what `pi_can_play` refuses as it is): a copy is seconds to make again, a two hour
   concert is most of an hour in which nothing else is delivered.
+
+- Two rules decide copy or encode, each for its own material. `pi_can_play` (PiTV) sets `copy`
+  or `transcode` for NAS material in the manifest. pitv_content's own test decides whether what
+  it fetches is remuxed or re-encoded, with its height cap taken from the manifest's profile.
+  PiTV's `search.duration_minutes` wins over pitv_content's own length window when it is sent.
+  pitv_content alone maps an episode's place in a run to its real season and number; PiTV does
+  not.
 
 ## 6. Timing
 
