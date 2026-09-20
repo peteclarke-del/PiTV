@@ -149,7 +149,15 @@ slice only when a fetch was the very next request, and in a real manifest the re
 about to air lies between; the 03:48 slice transcoded a concert for 35 minutes and ended without
 looking for anything. A slice out of time with its share untaken now passes over what lies
 between, takes its four fetches within the time box, and ends. Episode delivery is to be read
-from 04:38; contract section 6 is to describe the order.
+from 04:38; contract section 6 describes the order.
+
+First result on it (05:41 to 05:51): "Up the Elephant and Round the Castle" episodes 1 and 2,
+each under its real title, about four minutes from search to filed. The ten minute share went
+on one series because the look-ahead took the next two episodes of it. Decided on PiTV's side:
+a look-ahead is for a slice with time in hand, since about ninety series each need their first
+episode this week and a second is not needed for a week after; the share's size stays until the
+reading. PiTV 61c7a0e files a matched series' delivery under the report's real season, number
+and title, as the contract says; it had catalogued that first one as "Episode 1".
 
 The spread of a week (19 September, PiTV dcb86e5, ab299e9, 5def1e0), from Pete finding the same
 remote sport episode twice running on a Wednesday morning on PiTV One. Three causes: the last
