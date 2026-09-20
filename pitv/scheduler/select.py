@@ -20,7 +20,7 @@ from ..genres import canonical, canonical_all
 from ..lineup import nas_only_for
 from .clock import bday_minutes
 from .library import Library
-from .policy import SchedulerPolicy
+from .policy import LADDER, SchedulerPolicy
 from .rules import (
     EraSpans,
     allowed_at,
@@ -136,7 +136,7 @@ class Selector:
         television on a Saturday morning for cartoons, the sport dayparts for sport, a daypart
         weighted towards documentaries for those), and never as a way out when nothing else fits. The episode position is the
         series' own, so the home channel carries on from wherever the borrower left it."""
-        if relax:
+        if not LADDER[relax].borrowing:
             return []
         out: list[Show] = []
         for ptype in self.channel_json(channel, "also_carries") or []:
@@ -196,8 +196,7 @@ class Selector:
         """Pick a programme for a gap. Selection is two-stage so the TV/movie balance follows the
         channel's kind weights rather than the size of each pool: choose the kind, then the item.
 
-        relax=0 normal rules; relax=1 ignore daypart preferences;
-        relax=2 additionally allow movies that aired recently. Certificates are never relaxed.
+        `relax` is a rung of `policy.LADDER`, which says what each one leaves in force.
         `barred` holds the series either side of the gap (never two episodes back to back).
         `slack` is how far past the gap a programme may run: the duration tolerance at closedown,
         zero when a fixed slot follows (it must not be overlapped)."""
@@ -219,7 +218,8 @@ class Selector:
         repeat_penalty = self.policy.number("show_repeat_penalty")
         max_minutes = dp.get("max_minutes")
         weekend = weekday_n >= 5
-        relaxed = relax >= 1
+        level = LADDER[relax]
+        relaxed = not level.daypart_preferences
         kids_rule = not channel.get("kids_any_time")
         kids_breakfast = weekend and self.policy.enabled("weekend_kids_breakfast") and dp.get("name") == "Breakfast"
         unknown_w = self.policy.number("unknown_year_weight")
@@ -250,20 +250,25 @@ class Selector:
                 return 0.0     # never strand one short episode before a fixed boundary
             if not allowed_at(item, start_min, self.settings, kids_rule=kids_rule):
                 return 0.0
-            if not relaxed:
-                w *= float(dp.get(kind, 1.0)) * self._daypart_genre_weight(dp, item.get("genres") or [])
+            fits_daypart = float(dp.get(kind, 1.0)) * self._daypart_genre_weight(dp, item.get("genres") or [])
+            if level.daypart_bars and fits_daypart <= 0:
+                return 0.0     # a bar is not a preference: it holds until the last resort
+            if level.daypart_preferences:
+                w *= fits_daypart
             if item.get("kids"):
                 kw = float(dp.get("kids", 1.0))
                 if kids_breakfast:
                     kw = max(kw, 4.0)
-                w *= kw if not relaxed else max(kw, 0.2)
+                if level.daypart_bars and kw <= 0:
+                    return 0.0
+                w *= kw if level.daypart_preferences else max(kw, 0.2)
             w *= self._genre_weight(channel, item.get("genres") or [])
             is_sport = (item.get("category") == "sport")
             if is_sport:
                 sport_w = float(dp.get("sport", 1.0))
                 # Outside sport-friendly dayparts sport is admitted only at the final relaxation
                 # step, after recently aired films: it is a last resort, not a filler.
-                if sport_w < 0.5 and relax < 2:
+                if sport_w < 0.5 and level.sport_dayparts:
                     return 0.0
                 w *= sport_w if not relaxed else sport_w * 0.5
             w *= self.library.pool_factor(kind, item.get("year"), end_year)
@@ -286,7 +291,7 @@ class Selector:
         tv_cands: list[tuple[float, dict[str, Any], Show | None]] = []
         movie_cands: list[tuple[float, dict[str, Any], Show | None]] = []
         in_peak = self._is_peak(dp)
-        kept_for_peak = (not relax and not in_peak
+        kept_for_peak = (level.peak_hold and not in_peak
                          and self._series_kept_for_peak(channel, t, bday_min, day_ordinal, dayparts, placed_today))
         # While series wait for the peak, a film started before it must not run far into it.
         to_peak = self._minutes_to_peak(bday_min, dayparts) if kept_for_peak else None
@@ -300,13 +305,13 @@ class Selector:
                     if not sport_ok:
                         continue  # never two episodes of the same series back to back
                 resting = bool(show.resting_until and t < show.resting_until)
-                if resting and relax < 2:
+                if resting and level.resting:
                     continue
                 times_today = placed_today.get(show.id, 0)
                 # The daily cap is the first rule to give when nothing else fits: a channel with
                 # a few series airs one a third time, each extra airing penalised, rather than
                 # going dark for the evening (docs/PLAN.md section 4.5).
-                if times_today >= daily_limit and not relaxed:
+                if times_today >= daily_limit and level.daily_cap:
                     continue
                 # One episode per cadence: a week unless the channel sets its own. A series the owner made a strip or anchored keeps its own
                 # arrangement, and sport runs in blocks by its dayparts. Only at the last step
@@ -314,7 +319,7 @@ class Selector:
                 # episode, never the last one again: the small hours are where repeats live.
                 weekly = show.mode == "auto" and show.category != "sport"
                 last = self.library.show_last(channel["id"], show)
-                if weekly and relax < 2 and not self.policy.series_due(channel, show.id, last, t, day_ordinal, relax):
+                if weekly and level.cadence and not self.policy.series_due(channel, show.id, last, t, day_ordinal, relax):
                     continue
                 ep = show.next_episode()
                 if ep is None or (kept_for_peak and weekly and not ep.get("kids")):
@@ -331,7 +336,7 @@ class Selector:
                     # wanted, never that the last one is shown again in the meantime.
                     # On its own day a series is wanted even when that comes round early.
                     w *= max(self.policy.cadence_factor(channel, last, t, relaxed=relaxed),
-                             1.0 if not relax and self.policy.own_day(channel, show.id, day_ordinal) else 0.0)
+                             1.0 if level.own_day and self.policy.own_day(channel, show.id, day_ordinal) else 0.0)
                 tv_cands.append((w, ep, show))
         if token in ("show", "movie"):
             for m in self.library.movies_on.get(channel["id"], ()):
@@ -340,7 +345,7 @@ class Selector:
                 # today on another channel is just as "recent" as one shown yesterday.
                 nearest = min((abs(t - x) for x in placements), default=None)
                 recent = nearest is not None and nearest < movie_repeat
-                if recent and (relax < 2 or nearest < 12 * 3600):
+                if recent and (level.film_repeat_gap or nearest < 12 * 3600):
                     continue
                 if to_peak is not None and float(m["duration"]) > (to_peak + PEAK_OVERRUN_MINUTES) * 60:
                     continue
@@ -389,7 +394,7 @@ class Selector:
                     # The last step before a holding card may bring a remote title round again,
                     # but never past the daily cap: without it one unfetched episode was booked
                     # eight times in a day while series on disk waited for their week to pass.
-                    if relax < 2 or not e.get("last_spec") or times_today >= (daily_limit if episode else 1):
+                    if not level.remote_repeat or not e.get("last_spec") or times_today >= (daily_limit if episode else 1):
                         continue
                     candidate = {**e, "_external_repeat": True}
                     prior_run = self.library.external_short_runs.get(e["lineup_id"])
@@ -400,7 +405,7 @@ class Selector:
                     continue
                 if episode and not held_back:
                     w *= max(self.policy.cadence_factor(channel, placed_before, t, relaxed=relaxed),
-                             1.0 if not relax and self.policy.own_day(channel, e["lineup_id"], day_ordinal) else 0.0)
+                             1.0 if level.own_day and self.policy.own_day(channel, e["lineup_id"], day_ordinal) else 0.0)
                 (tv_cands if episode else movie_cands).append((w, candidate, None))
 
             # A configured remote title is part of the channel's catalogue, not an occasional
@@ -416,7 +421,7 @@ class Selector:
             if unseen_movies and self.policy.external_prepared(t):
                 movie_cands = unseen_movies
 
-        if in_peak and not relax and tv_cands:
+        if in_peak and level.peak_hold and tv_cands:
             # The peak hours are what the day's series were kept for: a film takes a peak slot only
             # when no series is left to offer.
             movie_cands = []
@@ -425,7 +430,10 @@ class Selector:
             kind_weight = float(kind_weights.get(kind, 1.0))
             if not cands or kind_weight <= 0:
                 continue  # zero is an explicit prohibition, not a very small preference
-            weight = kind_weight * (1.0 if relaxed else float(dp.get(kind, 1.0)))
+            daypart_kind = float(dp.get(kind, 1.0))
+            if level.daypart_bars and daypart_kind <= 0:
+                continue
+            weight = kind_weight * (daypart_kind if level.daypart_preferences else 1.0)
             if weight > 0:
                 kinds.append((weight, cands))
         if not kinds:

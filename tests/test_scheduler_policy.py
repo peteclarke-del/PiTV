@@ -37,3 +37,19 @@ def test_policy_uses_authoritative_defaults_when_a_setting_is_absent():
     rules = policy()
     assert rules.advert_break_seconds == 4 * 60
     assert rules.short_episode_seconds({}) == (20 * 60, 20 * 60)
+
+
+def test_the_ladder_is_defined_once_and_bars_outlast_preferences():
+    """What gives before a holding card, and in what order, is data in one place. The first rung
+    is the rules; the second sets preferences aside but keeps every bar; only the last lifts a
+    bar, a rest, the cadence or a film's repeat gap, and only it brings a remote title round again."""
+    from pitv.scheduler.policy import LADDER, attempts
+    rules, easier, last = LADDER
+    assert all(getattr(rules, f) for f in ("daypart_preferences", "daypart_bars", "borrowing", "peak_hold", "own_day",
+                                           "daily_cap", "cadence", "resting", "film_repeat_gap", "sport_dayparts"))
+    assert not rules.remote_repeat
+    assert not easier.daypart_preferences and easier.daypart_bars, "a bar is not a preference"
+    assert easier.cadence and easier.resting and easier.film_repeat_gap and easier.sport_dayparts and not easier.remote_repeat
+    assert not (last.daypart_bars or last.cadence or last.resting or last.film_repeat_gap or last.sport_dayparts) and last.remote_repeat
+    assert attempts("movie") == [("movie", 0), ("show", 0), ("show", 1), ("show", 2)]
+    assert attempts("show") == [("show", 0), ("show", 1), ("show", 2)]

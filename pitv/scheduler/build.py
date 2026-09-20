@@ -34,7 +34,7 @@ from ..db import (
 from . import bands, overnight
 from .clock import bday_minutes
 from .library import Library, Rebuild
-from .policy import SchedulerPolicy
+from .policy import SchedulerPolicy, attempts
 from .rules import (
     day_bounds,
     daypart_end_minutes,
@@ -381,9 +381,8 @@ class Builder:
             next_show_id = (next_fixed.show_id if isinstance(next_fixed, Slot)
                             else next_fixed[1].id if next_fixed else None)
             barred = {x for x in (w.last_show_id, next_show_id) if x}
-            attempts = [(token, 0)] + ([("show", 0)] if token != "show" else []) + [("show", 1), ("show", 2)]
             choice = None
-            for tok, relax in attempts:
+            for tok, relax in attempts(token):
                 choice = self.select.programme(channel, rng, w.t, gap, tok, w.placed_today, w.prev,
                                                barred, relax=relax, slack=slack)
                 if choice is not None:

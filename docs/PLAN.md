@@ -617,10 +617,29 @@ For each channel and day, walk from 08:00 to 00:00 following the pattern:
    limits. A show may air at most `show_daily_limit` (2) times a day per channel, each
    repeat weighted by `show_repeat_penalty` (0.3). Episodes only ever advance: the cadence
    weights when the next one is wanted and never re-airs the last one to wait for it.
-3. If nothing fits, the rules relax in two steps (ignore daypart preferences and daily
-   limits, then allow recently aired films, remote titles inside the lead window as a repeat
-   of an episode already requested, and, as the very last resort, sport outside its
-   dayparts); certificates are never relaxed.
+3. If nothing fits, the builder climbs a ladder of three rungs, defined once as data
+   (`policy.LADDER`; the selector reads its fields by name). The builder first asks for the
+   pattern's own token under the rules, then for any programme under the rules, then for any
+   programme on each further rung (`policy.attempts`).
+
+   | In force | The rules | Preferences set aside | Last resort |
+   |---|---|---|---|
+   | Daypart kind, genre and kids weights; the length and overrun penalties | yes | no | no |
+   | Daypart bars (a weight of 0: no game show before the evening) | yes | yes | no |
+   | Borrowing from other channels' shelves | yes | no | no |
+   | The peak hold, and series before films in the peak | yes | no | no |
+   | A series' own day of the week (else the plain interval) | yes | no | no |
+   | The daily cap on a library series | yes | no | no |
+   | The interval between a series' episodes | yes | yes | no |
+   | A finished series' rest | yes | yes | no |
+   | A film's repeat gap (never under twelve hours) | yes | yes | no |
+   | Sport kept out of dayparts weighted under a half | yes | yes | no |
+   | A remote title that may not be placed afresh comes round again | no | no | yes |
+
+   On no rung, because they never give: certificates and the children's cutoff, a channel's
+   decades and strict matching, its own kind and genre weights, fit to the gap, and never the
+   same series back to back. After the last rung comes the holding card, to the next daypart
+   boundary.
 4. Adverts must be from the configured decades, prefer a year within
    `advert_year_window` (3) of the surrounding programme, are penalised within
    `advert_repeat_penalty_hours` (6) and never repeat within a quarter of an hour if any other

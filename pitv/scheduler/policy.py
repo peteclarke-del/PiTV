@@ -33,6 +33,51 @@ def _field(row: Any, key: str) -> Any:
 
 
 @dataclass(frozen=True)
+class Relaxation:
+    """One rung of the ladder the builder climbs when nothing fits a gap: what is still in force.
+
+    The ladder is the whole answer to "what gives, and in what order, before a holding card".
+    It is defined here once; the selector reads these fields by name and compares no numbers.
+    Certificates, the children's cutoff, a channel's decades and strict matching, a channel's own
+    kind and genre weights, fit to the gap and "never the same series back to back" are on no
+    rung: they never give.
+    """
+
+    name: str
+    daypart_preferences: bool = True   # daypart kind, genre and kids weights, and the length and overrun penalties, shape the choice
+    daypart_bars: bool = True          # a daypart weight of 0 bars (no game show before the evening, no children's after nine)
+    borrowing: bool = True             # types from other channels' shelves, where the daypart asks (it needs the preferences)
+    peak_hold: bool = True             # the day's series wait for the peak hours, and the peak takes series before films
+    own_day: bool = True               # a series keeps to its own day of the cadence; off, the plain interval decides
+    daily_cap: bool = True             # a library series airs at most `show_daily_limit` times a day
+    cadence: bool = True               # a library series waits out its interval at all
+    resting: bool = True               # a series that has just finished its run rests
+    film_repeat_gap: bool = True       # a film keeps `movie_repeat_days` from its last airing
+    sport_dayparts: bool = True        # sport stays out of dayparts whose sport weight is under a half
+    remote_repeat: bool = False        # a remote title that may not be placed afresh comes round again
+
+
+# The rungs, in the order the builder tries them. The first is the rules. The second sets aside
+# what merely shapes a day (preferences, the own-day spread, the peak hold, the daily cap) but
+# keeps every bar. The third is the last step before a holding card.
+LADDER: tuple[Relaxation, ...] = (
+    Relaxation("the rules"),
+    Relaxation("preferences set aside", daypart_preferences=False, borrowing=False, peak_hold=False,
+               own_day=False, daily_cap=False),
+    Relaxation("last resort", daypart_preferences=False, daypart_bars=False, borrowing=False, peak_hold=False,
+               own_day=False, daily_cap=False, cadence=False, resting=False, film_repeat_gap=False,
+               sport_dayparts=False, remote_repeat=True),
+)
+
+
+def attempts(token: str) -> list[tuple[str, int]]:
+    """What the builder asks the selector for, in order: the pattern's own token under the rules,
+    then any programme under the rules (a `movie` slot takes a series before a rule gives), then
+    any programme on each further rung."""
+    return [(token, 0), *([("show", 0)] if token != "show" else []), *(("show", n) for n in range(1, len(LADDER)))]
+
+
+@dataclass(frozen=True)
 class SchedulerPolicy:
     """Resolved scheduler configuration with explicit units and inheritance."""
 
@@ -134,7 +179,7 @@ class SchedulerPolicy:
         weekly. The first step of relaxation falls back to the plain interval, so a thin day
         can still bring a series forward."""
         cadence = self.cadence_seconds(channel)
-        if relax or cadence <= DAY:
+        if not LADDER[relax].own_day or cadence <= DAY:
             return self.next_episode_due(channel, last, at)
         if last is None:
             return self.own_day(channel, key, day_ordinal)

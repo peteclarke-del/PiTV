@@ -1311,3 +1311,25 @@ def test_the_days_series_are_kept_for_the_peak_hours_when_there_are_too_few(tmp_
     builder = Builder(c, now=local_ts(day, "07:00", tz_of(c)))
     assert "series" in offered("10:00")
     c.close()
+
+
+def test_a_daypart_bar_holds_until_the_last_resort(tmp_path):
+    """"No game shows before the evening" is a weight of 0, a bar. The first step of relaxation
+    set every daypart weight aside, bars included, and Play Your Cards Right went out at half
+    past ten in the morning. A bar now holds on the second rung and gives only on the last."""
+    c = make_library(tmp_path, 6)["conn"]
+    day = parse_day("2026-09-14")
+    builder = Builder(c, now=local_ts(day, "07:00", tz_of(c)))
+    channel = next(ch for ch in builder.channels if ch["content"] == "general" and builder.library.free_shows.get(ch["id"]))
+    profile = {"weekday": [{"name": "All day", "start": "08:00", "tv": 1.0, "movie": 1.0, "kids": 1.0, "sport": 1.0,
+                            "genres": {g: 0.0 for g in ("Comedy", "Drama", "Crime", "Game Show", "Science Fiction", "Adventure", "Children", "Sport")}}]}
+    channel = {**channel, "daypart_profile": json.dumps({**profile, "saturday": profile["weekday"], "sunday": profile["weekday"]})}
+    rng = random.Random(1)
+    t = local_ts(day, "10:30", tz_of(c))
+
+    def series_offered(relax: int) -> bool:
+        picks = (builder.select.programme(channel, rng, t, 3 * 3600, "tv", {}, None, set(), relax=relax, slack=300) for _ in range(60))
+        return any(p and p[1] is not None for p in picks)
+    assert not series_offered(0) and not series_offered(1), "a bar gave way with the preferences"
+    assert series_offered(2), "and nothing but the last resort lifts it"
+    c.close()
