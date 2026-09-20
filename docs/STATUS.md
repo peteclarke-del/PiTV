@@ -163,6 +163,14 @@ a slice's share once the requested fetches have had their turn. Songs went from 
 167 at 06:00, so band helpings are collecting between slices. Episode delivery under the final
 behaviour is to be read from 06:04.
 
+The reading, 07:50 on the 20th: since 04:38 three episodes filed (two requests delivered, 72
+still queued, none "not found yet", none failed) against 73 songs since 01:20 (116 to 189). The
+searching works and what it takes is right; the limit is turns and share: two cache slices in
+three and a quarter hours, ten minutes of each for fetches, a band helping of most of an hour
+between. Asked of pitv_content: the share to half the slice and never under fifteen minutes with
+the time box as its only limit, and two slice turns to each helping's one while requested
+fetches wait. The target is about four first episodes an hour. C5's helping timing is still owed.
+
 The spread of a week (19 September, PiTV dcb86e5, ab299e9, 5def1e0), from Pete finding the same
 remote sport episode twice running on a Wednesday morning on PiTV One. Three causes: the last
 resort waived "never the same series back to back" for remote titles; placement ignored a
