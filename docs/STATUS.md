@@ -158,6 +158,10 @@ a look-ahead is for a slice with time in hand, since about ninety series each ne
 episode this week and a second is not needed for a week after; the share's size stays until the
 reading. PiTV 61c7a0e files a matched series' delivery under the report's real season, number
 and title, as the contract says; it had catalogued that first one as "Episode 1".
+pitv_content 19440e8 (restarted onto at 06:04 on the 20th) looks ahead only with what is left of
+a slice's share once the requested fetches have had their turn. Songs went from 116 at 01:20 to
+167 at 06:00, so band helpings are collecting between slices. Episode delivery under the final
+behaviour is to be read from 06:04.
 
 The spread of a week (19 September, PiTV dcb86e5, ab299e9, 5def1e0), from Pete finding the same
 remote sport episode twice running on a Wednesday morning on PiTV One. Three causes: the last
