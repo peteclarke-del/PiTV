@@ -148,7 +148,8 @@ and a receiver must never.
 Build order for the seam, each step shippable on the single box:
 
 1. `Station` and `LocalStation`, with the controller's database calls routed through them. No
-   behaviour changes; the suite is the proof.
+   behaviour changes; the suite is the proof. Done (`pitv/player/station.py`): the controller
+   no longer opens the database, and a test fails if a query is added to it.
 2. The maintenance pass moves from the player to the web service (the station), which already
    runs background jobs. The player keeps only what concerns the screen.
 3. The receiver endpoints on the station, versioned, and `RemoteStation` against them.

@@ -743,6 +743,18 @@ controller (main thread, half-second loop)
   deinterlace choice, and two seconds later one line with what mpv actually did (codec,
   hwdec in use, size, fps, vo, ao, dropped frames).
 
+### 5.1b The player and its station
+
+PiTV runs all in one and also with the front end on a machine of its own (docs/SPLIT_PLAN.md).
+The player is the front end in both, so everything it needs to know, as opposed to everything it
+draws and plays, comes through one interface, `player/station.py`: the settings and timezone, the
+channels, what is on a channel at a moment and where that sits in a band, what comes next, and
+the two history writes. `LocalStation` answers from the database beside it, which is the all in
+one install; a station across the network will answer the same questions from the HTTP API. The
+controller never opens the database, and `tests/test_station.py` fails if a query is added to it.
+A station that cannot answer (`station.UNAVAILABLE`) never stops the television: the player
+carries on with what it last knew.
+
 ### 5.2 What plays: the cache, then the NAS, then the card
 
 Everything on air is meant to play from the cache on the attached drive. `MediaCache.locate`

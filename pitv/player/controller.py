@@ -16,19 +16,15 @@ import json
 import logging
 import queue
 import signal
-import sqlite3
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
-from .. import db as dbm
 from .. import display, sdnotify
 from ..config import TEST_SIGNAL, Config
-from ..db import all_settings, enabled_channels, now_ts
-from ..guide import block_entry, next_programmes, slot_at
+from ..db import now_ts
 from ..logsetup import setup_logging
-from ..scheduler.rules import tz_of
 from .cache import MediaCache, touch_used
 from .control_socket import ControlServer
 from .hwdec import decode_options, is_raspberry_pi
@@ -45,6 +41,7 @@ from .osd import (
     Renderer,
     make_testcard,
 )
+from .station import UNAVAILABLE, LocalStation, Station
 
 log = logging.getLogger("pitv.player")
 
@@ -92,13 +89,15 @@ def _slot_position(slot: dict[str, Any], now: int) -> float:
 
 
 class Player:
-    def __init__(self, cfg: Config, channel: int | None = None, keyboard: bool = False, now_override: str | None = None) -> None:
+    def __init__(self, cfg: Config, channel: int | None = None, keyboard: bool = False, now_override: str | None = None,
+                 station: Station | None = None) -> None:
         self.cfg = cfg
         cfg.ensure_dirs()
-        self.conn = dbm.connect(cfg.db_path)
-        dbm.init_db(self.conn)
-        self.settings = all_settings(self.conn)
-        self.tz = tz_of(self.conn)
+        # Everything the player needs to know comes through the station (player/station.py), so it
+        # is the same player whether the schedule is on this machine or across the network.
+        self.station: Station = station or LocalStation(cfg.db_path)
+        self.settings = self.station.settings()
+        self.tz = self.station.timezone()
         self.on_pi = is_raspberry_pi() and not cfg.windowed
         self.offset = 0
         if now_override:
@@ -205,7 +204,7 @@ class Player:
         self.play_live()
 
     def _load_channels(self) -> None:
-        self.channels = enabled_channels(self.conn)
+        self.channels = self.station.channels()
         if self.channel is not None:
             # Pick up a rename or colour change for the channel on air; a channel that was
             # disabled keeps playing until the viewer changes channel.
@@ -228,7 +227,7 @@ class Player:
         cid, slot, read_at, until = self._slot_cache
         if cid == channel_id and read_at <= now < until:
             return slot
-        slot = slot_at(self.conn, channel_id, now)
+        slot = self.station.slot_at(channel_id, now)
         until = now + SLOT_RECHECK_SECONDS
         if slot:
             until = min(slot["end_ts"], until)
@@ -241,14 +240,14 @@ class Player:
     def current_programme(self, channel_id: int, ts: int) -> dict[str, Any] | None:
         """The programme 'on' now: during an ad break, the one that follows; on a music channel,
         the whole block with the current video as its subtitle."""
-        slot = slot_at(self.conn, channel_id, ts)
+        slot = self.station.slot_at(channel_id, ts)
         if slot and slot["kind"] == "programme":
-            entry = block_entry(self.conn, slot, ts)
+            entry = self.station.block_entry(slot, ts)
             if entry:
                 entry["subtitle"] = entry["video_title"]
                 return entry
             return slot
-        nxt = next_programmes(self.conn, channel_id, ts + 1, 1)
+        nxt = self.station.next_programmes(channel_id, ts + 1, 1)
         return nxt[0] if nxt else None
 
     # --- lifecycle -------------------------------------------------------------------------
@@ -323,7 +322,7 @@ class Player:
             except Exception:  # keep shutting the rest down
                 log.exception("stopping %s failed", type(part).__name__)
         self.mpv.stop()
-        self.conn.close()
+        self.station.close()
 
     def _restore_state(self) -> None:
         """Volume, mute and last channel survive a restart (a missing file is the first run)."""
@@ -434,11 +433,11 @@ class Player:
         so, and once a minute regardless. A change to mpv's arguments (the screen, output or
         audio device) relaunches mpv; the cache directory is read at start only."""
         try:
-            self.settings = all_settings(self.conn)
-            self.tz = tz_of(self.conn)
+            self.settings = self.station.settings()
+            self.tz = self.station.timezone()
             self.evdev.set_keymap(self.settings["keymap"])
             self._load_channels()
-        except sqlite3.Error as exc:
+        except UNAVAILABLE as exc:
             log.warning("settings reload failed: %s", exc)
             return
         args = self._mpv_args()
@@ -531,7 +530,7 @@ class Player:
         if self.channel is None:
             return
         now = self.clock()
-        slot = slot_at(self.conn, self.channel["id"], now)
+        slot = self.station.slot_at(self.channel["id"], now)
         self.slot = slot
         self.retry_at = time.monotonic() + RETRY_SECONDS
         if slot is None:
@@ -677,23 +676,13 @@ class Player:
         self._end_history()
         if slot["kind"] != "programme":
             return
-        try:
-            with dbm.tx(self.conn):
-                cur = self.conn.execute("INSERT INTO history(channel_id, media_id, schedule_id, started_at, title) VALUES (?,?,?,?,?)",
-                                        (slot["channel_id"], slot["media_id"], slot["id"], self.clock(), slot["title"]))
-            self.history_id = int(cur.lastrowid)
-        except sqlite3.Error as exc:
-            log.warning("could not record history for '%s': %s", slot["title"], exc)
+        self.history_id = self.station.watched(slot, self.clock())
 
     def _end_history(self) -> None:
         if self.history_id is None:
             return
         history_id, self.history_id = self.history_id, None
-        try:
-            with dbm.tx(self.conn):
-                self.conn.execute("UPDATE history SET ended_at = ? WHERE id = ?", (self.clock(), history_id))
-        except sqlite3.Error as exc:
-            log.warning("could not close history entry %s: %s", history_id, exc)
+        self.station.watched_until(history_id, self.clock())
 
     # --- actions --------------------------------------------------------------------------------------
 
@@ -724,7 +713,7 @@ class Player:
             log.info("end of file reached (%s)", self.playing_path)
             self.behind_live = False
             self.paused = False
-            slot = slot_at(self.conn, self.channel["id"], self.clock()) if self.channel else None
+            slot = self.station.slot_at(self.channel["id"], self.clock()) if self.channel else None
             if slot is not None and slot["id"] == self.playing_slot_id:
                 # The file ended before its slot did (it is shorter than scheduled): hold the
                 # continuity card until the next slot rather than reloading past the end.
@@ -911,7 +900,7 @@ class Player:
         self._sync_osd_size()
         now = self.clock()
         cur = self.current_programme(self.channel["id"], now)
-        nxt = next_programmes(self.conn, self.channel["id"], cur["end_ts"] if cur else now, 1)
+        nxt = self.station.next_programmes(self.channel["id"], cur["end_ts"] if cur else now, 1)
         position = None
         if cur and cur["end_ts"] > cur["start_ts"]:
             position = (now - cur["start_ts"]) / (cur["end_ts"] - cur["start_ts"])
@@ -939,7 +928,7 @@ class Player:
         for ch in self.channels:
             cur = self.current_programme(ch["id"], now)
             items = [cur] if cur else []
-            items += next_programmes(self.conn, ch["id"], cur["end_ts"] if cur else now, 40)
+            items += self.station.next_programmes(ch["id"], cur["end_ts"] if cur else now, 40)
             rows[ch["id"]] = items
         self.guide_rows = rows
         self.guide_loaded_at = time.monotonic()
