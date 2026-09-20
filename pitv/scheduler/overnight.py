@@ -40,7 +40,17 @@ def replay(channel: dict[str, Any], day: date, day_end: int, next_day_start: int
     replay_from = channel.get("overnight_replay_from") or policy.day_start
     from_ts = broadcast_ts(day, replay_from, day_start_min, tz)
     ordered = sorted(day_slots, key=lambda s: s.start_ts)
-    source = [s for s in ordered if s.start_ts >= from_ts and s.kind != "filler" and not (leave_out and leave_out(s))]
+    # What is left out takes the break that followed it along, as a programme that would run into
+    # tomorrow's opener does below: otherwise two breaks close up around the gap and the small
+    # hours show a run of adverts with two idents in it.
+    source, dropping = [], False
+    for s in ordered:
+        if s.start_ts < from_ts or s.kind == "filler":
+            continue
+        if s.kind == "programme":
+            dropping = bool(leave_out and leave_out(s))
+        if not dropping and not (leave_out and leave_out(s)):
+            source.append(s)
     if not source:
         source = next_day_slots()
     # A break only makes sense attached to a programme. Starting a replay part-way through the
@@ -77,6 +87,8 @@ def replay(channel: dict[str, Any], day: date, day_end: int, next_day_start: int
             continue
         if s.kind == "programme":
             suppress_break = False
+        elif s.kind == "ident" and _ident_in_break(out):
+            continue      # one ident to a break, in the small hours as in the day
         end = min(t + s.duration, next_day_start)
         # A replayed placeholder keeps its request (wanted_id, or wanted_spec until save)
         # so the delivered file binds to the replay too.
@@ -85,6 +97,16 @@ def replay(channel: dict[str, Any], day: date, day_end: int, next_day_start: int
     if t < next_day_start:
         out.append(caption(t, next_day_start))
     return out
+
+
+def _ident_in_break(out: list[Slot]) -> bool:
+    """Whether the break now being replayed already has its ident."""
+    for s in reversed(out):
+        if s.kind == "ident":
+            return True
+        if s.kind == "programme":
+            return False
+    return False
 
 
 def from_pool(channel_id: int, kinds: tuple[str, ...], decades: tuple[int, ...], day_end: int,

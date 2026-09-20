@@ -1423,7 +1423,9 @@ def test_a_break_never_carries_two_idents(tmp_path):
     assert c.execute("SELECT COUNT(*) FROM schedule WHERE kind = 'ident'").fetchone()[0] > 10
     for channel in (r[0] for r in c.execute("SELECT DISTINCT channel_id FROM schedule")):
         since_programme = 0
-        for kind, start in c.execute("SELECT kind, start_ts FROM schedule WHERE channel_id = ? AND replay = 0 ORDER BY start_ts", (channel,)):
+        # Every slot, the small-hours replay included: it drops programmes (children's ones past
+        # the cutoff, say), and the breaks either side of a gap once closed up into one.
+        for kind, start in c.execute("SELECT kind, start_ts FROM schedule WHERE channel_id = ? ORDER BY start_ts", (channel,)):
             if kind in ("programme", "filler"):
                 since_programme = 0
             elif kind == "ident":
