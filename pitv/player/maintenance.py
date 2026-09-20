@@ -17,8 +17,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .. import catalogue, tool_client
-from ..content import apply_report_files, protect_manifest
+from .. import catalogue, display, tool_client
+from ..content import apply_report_files, protect_manifest, push_screen
 from ..db import all_settings, connect, now_ts, tx
 from ..lineup import evict_fetched, remove_aired_transients
 from ..readiness import check as readiness_check
@@ -50,6 +50,7 @@ class Maintenance:
         self._empty_build_at = 0
         self._gap_build_at = 0
         self._wanted_requested_at = 0
+        self._screen_pushed: dict[str, Any] | None = None   # the profile pitv_content last took
         self._index_mtime = 0.0                 # the index file version last imported
         self._pruned_on: str | None = None      # local date of the last history/schedule trim
         self.status: dict[str, Any] = {"last_build": None, "last_import": None, "last_readiness": None,
@@ -89,6 +90,18 @@ class Maintenance:
         where = "status IN ('ok', 'warning')" if ok_only else "status != 'running'"
         row = conn.execute(f"SELECT MAX(started_at) AS t FROM run_log WHERE kind = 'catalogue' AND {where}").fetchone()
         return row["t"] if row else None
+
+    def _keep_content_screen(self, settings: dict[str, Any]) -> None:
+        """The screen goes to pitv_content after every start and whenever its values change,
+        whether the admin chose another or a release changed the table. Refused or unreachable,
+        it is tried again on the next pass."""
+        screen = display.content_profile(settings)
+        if screen == self._screen_pushed:
+            return
+        if failed := push_screen(settings):
+            log.debug("screen not pushed to pitv_content: %s", failed)
+        else:
+            self._screen_pushed = screen
 
     def _once(self) -> None:
         conn = connect(self.db_path)
@@ -148,6 +161,7 @@ class Maintenance:
             queue_gaps(conn)
         elif withdrawn := withdraw_gaps(conn):
             log.info("missing-episode requests are off: withdrew %d unanswered request(s)", withdrawn)
+        self._keep_content_screen(settings)
         # A band with no local pool depends on collection before its individual scheduled files
         # can even enter the cache manifest. Declare those top-ups first; pitv_content gives these
         # urgent catalogue jobs queue priority, while still running only one downloader at a time.

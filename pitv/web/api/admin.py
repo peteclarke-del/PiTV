@@ -19,6 +19,7 @@ from ... import db as dbm
 from ... import genres as genre_rules
 from ... import lineup as lineup_mod
 from ... import wanted as wanted_mod
+from ...content import push_screen
 from ...db import (
     CHANNEL_CONTENT,
     DEFAULT_SETTINGS,
@@ -752,19 +753,11 @@ def put_settings(request: Request, body: dict[str, Any] = Body(...), conn: sqlit
         for k, v in clean.items():
             set_setting(conn, k, v)
     request.app.state.player.call("settings-changed")
-    if "display_profile" in clean:
-        _sync_content_screen(conn, clean["display_profile"])
+    # Best effort and at once, so the admin has one screen to choose. The player's maintenance
+    # pass repeats it until pitv_content has taken it.
+    if "display_profile" in clean and (failed := push_screen(all_settings(conn))):
+        log.warning("pitv_content did not take the screen %s: %s", clean["display_profile"], failed)
     return _public_settings(conn)
-
-
-def _sync_content_screen(conn: sqlite3.Connection, profile_id: str) -> None:
-    """pitv_content's catalogue runs have no manifest and encode to its own screen setting; keep
-    it on PiTV's so the admin has one screen to choose. Best effort: offline, it picks the screen
-    up from the next manifest anyway."""
-    status, payload = tool_client.request(tool_url(conn), "PUT", "settings", body={"profile": profile_id}, timeout=5)
-    if status >= 400:
-        log.warning("pitv_content did not take the screen %s (HTTP %s): %s", profile_id, status,
-                    payload.get("error") if isinstance(payload, dict) else payload)
 
 
 @router.post("/settings/reset")

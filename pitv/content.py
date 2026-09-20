@@ -18,7 +18,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from . import display
+from . import display, tool_client
 from .catalogue import KINDS, family_safe, keyword_pattern, write_mirror
 from .db import (
     all_settings,
@@ -48,6 +48,7 @@ APPLIED_REPORT_DAYS = 7      # report files, once applied, are kept this long fo
 UNAPPLIED_REPORT_DAYS = 30   # a report file that never applies is given up after this long
 DEADLINE_LEAD = 15 * 60  # a file is due this long before it first airs
 REMOTE_PRIORITY_HOURS = 24  # fetching is slower/less certain than copying, so begin one day earlier
+SCREEN_VALUES = "video_profile_values"  # the settings key pitv_content takes the screen profile's values under
 # Typical running times per kind, so pitv_content can reject obviously wrong search hits.
 WANTED_MINUTES = {"music": [2, 8], "advert": [0.1, 2], "episode": [20, 60], "movie": [70, 180]}
 log = logging.getLogger("pitv.content")
@@ -207,6 +208,27 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
             "reports_dir": str(cache.reports_dir) if cache.dir else None,
             "profile": profile, "items": sorted(items.values(), key=lambda i: (i["priority"], i["deadline_ts"])),
             "wanted": wanted}
+
+
+def push_screen(settings: dict[str, Any]) -> str | None:
+    """Tell pitv_content the screen it encodes to when it has no manifest to read it from (a
+    catalogue run, a band helping). The profile's values go with its name, the same object the
+    manifest carries, so `pitv/display.py` is the only table and a value changed there reaches
+    what pitv_content fetches with no release of its own. A pitv_content from before it took the
+    values refuses the key; it is then given the name alone, which it resolves against its own
+    table as it always did. Returns why the push failed, or None."""
+    profile = display.content_profile(settings)
+    base = tool_client.base_url(settings)
+    status, payload = tool_client.request(base, "PUT", "settings",
+                                          body={"profile": profile["name"], SCREEN_VALUES: profile}, timeout=5)
+    errors = payload.get("errors") if isinstance(payload, dict) else None
+    if status == 400 and isinstance(errors, dict) and set(errors) == {SCREEN_VALUES}:
+        log.info("pitv_content does not take the screen's values yet; sending its name alone")
+        status, payload = tool_client.request(base, "PUT", "settings", body={"profile": profile["name"]}, timeout=5)
+    if status < 400:
+        return None
+    detail = (payload.get("error") or payload.get("errors")) if isinstance(payload, dict) else payload
+    return f"HTTP {status}: {detail}"
 
 
 def protect_manifest(conn: sqlite3.Connection, cache: MediaCache, now: int | None = None) -> None:

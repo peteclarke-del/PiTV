@@ -682,6 +682,61 @@ def test_settings_schema_matches_the_defaults(client):
     assert "admin_password_hash" not in by_key
 
 
+def _content_stub(refuse_values: bool):
+    """A stand-in for pitv_content's PUT /api/settings that records each body it is sent. An
+    older one refuses the screen's values as an unknown setting."""
+    import http.server
+    import json
+    import threading
+    seen: list[dict] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_PUT(self):
+            sent = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            seen.append(sent)
+            refused = refuse_values and "video_profile_values" in sent
+            body = json.dumps({"errors": {"video_profile_values": "unknown setting"}} if refused else {"ok": True}).encode()
+            self.send_response(400 if refused else 200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, seen
+
+
+def test_the_screens_values_go_to_pitv_content_with_its_name(client):
+    """pitv_content keeps no table of screens: what a catalogue run encodes to and the best source
+    it starts from are the values in `pitv/display.py`, the same object the manifest carries."""
+    srv, seen = _content_stub(refuse_values=False)
+    try:
+        client.put("/api/settings", json={"content_tool_url": f"http://127.0.0.1:{srv.server_port}"})
+        client.put("/api/settings", json={"display_profile": "lcd_1080p"})
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert len(seen) == 1 and seen[0]["profile"] == "lcd_1080p"
+    assert seen[0]["video_profile_values"] == client.get("/api/content/manifest").json()["profile"]
+    assert seen[0]["video_profile_values"]["max_source_height"] == 2160
+
+
+def test_a_pitv_content_from_before_the_values_still_gets_the_name(client):
+    srv, seen = _content_stub(refuse_values=True)
+    try:
+        client.put("/api/settings", json={"content_tool_url": f"http://127.0.0.1:{srv.server_port}"})
+        client.put("/api/settings", json={"display_profile": "lcd_1080p"})
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert [sorted(s) for s in seen] == [["profile", "video_profile_values"], ["profile"]]
+    assert seen[1] == {"profile": "lcd_1080p"}
+
+
 def test_screen_profile_sets_quality_and_screen(client):
     """Choosing the screen sets what pitv_content encodes to and the best source it fetches (720p
     for a standard definition screen, two rungs higher for HD, equal at 4K), and brings the

@@ -173,8 +173,15 @@ service is down. Schema 2.
   ladder for an HD screen, and equal to it at 4K. Prefer the higher resolution, then the higher bitrate, among
   hits of the same title; never go above the ceiling, and take a lower source only when
   nothing better exists. A copy or transcode from the NAS uses the file there as it is.
-  PiTV also sets pitv_content's own screen setting (`PUT /api/settings {"profile": <name>}`)
-  whenever the admin changes the screen, so catalogue runs, which have no manifest, match.
+  Catalogue runs and band helpings have no manifest, so PiTV also sends the screen by
+  `PUT /api/settings {"profile": <name>, "video_profile_values": {...}}`, where the values are
+  this same `profile` object. `pitv/display.py` is the only table of screens: pitv_content
+  encodes to the values it was last sent and resolves nothing from the name, which is kept for
+  its logs and admin. PiTV sends it when the admin changes the screen, after every start of
+  the player, and whenever the values change (a release that alters the table counts), trying
+  again each maintenance pass until it is taken. A pitv_content from before it took the values
+  answers 400 with `video_profile_values` as the only unknown setting; PiTV then sends the name
+  alone, which that version resolves against a table of its own.
 - Every scheduled file appears once, however many slots or channels use it.
 - `action` is `copy` (the Pi can play the source as it is: H.264 to 1080 lines, HEVC to 2160,
   progressive standard definition MPEG-4 or MPEG-2; PiTV decides, whatever the screen),
