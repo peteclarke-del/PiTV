@@ -1432,3 +1432,26 @@ def test_a_break_never_carries_two_idents(tmp_path):
                 since_programme += 1
                 assert since_programme == 1, f"channel {channel}: a second ident in one break at {start}"
     c.close()
+
+
+def test_an_ident_belongs_only_directly_after_a_programme():
+    """An ident announces the channel whose programme has just ended, so it heads the break and
+    a break carries one. Between adverts, after filler or beside another ident it reads as a
+    fault, and each of those had appeared in a built week."""
+    from pitv.scheduler.build import Walk
+
+    def walk_ending_in(*kinds: str) -> Walk:
+        slots = [Slot(1, "2026-09-20", n * 100, n * 100 + 100, None, 0, kind, kind.title())
+                 for n, kind in enumerate(kinds)]
+        w = Walk(channel={"id": 1}, day_str="2026-09-20", rng=random.Random(1), t=0, all_slots=[],
+                 last_show_id=None, ads_per_break=2, break_cap=240)
+        for slot in slots:
+            w.emit(slot)
+        return w
+
+    assert walk_ending_in("programme").ident_due() is True
+    assert walk_ending_in("programme", "ident").ident_due() is False, "one ident to a break"
+    assert walk_ending_in("programme", "ident", "advert").ident_due() is False, "and never a second"
+    assert walk_ending_in("programme", "advert").ident_due() is False, "not buried in the adverts"
+    assert walk_ending_in("filler").ident_due() is False, "nothing has just ended"
+    assert walk_ending_in("programme", "advert", "programme").ident_due() is True, "the next break has its own"

@@ -254,6 +254,22 @@ delivery runs alone; pitv_content now takes `state` from its queue (its c3c52b6,
 this move was checked). `pitv doctor` was not misled, since its idle finding reads `active_job`
 and `queued_by_mode`, but it prints `state`.
 
+Where an ident belongs, from Pete on the 20th: it always comes after a show, and a break carries
+only one. The ident closes the programme that has ended and hands over to the break, so it heads
+the break and the adverts follow it. Three things had to change. Each channel's pattern now reads
+`ident, show` or `ident, ad, ad, show`, which puts the break before the programme it leads into
+so that a walk resuming after a programme already on air still places it; the older `show, ident`
+lost the ident at exactly that junction, which is what Pete saw on PiTV One. Padding a gap now
+offers the ident first rather than after the adverts it could fit. And `Walk.ident_due` replaces
+the bare one-per-break test everywhere an ident can be placed: an ident is placed only where the
+slot just emitted is a programme, which is what stopped idents appearing between adverts, after
+filler and beside another ident. The first fully rebuilt day carries 90 idents, every one
+directly after a programme.
+
+PiTV Toons ran two programmes with nothing between them, which was its configured pattern
+(`show, show, ad, ad, ident`) doing as it was told. It now breaks after every programme like the
+other advert channels.
+
 From Pete watching over the web interface, late on the 20th: the end of a programme came round
 again for about ten seconds, then the ident arrived in pieces, its end first and sometimes its
 start, jerky and never whole. The cause was in the streams, not the television. A packaging run

@@ -103,6 +103,13 @@ class Walk:
                 return False
         return False
 
+    def ident_due(self) -> bool:
+        """Whether an ident belongs here: directly after the programme that has just ended, and
+        only where this break has not had one. An ident announces the channel whose programme
+        has just finished, so it heads the break; between adverts, or with another ident beside
+        it, it reads as a fault rather than as continuity."""
+        return not self.ident_shown() and self.prev is not None and self.prev.kind == "programme"
+
     def break_state(self) -> tuple[int, int]:
         """Seconds and number of adverts in the consecutive break currently under way.
 
@@ -386,7 +393,7 @@ class Builder:
                     w.t = slot.end_ts
                 continue
             if token == "ident":
-                ident = None if w.ident_shown() else (
+                ident = None if not w.ident_due() else (
                     self.select.ident(channel, rng, boundary - w.t) or self.select.stand_in_ident(channel, boundary - w.t))
                 if ident is not None:
                     slot = self._media_slot(channel, day_str, w.t, ident, "ident")
@@ -403,7 +410,7 @@ class Builder:
                 if 0 < target - w.t <= w.break_cap and target < boundary and room > 0:
                     w.t = self._pad(channel, rng, day_str, w.t, min(target, w.t + room), w.last_programme_year,
                                     w.emit, advert_room=room, advert_limit=w.advert_count_room(),
-                                    ident_allowed=not w.ident_shown())
+                                    ident_allowed=w.ident_due())
                     gap = boundary - w.t
             slack = 0
             if not fixed_queue:
@@ -491,7 +498,7 @@ class Builder:
         channel-day stays contiguous (the guide and the player both rely on that)."""
         w.t = self._pad(w.channel, w.rng, w.day_str, w.t, target, w.last_programme_year, w.emit,
                         advert_room=w.break_room(), advert_limit=w.advert_count_room(),
-                        ident_allowed=not w.ident_shown())
+                        ident_allowed=w.ident_due())
         if w.t < target:
             if note and target - w.t > 120:
                 self.log.append(f"{w.channel['name']} {w.day_str}: filler {(target - w.t) // 60} min at {self._hhmm(w.t)}")
@@ -599,28 +606,33 @@ class Builder:
         A break is a break, not a filibuster: adverts stop when `advert_room` (what is left of
         `max_break_minutes` after the adverts already running) is used up, however wide the
         gap, because a channel that fills twenty minutes with adverts is unwatchable and no
-        station ever did it. A break carries one ident at most, before its adverts or after
-        them: padding adds one only where the break has none yet (`ident_allowed`, from
-        `Walk.ident_shown`), and never a second. Whatever is left becomes filler, which the
-        caller adds."""
+        station ever did it. The ident heads the break, directly after the programme that has
+        just ended, and a break carries exactly one: padding adds it only where the break has
+        none yet (`ident_allowed`, from `Walk.ident_shown`), and never a second. Whatever is
+        left becomes filler, which the caller adds."""
         guard = 0
-        idents = 0
+        tried_ident = False
         adverts = 0
         if advert_room is None:
             advert_room = self.policy.advert_break_seconds
-        break_end = t + advert_room
+        break_end: int | None = None
         while t < target and guard < 20:
             guard += 1
             gap = target - t
             item = None
-            kind = "advert"
-            if (channel.get("ads_enabled") and t < break_end
-                    and (advert_limit is None or adverts < advert_limit)):
-                item = self.select.advert(channel, rng, t, min(gap, break_end - t), near_year)
-            if item is None and ident_allowed and idents < 1:
+            kind = "ident"
+            if ident_allowed and not tried_ident:
+                tried_ident = True
                 item = self.select.ident(channel, rng, gap)
-                kind = "ident"
-                idents += 1
+            if item is None:
+                kind = "advert"
+                if break_end is None:
+                    # The adverts' own allowance runs from the first of them, so an ident at the
+                    # head of the break does not come out of it.
+                    break_end = t + advert_room
+                if (channel.get("ads_enabled") and t < break_end
+                        and (advert_limit is None or adverts < advert_limit)):
+                    item = self.select.advert(channel, rng, t, min(gap, break_end - t), near_year)
             if item is None:
                 break
             slot = self._media_slot(channel, day_str, t, item, kind)

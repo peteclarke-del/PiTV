@@ -179,8 +179,12 @@ service is down. Schema 2.
   Catalogue runs and band helpings have no manifest, so PiTV also sends the screen by
   `PUT /api/settings {"profile": <name>, "video_profile_values": {...}}`, where the values are
   this same `profile` object. `pitv/display.py` is the only table of screens: pitv_content
-  encodes to the values it was last sent and resolves nothing from the name, which is kept for
-  its logs and admin. PiTV sends it when the admin changes the screen, after every start of
+  encodes to the values, and the name is what it falls back to for any value not given or not
+  usable, and is kept for its logs and admin. So a screen pitv_content has never heard of is
+  obeyed in full, a known name with one unusable value still encodes to that screen rather than
+  to nonsense, and a box with no PiTV keeps working. An empty object clears them and the name
+  decides again; `frame_rate: null` means the source's own rate. Sending the same values again
+  changes nothing and starts nothing, which is why PiTV may push after every start. PiTV sends it when the admin changes the screen, after every start of
   the player, and whenever the values change (a release that alters the table counts), trying
   again each maintenance pass until it is taken. A pitv_content from before it took the values
   answers 400 with `video_profile_values` as the only unknown setting; PiTV then sends the name

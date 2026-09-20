@@ -832,8 +832,11 @@ Without `--flat` the files land in `<out>/ch<number>/` (default `<data>/idents`)
 pitv_content reads a channel from directly. Either way they are ordinary library material, copied
 to the cache and placed where a channel's pattern asks.
 
-A break carries one ident at most, before its adverts or after them, whether a pattern asks for it
-or a gap is being padded (`Walk.ident_shown`); two idents never run together.
+The ident heads the break, directly after the programme that has just ended and before any
+adverts, so the viewer is told whose programme has just finished. A break carries exactly one,
+whether a pattern asks for it or a gap is being padded (`Walk.ident_shown`); two idents never run
+together. A channel's pattern is where this is expressed (`show, ident, ad, ad`), and the padding
+of a gap follows the same order.
 
 The snow over a channel change is animated. The renderer draws several frames once per screen
 size (boiling grain, line structure, a dark hum bar rolling down the tube, thin bands torn
