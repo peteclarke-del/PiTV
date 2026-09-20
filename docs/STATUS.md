@@ -227,6 +227,13 @@ Idents (PiTV 84b8a0f): seven made in the development data folder, and an idents 
 pitv_content through its API (type ident, the new location `local`, pitv_content ad1879e). They
 appear in the schedule once that source is indexed.
 
+They were indexed at 16:48 on the 20th, once pitv_content stopped a named-source index being
+starved by delivery (its 8a2847a); all seven arrived tied to their channels. On the development
+machine every programme channel's pattern now asks for one (before each programme on the two
+without adverts, after the break on the rest), and the next day carries 11 to 54 a channel. A
+rebuild also now keeps remote programmes already promised inside the lead window (PiTV c337e7d),
+which is what had left each today and tomorrow to fill from disk alone.
+
 The spread of a week (19 September, PiTV dcb86e5, ab299e9, 5def1e0), from Pete finding the same
 remote sport episode twice running on a Wednesday morning on PiTV One. Three causes: the last
 resort waived "never the same series back to back" for remote titles; placement ignored a
