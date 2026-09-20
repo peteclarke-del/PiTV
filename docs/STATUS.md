@@ -234,6 +234,26 @@ without adverts, after the break on the rest), and the next day carries 11 to 54
 rebuild also now keeps remote programmes already promised inside the lead window (PiTV c337e7d),
 which is what had left each today and tomorrow to fill from disk alone.
 
+Moved to the NAS on the evening of the 20th, at Pete's word: the seven films sit flat in the
+`idents` folder of the adverts share, each checked against its original by SHA-256, and the
+development copies are gone. pitv_content's `idents` source is now `nas` with that folder as its
+root, nested inside the adverts source, which leaves it out of its own scan (its f273648). One
+index job over both sources gave 608 adverts and 7 idents, none counted twice. On import PiTV
+tied each film to its channel by the name its title begins with (cc03656); the rows for the old
+`ch<number>/` paths are marked missing and the editor no longer lists them. The rebuilt week has
+97 to 203 ident slots on each of the six channels whose pattern asks for one, every one the
+channel's own film, and the manifest lists them for copying. `pitv idents --flat --out <folder>`
+writes this layout for the next regeneration (19732b7).
+
+Two readings from the move. The index job waited 21 minutes behind a band helping of ten songs
+and then ran in 12 seconds: pitv_content's log puts a song at 46 to 100 seconds end to end
+(search, download, one analysis pass, encode, with the next download running meanwhile), so a
+helping is fifteen to twenty minutes, which is the figure to hold against C5's. And
+`/api/status` said `idle` throughout that helping, because the status file was written by
+delivery runs alone; pitv_content now takes `state` from its queue (its c3c52b6, deployed once
+this move was checked). `pitv doctor` was not misled, since its idle finding reads `active_job`
+and `queued_by_mode`, but it prints `state`.
+
 From Pete watching the documentary channel on the evening of the 20th. Two idents ran in one
 break: padding a gap could add two of its own beside the pattern's, and the small-hours replay
 closed two breaks up wherever it left a programme out (six idents once). A break now carries one
