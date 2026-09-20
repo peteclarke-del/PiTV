@@ -252,6 +252,13 @@ midday with five bands wanting. It is now asked for at any hour, an hour apart, 
 could run seven days without a repeat, and `pitv doctor` reports pitv_content idle with work
 outstanding (PiTV f4b2e4e).
 
+pitv_content's language rule is live (cd8efce, 19:27 on the 20th) and in contract section 3; the
+dub is set aside and its source rejected. On never-idle it has no timer of its own, but an empty
+queue does not start work by itself: with the manifest delivered no look-ahead is taken, since
+one only happens inside a delivery slice. Asked for next: a queue that starts a slice whenever
+anything is left to fetch, with a floor so an empty manifest cannot make it spin, and an
+`idle_reason` in its status for `pitv doctor` to read.
+
 The spread of a week (19 September, PiTV dcb86e5, ab299e9, 5def1e0), from Pete finding the same
 remote sport episode twice running on a Wednesday morning on PiTV One. Three causes: the last
 resort waived "never the same series back to back" for remote titles; placement ignored a

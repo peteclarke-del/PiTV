@@ -249,6 +249,13 @@ applies a report once: a dropped copy of one it already took over HTTP is recogn
 - Schema 1 reports (no `file` block) are still accepted during the transition: the path is
   recorded and the requested length is kept.
 
+- A programme is taken only in the owner's language (pitv_content's `programme_language`,
+  default `en`; music is exempt, a song being in whatever language it is in). An upload is
+  refused when its title marks another language or a dub (a code in brackets, a language named
+  in words, a title in another script; "eng sub" is no refusal, "sub ita" is), when the site
+  declares another language and offers no audio format in ours, or when the file's only sound
+  track declares another; where several tracks are offered ours is the one kept. Such a
+  refusal reads `not found yet: no upload of this episode in en (N in another language)`.
 - A request for an episode of a matched series that the source's episode list does not have
   fails with a message beginning `no such episode`, followed by the length of the run when it
   is known: `no such episode: the series has 6`. PiTV does not ask again, records the length
