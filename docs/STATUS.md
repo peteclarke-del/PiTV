@@ -234,6 +234,24 @@ without adverts, after the break on the rest), and the next day carries 11 to 54
 rebuild also now keeps remote programmes already promised inside the lead window (PiTV c337e7d),
 which is what had left each today and tomorrow to fill from disk alone.
 
+From Pete watching the documentary channel on the evening of the 20th. Two idents ran in one
+break: padding a gap could add two of its own beside the pattern's, and the small-hours replay
+closed two breaks up wherever it left a programme out (six idents once). A break now carries one
+ident at most, day and night (PiTV f4b2e4e, 8d9ef13); the rebuilt week has none with two. And
+"Classic Albums" episode 1 was a Russian dub (source title "... [RUS]", dm:x1rpi08): excluded in
+PiTV, its request re-opened, and pitv_content asked for a rule that a programme is taken only in
+the owner's language (titles that mark a dub or another language refused, the provider's
+language field and English audio format preferred, a non-English only stream refused; music
+exempt).
+
+Pete's standing rule the same evening: pitv_content is never idle unless the cache is full and
+the foreseeable schedule's needs are met. Its job history showed no gap between jobs, but PiTV
+itself had stopped music collection: band material was asked for only until a band could get
+through its repeat gap, only from 01:00 to 05:00, six hours apart, so no song was filed from
+midday with five bands wanting. It is now asked for at any hour, an hour apart, until a band
+could run seven days without a repeat, and `pitv doctor` reports pitv_content idle with work
+outstanding (PiTV f4b2e4e).
+
 The spread of a week (19 September, PiTV dcb86e5, ab299e9, 5def1e0), from Pete finding the same
 remote sport episode twice running on a Wednesday morning on PiTV One. Three causes: the last
 resort waived "never the same series back to back" for remote titles; placement ignored a
