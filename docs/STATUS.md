@@ -123,7 +123,18 @@ the 19th, so C21's delivery rate has still to be measured.
 
 First reading after the fix, 01:19 on the 20th: pitv_content's cache run delivering with no
 errors (3 of 531 items, folder 284.5 GB), 73 episode requests open, none delivered yet, 116 songs.
-The measurement for C21 and C5 is due around 08:00, before pitv_content restarts onto 12d5262.
+The measurement for C21 is due around 08:00.
+
+Why episodes did not arrive all week (found by pitv_content at about 02:00 on the 20th): it
+sorted the manifest itself, fetches last, behind the transcodes, and since C15 a slice ends at
+its first transcode whenever a band helping is waiting and starts again from the top. While one
+transcode not about to air was listed, no fetch was ever reached: of tonight's 73 only the 2 due
+within three hours came before eight transcodes of thirteen hours. The 7 episodes in 12 hours
+were those near-term ones; the searching was never the limit. Fixed in pitv_content ea753d2
+(soon, copies, fetches, transcodes; four fetches a slice; "not found yet" remembered for twelve
+hours instead of searched again every slice), restarted onto with 12d5262 on PiTV's word that
+night. The band helping against C5's figure is to be timed on a later helping, since the first
+few re-make forty old fingerprints each.
 
 The spread of a week (19 September, PiTV dcb86e5, ab299e9, 5def1e0), from Pete finding the same
 remote sport episode twice running on a Wednesday morning on PiTV One. Three causes: the last
