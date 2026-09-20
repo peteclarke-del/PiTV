@@ -153,7 +153,9 @@ def _content(settings: dict[str, Any]) -> dict[str, Any]:
         queued[job.get("mode") or "?"] = queued.get(job.get("mode") or "?", 0) + 1
     return {"reachable": True, "version": body.get("version"), "state": body.get("state"), "phase": body.get("phase"),
             "active_job": {k: active.get(k) for k in ("job_id", "mode", "kind", "started_ts")} if active else None,
-            "queued_by_mode": queued, "counts": body.get("counts"), "errors": (body.get("errors") or [])[:10]}
+            "queued_by_mode": queued, "counts": body.get("counts"), "errors": (body.get("errors") or [])[:10],
+            # Why it is idle, in its own words: "nothing to fetch", "resting until HH:MM", "waiting for room".
+            "idle_reason": body.get("idle_reason")}
 
 
 def _logs(cfg: Config) -> dict[str, list[dict[str, Any]]]:
@@ -205,7 +207,10 @@ def _findings(doc: dict[str, Any]) -> list[str]:
     waiting = sum(r["n"] for r in doc.get("wanted") or [] if isinstance(r, dict) and r.get("status") == "queued")
     short = sum(1 for b in doc.get("bands") or [] if isinstance(b, dict) and (b.get("have") or 0) < (b.get("want") or 0))
     if content.get("reachable") and not content.get("active_job") and not content.get("queued_by_mode") and (waiting or short):
-        out.append(f"pitv_content is idle with work outstanding: {waiting} request(s) queued and {short} band(s) under stock")
+        why = f" (it says: {content['idle_reason']})" if content.get("idle_reason") else ""
+        out.append(f"pitv_content is idle with work outstanding: {waiting} request(s) queued and {short} band(s) under stock{why}")
+    elif content.get("idle_reason") == "waiting for room":
+        out.append("pitv_content is idle waiting for room in the cache")
     schedule = doc.get("schedule") or {}
     if schedule.get("days_ahead", 0) < 2:
         out.append(f"The schedule runs only {schedule.get('days_ahead', 0)} days ahead")

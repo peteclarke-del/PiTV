@@ -358,6 +358,14 @@ it republishes the fetched folders into the last index, as a catalogue run does.
 imports the index and extends the schedule. 05:00 pitv_content catch-up run. 06:00 and 07:00 PiTV readiness checks: anything
 not playable from the cache (or the NAS, with fallback on) is replaced and logged as an error.
 
+pitv_content is never idle while anything is left to fetch. A delivery run that leaves work behind
+puts the rest back in its queue, and with nothing queued it starts a delivery slice itself whenever
+the last run left requested fetches waiting or a rested request has come due. A run it started that
+delivered nothing buys ten minutes of quiet, doubling to an hour, cleared by any delivery or by PiTV
+asking for anything, so an empty manifest cannot make it spin. `GET /api/status` carries
+`idle_reason`: null while anything runs or is queued, otherwise `nothing to fetch`, `resting until
+HH:MM` or `waiting for room`. Band collection is PiTV's to ask for and is never self-started.
+
 ## 7. Host details
 
 `GET {content_tool_url}/api/system` returns the machine pitv_content runs on, in the shape PiTV
