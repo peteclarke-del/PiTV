@@ -178,3 +178,47 @@ def test_a_run_is_never_asked_for_more_than_the_file_has_left(tmp_path):
 
     _, where, _, _, _ = streams._source(slot, media, cache, {}, now=1000, exhausted=5)
     assert where == "card", "a file that gave nothing is not asked again"
+
+
+def test_a_browser_safe_source_is_copied_rather_than_re_encoded(monkeypatch, tmp_path):
+    """Re-encoding every stream spends most of a core a channel: 8.5 seconds of processor for
+    fifteen seconds of video against 0.2 to copy it. A stream that cannot hold real time falls
+    behind its own schedule, so what a browser already accepts goes through untouched."""
+    import pitv.stream as stream_mod
+    monkeypatch.setattr(stream_mod, "copyable", lambda source: (True, True))
+    cmd = ffmpeg_command(Path("already-h264.mp4"), start=0, seconds=60, out_dir=tmp_path, seq=0,
+                         segment_seconds=4, media={"vcodec": "h264"}, where="cache",
+                         profile={"width": 768, "height": 576, "max_bitrate_kbps": 3500}, encoder="libx264")
+    assert cmd[cmd.index("-c:v") + 1] == "copy" and cmd[cmd.index("-c:a") + 1] == "copy"
+    assert "-vf" not in cmd, "a copied stream takes no filter"
+
+    monkeypatch.setattr(stream_mod, "copyable", lambda source: (True, False))
+    cmd = ffmpeg_command(Path("h264-with-ac3.mkv"), start=0, seconds=60, out_dir=tmp_path, seq=0,
+                         segment_seconds=4, media=None, where="cache",
+                         profile={"width": 768, "height": 576, "max_bitrate_kbps": 3500}, encoder="libx264")
+    assert cmd[cmd.index("-c:v") + 1] == "copy" and cmd[cmd.index("-c:a") + 1] == "aac", "only the sound is remade"
+
+
+def test_hevc_and_interlaced_sources_are_still_re_encoded(monkeypatch, tmp_path):
+    """HEVC is refused or patchy in browsers and ten bit more so, and an interlaced source needs
+    deinterlacing whatever its codec. The test signal is looped and always encoded."""
+    import pitv.stream as stream_mod
+    monkeypatch.setattr(stream_mod, "copyable", lambda source: (False, False))
+    cmd = ffmpeg_command(Path("film.mkv"), start=0, seconds=60, out_dir=tmp_path, seq=0, segment_seconds=4,
+                         media={"vcodec": "hevc"}, where="cache",
+                         profile={"width": 768, "height": 576, "max_bitrate_kbps": 3500}, encoder="libx264")
+    assert cmd[cmd.index("-c:v") + 1] == "libx264" and "scale=768:576" in cmd[cmd.index("-vf") + 1]
+
+    monkeypatch.setattr(stream_mod, "copyable", lambda source: (True, True))
+    card = ffmpeg_command(Path("test_signal.mp4"), start=0, seconds=60, out_dir=tmp_path, seq=0,
+                          segment_seconds=4, media=None, where="card", loop=True, silent_audio=True,
+                          profile={"width": 768, "height": 576, "max_bitrate_kbps": 3500}, encoder="libx264")
+    assert card[card.index("-c:v") + 1] == "libx264", "one frame a second would be a single long segment"
+
+
+def test_what_a_browser_will_take_is_read_from_the_file(tmp_path):
+    """The catalogue records neither pixel format nor field order, so the file is asked. Ten bit
+    HEVC is the case that matters: it sits in the cache beside plain H.264 and a browser refuses
+    it, and nothing in the database tells them apart."""
+    from pitv.stream import copyable
+    assert copyable(tmp_path / "not-there.mp4") == (False, False)

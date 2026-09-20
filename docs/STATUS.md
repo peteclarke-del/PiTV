@@ -254,6 +254,22 @@ delivery runs alone; pitv_content now takes `state` from its queue (its c3c52b6,
 this move was checked). `pitv doctor` was not misled, since its idle finding reads `active_job`
 and `queued_by_mode`, but it prints `state`.
 
+The web streams re-encoded every programme to the screen's size, which cost 8.5 seconds of
+processor for fifteen seconds of video where copying costs 0.2, and on a machine at load 28 the
+encoder could not hold real time: a 921 second packaging run took over 993, so the stream fell
+behind its own schedule. A source a browser already accepts now goes through untouched, decided
+by asking the file, since the catalogue records neither pixel format nor field order and ten bit
+HEVC sits in the cache beside plain H.264. Of forty cache files probed, 31 were H.264 in eight
+bit 4:2:0 and copyable; the nine HEVC files, five of them ten bit, are still re-encoded. The
+picture keeps the source's own size, because a browser scales it to the window and the
+television has its own player. pitv_content was the other half of the contention and now runs
+its jobs five points of niceness below the player (its d4c96a3).
+
+Transcoding is not what holds delivery back, which is worth recording because it looks as though
+it might be. Of 602 manifest items, 513 are plain copies, 80 are remote fetches and 9 are
+transcodes. The NAS fallback and the thin variety come from the copies and the fetches, not from
+encoding.
+
 Where an ident belongs, from Pete on the 20th: it always comes after a show, and a break carries
 only one. The ident closes the programme that has ended and hands over to the break, so it heads
 the break and the adverts follow it. Three things had to change. Each channel's pattern now reads

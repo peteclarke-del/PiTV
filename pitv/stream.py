@@ -14,6 +14,7 @@ playlist, so nothing accumulates."""
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import sqlite3
@@ -72,16 +73,61 @@ def has_initial_burst() -> bool:
     return "readrate_initial_burst" in out.stdout
 
 
+@lru_cache(maxsize=512)
+def _streams_of(path: str, mtime: float, size: int) -> tuple[str, str, str, str]:
+    """The first video stream's codec, pixel format and field order, and the first audio codec.
+    Cached against the file's own mtime and size, so a redelivered file is asked again."""
+    try:
+        out = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                              "stream=codec_type,codec_name,pix_fmt,field_order", "-of", "json", str(path)],
+                             capture_output=True, text=True, timeout=20, check=False).stdout
+        streams = json.loads(out).get("streams", [])
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return ("", "", "", "")
+    first = {kind: next((s for s in streams if s.get("codec_type") == kind), {}) for kind in ("video", "audio")}
+    video, audio = first["video"], first["audio"]
+    return (video.get("codec_name", ""), video.get("pix_fmt", ""), video.get("field_order", ""),
+            audio.get("codec_name", ""))
+
+
+def copyable(source: Path) -> tuple[bool, bool]:
+    """Whether a browser will take this file's video, and its audio, untouched.
+
+    Copying costs almost nothing where the source is already what a browser wants, which is most
+    of the library: re-encoding every stream spends a core a channel and loses to anything else
+    on the machine, and a stream that cannot hold real time falls behind its own schedule. The
+    file is asked rather than the catalogue, which records neither pixel format nor field order.
+
+    H.264 in eight bit 4:2:0 is the one video format every current browser decodes. HEVC is
+    refused or patchy and ten bit more so, an interlaced source needs deinterlacing whatever its
+    codec, and MPEG-2 and AC-3 ride in MPEG-TS perfectly well while no browser plays them. The
+    picture keeps the source's own size: a browser scales it to the window, and the television
+    has its own player."""
+    try:
+        st = source.stat()
+    except OSError:
+        return (False, False)
+    vcodec, pix_fmt, field_order, acodec = _streams_of(str(source), st.st_mtime, st.st_size)
+    video = vcodec == "h264" and pix_fmt == "yuv420p" and field_order in ("progressive", "unknown", "")
+    return (video, video and acodec == "aac")
+
+
 def _codec_args(media: dict[str, Any] | None, where: str, profile: dict[str, Any], encoder: str,
                 segment_seconds: int, source: Path | None = None) -> list[str]:
-    """Encode a browser-safe H.264/AAC rendition at the screen's profile.
+    """A browser-safe H.264/AAC rendition: copied where the source already is one, else encoded
+    to the screen's profile.
 
     An encode is given a keyframe every segment, because the packager can only cut there: the
-    test signal, one frame a second, would otherwise become a single segment minutes long.
+    test signal, one frame a second, would otherwise become a single segment minutes long. A
+    copy is cut at the keyframes the file already has, so `-hls_time` becomes a minimum.
 
     MPEG-TS itself accepts HEVC, MPEG-2 and AC-3, but that does not make them safe in Chrome,
-    Firefox or Safari. Even copied H.264 can carry a profile/pixel format a browser's hardware
-    decoder refuses. The web rendition therefore never inherits source codecs."""
+    Firefox or Safari, so what is not already browser-safe is re-encoded (`copyable`)."""
+    if source is not None and where != "card":
+        video, audio = copyable(source)
+        if video:
+            return ["-c:v", "copy"] + (["-c:a", "copy"] if audio else
+                                       ["-af", "aresample=async=1:first_pts=0", "-c:a", "aac", "-b:a", "128k", "-ac", "2"])
     # Some old AVI/MPEG files retain broken or non-zero timestamps after an input seek. Reset
     # both tracks for the live rendition so a browser never has to join an HLS stream whose
     # first audio/video timestamps are unrelated.
