@@ -748,3 +748,23 @@ def test_the_add_dialog_is_told_what_the_catalogue_already_holds(client):
     client.delete(f"/api/lineup/{added['id']}")
     assert client.get("/api/lineup/known", params={"kind": "music"}).json()
     assert client.get("/api/lineup/known", params={"kind": "series"}).status_code == 400
+
+
+def test_a_channel_is_pointed_at_its_idents(client):
+    """The channel editor lists every ident with whose it is, and saving `ident_ids` is the whole
+    answer: those listed become the channel's own, any it had that are not listed go generic."""
+    channels = client.get("/api/channels").json()
+    first, second = channels[0], channels[1]
+    idents = first["idents"]
+    assert len(idents) >= 2 and {"id", "title", "seconds", "channel_id", "channel_name"} <= set(idents[0])
+    a, b = idents[0]["id"], idents[1]["id"]
+    got = client.put(f"/api/channels/{first['id']}", json={"ident_ids": [a, b]}).json()
+    assert {i["id"] for i in got["idents"] if i["channel_id"] == first["id"]} == {a, b}
+    got = client.put(f"/api/channels/{first['id']}", json={"ident_ids": [a]}).json()
+    mine = {i["id"]: i for i in got["idents"]}
+    assert mine[a]["channel_id"] == first["id"] and mine[b]["channel_id"] is None, "the one left out went generic"
+    client.put(f"/api/channels/{second['id']}", json={"ident_ids": [a]})           # pointing another channel at it moves it
+    assert {i["id"]: i for i in client.get("/api/channels").json()[0]["idents"]}[a]["channel_name"] == second["name"]
+    assert client.put(f"/api/channels/{first['id']}", json={"ident_ids": ["x"]}).status_code == 400
+    assert client.put(f"/api/channels/{first['id']}", json={"name": first["name"]}).status_code == 200, "a save that says nothing about idents leaves them"
+    assert {i["id"]: i for i in client.get("/api/channels").json()[1]["idents"]}[a]["channel_id"] == second["id"]

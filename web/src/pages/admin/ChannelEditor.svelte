@@ -44,6 +44,7 @@
     allowed_genres: c.allowed_genres ?? [], excluded_genres: c.excluded_genres ?? [], nas_only: c.nas_only ?? 'inherit',
     short_episode_minutes: c.short_episode_minutes ?? '', short_episode_run_minutes: c.short_episode_run_minutes ?? '',
     series_cadence_days: c.series_cadence_days ?? '', also_carries: c.also_carries ?? [],
+    ident_ids: (c.idents ?? []).filter((i) => i.channel_id === c.id).map((i) => i.id),
     fetch_kind: c.fetch_kind ?? '', band_item_max_minutes: c.band_item_max_minutes ?? '',
     strict_matching: c.strict_matching ?? false,
     decades: c.decades ?? [], kids_any_time: !!c.kids_any_time, bands: (c.bands ?? []).map((b) => ({ ...b, fill: { ...b.fill } })),
@@ -92,6 +93,7 @@
       short_episode_minutes: f.short_episode_minutes === '' ? null : Number(f.short_episode_minutes),
       short_episode_run_minutes: f.short_episode_run_minutes === '' ? null : Number(f.short_episode_run_minutes),
       series_cadence_days: num(f.series_cadence_days, { min: 1, max: 28, int: true }), also_carries: f.also_carries,
+      ident_ids: f.ident_ids,
       fetch_kind: f.fetch_kind || null, strict_matching: f.strict_matching,
       band_item_max_minutes: f.band_item_max_minutes === '' ? null : Number(f.band_item_max_minutes),
       decades: f.decades, kids_any_time: f.kids_any_time, bands: f.bands,
@@ -179,6 +181,18 @@
         <label class="field">Ads per break<input type="number" class="narrow" min="1" max="10" bind:value={f.ads_per_break} disabled={!f.ads_enabled} /></label>
         <label class="check wide"><input type="checkbox" bind:checked={f.family_safe_ads} /> Family-safe adverts only<span class="help">No alcohol, tobacco, adult or gambling adverts (pitv_content's verdict, else the keywords in Settings, Adverts).</span></label>
         <label class="check"><input type="checkbox" bind:checked={f.idents_enabled} /> Idents between programmes</label>
+        {#if (c.idents ?? []).length}
+          <div class="field wide"><span>This channel's idents</span>
+            <div class="stack" style="gap:.2rem">
+              {#each c.idents as i (i.id)}
+                <label class="check"><input type="checkbox" checked={f.ident_ids.includes(i.id)}
+                  onchange={(e) => (f.ident_ids = e.currentTarget.checked ? [...f.ident_ids, i.id] : f.ident_ids.filter((x) => x !== i.id))} />
+                  {i.title} <span class="muted small">{i.seconds}s{i.channel_id && i.channel_id !== c.id ? `, now ${i.channel_name}'s` : i.channel_id ? '' : ', generic'}</span></label>
+              {/each}
+            </div>
+            <span class="help">Tick the idents that are this channel's own. One that belongs to no channel is generic and may be shown by any channel without its own; one ticked here is never shown by another.</span>
+          </div>
+        {/if}
       </div>
       {#if shown('standard')}
         <h3>Pattern</h3>

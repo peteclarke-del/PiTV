@@ -1020,11 +1020,17 @@ def find_id(conn: sqlite3.Connection, table: str, column: str, value: Any) -> in
 
 
 def assign_ident_channels(conn: sqlite3.Connection) -> None:
-    """Give each ident without a channel the one whose number its file was made for. This runs
-    once per ident: afterwards the channel is the admin's to change and follows the channel's
-    id, so renumbering channels never strands an ident on the wrong one."""
+    """Give each ident without a channel the one it was made for: the channel whose number its
+    folder names (`channel_hint`), else the channel whose name its title begins with, the longest
+    name first, so "PiTV One ident" in a flat folder of idents still finds PiTV One. This runs
+    once per ident: afterwards the channel is the owner's to change (Channels, the channel's
+    idents) and follows the channel's id, so renumbering channels never strands an ident on the
+    wrong one. An ident that matches nothing stays generic, which any channel may show."""
     conn.execute("UPDATE media SET home_channel_id = (SELECT c.id FROM channels c WHERE c.number = media.channel_hint)"
                  " WHERE kind = 'ident' AND home_channel_id IS NULL AND channel_hint IS NOT NULL")
+    conn.execute("UPDATE media SET home_channel_id = (SELECT c.id FROM channels c"
+                 " WHERE lower(media.title) LIKE lower(c.name) || '%' ORDER BY length(c.name) DESC LIMIT 1)"
+                 " WHERE kind = 'ident' AND home_channel_id IS NULL AND channel_hint IS NULL AND missing = 0")
 
 
 def enabled_channels(conn: sqlite3.Connection) -> list[dict[str, Any]]:

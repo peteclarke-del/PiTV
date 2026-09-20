@@ -482,3 +482,26 @@ def test_make_room_measures_the_whole_cache_folder(tmp_path):
     cache.make_room(300)
     assert sorted(p.name for p in cache_dir.glob("*.mkv")) == ["2_Film_2.mkv", "3_Film_3.mkv"]
     assert (cache_dir / "acquired" / "tvshows" / "fetched.mp4").exists(), "fetched material is not a copy to evict"
+
+
+def test_an_ident_in_a_flat_folder_finds_its_channel_by_name(tmp_path):
+    """Idents kept in one folder carry no channel in their path. One whose title begins with a
+    channel's name is that channel's, the longest name winning; one that matches nothing stays
+    generic; and an owner's choice is never undone by a later import."""
+    ctx = make_library(tmp_path, 1)
+    conn = ctx["conn"]
+    one, two = (conn.execute("SELECT id FROM channels WHERE number = ?", (n,)).fetchone()["id"] for n in (1, 2))
+    with dbm.tx(conn):
+        conn.execute("UPDATE channels SET name = 'PiTV' WHERE id = ?", (two,))          # a shorter name that also matches
+        conn.execute("UPDATE media SET home_channel_id = NULL, channel_hint = NULL WHERE kind = 'ident'")
+        ids = [r["id"] for r in conn.execute("SELECT id FROM media WHERE kind = 'ident' AND missing = 0 ORDER BY id LIMIT 3")]
+        assert len(ids) == 3, "the fixture library carries idents"
+        for media_id, title in zip(ids, ("PiTV One ident", "PiTV late night", "Station clock"), strict=True):
+            conn.execute("UPDATE media SET title = ? WHERE id = ?", (title, media_id))
+        dbm.assign_ident_channels(conn)
+    homes = [conn.execute("SELECT home_channel_id FROM media WHERE id = ?", (i,)).fetchone()[0] for i in ids]
+    assert homes == [one, two, None]
+    with dbm.tx(conn):
+        conn.execute("UPDATE media SET home_channel_id = ? WHERE id = ?", (two, ids[0]))   # the owner points it elsewhere
+        dbm.assign_ident_channels(conn)
+    assert conn.execute("SELECT home_channel_id FROM media WHERE id = ?", (ids[0],)).fetchone()[0] == two

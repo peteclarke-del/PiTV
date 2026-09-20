@@ -572,6 +572,13 @@ def _channel(conn: sqlite3.Connection, cid: int) -> dict[str, Any]:
     # descriptive label, so using it here would hide valid line-ups on new/specialist channels.
     d["has_lineup"] = lineup_mod.carries_programmes(d)
     d["bands"] = band_rules.export(conn, cid)
+    # Every ident in the library with whose it is, so the channel can be pointed at its own:
+    # this channel's, another's by name, or generic (no channel: any channel may show it).
+    d["idents"] = [{"id": r["id"], "title": r["title"], "seconds": round(r["duration"] or 0),
+                    "channel_id": r["home_channel_id"], "channel_name": r["channel_name"]}
+                   for r in conn.execute("SELECT m.id, m.title, m.duration, m.home_channel_id, c.name AS channel_name FROM media m"
+                                         " LEFT JOIN channels c ON c.id = m.home_channel_id"
+                                         " WHERE m.kind = 'ident' AND m.missing = 0 AND m.excluded = 0 ORDER BY m.title")]
     return d
 
 
@@ -595,8 +602,8 @@ def _clean_bands(body: dict[str, Any]) -> list[dict[str, Any]] | None:
 def _clean_channel_fields(body: dict[str, Any]) -> dict[str, Any]:
     fields: dict[str, Any] = {}
     for k, v in body.items():
-        if k in ("bands",):
-            continue          # its own table, written by _clean_bands
+        if k in ("bands", "ident_ids"):
+            continue          # written apart: bands by _clean_bands, idents by _point_idents
         if k not in CHANNEL_FIELDS:
             continue
         if k in JSON_CHANNEL_FIELDS:
@@ -686,9 +693,22 @@ def update_channel(cid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Con
             dbm.update_row(conn, "channels", cid, fields)
             if new_bands is not None:
                 band_rules.save(conn, cid, new_bands, now_ts())
+            _point_idents(conn, cid, body)
     except sqlite3.IntegrityError as exc:
         raise HTTPException(409, f"channel number {fields.get('number')} is already used") from exc
     return _channel(conn, cid)
+
+
+def _point_idents(conn: sqlite3.Connection, cid: int, body: dict[str, Any]) -> None:
+    """`ident_ids` is the whole answer to "which idents are this channel's": those listed become
+    its own, and any it had that are not listed go back to being generic."""
+    if "ident_ids" not in body:
+        return
+    ids = body["ident_ids"]
+    if not isinstance(ids, list) or not all(isinstance(i, int) and not isinstance(i, bool) for i in ids):
+        raise HTTPException(400, "ident_ids must be a list of ident ids")
+    conn.execute("UPDATE media SET home_channel_id = NULL WHERE kind = 'ident' AND home_channel_id = ?", (cid,))
+    conn.executemany("UPDATE media SET home_channel_id = ? WHERE kind = 'ident' AND id = ?", [(cid, i) for i in ids])
 
 
 @router.delete("/channels/{cid}")

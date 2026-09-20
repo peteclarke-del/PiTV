@@ -821,7 +821,11 @@ it. Files land in `<data>/idents/ch<number>/`, the folder layout pitv_content re
 from, so an idents source pointed at `<data>/idents` (type `ident`, location `nas`, with
 `local_root` set to the same path on a Pi, where that folder is not a mount) is all that ties a
 film to its channel. They are then ordinary library material, copied to the cache and placed
-where a channel's pattern asks.
+where a channel's pattern asks. Idents kept flat in one folder (the `idents` folder of the adverts
+share, say) carry no channel in their path: one whose title begins with a channel's name is given to
+that channel on import (`db.assign_ident_channels`), and Channels, the channel, lists every ident so
+the owner can point the channel at its own; an ident that belongs to no channel is generic and any
+channel without its own may show it.
 
 A break carries one ident at most, before its adverts or after them, whether a pattern asks for it
 or a gap is being padded (`Walk.ident_shown`); two idents never run together.

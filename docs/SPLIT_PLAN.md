@@ -7,6 +7,19 @@ channel, and said it should be planned before any code changes. This page says w
 look like, what already exists, what is hard, and the order to find out in. Nothing here is
 built, and the single-box PiTV stays the supported shape throughout.
 
+## Parked
+
+Pete, 20 September 2026, late: the split is parked until the application as it stands is working
+to his satisfaction. The one step already taken (the player knows the schedule only through
+`player/station.py`) stays, since it changes no behaviour. Nothing else here is to be built until
+he says so. One requirement he added for when it resumes: more than one content back end must be
+possible, as processes or as machines, and one of them promotes itself to oversee the others.
+That is an elected coordinator, not the station handing out leases as the section below
+proposes, and it changes that section: the back ends must discover each other, agree which one
+leads, hold the shared knowledge (the index, what was not found, where each series was found,
+provider backoff) in the leader, and survive the leader going away. It is to be designed then,
+with pitv_content's session, not assumed now.
+
 ## Decided
 
 Pete's decision, 20 September 2026: PiTV is to be built so that it runs all in one and also
