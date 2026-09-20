@@ -1333,3 +1333,37 @@ def test_a_daypart_bar_holds_until_the_last_resort(tmp_path):
     assert not series_offered(0) and not series_offered(1), "a bar gave way with the preferences"
     assert series_offered(2), "and nothing but the last resort lifts it"
     c.close()
+
+
+def test_the_peak_count_sees_what_the_selector_sees(tmp_path):
+    """The count of series kept for the peak hours once had its own copy of eligibility, which
+    had drifted: it counted series the channel's decades refuse, series at rest, and remote
+    titles on a channel set to what is on disk. A channel then looked supplied, spent its few
+    airable series in the morning and met the evening with films. The count and the selector
+    now ask the same question. Each series is due on its own day, so the count is taken over
+    a week."""
+    from pitv.lineup import add as lineup_add
+    from pitv.scheduler.rules import dayparts_for_weekday
+    c = make_library(tmp_path, 6)["conn"]
+    ch_id = c.execute("SELECT channel_id FROM lineup WHERE show_id IS NOT NULL GROUP BY 1 ORDER BY COUNT(*) DESC").fetchone()[0]
+    lineup_add(c, ch_id, title="Remote Comedy", year=1984, kind="show", genres=["Comedy"], episode_minutes=30)
+    with dbm.tx(c):
+        dbm.set_setting(c, "nas_only", False)
+    first = parse_day("2026-09-14")
+
+    def week(rest: bool = False, **channel_changes) -> float:
+        builder = Builder(c, now=local_ts(first - timedelta(days=3), "07:00", tz_of(c)))
+        channel = {**next(ch for ch in builder.channels if ch["id"] == ch_id), **channel_changes}
+        if rest:
+            for show in builder.library.free_shows[ch_id]:
+                show.resting_until = local_ts(first + timedelta(days=8), "00:00", tz_of(c))
+        total = 0.0
+        for day in (first + timedelta(days=n) for n in range(7)):
+            dayparts = dayparts_for_weekday(day.weekday(), builder.settings, builder.select.channel_json(channel, "daypart_profile"))
+            total += builder.select._peak_supply(channel, local_ts(day, "10:00", tz_of(c)), 10 * 60, day.toordinal(), dayparts, {})[0]
+        return total
+    everything, on_disk = week(), week(nas_only="yes")
+    assert on_disk > 0 and everything - on_disk == 30 * 60, "a remote title counted on a channel that cannot place one"
+    assert week(decades=json.dumps([1930])) <= 30 * 60, "series the channel's decades refuse were counted"
+    assert week(rest=True, nas_only="yes") == 0, "series at rest were counted"
+    c.close()

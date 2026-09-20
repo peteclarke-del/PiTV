@@ -72,6 +72,22 @@ class Selector:
             self._channel_cols[ck] = json_field(channel.get(key))
         return self._channel_cols[ck]
 
+    def _belongs(self, channel: dict[str, Any], item: dict[str, Any], end_year: int | None = None) -> float:
+        """Whether this channel may air the item at any hour, as its era weight (0 is no): a strict
+        channel takes only what the index has labelled, a channel's decades bound what it shows,
+        and an era weighted 0 is out. A title the owner pinned to this channel is exempt from the
+        automatic era routing, which decides where unassigned material belongs. The selector's
+        candidate weight and the peak-hours count both start here, so they cannot disagree."""
+        explicit = bool(item.get("lineup_pinned") or (item.get("lineup_id") and item.get("pinned")))
+        strict = bool(channel.get("strict_matching"))
+        if strict and not explicit and not (item.get("genres") and item.get("year")):
+            return 0.0
+        if not explicit and not in_decades(item.get("year"), self.channel_decades(channel), end_year, unknown_ok=not strict):
+            return 0.0
+        unknown_w = self.policy.number("unknown_year_weight")
+        w = era_weight_spans(item.get("year"), self._channel_spans(channel), end_year, unknown_w)
+        return max(unknown_w, 0.2) if explicit and w <= 0 else w
+
     def _is_peak(self, dp: dict[str, Any]) -> bool:
         """Whether a daypart is one the day's series are kept for. It may say so itself (`peak`);
         otherwise it is peak when it starts within the `peak_from` to `peak_until` hours."""
@@ -87,7 +103,14 @@ class Selector:
 
     def _series_kept_for_peak(self, channel: dict[str, Any], t: int, bday_min: int, day_ordinal: int,
                               dayparts: list[dict[str, Any]], placed_today: dict[int, int]) -> bool:
-        """Whether the series still due today should wait for the peak hours. With one episode a
+        """Whether the series still due today should wait for the peak hours: they do while no more
+        are due than the peak still to come could hold (`_peak_supply`)."""
+        supply, peak = self._peak_supply(channel, t, bday_min, day_ordinal, dayparts, placed_today)
+        return bool(peak) and supply <= peak
+
+    def _peak_supply(self, channel: dict[str, Any], t: int, bday_min: int, day_ordinal: int,
+                     dayparts: list[dict[str, Any]], placed_today: dict[int, int]) -> tuple[float, float]:
+        """(seconds of series still due today that could open the peak, seconds of peak to come). With one episode a
         week there are rarely enough to fill a day, and a day filled from the morning on spends
         them by lunchtime and gives the evening to films, the reverse of the television this
         models. So outside the peak hours a series is offered only while more are due than the
@@ -103,7 +126,7 @@ class Selector:
                  if self._is_peak(d)]
         peak = sum(minutes for _, minutes in parts) * 60
         if not peak:
-            return False
+            return 0.0, 0.0
         opens = next(start for start, minutes in parts if minutes)      # the peak part on air, or the next to come
         kids_rule = not channel.get("kids_any_time")
         threshold, target = self.policy.short_episode_seconds(channel)
@@ -111,23 +134,32 @@ class Selector:
         for show in self.library.free_shows.get(channel["id"], ()):
             if show.mode != "auto" or show.category == "sport" or placed_today.get(show.id):
                 continue
+            if show.resting_until and t < show.resting_until:
+                continue
             ep = show.next_episode()
             if ep is None or ep.get("kids") or not allowed_at(ep, opens, self.settings, kids_rule=kids_rule):
+                continue
+            if self._belongs(channel, ep, show.end_year) <= 0:
                 continue
             if self.policy.series_due(channel, show.id, self.library.show_last(channel["id"], show), t, day_ordinal):
                 supply += max(float(ep["duration"]), target if threshold and ep["duration"] < threshold else 0)
         day_key = broadcast_day_for(t, self.settings, self.tz).isoformat()
         room = self.policy.integer("external_new_per_day") - self.library.external_per_day.get(day_key, 0)
-        for e in self.library.externals_on.get(channel["id"], ()):
+        remote = () if nas_only_for(channel, self.settings) else self.library.externals_on.get(channel["id"], ())
+        for e in remote:
             if room <= 0:
                 break
+            if not e["spare_wanted"] and next_episode_number(e) is None:
+                continue      # every episode of it has been asked for
+            if self._belongs(channel, e) <= 0:
+                continue
             if e["kind"] == "episode" and not e.get("kids") and e.get("category") != "sport" and not placed_today.get(e["id"]) \
                     and allowed_at(e, opens, self.settings, kids_rule=kids_rule) \
                     and self.policy.external_prepared(t) and self.policy.series_due(
                         channel, e["lineup_id"], self.library.external_last_placed.get(e["lineup_id"]), t, day_ordinal):
                 supply += float(e["duration"])
                 room -= 1
-        return supply <= peak
+        return supply, float(peak)
 
     def _borrowed(self, channel: dict[str, Any], dp: dict[str, Any], relax: int) -> list[Show]:
         """Series from other channels' shelves that this channel may carry here and now. A type
@@ -208,12 +240,9 @@ class Selector:
         dp = daypart_for(bday_min, dayparts)
         sport_block = float(dp.get("sport", 1.0)) >= 3.0   # docs/PLAN.md section 4.6: 3 and above forms a block
         dp_end = daypart_end_minutes(bday_min, dayparts, 1440)
-        spans = self._channel_spans(channel)
         kind_weights = self._channel_setting(channel, "kind_weights")
         movie_repeat = self.policy.movie_repeat_seconds
         genre_penalty = self.policy.number("genre_repeat_penalty")
-        # A channel may take only what the index has labelled: no genre or no year, no airing.
-        strict_matching = bool(channel.get("strict_matching"))
         daily_limit = self.policy.integer("show_daily_limit")
         repeat_penalty = self.policy.number("show_repeat_penalty")
         max_minutes = dp.get("max_minutes")
@@ -222,24 +251,11 @@ class Selector:
         relaxed = not level.daypart_preferences
         kids_rule = not channel.get("kids_any_time")
         kids_breakfast = weekend and self.policy.enabled("weekend_kids_breakfast") and dp.get("name") == "Breakfast"
-        unknown_w = self.policy.number("unknown_year_weight")
         prev_genres = ({g.lower() for g in prev.genres}
                        if prev is not None and prev.kind == "programme" and prev.genres else set())
 
-        decades = self.channel_decades(channel)
-
         def common_weight(item: dict[str, Any], kind: str, end_year: int | None = None) -> float:
-            # A pinned external line-up entry was put on this exact channel by the user. Its
-            # year must not be rejected by the automatic era-routing defaults; those defaults
-            # decide where unassigned library material belongs.
-            explicit = bool(item.get("lineup_pinned") or (item.get("lineup_id") and item.get("pinned")))
-            if strict_matching and not explicit and not (item.get("genres") and item.get("year")):
-                return 0.0     # this channel takes only what the index has labelled
-            if not explicit and not in_decades(item.get("year"), decades, end_year, unknown_ok=not strict_matching):
-                return 0.0
-            w = era_weight_spans(item.get("year"), spans, end_year, unknown_w)
-            if explicit and w <= 0:
-                w = max(unknown_w, 0.2)
+            w = self._belongs(channel, item, end_year)
             if w <= 0:
                 return 0.0
             duration = float(item["duration"])
