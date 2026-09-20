@@ -278,8 +278,9 @@ holding it is 100 per cent used with 13 GB free, almost all of it material that 
 A day of schedule is 501 distinct files and 222 GB; two days is 343 GB. So the cap holds about
 one day and the rest is evicted before its slot comes round, which is why those programmes play
 from the NAS. pitv_content priced it from its own reports: of 434 files delivered in a day, 165
-were evicted again, 178.8 GB copied onto the drive and thrown away, and it will repeat every day
-the cap stands.
+were evicted again, 166.5 GiB copied onto the drive and thrown away, and it will repeat every
+day the cap stands. That figure is nearly all NAS copies, which are cheap to make again and are
+meant to come and go; it is the size of the churn, not of anything lost.
 
 Nothing is at fault. `POST /api/content/make-room` protects the current manifest before evicting
 and `evict_fetched` spares anything still scheduled ahead; what goes is NAS copies for airings
@@ -295,10 +296,12 @@ comes round and those programmes play from the NAS. It wants about 335 GiB; the 
 spare." A delivery report could never have shown it, because a run only ever sees what is
 missing now.
 
-Sizes are GiB throughout, the unit `cache_max_gb` is set in and `df -h` prints. This was worth
-stating because the two applications appeared to disagree about the cap: PiTV read 270 and
-pitv_content 289.9, and they are the same 289,910,292,480 bytes in the two conventions. Nothing
-was misconfigured, but Pete would have been freeing disk against whichever figure he read last.
+Sizes are GiB throughout, the unit `cache_max_gb` is set in and `df -h` prints, and pitv_content
+prints GiB too from its ddfcaf3 onwards. This was worth stating because the two applications
+appeared to disagree about the cap: PiTV read 270 and pitv_content 289.9, and they are the same
+289,910,292,480 bytes in the two conventions. Nothing was misconfigured, but Pete would have been
+freeing disk against whichever figure he read last. The mix caught three separate figures in one
+evening, including one quoted to him, which is the argument for one unit rather than for care.
 
 The doctor also watches what the cache is meant to grow by. Fetched episodes are kept so a later
 airing costs nothing, and a cap that holds the schedule while leaving less room than those
