@@ -203,6 +203,20 @@ and 226 songs on disk. Two an hour against a target of about four, with nothing 
 the cache is at its cap and every copy waits on an eviction. It restarts onto 8173832 (the
 back-off, and `encoded` in the index) after this reading.
 
+What the reading came to (pitv_content's account, 20 September): the quiet from 11:42 was a full
+index of every source, twenty-six minutes in which nothing is delivered, requeued by a restart;
+and the real ceiling is that each fetched episode is decoded whole for the duplicate fingerprint,
+about a minute for every four or five of programme (ten minutes to file a 44 minute episode that
+downloaded in 37 seconds). Agreed: the fingerprint of a long programme is taken over a window
+after the trim, proven against the whole-file fingerprints already stored and against two
+different episodes of one series, with the threshold untouched and music left alone; and a full
+index nobody asked for runs only between 01:00 and 06:00. PiTV's make-room was cleared of
+suspicion: the waits scale with the copy that follows it.
+
+Idents (PiTV 84b8a0f): seven made in the development data folder, and an idents source added to
+pitv_content through its API (type ident, the new location `local`, pitv_content ad1879e). They
+appear in the schedule once that source is indexed.
+
 The spread of a week (19 September, PiTV dcb86e5, ab299e9, 5def1e0), from Pete finding the same
 remote sport episode twice running on a Wednesday morning on PiTV One. Three causes: the last
 resort waived "never the same series back to back" for remote titles; placement ignored a

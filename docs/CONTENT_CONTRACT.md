@@ -298,6 +298,11 @@ pitv_content's API owns the source configuration; PiTV's admin Sources page is a
 - NAS mounts are pitv_content's: it creates them for its sources, including those seeded from
   the installer's share list. Until a pitv_content with the mount helper is installed, PiTV's
   installer keeps writing the mounts for the installer's shares with one shared login.
+- A source's `location` is `nas` (a share, which must be mounted before it is indexed, since a
+  share that failed to mount leaves an empty folder behind), `cache` (pitv_content's own fetched
+  folders under the cache) or `local`: a read-only folder on the machine that is neither. PiTV's
+  idents live in one (`<data>/idents`, type `ident`); the channel an ident belongs to is read
+  from a folder in its path named `ch<n>`, `channel_<n>` or a bare number.
 - Online providers stay on `GET/PUT /api/providers` as already agreed.
 
 ## 5. Shared cache rules
