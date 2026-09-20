@@ -58,8 +58,9 @@ Needs:
    change static is drawn by the receiver.
 4. An API for receivers: what is on now and next per channel, the guide grid, the channel
    list with names, colours and numbers, and the settings a receiver needs (badge seconds, OSD
-   scale). Most of this exists for the web guide (`/api/now`, `/api/guide`); it needs to be
-   treated as a stable interface and versioned.
+   scale). Most of this exists for the web guide (`/api/now`, `/api/schedule`,
+   `/api/schedule/day/<day>`, and `/api/events` for changes); it needs to be treated as a stable
+   interface and versioned.
 5. Receiver registry in the admin: which receivers exist, what each is showing, last seen.
    The stream log already records viewers by address.
 
