@@ -136,6 +136,16 @@ hours instead of searched again every slice), restarted onto with 12d5262 on PiT
 night. The band helping against C5's figure is to be timed on a later helping, since the first
 few re-make forty old fingerprints each.
 
+It was not enough: the first slice on ea753d2 opened with a concert about to air, which is
+rightly exempt from every limit, and that one transcode took 76 minutes of a 30 minute slice.
+Behind it stood 158 copies not yet in the cache (153 GB, each waiting on make-room after a day
+of rebuilds had filled it), so the fetches would still not have been reached. pitv_content
+2d6d0b9, restarted onto at 03:28 on the 20th: soon, then the fetches' share (four things looked
+for, within a third of the slice and never less than ten minutes, taken even when what is about
+to air has used the slice up), then copies, then the transcode. The trade is deliberate and
+agreed: a late copy leaves the player on the NAS for that programme, a late fetch leaves a gap.
+Episode delivery is to be read from 03:28; contract section 6 is to say so.
+
 The spread of a week (19 September, PiTV dcb86e5, ab299e9, 5def1e0), from Pete finding the same
 remote sport episode twice running on a Wednesday morning on PiTV One. Three causes: the last
 resort waived "never the same series back to back" for remote titles; placement ignored a
