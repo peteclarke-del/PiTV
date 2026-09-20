@@ -196,6 +196,13 @@ waiting on make-room. Agreed the same day: a search that finds nothing is also "
 yet" and costs no attempt, and the not-found memory backs off (twelve hours, doubling to a
 week) so that a title that never appears is not searched for twice a day for ever.
 
+PiTV's own reading for the same stretch, 08:20 to 12:20: 8 episodes filed, 7 requests delivered, 2
+"not found yet" (Planet Earth 1, How It's Made 2), 1 with no upload found, 77 queued; 17 episodes
+and 226 songs on disk. Two an hour against a target of about four, with nothing filed after
+11:42; pitv_content has been asked what those slices did and how long make-room takes it, since
+the cache is at its cap and every copy waits on an eviction. It restarts onto 8173832 (the
+back-off, and `encoded` in the index) after this reading.
+
 The spread of a week (19 September, PiTV dcb86e5, ab299e9, 5def1e0), from Pete finding the same
 remote sport episode twice running on a Wednesday morning on PiTV One. Three causes: the last
 resort waived "never the same series back to back" for remote titles; placement ignored a
