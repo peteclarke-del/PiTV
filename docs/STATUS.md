@@ -171,6 +171,19 @@ between. Asked of pitv_content: the share to half the slice and never under fift
 the time box as its only limit, and two slice turns to each helping's one while requested
 fetches wait. The target is about four first episodes an hour. C5's helping timing is still owed.
 
+Both are live in pitv_content 751ffcc (restarted onto at 08:04 on the 20th). Its sampler for
+the night shows the shape plainly: four of five slices opened with a concert being re-encoded
+for that evening, 33 to 76 minutes each. That was PiTV's eviction, which went by least recently
+used alone and threw an encoded concert out ahead of films that take seconds to copy again;
+PiTV 893abbf evicts plain copies first. The one slow fetch of the night was a 44 minute 720p
+upload that needed ten minutes to re-encode; SD uploads are copied in about four.
+
+A sixth wrong delivery, excluded in PiTV and left on disk for Pete: "Crackerjack (1955) S01E01"
+is almost certainly the 2020 CBBC revival (44 minutes, 720p, titled "Crackerjack!"). An episode
+number cannot tell namesakes apart; pitv_content is making a title or a year inside the run
+the evidence when a namesake exists, and was asked to take the longer of two sources' runs
+(PiTV's match says 1955 with 453 episodes; TVmaze stops at 1958).
+
 The spread of a week (19 September, PiTV dcb86e5, ab299e9, 5def1e0), from Pete finding the same
 remote sport episode twice running on a Wednesday morning on PiTV One. Three causes: the last
 resort waived "never the same series back to back" for remote titles; placement ignored a
