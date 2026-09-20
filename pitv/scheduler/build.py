@@ -211,11 +211,21 @@ class Builder:
             # part before the cut is kept here at that length, or the walk would take the hole
             # it leaves for time to fill and place programmes in the past, over the card.
             return [replace(s, end_ts=cut) if s.kind == "filler" and not s.locked and s.end_ts > cut else s
-                    for s in existing if s.locked or s.start_ts < cut]
+                    for s in existing if s.locked or s.start_ts < cut or self._promised(s)]
         if existing and max(s.end_ts for s in existing) >= day_end - 60:
             return None
         self._cuts[(channel_id, day_str)] = None
         return existing
+
+    def _promised(self, s: Slot) -> bool:
+        """A remote programme already asked for and due to air inside the lead window. A rebuild
+        places nothing remote that close to air, so dropping such a slot loses it for good: the
+        request is withdrawn as it is being fetched and the near days fill from disk alone, which
+        is what a day of rebuilds did to every today and tomorrow. It stays where it was promised.
+        The readiness check, which rebuilds without remote titles exactly to replace what has not
+        arrived, is the one caller it does not bind."""
+        return bool(self.library.allow_external and s.wanted_id is not None and not s.replay and s.kind == "programme"
+                    and s.start_ts < self.now + self.policy.integer("external_lead_hours") * 3600)
 
     def _adjacent_show(self, channel_id: int, ts: int, before: bool) -> int | None:
         """show_id of the nearest programme across a day boundary: the last one starting before
@@ -678,8 +688,12 @@ class Builder:
                 conn.execute("UPDATE schedule SET end_ts = ? WHERE channel_id = ? AND day = ? AND locked = 0"
                              " AND kind = 'filler' AND start_ts < ? AND end_ts > ? AND replay = 0",
                              (cut, channel_id, day_str, cut, cut))
+                # What `_keep_slots` kept stays: locked slots, and promised remote ones (`_promised`).
+                keep_until = self.now + self.policy.integer("external_lead_hours") * 3600 if self.library.allow_external else 0
                 conn.execute("DELETE FROM schedule WHERE channel_id = ? AND day = ? AND locked = 0"
-                             " AND start_ts >= ? AND replay = 0", (channel_id, day_str, cut))
+                             " AND start_ts >= ? AND replay = 0"
+                             " AND NOT (wanted_id IS NOT NULL AND kind = 'programme' AND start_ts < ?)",
+                             (channel_id, day_str, cut, keep_until))
             self._raise_wanted(slots)
             conn.executemany(
                 "INSERT INTO schedule(channel_id, day, start_ts, end_ts, media_id, offset, kind,"

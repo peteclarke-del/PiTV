@@ -673,6 +673,12 @@ reproduces it.
   made entirely from bands replays those same labelled blocks; it does not flatten their media
   into an unlabelled mixed pool.
 
+A rebuild keeps what was promised. A remote title is placed only beyond `external_lead_hours`, so
+a rebuild, which places nothing remote nearer than that, would drop every remote slot inside the
+lead window, withdraw requests that were being fetched and leave the near days to fill from disk
+alone. Such a slot (`Builder._promised`) survives a rebuild where it stands. The readiness check
+is not bound by it: it rebuilds without remote titles precisely to replace what has not arrived.
+
 ### 4.10 Manual editing
 
 In the admin Schedule tab a slot can be locked or unlocked, removed, replaced with a chosen

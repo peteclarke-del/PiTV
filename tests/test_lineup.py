@@ -1,6 +1,7 @@
 """Channel line-ups: exclusive membership, genre-driven generation, external entries."""
 
 import json
+from datetime import timedelta
 from itertools import pairwise
 
 import pytest
@@ -775,3 +776,35 @@ def test_a_matched_series_episode_is_filed_under_its_real_number_and_title(conn,
         with dbm.tx(conn):
             conn.execute("DELETE FROM media WHERE uid LIKE 'test:%'")
         lineup.remove(conn, entry["id"])
+
+
+def test_a_rebuild_keeps_what_was_promised_for_the_coming_day():
+    """A remote title is placed only beyond the lead time, so a forced rebuild, which places
+    nothing remote nearer than that, used to drop every remote slot inside it: the request was
+    withdrawn while being fetched and today and tomorrow filled from disk alone. A promised slot
+    now survives a rebuild; the readiness check, which rebuilds to replace what has not arrived,
+    is not bound by it."""
+    from pitv.scheduler.horizon import rebuild_from
+    c = dbm.connect(":memory:")
+    dbm.init_db(c)
+    ch = c.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
+    lineup.add(c, ch, title="Remote Series", year=1984, kind="show", genres=["Comedy"], episode_minutes=30)
+    with dbm.tx(c):
+        dbm.set_setting(c, "nas_only", False)
+        c.execute("UPDATE channels SET series_cadence_days = 1 WHERE id = ?", (ch,))
+    day = parse_day("2026-09-14")
+    build_horizon(c, start_day=day, days=4, now=local_ts(day, "07:00", tz_of(c)), seed=3, force=True)
+    later = local_ts(day + timedelta(days=1), "07:30", tz_of(c))      # the next morning, before anything has aired
+    promised = c.execute("SELECT start_ts, wanted_id FROM schedule WHERE channel_id = ? AND wanted_id IS NOT NULL AND replay = 0"
+                         " AND start_ts > ? AND start_ts < ? ORDER BY start_ts", (ch, later, later + 23 * 3600)).fetchall()
+    assert promised, "nothing remote was placed for the following day"
+    build_horizon(c, start_day=day + timedelta(days=1), days=4, now=later, seed=99, force=True)
+    after = c.execute("SELECT start_ts, wanted_id FROM schedule WHERE channel_id = ? AND wanted_id IS NOT NULL AND replay = 0"
+                      " AND start_ts > ? AND start_ts < ? ORDER BY start_ts", (ch, later, later + 23 * 3600)).fetchall()
+    assert [tuple(r) for r in after] == [tuple(r) for r in promised], "a rebuild dropped what was promised"
+    assert not c.execute("SELECT 1 FROM schedule a JOIN schedule b ON a.channel_id = b.channel_id AND a.id < b.id AND a.replay = 0"
+                         " AND b.replay = 0 AND a.start_ts < b.end_ts AND b.start_ts < a.end_ts WHERE a.channel_id = ?", (ch,)).fetchone(), "slots overlap"
+    rebuild_from(c, ch, promised[0]["start_ts"], now=later, allow_external=False)
+    assert not c.execute("SELECT 1 FROM schedule WHERE channel_id = ? AND wanted_id = ? AND start_ts = ?",
+                         (ch, promised[0]["wanted_id"], promised[0]["start_ts"])).fetchone(), "readiness could not replace it"
+    c.close()
