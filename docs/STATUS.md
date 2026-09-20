@@ -187,6 +187,15 @@ That is live in pitv_content ffdaf19 (restarted onto at 08:20 on the 20th): with
 upload must carry the episode's title or a year from the matched source's own run; its year
 reader had known only 1960 to 1999. The midday reading is on this code from 08:20.
 
+From pitv_content's own reports, 08:20 to 11:40 on the 20th: 8 episodes delivered, every one
+under its real title (How It's Made 1, Classic Albums 1, Forbidden History 2, Dinosaur
+Apocalypse 2, Ancient Aliens 2, How It Works 1 and 3 with 2 downloading), 5 where no upload was
+found at all and 3 where none said which episode it was; 16 episodes on disk against 6
+overnight, and 216 songs. About two and a half an hour, with the cache full and every copy
+waiting on make-room. Agreed the same day: a search that finds nothing is also "not found
+yet" and costs no attempt, and the not-found memory backs off (twelve hours, doubling to a
+week) so that a title that never appears is not searched for twice a day for ever.
+
 The spread of a week (19 September, PiTV dcb86e5, ab299e9, 5def1e0), from Pete finding the same
 remote sport episode twice running on a Wednesday morning on PiTV One. Three causes: the last
 resort waived "never the same series back to back" for remote titles; placement ignored a
