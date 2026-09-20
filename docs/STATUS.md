@@ -213,6 +213,16 @@ different episodes of one series, with the threshold untouched and music left al
 index nobody asked for runs only between 01:00 and 06:00. PiTV's make-room was cleared of
 suspicion: the waits scale with the copy that follows it.
 
+The windowed fingerprint went live at 13:33 on the 20th (pitv_content dea42a2; on the twenty
+episodes then on disk each window matched its own file at 0.0 and the nearest other episode,
+same series included, was 25.6 bits against a threshold of 10). PiTV's reading, 13:34 to 16:41: 15
+episodes filed, about five an hour against the target of four and two that morning; 38 on disk
+against 6 the night before; 74 requests still queued, of which 6 found no upload that said which
+episode it was and 4 found nothing. With time in hand the look-ahead is running again (Forbidden
+History 1 to 5, Planet Dinosaur 1 to 3). What arrives is mostly documentary; the 1980s British
+series on One and Three are the ones the search finds least. Songs stood at 226 from 12:20 to
+16:41, which wants asking about. C21 is met on this machine.
+
 Idents (PiTV 84b8a0f): seven made in the development data folder, and an idents source added to
 pitv_content through its API (type ident, the new location `local`, pitv_content ad1879e). They
 appear in the schedule once that source is indexed.
