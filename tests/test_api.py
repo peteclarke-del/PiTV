@@ -823,3 +823,21 @@ def test_a_channel_is_pointed_at_its_idents(client):
     assert client.put(f"/api/channels/{first['id']}", json={"ident_ids": ["x"]}).status_code == 400
     assert client.put(f"/api/channels/{first['id']}", json={"name": first["name"]}).status_code == 200, "a save that says nothing about idents leaves them"
     assert {i["id"]: i for i in client.get("/api/channels").json()[1]["idents"]}[a]["channel_id"] == second["id"]
+
+
+def test_doctor_says_when_the_cache_cannot_hold_the_schedule():
+    """A cap smaller than the schedule does not fail, it just copies the same files again every
+    day and plays those slots from the NAS, and nothing in a delivery report shows it: a run only
+    ever sees what is missing now. It took an evening by hand to find, so the doctor says it."""
+    from pitv import doctor
+    gb = 1024 ** 3
+    doc = {"cache": {"next_day_files": 520, "cached_percent": 100, "cap_holds_days": 1.2,
+                     "schedule_day_bytes": 222 * gb, "usage": {"max": 270 * gb, "free": 13 * gb}}}
+    finding = next(f for f in doctor._findings(doc) if "holds only" in f)
+    assert "1.2 days" in finding and "270 GB against 222 GB a day" in finding
+    assert "play from the NAS" in finding
+    assert "wants about 333 GB" in finding and "13 GB free" in finding
+
+    roomy = {"cache": {"next_day_files": 520, "cached_percent": 100, "cap_holds_days": 3.0,
+                       "schedule_day_bytes": 100 * gb, "usage": {"max": 300 * gb, "free": 500 * gb}}}
+    assert not [f for f in doctor._findings(roomy) if "holds only" in f]

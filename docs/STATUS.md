@@ -270,6 +270,31 @@ it might be. Of 602 manifest items, 513 are plain copies, 80 are remote fetches 
 transcodes. The NAS fallback and the thin variety come from the copies and the fetches, not from
 encoding.
 
+What does hold it back is the cache cap, found on the night of the 20th after pitv_content had
+ruled out its own half with evidence: delivery is not behind (of 128 undelivered items exactly
+one was due within three hours) and the two sides' books agree exactly (392 files claimed
+cached, 392 present). The cache folder is 267 GB against a cap of 270, and the 17 TB drive
+holding it is 100 per cent used with 13 GB free, almost all of it material that is not PiTV's.
+A day of schedule is 501 distinct files and 222 GB; two days is 343 GB. So the cap holds about
+one day and the rest is evicted before its slot comes round, which is why those programmes play
+from the NAS. pitv_content priced it from its own reports: of 434 files delivered in a day, 165
+were evicted again, 178.8 GB copied onto the drive and thrown away, and it will repeat every day
+the cap stands.
+
+Nothing is at fault. `POST /api/content/make-room` protects the current manifest before evicting
+and `evict_fetched` spares anything still scheduled ahead; what goes is NAS copies for airings
+beyond the one day the manifest covers, which the rules permit because a NAS copy is cheap to
+make again. The cap is what is wrong, and raising it is Pete's decision because it needs about
+180 GB freed on a drive holding his own material.
+
+`pitv doctor` now reports this by itself rather than needing an evening of measurement: it
+totals the distinct files the next 24 hours needs and states the cap as days of schedule, with
+what it would want and what the drive has spare. The finding reads "The cache holds only 1.2
+days of the schedule (270 GB against 222 GB a day), so copies are evicted before their slot
+comes round and those programmes play from the NAS. It wants about 333 GB; the drive has 13 GB
+free." A delivery report could never have shown it, because a run only ever sees what is missing
+now.
+
 Where an ident belongs, from Pete on the 20th: it always comes after a show, and a break carries
 only one. The ident closes the programme that has ended and hands over to the break, so it heads
 the break and the adverts follow it. Three things had to change. Each channel's pattern now reads

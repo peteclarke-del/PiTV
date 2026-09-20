@@ -31,6 +31,7 @@ from .scheduler.rules import tz_of
 
 DAY = 86400
 CACHED_TARGET = 95      # per cent of the next day's files expected in the cache
+CAP_DAYS_TARGET = 1.5   # days of built schedule the cache should hold; below this it thrashes
 LOW_DISK_BYTES = 5 * 1024 ** 3
 LOG_LINES = 12
 
@@ -107,8 +108,27 @@ def _cache(conn: sqlite3.Connection, settings: dict[str, Any], now: int) -> dict
         if not item.get("already_cached"):
             waiting[item["action"]] = waiting.get(item["action"], 0) + 1
     cached = sum(1 for i in items if i.get("already_cached"))
-    return {"usage": MediaCache.from_settings(settings).usage(), "next_day_files": len(items), "cached": cached,
-            "cached_percent": round(100 * cached / len(items)) if items else 100, "waiting_by_action": waiting}
+    cache = MediaCache.from_settings(settings)
+    return {"usage": cache.usage(), "next_day_files": len(items), "cached": cached,
+            "cached_percent": round(100 * cached / len(items)) if items else 100, "waiting_by_action": waiting,
+            **_cap_against_schedule(conn, cache.max_bytes, now)}
+
+
+def _cap_against_schedule(conn: sqlite3.Connection, cap: int, now: int) -> dict[str, Any]:
+    """How much of the built schedule the cache cap can hold.
+
+    A cap smaller than the schedule does not fail: the copies beyond it are evicted and those
+    slots play from the NAS, which is the designed fallback. It is expensive and invisible,
+    though, because each of those copies is made again the next time its slot comes round, and
+    nothing in a delivery report shows it: a run only ever sees what is missing now. Stated as
+    days, it answers the question a person actually has, which is whether to find more disk."""
+    day = conn.execute(
+        "SELECT COALESCE(SUM(size), 0) FROM (SELECT DISTINCT m.id, m.size FROM schedule s"
+        " JOIN media m ON m.id = s.media_id WHERE s.start_ts BETWEEN ? AND ? AND m.size > 0)",
+        (now, now + DAY)).fetchone()[0]
+    if not cap or not day:
+        return {}
+    return {"schedule_day_bytes": int(day), "cap_holds_days": round(cap / day, 1)}
 
 
 def _bands(conn: sqlite3.Connection, settings: dict[str, Any], now: int) -> dict[str, Any]:
@@ -223,6 +243,16 @@ def _findings(doc: dict[str, Any]) -> list[str]:
     if cache.get("next_day_files") and cache.get("cached_percent", 100) < CACHED_TARGET:
         out.append(f"Only {cache['cached_percent']}% of the next day's {cache['next_day_files']} files are in the cache"
                    f" (waiting: {cache.get('waiting_by_action')})")
+    holds = cache.get("cap_holds_days")
+    if holds is not None and holds < CAP_DAYS_TARGET:
+        usage = cache.get("usage") or {}
+        gb = 1024 ** 3
+        want = int(CAP_DAYS_TARGET * cache["schedule_day_bytes"] / gb)
+        free = usage.get("free")
+        room = (f"; the drive has {free // gb} GB free" if isinstance(free, int) else "")
+        out.append(f"The cache holds only {holds} days of the schedule ({usage.get('max', 0) // gb} GB against"
+                   f" {cache['schedule_day_bytes'] // gb} GB a day), so copies are evicted before their slot comes"
+                   f" round and those programmes play from the NAS. It wants about {want} GB{room}")
     cards = (doc.get("bands") or {}).get("holding_cards_next_two_days") or []
     if cards:
         minutes = sum(c["card_minutes"] for c in cards)
