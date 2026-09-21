@@ -1455,3 +1455,56 @@ def test_an_ident_belongs_only_directly_after_a_programme():
     assert walk_ending_in("programme", "advert").ident_due() is False, "not buried in the adverts"
     assert walk_ending_in("filler").ident_due() is False, "nothing has just ended"
     assert walk_ending_in("programme", "advert", "programme").ident_due() is True, "the next break has its own"
+
+
+def test_only_one_schedule_build_runs_at_a_time(tmp_path):
+    """The web service and the player's maintenance thread are separate processes, and emptying
+    the schedule is exactly what makes maintenance decide to build. A fresh rebuild therefore
+    raced it and the week held every programme twice, 5063 overlapping slots across seven
+    channels. The run log is the lock, claimed under BEGIN IMMEDIATE."""
+    from pitv.scheduler.horizon import build_horizon, claim_build
+
+    conn = make_library(tmp_path, max_episodes=2)["conn"]
+    now = dbm.now_ts()
+    mine = claim_build(conn, now)
+    assert mine is not None
+    assert claim_build(conn, now) is None, "a second builder is turned away while the first holds it"
+
+    skipped = build_horizon(conn, now=now)
+    assert skipped["status"] == "skipped" and skipped["built"] == 0
+    assert not conn.execute("SELECT 1 FROM schedule LIMIT 1").fetchall(), "and it wrote nothing"
+
+    dbm.run_log_finish(conn, mine, "ok", "done", [])
+    assert claim_build(conn, now) is not None, "the claim is released when the run finishes"
+    conn.close()
+
+
+def test_a_build_killed_mid_run_does_not_block_every_build_after_it(tmp_path):
+    """A process that is killed cannot close its own run, so a claim that is never released would
+    stop the schedule being built again for good."""
+    from pitv.scheduler.horizon import BUILD_STALE_SECONDS, claim_build
+
+    conn = make_library(tmp_path, max_episodes=2)["conn"]
+    now = dbm.now_ts()
+    assert claim_build(conn, now) is not None
+    assert claim_build(conn, now + BUILD_STALE_SECONDS - 1) is None
+    assert claim_build(conn, now + BUILD_STALE_SECONDS + 1) is not None, "a dead run is stepped over"
+    conn.close()
+
+
+def test_a_fresh_rebuild_it_cannot_run_clears_nothing(tmp_path):
+    """Clearing the schedule and then declining to build it would leave the channels empty, which
+    is worse than not starting. The claim is taken before anything is thrown away."""
+    from pitv.scheduler.horizon import build_horizon, claim_build, fresh_rebuild_horizon
+
+    conn = make_library(tmp_path, max_episodes=2)["conn"]
+    now = dbm.now_ts()
+    build_horizon(conn, now=now, days=1)
+    before = conn.execute("SELECT COUNT(*) FROM schedule").fetchone()[0]
+    assert before > 0
+
+    assert claim_build(conn, now) is not None          # somebody else is building
+    result = fresh_rebuild_horizon(conn, now=now)
+    assert result["status"] == "skipped" and result["cleared_slots"] == 0
+    assert conn.execute("SELECT COUNT(*) FROM schedule").fetchone()[0] == before
+    conn.close()

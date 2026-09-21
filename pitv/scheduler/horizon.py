@@ -25,13 +25,41 @@ def seed_for(text: str) -> int:
     return int(hashlib.sha256(text.encode()).hexdigest()[:8], 16)
 
 
+BUILD_STALE_SECONDS = 1800   # a build still unfinished after this long is taken as dead
+
+
+def claim_build(conn: sqlite3.Connection, now: int) -> int | None:
+    """Take the schedule build for this caller, or None when another already holds it.
+
+    Two builders writing the same channel-days leave every programme in the guide twice. The web
+    service and the player's maintenance thread are separate processes, and emptying the schedule
+    is exactly what makes maintenance decide to build, so a fresh rebuild raced it by
+    construction: one produced 46 channel-days and the other 39 three seconds later, and the
+    week held 5063 overlapping slots.
+
+    The run log is the lock. The claim is made under `BEGIN IMMEDIATE`, so only one process can
+    take it, and a run left unfinished for `BUILD_STALE_SECONDS` is treated as dead rather than
+    blocking every build after it: a killed process cannot close its own run."""
+    with tx(conn):
+        row = conn.execute("SELECT id, started_at FROM run_log WHERE kind = 'schedule'"
+                           " AND finished_at IS NULL ORDER BY id DESC LIMIT 1").fetchone()
+        if row is not None and now - int(row["started_at"] or 0) < BUILD_STALE_SECONDS:
+            return None
+        return run_log_start(conn, "schedule")
+
+
 def build_horizon(conn: sqlite3.Connection, *, start_day: date | None = None,
                   days: int | None = None, force: bool = False,
                   channel_numbers: list[int] | None = None, seed: int | None = None,
-                  progress: Progress = None, now: int | None = None) -> dict[str, Any]:
+                  progress: Progress = None, now: int | None = None,
+                  run_id: int | None = None) -> dict[str, Any]:
     """Build `days` broadcast days from `start_day` for the enabled channels (or those
     numbered in `channel_numbers`). Without `force` only incomplete days are extended; with it
-    everything unlocked from now on is rebuilt. Logged as a `schedule` run."""
+    everything unlocked from now on is rebuilt. Logged as a `schedule` run.
+
+    One build at a time (`claim_build`); another already running means this one has nothing to
+    add, so it says so and leaves. A caller that has cleared state first takes the claim itself
+    and passes `run_id`, so it never clears a schedule it then declines to rebuild."""
     settings = all_settings(conn)
     tz = tz_of(conn)
     now = now or now_ts()
@@ -40,7 +68,12 @@ def build_horizon(conn: sqlite3.Connection, *, start_day: date | None = None,
     days = days or int(settings.get("horizon_days", 7))
     if seed is None:
         seed = seed_for(start_day.isoformat())
-    run_id = run_log_start(conn, "schedule")
+    if run_id is None:
+        run_id = claim_build(conn, now)
+    if run_id is None:
+        log.info("a schedule build is already running; leaving this one to it")
+        return {"status": "skipped", "summary": "another schedule build is already running",
+                "notes": [], "run_id": None, "start_day": start_day.isoformat(), "days": days, "built": 0}
     channels = enabled_channels(conn)
     if channel_numbers:
         channels = [c for c in channels if c["number"] in channel_numbers]
@@ -100,7 +133,17 @@ def fresh_rebuild_horizon(conn: sqlite3.Connection, *, start_day: date | None = 
 
     No file is forgotten, here or in pitv_content: cache copies and fetched material stay
     exactly as they are, and the caller has pitv_content publish a fresh index which is imported
-    before this runs, so material fetched earlier is scheduled again like anything else."""
+    before this runs, so material fetched earlier is scheduled again like anything else.
+
+    The build is claimed before anything is cleared, so a rebuild that cannot have the builder
+    leaves the schedule alone rather than emptying it and declining to fill it again."""
+    now = now or now_ts()
+    run_id = claim_build(conn, now)
+    if run_id is None:
+        return {"status": "skipped", "summary": "another schedule build is already running;"
+                                                " nothing was cleared", "notes": [], "built": 0,
+                "cleared_slots": 0, "cleared_history": 0, "cleared_wanted": 0, "kept_wanted": 0,
+                "withdrawn_requests": 0}
     with tx(conn):
         cleared_slots = conn.execute("SELECT COUNT(*) FROM schedule").fetchone()[0]
         cleared_history = conn.execute("SELECT COUNT(*) FROM history").fetchone()[0]
@@ -111,7 +154,8 @@ def fresh_rebuild_horizon(conn: sqlite3.Connection, *, start_day: date | None = 
         conn.execute("DELETE FROM run_log")
         conn.execute(f"DELETE FROM wanted WHERE {DERIVED_WANTED}")
         conn.execute("UPDATE band SET last_fetch_at = NULL")
-    result = build_horizon(conn, start_day=start_day, days=days, seed=seed, progress=progress, now=now)
+    result = build_horizon(conn, start_day=start_day, days=days, seed=seed, progress=progress,
+                           now=now, run_id=run_id)
     return {**result, "cleared_slots": cleared_slots, "cleared_history": cleared_history,
             "cleared_wanted": cleared_wanted, "kept_wanted": kept_wanted,
             "withdrawn_requests": cleared_wanted}
