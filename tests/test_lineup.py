@@ -845,3 +845,36 @@ def test_a_rebuild_keeps_what_was_promised_for_the_coming_day():
     assert not c.execute("SELECT 1 FROM schedule WHERE channel_id = ? AND wanted_id = ? AND start_ts = ?",
                          (ch, promised[0]["wanted_id"], promised[0]["start_ts"])).fetchone(), "readiness could not replace it"
     c.close()
+
+
+def test_a_programme_goes_to_the_channel_it_was_broadcast_on():
+    """The channels model real broadcasters, so a series belongs where it actually went out. A
+    channel lists what it will take, its own first, which lets a BBC One programme land on the
+    channel modelling BBC Two when the first is full without any of this being known to the code."""
+    from pitv.lineup import channel_fit, network_fit
+
+    one = {"content": "general", "networks": ["BBC One", "BBC Two"], "allowed_genres": ["Drama"]}
+    two = {"content": "general", "networks": ["BBC Two", "BBC One"], "allowed_genres": ["Drama"]}
+    three = {"content": "general", "networks": ["ITV", "Channel 4"], "allowed_genres": ["Drama"]}
+
+    assert network_fit(one, "BBC One") == 1.0
+    assert network_fit(two, "BBC One") == 0.5, "its sibling takes it, but second"
+    assert network_fit(three, "BBC One") is None, "ITV never carried it"
+    assert network_fit(one, "bbc one") == 1.0, "the spelling is not case sensitive"
+
+    drama = {"drama"}
+    assert channel_fit(one, drama, "series", network="BBC One") > channel_fit(two, drama, "series", network="BBC One")
+    assert channel_fit(three, drama, "series", network="BBC One") is None
+
+
+def test_a_channel_with_no_broadcaster_listed_is_unchanged_and_films_are_not_skewed():
+    """Most of the library has never been looked up and a film has no broadcaster at all. Scoring
+    the unknown below par would drive every film onto whichever channel listed no networks."""
+    from pitv.lineup import channel_fit, network_fit
+
+    open_channel = {"content": "general", "allowed_genres": ["Drama"]}
+    bbc = {"content": "general", "networks": ["BBC One"], "allowed_genres": ["Drama"]}
+    assert network_fit(open_channel, "ITV") == 1.0, "a channel listing nothing takes anything"
+    assert network_fit(bbc, None) == 1.0, "and an unknown broadcaster counts for nothing"
+    drama = {"drama"}
+    assert channel_fit(bbc, drama, "movie") == channel_fit(open_channel, drama, "movie")

@@ -577,6 +577,7 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("media", "cache_interlaced", "INTEGER"),
     ("media", "encoded", "INTEGER"),
     ("band", "fetch_job_id", "TEXT"),
+    ("channels", "networks", "TEXT"),
     ("lineup", "match", "TEXT"),
     ("channels", "kids_any_time", "INTEGER NOT NULL DEFAULT 0"),
     ("channels", "decades", "TEXT"),

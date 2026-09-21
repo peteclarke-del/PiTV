@@ -74,12 +74,12 @@ MEDIA_DIRECT_FIELDS = {"excluded", "concert", "family_safe", "home_channel_id"}
 CHANNEL_FIELDS = {"number", "name", "short_name", "colour", "enabled", "ads_enabled", "ads_per_break",
                   "pattern", "era_weights", "genre_weights", "kind_weights", "daypart_profile",
                   "overnight_replay_from", "idents_enabled", "description", "content", "family_safe_ads",
-                  "allowed_genres", "excluded_genres", "nas_only", "kids_any_time", "decades", "bands",
+                  "allowed_genres", "excluded_genres", "nas_only", "kids_any_time", "decades", "networks", "bands",
                   "band_item_repeat_hours", "band_feature_repeat_days",
                   "short_episode_minutes", "short_episode_run_minutes", "series_cadence_days", "also_carries", "fetch_kind",
                   "band_item_max_minutes", "strict_matching"}
 JSON_CHANNEL_FIELDS = {"era_weights", "genre_weights", "kind_weights", "daypart_profile", "allowed_genres",
-                       "excluded_genres", "decades"}
+                       "excluded_genres", "decades", "networks"}
 _COLOUR = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 

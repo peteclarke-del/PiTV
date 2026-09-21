@@ -456,6 +456,9 @@ def _put_together(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
             found["year"] = when
         if candidate.get("summary") and "summary" not in found:
             found["summary"] = candidate["summary"]
+        if (where := as_text(candidate.get("network"))) and "network" not in found:
+            # Who first broadcast it. A channel modelled on a real one is placed from this.
+            found["network"] = where
         genres += [g for g in (candidate.get("genres") or []) if isinstance(g, str)]
     return {**found, "genres": genres} if found else None
 
@@ -558,6 +561,8 @@ def enrich_missing_metadata(conn: sqlite3.Connection, *, limit: int = 50, force:
                 enriched["plot"] = str(candidate["summary"])
             if table == "shows":
                 enriched["kids"] = int(bool(effective(row).get("kids")) or genre_rules.is_childrens(genres))
+                if candidate.get("network") and not effective(row).get("network"):
+                    enriched["network"] = str(candidate["network"])
             source = str((candidate.get("match") or {}).get("source") or "online")
             with tx(conn):
                 conn.execute(f"UPDATE {table} SET enriched = ?, metadata_checked_at = ?, metadata_source = ? WHERE id = ?",

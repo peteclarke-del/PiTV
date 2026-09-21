@@ -84,8 +84,37 @@ def claimed_types(channels: list[dict[str, Any]]) -> frozenset[str]:
                      for t in genre_rules.THEME_TYPES.get(c.get("content") or "", ()))
 
 
+NETWORK_OWN = 1.0        # the channel this programme actually went out on
+NETWORK_SIBLING = 0.5    # the other channel of the same broadcaster, to spread the load
+
+
+def network_fit(channel: dict[str, Any], network: str | None) -> float | None:
+    """How well a programme's original broadcaster suits a channel that models a real one.
+
+    A channel lists the broadcasters it will take, its own first: PiTV One reads
+    `["BBC One", "BBC Two"]` and PiTV Two `["BBC Two", "BBC One"]`, so what went out on BBC One
+    prefers PiTV One and may still land on Two when One is full. That is how the 1980s schedules
+    are followed without pinning every title by hand, and it is configuration rather than
+    anything the code knows about the BBC.
+
+    A channel that lists nothing takes anything, which is how it worked before. So does a
+    programme whose broadcaster is unknown, and it counts for nothing either way: most of the
+    library has never been looked up, and films have no broadcaster at all. Scoring the unknown
+    below par would have driven every film onto whichever channel happened to list no networks,
+    which is the opposite of spreading them."""
+    listed = [str(n).strip().lower() for n in (channel.get("networks") or []) if str(n).strip()]
+    if not listed or not network:
+        return 1.0
+    name = network.strip().lower()
+    for place, allowed in enumerate(listed):
+        if name == allowed:
+            return NETWORK_OWN if place == 0 else NETWORK_SIBLING / place
+    return None
+
+
 def channel_fit(channel: dict[str, Any], genres: set[str], ptype: str, *, kids: bool = False,
-                claimed: frozenset[str] = frozenset(), year: int | None = None, end_year: int | None = None) -> float | None:
+                claimed: frozenset[str] = frozenset(), year: int | None = None,
+                end_year: int | None = None, network: str | None = None) -> float | None:
     """How well an item suits a channel, or None when the channel must not carry it.
 
     What the item is decides whether it belongs (docs/PLAN.md section 4.2): a themed channel
@@ -106,6 +135,9 @@ def channel_fit(channel: dict[str, Any], genres: set[str], ptype: str, *, kids: 
     decades = [int(d) for d in (channel.get("decades") or []) if str(d).isdigit()]
     if not in_decades(year, decades, end_year):
         return None
+    where = network_fit(channel, network)
+    if where is None:
+        return None
     theme = channel.get("content") or "general"
     if theme != "general":
         own = genre_rules.THEME_TYPES.get(theme)
@@ -114,11 +146,14 @@ def channel_fit(channel: dict[str, Any], genres: set[str], ptype: str, *, kids: 
         return None
     allowed = {str(g).lower() for g in (channel.get("allowed_genres") or [])}
     if not genres:
-        return 0.01
+        return 0.01 * where
     if not allowed:
-        return 0.05
+        return 0.05 * where
     matched = len(allowed & genres)
-    return matched / len(allowed) if matched else None
+    # The broadcaster it went out on weighs as heavily as the genres, so a drama that was on
+    # BBC Two goes to the channel modelled on BBC Two rather than to whichever general channel
+    # happens to list the most drama genres.
+    return (matched / len(allowed)) * where if matched else None
 
 
 def carries_programmes(channel: dict[str, Any]) -> bool:
@@ -170,13 +205,15 @@ def _cheapest(fits: list[tuple[dict[str, Any], float]], load: dict[tuple[int, st
 
 
 def best_channel(conn: sqlite3.Connection, genres: list[str] | None, hours: float = 1.0, *,
-                 ptype: str = "series", kids: bool = False, year: int | None = None) -> int | None:
+                 ptype: str = "series", kids: bool = False, year: int | None = None,
+                 network: str | None = None) -> int | None:
     """The channel the generator would give a new item of this type with these genres, or None
     when no channel accepts it."""
     channels = programme_channels(conn)
     claimed = claimed_types(channels)
     fits = [(c, f) for c in channels
-            if (f := channel_fit(c, _genre_set(genres), ptype, kids=kids, claimed=claimed, year=year)) is not None]
+            if (f := channel_fit(c, _genre_set(genres), ptype, kids=kids, claimed=claimed, year=year,
+                                 network=network)) is not None]
     if not fits:
         return None
     return _cheapest(fits, _load_hours(conn, [c["id"] for c in channels]), "general", hours)["id"]
@@ -230,6 +267,7 @@ def generate(conn: sqlite3.Connection, rebalance: bool = False) -> dict[str, int
                               "bucket": _bucket(r["category"]),
                               # as the scheduler reckons it: first year plus a year a season
                               "end_year": r["year"] + max(int(r["seasons"] or 1), 1) - 1 if r["year"] else None,
+                              "network": as_text(r.get("network")),
                               "ptype": genre_rules.programme_type("show", genre_list(r["genres"]), r["category"], r.get("programme_type"))})
         for row in conn.execute(f"SELECT * FROM media WHERE kind = 'movie' AND {LIVE} AND duration IS NOT NULL"):
             r = effective(dict(row))
@@ -245,7 +283,8 @@ def generate(conn: sqlite3.Connection, rebalance: bool = False) -> dict[str, int
         for it in items:
             fits = [(c, f) for c in channels
                     if (f := channel_fit(c, it["genres"], it["ptype"], kids=bool(it["kids"]), claimed=claimed,
-                                         year=it["year"], end_year=it.get("end_year"))) is not None]
+                                         year=it["year"], end_year=it.get("end_year"),
+                                         network=it.get("network"))) is not None]
             if not fits:
                 result["unmatched"] += 1
                 _flag(conn, it, f"No channel accepts a {it['ptype']} with its genres ({', '.join(sorted(it['genres'])) or 'none'})")
