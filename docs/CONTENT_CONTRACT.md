@@ -347,6 +347,13 @@ alone, and marks it stopped on purpose so nothing revives it. Cancelling one alr
 filled since it was asked for: a helping can wait hours for its turn, and one for a band that is
 already stocked would fetch material nobody is waiting for ahead of episodes that slots are.
 
+`GET {content_tool_url}/api/status` carries `queue_warning`, naming a job that has waited far
+longer than it should, and `healed`, the last ten jobs pitv_content ran ahead of their turn
+because a rule had held them past three hours, each saying which rule and how long. No rule of
+pitv_content's may hold a job indefinitely: three of them could, and all three were silent.
+PiTV's doctor raises both as findings, because a queue that puts itself right without saying so
+leaves the rule that held the job still there to hold the next one.
+
 `GET {content_tool_url}/api/jobs` lists the most recent jobs and, whatever the limit, everything
 queued or running however old. A job PiTV was handed can therefore always be found while it is
 alive, which is what lets PiTV tell "not started yet" from "long gone".

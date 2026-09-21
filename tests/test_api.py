@@ -901,3 +901,18 @@ def test_a_fresh_schedule_keeps_what_was_fetched_unless_asked_otherwise(client, 
     assert client.post("/api/schedule/fresh-rebuild", json={"clear_material": True}).status_code == 200
     _wait_for_jobs(client)
     assert "reset" in called, "and it is still available for starting the library over"
+
+
+def test_doctor_reports_what_pitv_content_healed_and_what_is_still_waiting():
+    """A queue that puts itself right silently is only half of what was asked for: the rule that
+    held the job is still there to hold the next one, so the event belongs where a person reads
+    it rather than only in the tool's own log."""
+    from pitv import doctor
+    doc = {"content": {"reachable": True, "errors": [],
+                       "queue_warning": "index job 20260921-021947-08be has been queued 9 hours without a turn",
+                       "healed": [("ran index job 20260921-021947-08be ahead of its turn after 9 hours"
+                                   " queued, because it was waiting for a delivery run that never ends")]}}
+    findings = doctor._findings(doc)
+    assert any("healed its queue" in f and "9 hours queued" in f for f in findings)
+    assert any("queue: index job" in f for f in findings)
+    assert not [f for f in doctor._findings({"content": {"reachable": True, "errors": []}}) if "healed" in f]

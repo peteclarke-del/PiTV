@@ -186,7 +186,11 @@ def _content(settings: dict[str, Any]) -> dict[str, Any]:
             "active_job": {k: active.get(k) for k in ("job_id", "mode", "kind", "started_ts")} if active else None,
             "queued_by_mode": queued, "counts": body.get("counts"), "errors": (body.get("errors") or [])[:10],
             # Why it is idle, in its own words: "nothing to fetch", "resting until HH:MM", "waiting for room".
-            "idle_reason": body.get("idle_reason")}
+            "idle_reason": body.get("idle_reason"),
+            # A job pitv_content ran ahead of its turn because a rule had held it too long, and
+            # anything still waiting far longer than it should. Both are its own account of
+            # itself; a queue that heals silently is only half of what was asked for.
+            "healed": (body.get("healed") or [])[:10], "queue_warning": body.get("queue_warning")}
 
 
 def _logs(cfg: Config) -> dict[str, list[dict[str, Any]]]:
@@ -234,6 +238,12 @@ def _findings(doc: dict[str, Any]) -> list[str]:
         out.append(f"pitv_content is not reachable: {content.get('detail')}")
     for error in content.get("errors") or []:
         out.append(f"pitv_content reports: {error}")
+    if warning := content.get("queue_warning"):
+        out.append(f"pitv_content's queue: {warning}")
+    for healed in content.get("healed") or []:
+        # Worth a finding rather than a log line: the queue put itself right, and the rule that
+        # held the job is still there to hold the next one.
+        out.append(f"pitv_content healed its queue: {healed}")
     # pitv_content is never to be idle while anything is left to fetch.
     waiting = sum(r["n"] for r in doc.get("wanted") or [] if isinstance(r, dict) and r.get("status") == "queued")
     short = sum(1 for b in doc.get("bands") or [] if isinstance(b, dict) and (b.get("have") or 0) < (b.get("want") or 0))
