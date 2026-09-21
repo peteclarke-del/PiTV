@@ -282,6 +282,12 @@ were evicted again, 166.5 GiB copied onto the drive and thrown away, and it will
 day the cap stands. That figure is nearly all NAS copies, which are cheap to make again and are
 meant to come and go; it is the size of the churn, not of anything lost.
 
+By 01:50 the drive had 2.0 TB free rather than 14 GB, the ROM archive on it having dropped from
+11 TB to 8.7 TB, so nothing needs to be deleted to fix this: `cache_max_gb` can simply be raised.
+The doctor reads it straight from the drive, so its finding now ends "it wants about 313 GiB;
+the drive has 2295 GiB spare". Raising the cap is Pete's decision because it spends his disk,
+but it no longer costs him anything else.
+
 Nothing is at fault. `POST /api/content/make-room` protects the current manifest before evicting
 and `evict_fetched` spares anything still scheduled ahead; what goes is NAS copies for airings
 beyond the one day the manifest covers, which the rules permit because a NAS copy is cheap to
@@ -324,6 +330,26 @@ directly after a programme.
 PiTV Toons ran two programmes with nothing between them, which was its configured pattern
 (`show, show, ad, ad, ident`) doing as it was told. It now breaks after every programme like the
 other advert channels.
+
+The suite has only ever been run in one order, so a test that passes because an earlier one left
+state behind would never have been caught. Two were found by accident on the night of the 20th:
+a readiness test that needed the test before it to have scheduled remote titles, and a test of
+the public player state that asserted nothing at all unless an earlier test had set an admin
+password. Running each file with its tests reversed is a cheap check that would have caught both
+and needs no new dependency:
+
+    ids=$(.venv/bin/python -m pytest -q -p no:cacheprovider --collect-only tests/test_x.py | grep '^tests/' | tac)
+    .venv/bin/python -m pytest -q -p no:cacheprovider $ids
+
+Swept over the whole suite it leaves 16 of 21 files clean and names 21 failures in four:
+test_api (15), test_lineup (4), test_catalogue (1) and test_scheduler (1). Most of test_api's
+are the admin password and session, where the order is the point rather than an accident, and
+reversal is an unfair test of it. The four in test_lineup, and one each in test_catalogue and
+test_scheduler, are the accidental kind and are named here rather than fixed:
+test_external_entry_scheduled_ahead_and_requested, test_week_never_shares_a_programme_across_channels,
+test_generation_respects_channel_genres, test_every_programme_belongs_to_exactly_one_channel,
+test_import_creates_catalogue_and_is_idempotent and test_episodes_in_order_per_show. pitv_content
+checked its own suite the same night and found its twenty-one files independent of each other.
 
 From Pete watching over the web interface, late on the 20th: the end of a programme came round
 again for about ten seconds, then the ident arrived in pieces, its end first and sometimes its
