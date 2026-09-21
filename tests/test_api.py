@@ -298,14 +298,21 @@ def test_public_player_state_hides_machine_details(client):
     pub = player_public(state, False)
     assert "file" not in pub and "input_devices" not in pub and "stream" not in pub
     assert "dir" not in pub["cache"] and "/mnt" not in pub["error"] and pub["volume"] == 80
-    # Anonymous callers of the public endpoints get the filtered view.
-    # The web service's player subscriber resets the state to offline when no player answers,
-    # so set it immediately before each request rather than once for both.
+    # Anonymous callers of the public endpoints get the filtered view. The state carries the
+    # same detail but does not claim to be online, because the web service's player subscriber
+    # resets any state that does, every three seconds and whenever the socket drops: setting one
+    # immediately before each request only narrows the window, and this test failed on a machine
+    # busy encoding video. What is under test here is that /api/now applies the filter above by
+    # whether the caller is logged in, which has nothing to do with the player answering.
+    # Before any password exists every caller is an admin, so there is nothing to filter and
+    # this proves nothing. The test set one earlier in the file, which made it pass here and
+    # fail on its own; it now sees to that itself.
+    if not client.get("/api/auth").json()["password_set"]:
+        assert client.post("/api/auth/setup", json={"password": "secret123"}).status_code == 200
     anon = TestClient(client.app)
     try:
-        client.app.state.player_state = state
+        client.app.state.player_state = {**state, "online": False}
         assert "file" not in anon.get("/api/now").json()["player"]
-        client.app.state.player_state = state
         assert "file" in client.get("/api/now").json()["player"]   # logged in
     finally:
         client.app.state.player_state = {"online": False}
