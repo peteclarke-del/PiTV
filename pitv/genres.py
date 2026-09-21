@@ -46,6 +46,10 @@ ALIASES: dict[str, str] = {
     "news": "News", "currentaffairs": "News", "entertainment": "Entertainment", "variety": "Entertainment",
     "education": "Education", "educational": "Education", "science": "Science", "technology": "Technology",
     "scienceandtechnology": "Science", "popular": "Pop", "pop": "Pop",
+    # Where a programme came from rather than what it is about. A band that collects from named
+    # creators matches on this, so the spellings have to agree: "YouTube", "You Tube", "youtube"
+    # and "yt" otherwise canonicalise three different ways and a band silently matches nothing.
+    "youtube": "YouTube", "yt": "YouTube", "ytchannel": "YouTube", "youtubechannel": "YouTube",
 }
 
 # Children's programming, however it is labelled: what marks a series as one for children and

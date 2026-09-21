@@ -104,3 +104,14 @@ def test_malformed_era_spans_are_ignored():
 def test_parse_pattern():
     assert parse_pattern("show, ad, ad") == ["show", "ad", "ad"]
     assert parse_pattern("garbage") == ["show"]
+
+
+def test_youtube_is_one_spelling_however_it_is_written():
+    """Where a programme came from rather than what it is about. A band collecting from named
+    creators matches on this, and band matching compares the two sides as plain lowercase text,
+    so the spellings have to agree: without an entry, "YouTube", "YOUTUBE" and "You Tube"
+    canonicalise three different ways and such a band silently matches nothing."""
+    from pitv.genres import canonical, canonical_all
+
+    assert {canonical(t) for t in ("YouTube", "youtube", "YOUTUBE", "You Tube", "yt", "YT")} == {"YouTube"}
+    assert canonical_all(["youtube", "Sport"]) == ["YouTube", "Sport"]
