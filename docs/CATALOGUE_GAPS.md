@@ -1,12 +1,25 @@
 # Period titles the catalogue does not have
 
-Written for Pete, to choose from when adding titles in Admin, Catalogue. Nothing here is in the
-catalogue as of 21 September 2026; everything is British unless marked, and the channel given is
-the one that first broadcast it, which is now what places a series (`channels.networks`).
+Written for Pete, to choose from when adding titles in Admin, Catalogue. Checked on 21 September
+2026 against the line-up, the NAS series and the open requests, not against the NAS series alone:
+the first draft of this list named twelve titles Pete had already added by hand, because a title
+added in the admin has no `shows` row until an episode arrives. A film sharing a name with a
+series is not a match.
 
-The order is by how badly each channel needs material, measured rather than guessed. A channel
-can only air as many episodes a week as it has series, because a series airs once a week, so the
-rest of its airtime goes to films whatever the configured mix says.
+## Read this before adding anything
+
+Adding titles is not what the schedule is short of. Of the 139 titles already added by hand, 50
+have episodes, 39 have an open request, and **50 have never been asked for at all**. New titles
+enter the schedule at `external_new_per_day` (12), and a title is only requested once a slot
+wants it, so the backlog is a queue rather than a gap. Adding more lengthens the queue without
+putting anything else on screen.
+
+What is genuinely worth adding is material for the two channels the rebalance left thin, because
+placing a series on the channel that broadcast it has concentrated BBC One on PiTV One and ITV on
+PiTV Three: the catalogue holds 9 series identified as BBC Two and 6 as Channel 4. Those two
+sections are the ones to work from. Sport is better provided than it looks, since Pot Black, the
+snooker championships, Speedway, Motocross, Kick Start, It's a Knockout, World's Strongest Man
+and the wrestling strands are all added already and waiting on delivery.
 
 ## PiTV Docs, most urgent
 
@@ -72,7 +85,6 @@ sport, so this is the largest hole in the schedule's shape.
 | Lovejoy | 1986 | |
 | Last of the Summer Wine | 1973 | |
 | Hi-de-Hi! | 1980 | |
-| You Rang, M'Lord? | 1988 | |
 | One Foot in the Grave | 1990 | |
 | Keeping Up Appearances | 1990 | |
 | Waiting for God | 1990 | |
@@ -80,10 +92,7 @@ sport, so this is the largest hole in the schedule's shape.
 | Blue Peter | 1958 | Children's, twice weekly |
 | Jackanory | 1965 | Children's, nightly |
 | Going Live! | 1987 | Saturday morning |
-| Multi-Coloured Swap Shop | 1976 | Saturday morning |
 | Wogan | 1982 | Thrice weekly chat |
-| Record Breakers | 1972 | |
-| Top of the Pops | 1964 | Thursday, and one for the music channel |
 
 ## PiTV Two (BBC Two)
 
@@ -133,10 +142,6 @@ sport, so this is the largest hole in the schedule's shape.
 | Robin of Sherwood | 1984 |
 | The Professionals | 1977 |
 | Dempsey and Makepeace | 1985 |
-| Spitting Image | 1984 |
-| Bullseye | 1981 |
-| Catchphrase | 1986 |
-| The Krypton Factor | 1977 |
 | Blind Date | 1985 |
 | Surprise Surprise | 1984 |
 | Rising Damp | 1974 |
@@ -144,7 +149,6 @@ sport, so this is the largest hole in the schedule's shape.
 | George and Mildred | 1976 |
 | Duty Free | 1984 |
 | The Chart Show | 1986 |
-| Tiswas | 1974 |
 | World of Sport | 1965 |
 
 ## PiTV Four (Channel 4)
@@ -155,7 +159,6 @@ sport, so this is the largest hole in the schedule's shape.
 |---|---|
 | Brookside | 1982 |
 | The Tube | 1982 |
-| Whose Line Is It Anyway? | 1988 |
 | Drop the Dead Donkey | 1990 |
 | Desmond's | 1989 |
 | The Crystal Maze | 1990 |
@@ -177,11 +180,9 @@ These are what a British child actually watched.
 | Title | From | Broadcaster |
 |---|---|---|
 | Danger Mouse | 1981 | ITV |
-| Willo the Wisp | 1981 | BBC One |
 | Bagpuss | 1974 | BBC One |
 | The Clangers | 1969 | BBC One |
 | Ivor the Engine | 1959 | ITV |
-| Mr Benn | 1971 | BBC One |
 | Camberwick Green | 1966 | BBC One |
 | Trumpton | 1967 | BBC One |
 | Postman Pat | 1981 | BBC One |
