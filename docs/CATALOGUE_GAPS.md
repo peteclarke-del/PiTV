@@ -52,10 +52,14 @@ within the week. Roughly 50 more series would settle it.
 | The Great Egg Race | 1979 | BBC Two |
 | Ancient Voices | 1998 | BBC Two |
 
-## Sport, effectively empty
+## Sport, waiting on delivery rather than missing
 
-One item in the whole sport source, one slot in the week. A 1980s Saturday afternoon was built on
-sport, so this is the largest hole in the schedule's shape.
+One slot aired all week and the sport share holds one item, which reads as an empty shelf and is
+not one. Pot Black, the World and UK Snooker Championships, Speedway, Motocross, Motorcycle Grand
+Prix, British Motorcycle Racing, Kick Start, It's a Knockout, World's Strongest Man, Darts and
+the wrestling strands are all in the line-up already, waiting to be fetched. What is genuinely
+absent is the studio sport a 1980s Saturday was built around: the afternoon strands themselves
+and the football highlights.
 
 | Title | From | Broadcaster |
 |---|---|---|
