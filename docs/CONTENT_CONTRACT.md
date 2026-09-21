@@ -125,6 +125,17 @@ for the nightly index run.
   answers the same question. PiTV keeps it for eviction (section 5).
 - A `complete` index lists every item; PiTV marks anything absent from it as missing. An
   incomplete index (`"complete": false`) only adds and updates.
+- Anything that walks every source while a delivery is outstanding publishes incomplete: a full
+  index job and a band run that ends by refreshing the library. A scan taken before the later
+  slices of a delivery would otherwise retire the very files that delivery's own report had just
+  filed, and would do it again every night. A run that republishes only the folders it wrote to
+  inherits the completeness of the document it merges into and is unaffected. The index that a
+  delivery run takes before it starts stays complete, because it precedes the files it omits
+  rather than postdating them.
+- PiTV never retires material whose origin is `online`, whatever an index says: that is what a
+  delivery report filed, and reports are the only authority over it. So the exemption and the
+  rule above are two independent protections for the same material, and the NAS sources and the
+  acquired folders have only the second.
 - `sources` are pitv_content's NAS sources. PiTV shows them and edits them through
   pitv_content's API; it does not use them itself.
 
