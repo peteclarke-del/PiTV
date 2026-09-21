@@ -33,6 +33,7 @@ from ..db import (
     tx,
 )
 from ..genres import is_childrens
+from ..lineup import carries_programmes
 from . import bands, overnight
 from .clock import bday_minutes
 from .library import Library, Rebuild
@@ -586,6 +587,12 @@ class Builder:
         what it would take."""
         out: list[str] = []
         for channel in self.channels_built:
+            # A channel with no pattern is built from its bands, so its airtime is music or
+            # whatever the band collects rather than a choice between series and films. Counting
+            # its band items as programmes it could not fill with series said the music channel
+            # wanted 1460 more series, which is true of nothing.
+            if not carries_programmes(channel):
+                continue
             want_film = float(self._kind_weights(channel).get("movie", 0) or 0)
             slots = self.programmes_built.get(channel["id"], 0)
             if not slots or want_film >= 1:

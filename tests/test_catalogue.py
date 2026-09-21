@@ -3,6 +3,7 @@
 import copy
 import json
 import random
+import time
 
 import pytest
 from conftest import make_library
@@ -562,3 +563,51 @@ def test_a_reindex_job_that_is_running_is_waited_for(monkeypatch):
     monkeypatch.setattr(tool_client, "request", fake_request)
     catalogue._reindex("http://127.0.0.1:8091", timeout=30)
     assert not answers, "it followed the job to the end"
+
+
+def test_a_reindex_queued_behind_other_work_is_not_waited_on(monkeypatch):
+    """A queued index has not started and may be behind hours of delivery. One evening a rebuild
+    waited forty minutes for an index that never ran, when the index it would have replaced was
+    minutes old: maintenance imports every rewrite, so what is in hand is nearly current."""
+    from pitv import catalogue, tool_client
+
+    monkeypatch.setattr(catalogue, "REINDEX_QUEUED", 0.05)
+    monkeypatch.setattr(catalogue, "REINDEX_POLL", 0.01)
+    polls = 0
+
+    def fake_request(base, method, path, query="", body=None, timeout=15):
+        nonlocal polls
+        if path == "index":
+            return 200, {"ok": True, "job_id": "j1"}
+        polls += 1
+        return 200, [{"job_id": "j1", "status": "queued", "started_ts": None}]
+
+    monkeypatch.setattr(tool_client, "request", fake_request)
+    started = time.monotonic()
+    catalogue._reindex("http://127.0.0.1:8091", timeout=30)
+    assert time.monotonic() - started < 5, "it must not wait out the running-index timeout"
+    assert polls >= 1
+
+
+def test_a_reindex_that_is_running_is_given_its_time(monkeypatch):
+    """One that has started is nearly done, so it is waited for; the point of asking was a fresh
+    index and this is the only case that delivers one."""
+    from pitv import catalogue, tool_client
+
+    monkeypatch.setattr(catalogue, "REINDEX_QUEUED", 0.05)
+    monkeypatch.setattr(catalogue, "REINDEX_POLL", 0.01)
+    answers = [
+        [{"job_id": "j1", "status": "queued", "started_ts": None}],
+        [{"job_id": "j1", "status": "running", "started_ts": 100}],
+        [{"job_id": "j1", "status": "running", "started_ts": 100}],
+        [{"job_id": "j1", "status": "ok", "started_ts": 100, "finished_ts": 200}],
+    ]
+
+    def fake_request(base, method, path, query="", body=None, timeout=15):
+        if path == "index":
+            return 200, {"ok": True, "job_id": "j1"}
+        return 200, answers.pop(0) if answers else [{"job_id": "j1", "finished_ts": 200, "status": "ok"}]
+
+    monkeypatch.setattr(tool_client, "request", fake_request)
+    catalogue._reindex("http://127.0.0.1:8091", timeout=30)
+    assert not answers, "it followed the job from queued through running to done"

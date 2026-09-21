@@ -57,7 +57,6 @@ within the week. Roughly 50 more series would settle it.
 | World in Action | 1963 | ITV | 1294 episodes |
 | Panorama | 1953 | BBC One | 2379 episodes |
 | QED | 1982 | BBC One | 210 episodes |
-| The Natural World | 1983 | BBC Two | not found |
 | Timewatch | 1982 | BBC Two | 343 episodes |
 | Arena | 1975 | BBC Two | 697 episodes |
 | 40 Minutes | 1981 | BBC Two | 323 episodes |
@@ -71,7 +70,6 @@ within the week. Roughly 50 more series would settle it.
 | Secret Society | 1987 | BBC Two | only 4 |
 | Connections | 1978 | BBC One | 40 episodes |
 | The Ascent of Man | 1973 | BBC Two | 13 episodes |
-| Cosmos (US) | 1980 | PBS | not found |
 | Rough Justice | 1982 | BBC One | 6 episodes |
 | The Great Egg Race | 1979 | BBC Two | 68 episodes |
 | Ancient Voices | 1998 | BBC Two | 11 episodes |
@@ -87,15 +85,7 @@ and the football highlights.
 
 | Title | From | Broadcaster | Online |
 |---|---|---|---|
-| Grandstand | 1958 | BBC One | 6 episodes |
-| Match of the Day | 1964 | BBC One | 3292 episodes |
-| Sportsnight | 1968 | BBC One | only 3 |
-| A Question of Sport | 1970 | BBC One | 569 episodes |
-| Ski Sunday | 1978 | BBC Two | not found |
-| Rugby Special | 1966 | BBC Two | not found |
-| The Big Match | 1968 | ITV | only 2 |
-| Saint and Greavsie | 1985 | ITV | no episode list |
-| Sunday Grandstand | 1981 | BBC Two | not found |
+
 
 ## PiTV One (BBC One), about 15 short
 
@@ -105,7 +95,6 @@ and the football highlights.
 |---|---|---|---|
 | Doctor Who | 1963 | The largest single omission in the catalogue | 700 episodes |
 | EastEnders | 1985 | Soap, the spine of a BBC One evening | 7323 episodes |
-| Grange Hill | 1978 | Children's drama, weekday teatime | no episode list |
 | Bergerac | 1981 | Sunday evening drama | 86 episodes |
 | Juliet Bravo | 1980 | | 88 episodes |
 | Howards' Way | 1985 | | 78 episodes |
@@ -133,18 +122,10 @@ and the football highlights.
 | Newsnight | 1980 | 4006 episodes |
 | Gardeners' World | 1968 | 653 episodes |
 | The Old Grey Whistle Test | 1971 | 558 episodes |
-| Boys from the Blackstuff | 1982 | only 5 |
-| Edge of Darkness | 1985 | 6 episodes |
-| Tinker Tailor Soldier Spy | 1979 | 7 episodes |
 | Have I Got News for You | 1990 | 647 episodes |
-| The Day Today | 1994 | 6 episodes |
-| Knowing Me, Knowing You with Alan Partridge | 1994 | 6 episodes |
-| I'm Alan Partridge | 1997 | 12 episodes |
 | Shooting Stars | 1993 | 70 episodes |
 | A Very Peculiar Practice | 1986 | 14 episodes |
 | The Late Show | 1989 | 4262 episodes |
-| Def II | 1988 | not found |
-| Ready Steady Cook | 1994 | 7 episodes |
 
 ## PiTV Three (ITV)
 
@@ -152,9 +133,7 @@ and the football highlights.
 
 | Title | From | Online |
 |---|---|---|
-| Coronation Street | 1960 | 5382 episodes |
-| Emmerdale Farm | 1972 | 10098 episodes |
-| The Bill | 1984 | 2373 episodes |
+
 | Inspector Morse | 1987 | 28 episodes |
 | Agatha Christie's Poirot | 1989 | 70 episodes |
 | The Adventures of Sherlock Holmes | 1984 | 41 episodes |
@@ -165,19 +144,15 @@ and the football highlights.
 | Taggart | 1983 | 114 episodes |
 | The Darling Buds of May | 1991 | 20 episodes |
 | Heartbeat | 1992 | 372 episodes |
-| London's Burning | 1988 | 171 episodes |
 | Boon | 1986 | 92 episodes |
 | Robin of Sherwood | 1984 | 26 episodes |
 | The Professionals | 1977 | 57 episodes |
 | Dempsey and Makepeace | 1985 | 30 episodes |
-| Blind Date | 1985 | 370 episodes |
-| Surprise Surprise | 1984 | 128 episodes |
 | Rising Damp | 1974 | 28 episodes |
 | Man About the House | 1973 | 39 episodes |
 | George and Mildred | 1976 | 38 episodes |
 | Duty Free | 1984 | 22 episodes |
 | The Chart Show | 1986 | 604 episodes |
-| World of Sport | 1965 | not found |
 
 ## PiTV Four (Channel 4)
 
@@ -194,9 +169,7 @@ and the football highlights.
 | Vic Reeves Big Night Out | 1990 | 14 episodes |
 | The Big Breakfast | 1992 | 20 episodes |
 | Eurotrash | 1993 | 43 episodes |
-| GBH | 1991 | 7 episodes |
 | Max Headroom | 1985 | 14 episodes |
-| Network 7 | 1987 | not found |
 | The Word | 1990 | 104 episodes |
 | Saturday Live | 1985 | 30 episodes |
 
@@ -218,17 +191,10 @@ These are what a British child actually watched.
 | Thomas the Tank Engine and Friends | 1984 | ITV | no episode list |
 | Rainbow | 1972 | ITV | no episode list |
 | Jamie and the Magic Torch | 1976 | ITV | no episode list |
-| Dogtanian and the Three Muskehounds | 1981 | BBC One | no episode list |
-| The Mysterious Cities of Gold | 1982 | BBC One | no episode list |
-| Ulysses 31 | 1981 | BBC One | no episode list |
-| The Raccoons | 1985 | BBC One | 60 episodes |
 | Teenage Mutant Hero Turtles | 1987 | BBC One | 193 episodes |
 | DuckTales | 1987 | ITV | 101 episodes |
 | The Real Ghostbusters | 1986 | ITV | 140 episodes |
-| Knightmare | 1987 | ITV | no episode list |
-| Press Gang | 1989 | ITV | no episode list |
-| Byker Grove | 1989 | BBC One | no episode list |
-| Round the Twist (AU) | 1990 | BBC One | no episode list |
+
 
 ## Why the broadcaster column matters
 

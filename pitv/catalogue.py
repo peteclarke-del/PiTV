@@ -58,9 +58,14 @@ SCHEMA = 2
 SOURCE_TYPES = ("tv", "movie", "advert", "ident", "music")
 KINDS = ("episode", "movie", "advert", "ident", "music")
 SOURCE_CATEGORIES = ("general", "sport", "kids")
-REINDEX_TIMEOUT = 1800        # seconds to wait for a NAS re-index before importing what is there
+# How long to wait for a re-index before importing the index in hand. The figure is what the
+# work takes, not what a queue might do with it: a full walk of a seventeen thousand file library
+# runs in seconds to a few minutes. Waiting half an hour was measuring the wrong thing, and it
+# cost forty minutes of a rebuild one evening for an index that had never started.
+REINDEX_TIMEOUT = 300         # it is running: give it time to finish
+REINDEX_QUEUED = 20           # it has not started: it is behind other work, which may be hours
 REINDEX_POLL = 3
-REINDEX_UNSEEN = 30           # seconds to wait for the job to appear at all before giving up on it
+REINDEX_UNSEEN = 30           # it is not in the job list at all: nobody can see it, so do not wait
 CONCERT_MINUTES = 35          # a music item this long is a concert even when not tagged
 UNSAFE_TAGS = {"alcohol", "tobacco", "adult", "gambling", "18"}
 REJECTS_KEPT = 50             # rejected records described in the run log; the rest are only counted
@@ -104,12 +109,16 @@ def _reindex(base: str, timeout: float = REINDEX_TIMEOUT) -> None:
     new index rather than the one it replaces. A failure or timeout is logged; the current index
     is imported regardless.
 
-    A request may be answered with the id of one already queued (`deduplicated`), which is
-    normally the same work and worth waiting for. It can also name a job old enough to have
-    fallen off the end of the job list, and one queued yesterday that has never had its turn
-    looks exactly like one queued a moment ago that has not started yet. Waiting half an hour
-    for a job nobody can see is the wrong answer to both, so a job that has not appeared at all
-    within `REINDEX_UNSEEN` is given up on and the index in hand is imported."""
+    Three things can be waited on and only one of them is worth waiting for. An index that is
+    running is nearly done, and gets `REINDEX_TIMEOUT`. One that is queued has not started and
+    may be behind hours of delivery, so it gets `REINDEX_QUEUED` and no more: the index in hand
+    is minutes old, because maintenance imports every rewrite, and a rebuild from that is far
+    better than a rebuild half an hour late. One that is not in the job list at all cannot be
+    observed, which a deduplicated reply naming a long-dead request produces, and gets
+    `REINDEX_UNSEEN`.
+
+    In every case the index already published is imported and the build goes ahead; none of this
+    fails, it only decides how long to hope for something fresher."""
     status, started = tool_client.request(base, "POST", "index", body={}, timeout=10)
     job_id = started.get("job_id") if status == 200 and isinstance(started, dict) else None
     if not job_id:
@@ -119,11 +128,12 @@ def _reindex(base: str, timeout: float = REINDEX_TIMEOUT) -> None:
     deadline = start + timeout
     seen = False
     while time.monotonic() < deadline:
+        waited = time.monotonic() - start
         status, jobs = tool_client.request(base, "GET", "jobs", timeout=10)
         job = next((j for j in jobs if isinstance(j, dict) and j.get("job_id") == job_id), None) \
             if status == 200 and isinstance(jobs, list) else None
         if job is None:
-            if not seen and time.monotonic() - start > REINDEX_UNSEEN:
+            if not seen and waited > REINDEX_UNSEEN:
                 log.warning("re-index %s is not in pitv_content's job list%s; importing the index in hand",
                             job_id, " (it was deduplicated against an older request)"
                             if isinstance(started, dict) and started.get("deduplicated") else "")
@@ -134,6 +144,11 @@ def _reindex(base: str, timeout: float = REINDEX_TIMEOUT) -> None:
         if job.get("finished_ts"):
             if job.get("status") != "ok":
                 log.warning("re-index %s ended %s, no new index: %s", job_id, job.get("status"), job.get("summary", ""))
+            return
+        if not job.get("started_ts") and waited > REINDEX_QUEUED:
+            # Queued behind other work. That queue is not PiTV's to wait on, and the index it
+            # would replace is minutes old.
+            log.info("re-index %s is queued behind pitv_content's other work; importing the index in hand", job_id)
             return
         time.sleep(REINDEX_POLL)
     log.warning("re-index %s still running after %ds; importing the current index", job_id, timeout)
