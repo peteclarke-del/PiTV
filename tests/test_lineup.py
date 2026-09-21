@@ -949,3 +949,32 @@ def test_a_broadcaster_is_recognised_by_its_current_name():
     claimed = claimed_networks([bbc, itv])
     assert network_fit(itv, "ITV1", claimed) == 1.0, "however the provider spells it"
     assert network_fit(bbc, "ITV1", claimed) is None
+
+
+def test_a_year_taken_from_the_request_is_noted_rather_than_trusted(conn, tmp_path):
+    """A delivered file takes the upload's own year, or the year PiTV asked with when none could
+    be read. That fallback is right for a series, whose episodes really are of its year, and a
+    guess for a strand that ran for decades: a 2019 round fetched against an entry dated 1988
+    would be filed as 1988 and pass an era check it should fail. It is noted, not refused,
+    because the guess is usually right and nothing here can tell which case it is."""
+    from pitv.content import apply_report
+
+    ch = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
+    entry = lineup.add(conn, ch, title="Superbikes", year=1988, kind="show", genres=["Sport"], episode_minutes=45)
+    for n, (read, expect) in enumerate(((2019, None), (None, "Year taken from the request, not the file"))):
+        with dbm.tx(conn):
+            wid = conn.execute("INSERT INTO wanted(kind, title, year, episode, provider, lineup_id, created_at)"
+                               " VALUES ('episode', 'Superbikes', 1988, ?, 'auto', ?, 0)",
+                               (n + 1, entry["id"])).lastrowid
+        f = tmp_path / f"round{n}.mp4"
+        f.write_bytes(b"x" * 10)
+        meta = {"kind": "episode", "title": f"Round {n}", "uid": f"yt:round{n}"}
+        if read:
+            meta["year"] = read
+        apply_report(conn, {"schema": 2, "items": [{
+            "request_id": f"w:{wid}", "wanted_id": wid, "status": "done",
+            "file": {"path": str(f), "duration": 2700.0, "vcodec": "h264", "height": 576, "size": 10},
+            "meta": meta}]})
+        row = conn.execute("SELECT year, attention FROM media WHERE uid = ?", (f"yt:round{n}",)).fetchone()
+        assert row["year"] == (read or 1988)
+        assert row["attention"] == expect

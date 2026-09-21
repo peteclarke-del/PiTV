@@ -328,7 +328,14 @@ def _deliver_fetched(conn: sqlite3.Connection, wid: int, file: dict[str, Any], m
     if w is None:
         return {}
     kind = meta["kind"] if meta.get("kind") in KINDS else w["kind"]
-    year = as_int(meta.get("year")) or w.get("year")
+    # The upload's own year where pitv_content could read one, else the year PiTV asked with.
+    # That fallback is right for a series, whose episodes really are of its year, and a guess
+    # for a strand that ran for decades: a 2019 round of a championship, fetched against an
+    # entry dated 1988 and carrying no readable year, would be filed as 1988 and pass an era
+    # check it should fail. It is noted rather than refused, because the guess is usually right
+    # and nobody can tell from here which case this is.
+    read_year = as_int(meta.get("year"))
+    year = read_year or w.get("year")
     path = file["path"]
     title = w["title"] if kind == "episode" else (as_text(meta.get("title")) or w["title"])
     season, episode = w.get("season"), w.get("episode")
@@ -349,6 +356,7 @@ def _deliver_fetched(conn: sqlite3.Connection, wid: int, file: dict[str, Any], m
         "interlaced": int(as_bool(file.get("interlaced"))), "hwdec": int((vcodec or "") in PI_HW_CODECS),
         "certificate": normalise_cert(as_text(meta.get("certificate"))), "genres": json.dumps(genre_list(meta.get("genres"))),
         "plot": as_text(meta.get("plot")), "artist": as_text(meta.get("artist")) or w.get("artist"),
+        "attention": None if read_year or not year else "Year taken from the request, not the file",
         "concert": int(as_bool(meta.get("concert"))),
         "family_safe": family_safe({**meta, "title": title, "path": path},
                                    keyword_pattern(get_setting(conn, "adult_advert_keywords"))) if kind == "advert" else 1,
