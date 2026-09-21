@@ -505,3 +505,53 @@ def test_an_ident_in_a_flat_folder_finds_its_channel_by_name(tmp_path):
         conn.execute("UPDATE media SET home_channel_id = ? WHERE id = ?", (two, ids[0]))   # the owner points it elsewhere
         dbm.assign_ident_channels(conn)
     assert conn.execute("SELECT home_channel_id FROM media WHERE id = ?", (ids[0],)).fetchone()[0] == two
+
+
+def test_a_reindex_job_nobody_can_see_is_not_waited_on(monkeypatch):
+    """pitv_content may answer with the id of a request already queued. One queued yesterday that
+    has never had its turn has fallen off the end of the job list, and looks exactly like one
+    queued a moment ago that has not started. A fresh rebuild sat for half an hour on such an id;
+    the index in hand is imported instead."""
+    import time as _time
+
+    from pitv import catalogue, tool_client
+
+    monkeypatch.setattr(catalogue, "REINDEX_UNSEEN", 0.05)
+    monkeypatch.setattr(catalogue, "REINDEX_POLL", 0.01)
+    polls = 0
+
+    def fake_request(base, method, path, query="", body=None, timeout=15):
+        nonlocal polls
+        if path == "index":
+            return 200, {"ok": True, "job_id": "20260920-080355-10e5", "deduplicated": True}
+        polls += 1
+        return 200, [{"job_id": "something-else", "finished_ts": 1}]
+
+    monkeypatch.setattr(tool_client, "request", fake_request)
+    started = _time.monotonic()
+    catalogue._reindex("http://127.0.0.1:8091", timeout=30)
+    assert _time.monotonic() - started < 5, "it must not wait out the full timeout"
+    assert polls >= 1
+
+
+def test_a_reindex_job_that_is_running_is_waited_for(monkeypatch):
+    """A job that does appear is waited on properly, however long it takes to start."""
+    from pitv import catalogue, tool_client
+
+    monkeypatch.setattr(catalogue, "REINDEX_UNSEEN", 0.05)
+    monkeypatch.setattr(catalogue, "REINDEX_POLL", 0.01)
+    answers = [
+        [],                                                     # not listed yet
+        [{"job_id": "j1", "status": "queued"}],                 # queued, past the unseen grace
+        [{"job_id": "j1", "status": "running"}],
+        [{"job_id": "j1", "status": "ok", "finished_ts": 2}],
+    ]
+
+    def fake_request(base, method, path, query="", body=None, timeout=15):
+        if path == "index":
+            return 200, {"ok": True, "job_id": "j1"}
+        return 200, answers.pop(0) if answers else [{"job_id": "j1", "status": "ok", "finished_ts": 2}]
+
+    monkeypatch.setattr(tool_client, "request", fake_request)
+    catalogue._reindex("http://127.0.0.1:8091", timeout=30)
+    assert not answers, "it followed the job to the end"

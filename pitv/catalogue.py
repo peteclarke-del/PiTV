@@ -60,6 +60,7 @@ KINDS = ("episode", "movie", "advert", "ident", "music")
 SOURCE_CATEGORIES = ("general", "sport", "kids")
 REINDEX_TIMEOUT = 1800        # seconds to wait for a NAS re-index before importing what is there
 REINDEX_POLL = 3
+REINDEX_UNSEEN = 30           # seconds to wait for the job to appear at all before giving up on it
 CONCERT_MINUTES = 35          # a music item this long is a concert even when not tagged
 UNSAFE_TAGS = {"alcohol", "tobacco", "adult", "gambling", "18"}
 REJECTS_KEPT = 50             # rejected records described in the run log; the rest are only counted
@@ -101,18 +102,36 @@ def fetch_index(settings: dict[str, Any], reindex: bool = False) -> tuple[dict[s
 def _reindex(base: str, timeout: float = REINDEX_TIMEOUT) -> None:
     """Start a re-index and wait for that job to finish, so the import that follows reads the
     new index rather than the one it replaces. A failure or timeout is logged; the current index
-    is imported regardless."""
+    is imported regardless.
+
+    A request may be answered with the id of one already queued (`deduplicated`), which is
+    normally the same work and worth waiting for. It can also name a job old enough to have
+    fallen off the end of the job list, and one queued yesterday that has never had its turn
+    looks exactly like one queued a moment ago that has not started yet. Waiting half an hour
+    for a job nobody can see is the wrong answer to both, so a job that has not appeared at all
+    within `REINDEX_UNSEEN` is given up on and the index in hand is imported."""
     status, started = tool_client.request(base, "POST", "index", body={}, timeout=10)
     job_id = started.get("job_id") if status == 200 and isinstance(started, dict) else None
     if not job_id:
         log.warning("re-index not started (HTTP %s): %s", status, started.get("error", "") if isinstance(started, dict) else "")
         return
-    deadline = time.monotonic() + timeout
+    start = time.monotonic()
+    deadline = start + timeout
+    seen = False
     while time.monotonic() < deadline:
         status, jobs = tool_client.request(base, "GET", "jobs", timeout=10)
         job = next((j for j in jobs if isinstance(j, dict) and j.get("job_id") == job_id), None) \
             if status == 200 and isinstance(jobs, list) else None
-        if job is not None and job.get("finished_ts"):
+        if job is None:
+            if not seen and time.monotonic() - start > REINDEX_UNSEEN:
+                log.warning("re-index %s is not in pitv_content's job list%s; importing the index in hand",
+                            job_id, " (it was deduplicated against an older request)"
+                            if isinstance(started, dict) and started.get("deduplicated") else "")
+                return
+            time.sleep(REINDEX_POLL)
+            continue
+        seen = True
+        if job.get("finished_ts"):
             if job.get("status") != "ok":
                 log.warning("re-index %s ended %s, no new index: %s", job_id, job.get("status"), job.get("summary", ""))
             return
