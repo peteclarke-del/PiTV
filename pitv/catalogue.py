@@ -510,6 +510,10 @@ def enrich_missing_metadata(conn: sqlite3.Connection, *, limit: int = 50, force:
     providers, while an explicit force run may retry them. A series that learns its genres is
     given a channel again, since it was placed without them, and its episodes stop being flagged
     for a year the series now has.
+
+    A series whose broadcaster is unknown is also worth asking about, because the channels model
+    real ones and a programme is placed on the channel it went out on. Films are not: nobody
+    broadcast them first.
     """
     cutoff = now_ts() - METADATA_RECHECK_DAYS * 86400
     items: list[dict[str, Any]] = []
@@ -518,7 +522,9 @@ def enrich_missing_metadata(conn: sqlite3.Connection, *, limit: int = 50, force:
         for row in conn.execute(f"SELECT * FROM {table} WHERE {where} ORDER BY title").fetchall():
             raw = row_to_dict(row) or {}
             known = effective(raw)
-            if normalise_cert(as_text(known.get("certificate"))) and known.get("year") and genre_list(known.get("genres")):
+            complete = (normalise_cert(as_text(known.get("certificate"))) and known.get("year")
+                        and genre_list(known.get("genres")))
+            if complete and (table == "media" or known.get("network")):
                 continue
             checked = as_int(raw.get("metadata_checked_at")) or 0
             if not force and checked >= cutoff:

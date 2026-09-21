@@ -88,7 +88,14 @@ NETWORK_OWN = 1.0        # the channel this programme actually went out on
 NETWORK_SIBLING = 0.5    # the other channel of the same broadcaster, to spread the load
 
 
-def network_fit(channel: dict[str, Any], network: str | None) -> float | None:
+def claimed_networks(channels: list[dict[str, Any]]) -> frozenset[str]:
+    """Every broadcaster some channel lists, so one that nobody claims constrains nothing."""
+    return frozenset(str(n).strip().lower() for c in channels
+                     for n in (c.get("networks") or []) if str(n).strip())
+
+
+def network_fit(channel: dict[str, Any], network: str | None,
+                claimed: frozenset[str] = frozenset()) -> float | None:
     """How well a programme's original broadcaster suits a channel that models a real one.
 
     A channel lists the broadcasters it will take, its own first: PiTV One reads
@@ -101,7 +108,13 @@ def network_fit(channel: dict[str, Any], network: str | None) -> float | None:
     programme whose broadcaster is unknown, and it counts for nothing either way: most of the
     library has never been looked up, and films have no broadcaster at all. Scoring the unknown
     below par would have driven every film onto whichever channel happened to list no networks,
-    which is the opposite of spreading them."""
+    which is the opposite of spreading them.
+
+    `claimed` is every broadcaster any channel lists. A programme from one of those belongs to
+    whichever channel claims it and nowhere else. A programme from a broadcaster no channel
+    claims is unconstrained, which is what keeps the imports: the 1980s schedules were full of
+    American series, and a rule that sent anything from ABC or NBC to no channel at all would
+    have thrown out Dallas and The A-Team along with the streaming material."""
     listed = [str(n).strip().lower() for n in (channel.get("networks") or []) if str(n).strip()]
     if not listed or not network:
         return 1.0
@@ -109,12 +122,13 @@ def network_fit(channel: dict[str, Any], network: str | None) -> float | None:
     for place, allowed in enumerate(listed):
         if name == allowed:
             return NETWORK_OWN if place == 0 else NETWORK_SIBLING / place
-    return None
+    return None if name in (claimed or frozenset()) else 1.0
 
 
 def channel_fit(channel: dict[str, Any], genres: set[str], ptype: str, *, kids: bool = False,
                 claimed: frozenset[str] = frozenset(), year: int | None = None,
-                end_year: int | None = None, network: str | None = None) -> float | None:
+                end_year: int | None = None, network: str | None = None,
+                claimed_nets: frozenset[str] = frozenset()) -> float | None:
     """How well an item suits a channel, or None when the channel must not carry it.
 
     What the item is decides whether it belongs (docs/PLAN.md section 4.2): a themed channel
@@ -135,7 +149,7 @@ def channel_fit(channel: dict[str, Any], genres: set[str], ptype: str, *, kids: 
     decades = [int(d) for d in (channel.get("decades") or []) if str(d).isdigit()]
     if not in_decades(year, decades, end_year):
         return None
-    where = network_fit(channel, network)
+    where = network_fit(channel, network, claimed_nets)
     if where is None:
         return None
     theme = channel.get("content") or "general"
@@ -211,9 +225,10 @@ def best_channel(conn: sqlite3.Connection, genres: list[str] | None, hours: floa
     when no channel accepts it."""
     channels = programme_channels(conn)
     claimed = claimed_types(channels)
+    nets = claimed_networks(channels)
     fits = [(c, f) for c in channels
             if (f := channel_fit(c, _genre_set(genres), ptype, kids=kids, claimed=claimed, year=year,
-                                 network=network)) is not None]
+                                 network=network, claimed_nets=nets)) is not None]
     if not fits:
         return None
     return _cheapest(fits, _load_hours(conn, [c["id"] for c in channels]), "general", hours)["id"]
@@ -280,11 +295,12 @@ def generate(conn: sqlite3.Connection, rebalance: bool = False) -> dict[str, int
         order = {"U": 0, "PG": 1, "12": 2, "12A": 2, "15": 3, "18": 4}
         items.sort(key=lambda i: (-i["secs"], -int(i["kids"] or 0), order.get((i["cert"] or "PG").upper(), 1), i["title"]))
         claimed = claimed_types(channels)
+        nets = claimed_networks(channels)
         for it in items:
             fits = [(c, f) for c in channels
                     if (f := channel_fit(c, it["genres"], it["ptype"], kids=bool(it["kids"]), claimed=claimed,
                                          year=it["year"], end_year=it.get("end_year"),
-                                         network=it.get("network"))) is not None]
+                                         network=it.get("network"), claimed_nets=nets)) is not None]
             if not fits:
                 result["unmatched"] += 1
                 _flag(conn, it, f"No channel accepts a {it['ptype']} with its genres ({', '.join(sorted(it['genres'])) or 'none'})")
