@@ -87,10 +87,29 @@ def claimed_types(channels: list[dict[str, Any]]) -> frozenset[str]:
 NETWORK_OWN = 1.0        # the channel this programme actually went out on
 NETWORK_SIBLING = 0.5    # the other channel of the same broadcaster, to spread the load
 
+# One spelling per broadcaster, as `genres.ALIASES` does for genres. Providers name a channel as
+# it is called now rather than as it was called then: TVmaze returns ITV1 for everything ITV
+# broadcast, including programmes from before the name existed. Compared with case, spacing and
+# punctuation removed, so "Channel4" and "channel 4" agree.
+NETWORK_ALIASES = {
+    "itv1": "itv", "itv2": "itv", "itv3": "itv", "itv4": "itv", "itvx": "itv",
+    "independenttelevision": "itv", "citv": "itv",
+    "bbc1": "bbc one", "bbcone": "bbc one", "bbc2": "bbc two", "bbctwo": "bbc two",
+    "bbc": "bbc one", "channel4": "channel 4", "channelfour": "channel 4", "film4": "channel 4",
+    "channel5": "channel 5", "five": "channel 5",
+}
+_NETWORK_KEY = re.compile(r"[^a-z0-9]+")
+
+
+def network_key(name: object) -> str:
+    """A broadcaster's one spelling, for comparing a channel's list with what a provider said."""
+    key = _NETWORK_KEY.sub("", str(name or "").lower())
+    return NETWORK_ALIASES.get(key, key)
+
 
 def claimed_networks(channels: list[dict[str, Any]]) -> frozenset[str]:
     """Every broadcaster some channel lists, so one that nobody claims constrains nothing."""
-    return frozenset(str(n).strip().lower() for c in channels
+    return frozenset(network_key(n) for c in channels
                      for n in (c.get("networks") or []) if str(n).strip())
 
 
@@ -115,10 +134,10 @@ def network_fit(channel: dict[str, Any], network: str | None,
     claims is unconstrained, which is what keeps the imports: the 1980s schedules were full of
     American series, and a rule that sent anything from ABC or NBC to no channel at all would
     have thrown out Dallas and The A-Team along with the streaming material."""
-    listed = [str(n).strip().lower() for n in (channel.get("networks") or []) if str(n).strip()]
+    listed = [network_key(n) for n in (channel.get("networks") or []) if str(n).strip()]
     if not listed or not network:
         return 1.0
-    name = network.strip().lower()
+    name = network_key(network)
     for place, allowed in enumerate(listed):
         if name == allowed:
             return NETWORK_OWN if place == 0 else NETWORK_SIBLING / place

@@ -900,3 +900,20 @@ def test_an_import_from_a_broadcaster_no_channel_claims_is_placed_freely():
     drama = {"drama"}
     assert channel_fit(channels[1], drama, "series", network="ABC", claimed_nets=claimed) is not None
     assert channel_fit(channels[1], drama, "series", network="BBC Two", claimed_nets=claimed) is None
+
+
+def test_a_broadcaster_is_recognised_by_its_current_name():
+    """Providers name a channel as it is called now, not as it was called then: TVmaze returns
+    ITV1 for everything ITV broadcast, including programmes from before that name existed, and
+    19 of the catalogue's series came back that way."""
+    from pitv.lineup import claimed_networks, network_fit, network_key
+
+    assert network_key("ITV1") == network_key("ITV") == network_key("CITV") == "itv"
+    assert network_key("BBC1") == network_key("BBC One") == "bbc one"
+    assert network_key("Channel4") == network_key("channel 4") == "channel 4"
+
+    itv = {"networks": ["ITV", "Channel 4"]}
+    bbc = {"networks": ["BBC One", "BBC Two"]}
+    claimed = claimed_networks([bbc, itv])
+    assert network_fit(itv, "ITV1", claimed) == 1.0, "however the provider spells it"
+    assert network_fit(bbc, "ITV1", claimed) is None
