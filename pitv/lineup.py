@@ -529,10 +529,17 @@ def options(conn: sqlite3.Connection, q: str = "", limit: int = 50) -> list[dict
 def facets(conn: sqlite3.Connection) -> dict[str, Any]:
     """What the library and added catalogue entries hold, by kind and classification.
 
-    The admin offers these as the only choices for a channel's genres and a band's genres and
-    decades, so nobody can type a genre no item carries and then wonder why the band is empty.
-    Counts are per kind (`episode`, `movie`, `music`) because a band draws on the kinds it names:
-    a band of music videos should not be offered Westerns."""
+    The admin offers these as the choices for a channel's genres and a band's genres and
+    decades, so nobody types a genre by hand and then wonders why the band is empty. Counts are
+    per kind (`episode`, `movie`, `music`) because a band draws on the kinds it names: a band of
+    music videos should not be offered Westerns.
+
+    Every genre the vocabulary knows is offered, at zero where the library holds none of it. A
+    band that asks for something absent is not a mistake: a band with nothing at all is what
+    tells pitv_content to go and collect it, which is how the music bands were filled and the
+    only way a channel of new material can ever be set up. Offering only what is already here
+    made that impossible to configure, so a genre nobody has yet is shown with its zero rather
+    than hidden."""
     genres: dict[str, dict[str, int]] = {}
     decades: dict[str, dict[str, int]] = {}
     concerts = 0
@@ -555,6 +562,8 @@ def facets(conn: sqlite3.Connection) -> dict[str, Any]:
             genres.setdefault(g, dict.fromkeys(FACET_KINDS, 0))[kind] += 1
         if r["year"]:
             decades.setdefault(str((r["year"] // 10) * 10), dict.fromkeys(FACET_KINDS, 0))[kind] += 1
+    for known in genre_rules.KNOWN:
+        genres.setdefault(known, dict.fromkeys(FACET_KINDS, 0))
     return {"genres": dict(sorted(genres.items())),
             "decades": dict(sorted(decades.items(), key=lambda kv: int(kv[0]))), "concerts": concerts}
 

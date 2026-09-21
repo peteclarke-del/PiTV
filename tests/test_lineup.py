@@ -989,3 +989,18 @@ def test_a_title_added_by_hand_is_kept_after_it_airs(conn):
     assert not kept["transient"], "what is fetched is kept unless the caller says otherwise"
     once = lineup.add(conn, ch, title="Asked To Go", year=1985, kind="show", episode_minutes=30, transient=True)
     assert once["transient"], "and a caller that wants it gone can still say so"
+
+
+def test_a_genre_nothing_carries_yet_is_still_offered(conn):
+    """A band asking for material the library does not hold is not a mistake: a band with nothing
+    at all is what tells pitv_content to collect it, which is how the music bands were filled.
+    Offering only what is already here made a channel of new material impossible to set up, so
+    YouTube could not be chosen for a channel meant to be filled from YouTube."""
+    from pitv.genres import KNOWN
+
+    offered = lineup.facets(conn)["genres"]
+    assert "YouTube" in offered, "a genre nothing carries yet can still be asked for"
+    assert offered["YouTube"] == {"episode": 0, "movie": 0, "music": 0}, "and is honest about holding none"
+    assert set(KNOWN) <= set(offered), "every genre the vocabulary knows is choosable"
+    carried = {g for g, counts in offered.items() if any(counts.values())}
+    assert carried, "what the library does hold still counts"

@@ -65,6 +65,12 @@ SCRIPTED = ("Drama", "Comedy", "Action", "Adventure", "Fantasy", "Science Fictio
             "Mystery", "Horror", "Romance", "Soap", "Western", "War", "Supernatural", "Animation", "Anime",
             "Game Show", "Reality TV")
 
+# Every genre this table can name, whether or not the library holds any of it. The admin offers
+# these when setting up a channel or a band, because a band asking for something absent is how
+# material gets collected in the first place: offering only what is already here makes a channel
+# of new material impossible to configure.
+KNOWN: tuple[str, ...] = tuple(sorted({*ALIASES.values(), *CHILDRENS, *CARTOONS, *SCRIPTED}))
+
 # Words that keep their own case inside a title-cased name.
 _LOWER = {"and", "of", "the", "in", "on", "de", "la"}
 _KEY = re.compile(r"[^a-z0-9]+")
