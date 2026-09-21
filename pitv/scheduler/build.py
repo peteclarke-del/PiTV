@@ -16,6 +16,7 @@ one already placed (in history or the schedule), or a cursor set in the admin UI
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import random
 import sqlite3
@@ -61,6 +62,8 @@ from .slots import (
 )
 
 Progress = Callable[[str], None] | None
+MIX_TOLERANCE = 0.05   # how far a channel's realised film share may sit above its setting unremarked
+
 # Upper bound on walk steps for one channel-day. Only a pattern that can never place a
 # programme (adverts or idents alone) gets near it; the rest of such a day becomes filler.
 MAX_STEPS_PER_DAY = 3000
@@ -145,6 +148,10 @@ class Builder:
         self.log: list[str] = []
         # (channel, band) -> minutes of holding card on each day built, reported as one note
         self.band_short: dict[tuple[str, str], list[int]] = {}
+        # What was built, for the mix report: a channel can offer only as many episodes as it
+        # has series, so its configured film share may be beyond reach and it should say so.
+        self.programmes_built: dict[int, int] = {}
+        self.days_built = 0
         self.channels = enabled_channels(conn)
         # Minute of day the broadcast day starts (08:00 = 480); minutes before it belong to the
         # previous day and are counted past 1440 so comparisons stay monotonic.
@@ -548,13 +555,53 @@ class Builder:
         return tolerance if isinstance(following, tuple) and following[0] == "band" else 0
 
     def notes(self) -> list[str]:
-        """What the build has to say: its log, and one line for each band short of material
-        however many days it was short on, so a week of thin bands is ten lines and not seventy."""
+        """What the build has to say: its log, one line for each band short of material however
+        many days it was short on, so a week of thin bands is ten lines and not seventy, and one
+        for each channel whose configured mix its line-up cannot deliver."""
         short = [f"{channel}: {band} is short of material on {len(minutes)} day(s), "
                  f"{min(minutes)} to {max(minutes)} min of holding card" if len(minutes) > 1 else
                  f"{channel}: {band} is {minutes[0]} min short of material"
                  for (channel, band), minutes in self.band_short.items()]
-        return self.log + short
+        return self.log + short + self.mix_notes()
+
+    @property
+    def channels_built(self) -> list[dict[str, Any]]:
+        return [c for c in self.channels if c["id"] in self.programmes_built]
+
+    def _kind_weights(self, channel: dict[str, Any]) -> dict[str, Any]:
+        own = channel.get("kind_weights")
+        if isinstance(own, str):
+            own = json.loads(own) if own.strip() else None
+        return own or self.settings.get("kind_weights") or {}
+
+    def mix_notes(self) -> list[str]:
+        """Channels whose line-up cannot reach the film share they are configured for.
+
+        A series airs once a cadence, so a channel can offer only as many episodes a week as it
+        has series. When that is fewer than its airtime needs, films take the rest whatever the
+        configured mix says, and the scheduler has no way to obey the setting. It said nothing,
+        which left the owner to notice in the guide that a channel set to a quarter films was
+        running at a half: Docs has 22 series against the 73 episodes a week its share would
+        need. The setting is the authority, so a build that cannot honour it says so and says
+        what it would take."""
+        out: list[str] = []
+        for channel in self.channels_built:
+            want_film = float(self._kind_weights(channel).get("movie", 0) or 0)
+            slots = self.programmes_built.get(channel["id"], 0)
+            if not slots or want_film >= 1:
+                continue
+            cadence = max(1, int(channel.get("series_cadence_days") or self.settings.get("series_cadence_days", 7) or 7))
+            series = self.conn.execute("SELECT COUNT(*) FROM lineup WHERE channel_id = ? AND kind = 'show'",
+                                       (channel["id"],)).fetchone()[0]
+            days = max(1, self.days_built)
+            offered = series * days / cadence
+            floor = max(0.0, 1 - offered / slots)
+            if floor > want_film + MIX_TOLERANCE:
+                need = int((1 - want_film) * slots * cadence / days) - series
+                out.append(f"{channel['name']}: set to {want_film:.0%} films but cannot go below {floor:.0%};"
+                           f" {series} series offer {offered:.0f} of the {slots} programmes in {days} day(s)."
+                           f" About {need} more series would meet it")
+        return out
 
     def _fill_band(self, channel: dict[str, Any], day_str: str, band: bands.Band, start: int, end: int,
                    filler: bands.Filler | None, emit: Callable[[Slot], None],

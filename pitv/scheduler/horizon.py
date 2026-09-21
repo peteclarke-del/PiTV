@@ -85,6 +85,7 @@ def build_horizon(conn: sqlite3.Connection, *, start_day: date | None = None,
         bring_requests_forward(conn)      # before the library reads them: a build reuses what it finds
         builder = Builder(conn, now=now, seed=seed,
                           rebuild={c["id"]: (now, None) for c in channels} if force else None)
+        builder.days_built = days
         for i in range(days):
             day = start_day + timedelta(days=i)
             for channel in channels:
@@ -93,6 +94,7 @@ def build_horizon(conn: sqlite3.Connection, *, start_day: date | None = None,
                     continue
                 builder.save(channel["id"], day, slots)
                 n = sum(1 for s in slots if s.kind == "programme" and not s.replay)
+                builder.programmes_built[channel["id"]] = builder.programmes_built.get(channel["id"], 0) + n
                 programmes += n
                 built += 1
                 if progress:

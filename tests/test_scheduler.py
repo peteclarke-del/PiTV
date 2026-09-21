@@ -1614,3 +1614,32 @@ def test_a_helping_that_has_already_run_is_simply_forgotten(tmp_path, monkeypatc
     assert result["forgotten"] == ["job-done"] and not result["cancelled"]
     assert not conn.execute("SELECT 1 FROM band WHERE fetch_job_id IS NOT NULL").fetchall()
     conn.close()
+
+
+def test_a_channel_that_cannot_reach_its_configured_mix_says_so(tmp_path):
+    """A series airs once a cadence, so a channel offers only as many episodes a week as it has
+    series. When that is fewer than its airtime needs, films take the rest whatever the setting
+    says and the scheduler cannot obey it. It said nothing, leaving the owner to notice in the
+    guide that a channel set to a quarter films was running at a half."""
+    from pitv.scheduler.build import Builder
+
+    conn = make_library(tmp_path, max_episodes=2)["conn"]
+    builder = Builder(conn)
+    channel = builder.channels[0]
+    with dbm.tx(conn):
+        conn.execute("UPDATE channels SET kind_weights = ?, series_cadence_days = 7 WHERE id = ?",
+                     (json.dumps({"tv": 0.9, "movie": 0.1}), channel["id"]))
+    builder = Builder(conn)
+    channel = next(c for c in builder.channels if c["id"] == channel["id"])
+    series = conn.execute("SELECT COUNT(*) FROM lineup WHERE channel_id = ? AND kind = 'show'",
+                          (channel["id"],)).fetchone()[0]
+
+    builder.days_built = 7
+    builder.programmes_built[channel["id"]] = series * 4      # far more airtime than episodes
+    note = next(n for n in builder.mix_notes() if channel["name"] in n)
+    assert "set to 10% films but cannot go below" in note
+    assert "more series would meet it" in note
+
+    builder.programmes_built[channel["id"]] = max(1, series)  # enough to honour it
+    assert not [n for n in builder.mix_notes() if channel["name"] in n]
+    conn.close()

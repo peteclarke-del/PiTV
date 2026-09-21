@@ -18,6 +18,7 @@
   import Logs from './admin/Logs.svelte';
   import Content from './admin/Content.svelte';
   import Providers from './admin/Providers.svelte';
+  import Doctor from './admin/Doctor.svelte';
 
   // Two applications share this admin: PiTV (catalogue, line-ups, schedule, playback) and pitv_content
   // (sources, providers, fetching, encoding). The navigation keeps them apart so it is clear which app a
@@ -26,7 +27,7 @@
     ['pitv', 'Schedules and plays: what is on each channel and when',
       [['dashboard', 'Dashboard', 'basic'], ['channels', 'Channels', 'basic'], ['library', 'Catalogue', 'basic'],
        ['schedule', 'Schedule', 'basic'], ['settings', 'Settings', 'basic'], ['player', 'Player', 'standard'],
-       ['logs', 'Logs', 'advanced'], ['system', 'System', 'basic']]],
+       ['doctor', 'Doctor', 'basic'], ['logs', 'Logs', 'advanced'], ['system', 'System', 'basic']]],
     ['content', 'Indexes the NAS, fetches and encodes: what can be played',
       [['content', 'Content', 'basic'], ['sources', 'Sources', 'standard'], ['wanted', 'Wanted', 'standard'],
        ['providers', 'Providers', 'advanced']]],
@@ -94,6 +95,7 @@
     {:else if tab === 'player'}<PlayerPage />
     {:else if tab === 'content'}<Content />
     {:else if tab === 'logs'}<Logs />
+    {:else if tab === 'doctor'}<Doctor />
     {:else if tab === 'system'}<System />
     {:else}<div class="empty">Unknown section.</div>{/if}
   {/if}
