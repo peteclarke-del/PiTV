@@ -29,9 +29,9 @@ numbers episodes from.
 
 | | |
 |---|---|
-| A full episode list, reliable to add | 41 |
-| Identified but thin or no episode list | 25 |
-| Nothing of the right era | 5 |
+| A full episode list, reliable to add | 94 |
+| Identified but thin or no episode list | 26 |
+| Nothing of the right era | 8 |
 
 Two cautions. The lookup often returns a modern revival first: Doctor Who's top candidate is the
 2005 series, and the 1963 one is further down. Add by year rather than taking the first match;
