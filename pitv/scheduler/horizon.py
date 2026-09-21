@@ -151,7 +151,9 @@ def fresh_rebuild_horizon(conn: sqlite3.Connection, *, start_day: date | None = 
         kept_wanted = conn.execute(f"SELECT COUNT(*) FROM wanted WHERE NOT ({DERIVED_WANTED})").fetchone()[0]
         conn.execute("DELETE FROM schedule")
         conn.execute("DELETE FROM history")
-        conn.execute("DELETE FROM run_log")
+        # Every run but this one: the claim on the build is a row in here, and deleting it
+        # would hand the builder to anyone asking, in the one path where the race actually bites.
+        conn.execute("DELETE FROM run_log WHERE id != ?", (run_id,))
         conn.execute(f"DELETE FROM wanted WHERE {DERIVED_WANTED}")
         conn.execute("UPDATE band SET last_fetch_at = NULL")
     result = build_horizon(conn, start_day=start_day, days=days, seed=seed, progress=progress,

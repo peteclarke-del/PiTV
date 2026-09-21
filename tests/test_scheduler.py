@@ -1508,3 +1508,30 @@ def test_a_fresh_rebuild_it_cannot_run_clears_nothing(tmp_path):
     assert result["status"] == "skipped" and result["cleared_slots"] == 0
     assert conn.execute("SELECT COUNT(*) FROM schedule").fetchone()[0] == before
     conn.close()
+
+
+def test_a_fresh_rebuild_keeps_hold_of_the_builder_while_it_works(tmp_path):
+    """The claim is a row in the run log and a fresh rebuild empties that log, so it released the
+    builder the moment it started clearing, in the one path where the race actually bites."""
+    from pitv.scheduler.horizon import claim_build, fresh_rebuild_horizon
+
+    conn = make_library(tmp_path, max_episodes=2)["conn"]
+    now = dbm.now_ts()
+    taken: list[int | None] = []
+
+    import pitv.scheduler.horizon as horizon_mod
+    real_build = horizon_mod.build_horizon
+
+    def watch(conn_, **kw):
+        taken.append(claim_build(conn_, now))    # another process, mid-clear
+        return real_build(conn_, **kw)
+
+    monkey = pytest.MonkeyPatch()
+    monkey.setattr(horizon_mod, "build_horizon", watch)
+    try:
+        result = fresh_rebuild_horizon(conn, now=now, days=1)
+    finally:
+        monkey.undo()
+    assert result["status"] in ("ok", "warning")
+    assert taken == [None], "nobody else can take the builder while the rebuild holds it"
+    conn.close()
