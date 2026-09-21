@@ -18,12 +18,19 @@ def ctx(tmp_path_factory):
 
 
 def test_import_creates_catalogue_and_is_idempotent(ctx):
+    """Importing the same index twice changes nothing and moves no id.
+
+    Counted over the index's own uids rather than the whole media table: other tests here file
+    material that never came from an index, a delivered episode or a fetched film, and those are
+    real rows with no index item behind them."""
     conn, doc = ctx["conn"], ctx["lib"]["index"]
-    ids = {r["uid"]: r["id"] for r in conn.execute("SELECT id, uid FROM media")}
-    assert len(ids) == len(doc["items"])
+    listed = {it["uid"] for it in doc["items"]}
+    ids = {r["uid"]: r["id"] for r in conn.execute("SELECT id, uid FROM media") if r["uid"] in listed}
+    assert len(ids) == len(listed), "everything the index lists is in the catalogue"
     counts = import_index(conn, doc)
     assert counts["new"] == 0 and counts["missing"] == 0 and counts["rejected"] == 0
-    assert {r["uid"]: r["id"] for r in conn.execute("SELECT id, uid FROM media")} == ids, "ids must be stable"
+    again = {r["uid"]: r["id"] for r in conn.execute("SELECT id, uid FROM media") if r["uid"] in listed}
+    assert again == ids, "ids must be stable"
     sport = conn.execute("SELECT category FROM shows WHERE title = 'Pot Black'").fetchone()
     assert sport["category"] == "sport"
     toons = conn.execute("SELECT category, kids FROM shows WHERE title = 'Danger Mouse'").fetchone()

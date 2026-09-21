@@ -356,15 +356,26 @@ and needs no new dependency:
     ids=$(.venv/bin/python -m pytest -q -p no:cacheprovider --collect-only tests/test_x.py | grep '^tests/' | tac)
     .venv/bin/python -m pytest -q -p no:cacheprovider $ids
 
-Swept over the whole suite it leaves 16 of 21 files clean and names 21 failures in four:
-test_api (15), test_lineup (4), test_catalogue (1) and test_scheduler (1). Most of test_api's
-are the admin password and session, where the order is the point rather than an accident, and
-reversal is an unfair test of it. The four in test_lineup, and one each in test_catalogue and
-test_scheduler, are the accidental kind and are named here rather than fixed:
-test_external_entry_scheduled_ahead_and_requested, test_week_never_shares_a_programme_across_channels,
-test_generation_respects_channel_genres, test_every_programme_belongs_to_exactly_one_channel,
-test_import_creates_catalogue_and_is_idempotent and test_episodes_in_order_per_show. pitv_content
-checked its own suite the same night and found its twenty-one files independent of each other.
+Settled on 21 September, after pitv_content's own shuffler found a real fault in its `/api/system`
+on its second run. Pete chose to add one here too. `pytest-randomly` is a dev dependency and every
+run is in a different order, with the seed printed at the top so a failure is reproducible.
+
+Shuffling found eleven order-dependent tests where the reverse-order sweep had found six, and
+fixing them properly took a dozen more runs, because each fix exposed the next. They were three
+faults wearing eleven faces. Most of `test_api` failed on 401s that had nothing to do with what
+they were testing: the module shares one client, one test sets a password and another rotates the
+signing secret, so whoever ran after them lost their session. The client now has a password from
+the start, which is what makes "a stranger is refused" mean anything, and an autouse fixture logs
+back in when a neighbour has invalidated the session; the two tests about an installation nobody
+has set up get a service of their own. In `test_lineup` a helper left `nas_only` off for everyone
+and several tests counted the whole line-up or the whole week, so they were measuring their
+neighbours' work: each now states what it needs, scopes its query to its own entry, or takes a
+library of its own where the thing it asserts is an invariant over the whole catalogue. And
+`test_episodes_in_order_per_show` read a week that other tests rebuild, so it rebuilds the
+canonical week first.
+
+The suite is green in its declaration order and under seeds 42, 55, 314, 777, 1618, 2026, 2718,
+4242, 8080, 9001, 9999 and 31337.
 
 From Pete watching over the web interface, late on the 20th: the end of a programme came round
 again for about ten seconds, then the ident arrived in pieces, its end first and sometimes its

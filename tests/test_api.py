@@ -26,10 +26,50 @@ def env(tmp_path_factory):
     return ctx["cfg"]
 
 
+PASSWORD = "secret123"   # what the auth tests leave behind, so the rest can log back in
+
+
 @pytest.fixture(scope="module")
 def client(env):
+    """The shared admin client, with a password set from the start.
+
+    Almost every test here asserts that a stranger is refused, and there is no stranger until a
+    password exists: until then the admin is open and an anonymous caller is an admin. Setting
+    it once here is what makes those assertions mean anything in any order. The two tests about
+    an installation nobody has set up use `fresh_client` instead."""
     from pitv.web.app import create_app
     with TestClient(create_app(env)) as c:
+        assert c.post("/api/auth/setup", json={"password": PASSWORD}).status_code == 200
+        yield c
+
+
+@pytest.fixture(autouse=True)
+def _admin(client):
+    """Every test in this file speaks as an admin, whatever order it runs in.
+
+    The client is shared by the whole module and the auth tests change what it is: setting a
+    password ends the open first run, and changing one rotates the signing secret so every
+    session issued before it is refused. Run in file order that happened to be harmless; run
+    shuffled, a dozen tests failed on 401s that had nothing to do with what they were testing.
+    So each test logs back in if it needs to, and says so here rather than in a dozen places."""
+    if client.get("/api/auth").json()["admin"]:
+        return
+    for password in (PASSWORD, "secret456"):   # the flow test leaves one or the other
+        if client.post("/api/auth/login", json={"password": password}).status_code == 200:
+            return
+    raise AssertionError("cannot get an admin session back")
+
+
+@pytest.fixture
+def fresh_client(tmp_path_factory):
+    """A web service of its own, for the tests about a PiTV nobody has set up yet. The shared
+    client cannot show that, because the first thing any other test does is give it a password."""
+    from conftest import make_library
+
+    from pitv.web.app import create_app
+    ctx = make_library(tmp_path_factory.mktemp("firstrun"), max_episodes=1)
+    ctx["conn"].close()
+    with TestClient(create_app(ctx["cfg"])) as c:
         yield c
 
 
@@ -58,9 +98,11 @@ def _wait_for_jobs(client, timeout=60.0):
     raise AssertionError("jobs did not settle")
 
 
-def test_admin_open_until_password(client):
-    assert client.get("/api/auth").json() == {"password_set": False, "admin": True}
-    assert client.get("/api/sources").status_code == 200
+def test_admin_open_until_password(fresh_client):
+    """Before anyone sets a password the admin is open, which is only true of an installation
+    nobody has touched: this needs a service of its own rather than the shared one."""
+    assert fresh_client.get("/api/auth").json() == {"password_set": False, "admin": True}
+    assert fresh_client.get("/api/sources").status_code == 200
 
 
 def test_library_and_shows(client):
@@ -122,7 +164,8 @@ def test_schedule_edit(client):
 
 
 def test_password_flow(client):
-    assert client.post("/api/auth/setup", json={"password": "secret123"}).status_code == 200
+    # The fixture has already set one, so setup is refused: that is the rule under test.
+    assert client.post("/api/auth/setup", json={"password": PASSWORD}).status_code == 409
     assert client.get("/api/auth").json()["admin"] is True
     client.post("/api/auth/logout")
     client.cookies.clear()
@@ -277,11 +320,16 @@ def test_content_tool_proxy_non_json_and_log_shape(client):
 
 # --- security -------------------------------------------------------------------------------------
 
-def test_session_cookie_flags(client):
-    r = client.post("/api/auth/login", json={"password": "secret123"})
+def test_session_cookie_flags(fresh_client):
+    """The session cookie is HttpOnly and SameSite=Lax, and Secure only behind HTTPS.
+
+    On its own service: logging in is what sets the cookie, and there is nothing to log in to
+    until a password exists. The shared client's password is moved about by its neighbours."""
+    assert fresh_client.post("/api/auth/setup", json={"password": PASSWORD}).status_code == 200
+    r = fresh_client.post("/api/auth/login", json={"password": PASSWORD})
     cookie = r.headers["set-cookie"].lower()
     assert "httponly" in cookie and "samesite=lax" in cookie and "secure" not in cookie
-    r = client.post("/api/auth/login", json={"password": "secret123"}, headers={"X-Forwarded-Proto": "https"})
+    r = fresh_client.post("/api/auth/login", json={"password": PASSWORD}, headers={"X-Forwarded-Proto": "https"})
     assert "secure" in r.headers["set-cookie"].lower()
 
 
@@ -317,11 +365,6 @@ def test_public_player_state_hides_machine_details(client):
     # immediately before each request only narrows the window, and this test failed on a machine
     # busy encoding video. What is under test here is that /api/now applies the filter above by
     # whether the caller is logged in, which has nothing to do with the player answering.
-    # Before any password exists every caller is an admin, so there is nothing to filter and
-    # this proves nothing. The test set one earlier in the file, which made it pass here and
-    # fail on its own; it now sees to that itself.
-    if not client.get("/api/auth").json()["password_set"]:
-        assert client.post("/api/auth/setup", json={"password": "secret123"}).status_code == 200
     anon = TestClient(client.app)
     try:
         client.app.state.player_state = {**state, "online": False}
@@ -580,6 +623,7 @@ def test_request_bodies_are_capped(client):
 
 
 def test_document_uploads_are_read_only_after_the_admin_check(client):
+    """An upload endpoint refuses a stranger before it reads a byte of the body."""
     anon = TestClient(client.app)
     for path in ("/api/catalogue/import", "/api/lineup/import", "/api/content/report"):
         assert anon.post(path, content=b"{not json", headers=JSON).status_code == 401, path
@@ -596,15 +640,18 @@ def test_proxy_requires_json_bodies(client):
     assert client.post("/api/content/tool/api/run", json={}).status_code == 503   # well formed; tool offline
 
 
-def test_password_change_revokes_other_sessions(client):
-    other = TestClient(client.app)
-    assert other.post("/api/auth/login", json={"password": "secret123"}).status_code == 200
+def test_password_change_revokes_other_sessions(fresh_client):
+    """Changing the password rotates the signing secret, so every session but the caller's is
+    refused. On its own service: the shared one's password is moved about by its neighbours, and
+    this test has to know what it is."""
+    assert fresh_client.post("/api/auth/setup", json={"password": PASSWORD}).status_code == 200
+    other = TestClient(fresh_client.app)
+    assert other.post("/api/auth/login", json={"password": PASSWORD}).status_code == 200
     assert other.get("/api/jobs").status_code == 200
-    r = client.post("/api/auth/password", json={"current": "secret123", "password": "secret456"})
+    r = fresh_client.post("/api/auth/password", json={"current": PASSWORD, "password": "secret456"})
     assert r.status_code == 200 and "pitv_session=" in r.headers["set-cookie"]
     assert other.get("/api/jobs").status_code == 401
-    assert client.get("/api/jobs").status_code == 200   # the caller carries on with its new cookie
-    assert client.post("/api/auth/password", json={"current": "secret456", "password": "secret123"}).status_code == 200
+    assert fresh_client.get("/api/jobs").status_code == 200   # the caller carries on with its new cookie
 
 
 def test_login_attempts_are_counted_before_verification():

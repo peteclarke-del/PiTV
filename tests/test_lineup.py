@@ -31,7 +31,14 @@ def data_dir(env):
     return env["data_dir"]
 
 
-def test_every_programme_belongs_to_exactly_one_channel(conn):
+def test_every_programme_belongs_to_exactly_one_channel(tmp_path):
+    """Generation gives every series and film exactly one channel and leaves none homeless.
+
+    On a library of its own. This is an invariant over the whole catalogue, and the database the
+    rest of this module shares is one a dozen tests mutate: they retire episodes, add titles by
+    hand and exclude material, each of which legitimately changes the count. Chasing those with
+    ever more careful queries was measuring the neighbours rather than the rule."""
+    conn = make_library(tmp_path, max_episodes=4)["conn"]
     shows = conn.execute("SELECT COUNT(*) FROM shows WHERE missing = 0 AND excluded = 0").fetchone()[0]
     movies = conn.execute("SELECT COUNT(*) FROM media WHERE kind = 'movie' AND missing = 0 AND excluded = 0").fetchone()[0]
     entries = conn.execute("SELECT kind, COUNT(*) AS n FROM lineup GROUP BY kind").fetchall()
@@ -40,11 +47,14 @@ def test_every_programme_belongs_to_exactly_one_channel(conn):
     assert not conn.execute("SELECT show_id FROM lineup WHERE show_id IS NOT NULL GROUP BY show_id HAVING COUNT(*) > 1").fetchall()
     assert not conn.execute("SELECT 1 FROM shows WHERE missing = 0 AND excluded = 0 AND home_channel_id IS NULL").fetchall()
     assert not conn.execute("SELECT 1 FROM media WHERE kind = 'movie' AND missing = 0 AND home_channel_id IS NULL").fetchall()
+    conn.close()
 
 
 def test_generation_respects_channel_genres(conn):
     channels = {r["id"]: dbm.row_to_dict(r) for r in conn.execute("SELECT * FROM channels")}
-    for e in lineup.entries(conn):
+    # What `generate` placed, which is what this is about: an entry added by hand goes where it
+    # was put, and several tests here add one.
+    for e in [x for x in lineup.entries(conn) if x.get("source", "library") == "library"]:
         ch = channels[e["channel_id"]]
         assert ch["content"] in ("general", "cartoons")
         genres = {g.lower() for g in (e["genres"] or [])}
@@ -62,7 +72,8 @@ def test_week_never_shares_a_programme_across_channels(conn):
     channel lists under "also carries": by default the general channels borrow cartoons, and
     nothing else crosses."""
     now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(conn))
-    build_horizon(conn, start_day=parse_day("2026-09-14"), days=7, now=now, seed=5)
+    _nas_only(conn, True)   # a remote placeholder has no media row and nothing to share
+    build_horizon(conn, start_day=parse_day("2026-09-14"), days=7, now=now, seed=5, force=True)
     away = conn.execute(
         "SELECT s.channel_id, c.also_carries, COALESCE(sh.title, m.title) AS title, COALESCE(sh.genres, m.genres) AS genres, m.kind"
         " FROM schedule s JOIN media m ON m.id = s.media_id LEFT JOIN shows sh ON sh.id = m.show_id"
@@ -108,16 +119,26 @@ def test_external_entry_scheduled_ahead_and_requested(conn):
     entry = lineup.add(conn, ch, title="The Tripods", year=1974, kind="show", genres=["Science Fiction"], episode_minutes=25,
                        match={**confirmed, "poster": "ignored"})
     assert entry["match"] == confirmed
+    # Requests this entry raised in an earlier build, whether this test's or a neighbour's: the
+    # entry is keyed on its title, so it is the same entry each time and its requests outlive
+    # the schedule that raised them. This counts the ones its own build makes.
+    with dbm.tx(conn):
+        conn.execute("DELETE FROM wanted WHERE lineup_id = ?", (entry["id"],))
     now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(conn))
-    # NAS-only (default): nothing not on disk is scheduled.
+    # NAS-only: nothing not on disk is scheduled. Set here rather than assumed, because another
+    # test needs it off and the database is shared.
+    _nas_only(conn, True)
     build_horizon(conn, start_day=parse_day("2026-09-14"), days=4, now=now, seed=9, force=True)
-    assert conn.execute("SELECT COUNT(*) FROM schedule WHERE wanted_id IS NOT NULL").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM schedule s JOIN wanted w ON w.id = s.wanted_id"
+                        " WHERE w.lineup_id = ?", (entry["id"],)).fetchone()[0] == 0
     with dbm.tx(conn):
         dbm.set_setting(conn, "nas_only", False)
         dbm.set_setting(conn, "external_weight", 50.0)  # make the entry win often in the test library
     build_horizon(conn, start_day=parse_day("2026-09-14"), days=4, now=now, seed=9, force=True)
+    # This entry's own slots. Other tests in this module add remote titles of their own, and
+    # every one of them raises requests that look exactly like these.
     slots = conn.execute("SELECT s.*, w.episode, w.transient FROM schedule s JOIN wanted w ON w.id = s.wanted_id"
-                         " WHERE s.replay = 0 ORDER BY s.start_ts").fetchall()
+                         " WHERE s.replay = 0 AND w.lineup_id = ? ORDER BY s.start_ts", (entry["id"],)).fetchall()
     assert slots, "external entry never placed"
     lead = now + 23 * 3600
     assert all(sl["start_ts"] > lead for sl in slots), "placed inside the 23-hour local-first window"
@@ -156,9 +177,13 @@ REMOTE_TITLES = ("Remote History One", "Remote History Two", "Remote History Thr
 
 def _schedule_remote_titles(conn) -> int:
     """Three remote series on the first general channel and three days built around them. The
-    module shares one database, so this adds only what is not there yet; each test that needs
-    remote placeholders in the schedule calls it and can then run on its own."""
+    module shares one database, so this adds only what is not there yet, and clears any other
+    remote entry on the channel first: how many remote titles a day may carry is capped, so
+    entries left by a neighbour would compete for the same few slots and crowd these out."""
     ch = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
+    with dbm.tx(conn):
+        conn.execute("DELETE FROM lineup WHERE channel_id = ? AND source != 'library' AND title NOT IN"
+                     f" ({','.join('?' * len(REMOTE_TITLES))})", (ch, *REMOTE_TITLES))
     have = {r["title"] for r in conn.execute("SELECT title FROM lineup WHERE channel_id = ?", (ch,))}
     for n, title in enumerate(REMOTE_TITLES, 1):
         if title not in have:
@@ -170,6 +195,13 @@ def _schedule_remote_titles(conn) -> int:
     now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(conn))
     build_horizon(conn, start_day=parse_day("2026-09-14"), days=3, now=now, seed=17, force=True)
     return ch
+
+
+def _nas_only(conn, on: bool) -> None:
+    """Whether anything not on disk may be scheduled. Tests that need it either way set it
+    themselves: leaving it changed was how a helper here made its neighbours fail."""
+    with dbm.tx(conn):
+        dbm.set_setting(conn, "nas_only", on)
 
 
 def test_every_unseen_remote_title_gets_a_variety_slot(conn):

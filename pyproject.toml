@@ -16,7 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 pi = ["evdev>=1.6"]
-dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.16"]
+dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.16", "pytest-randomly>=3.15"]
 
 [project.scripts]
 pitv = "pitv.cli:main"
@@ -30,6 +30,10 @@ include = ["pitv*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Every run in a different order. A suite that has only ever run in one order cannot tell a test
+# that passes from one that passes because of its neighbours: two here asserted nothing at all
+# unless an earlier test had left the right state behind, and were green for months. The seed is
+# printed at the top of each run, so a failure is reproducible with `-p randomly --randomly-seed=N`.
 
 [tool.ruff]
 line-length = 100

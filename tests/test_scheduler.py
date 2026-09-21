@@ -35,6 +35,18 @@ def conn(tmp_path_factory):
     return c
 
 
+def _canonical_week(conn):
+    """Rebuild the week the module fixture built, exactly as it built it.
+
+    Most tests here rebuild a channel or a day to make their point, so the shared schedule is
+    whatever the test before happened to leave. A test that reads the whole week must therefore
+    put it back first, or it is asserting about its neighbours' work; this one failed only when
+    the order changed."""
+    now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(conn))
+    r = build_horizon(conn, start_day=parse_day("2026-09-14"), days=7, now=now, seed=42, force=True)
+    assert r["status"] in ("ok", "warning"), r
+
+
 def _programmes(conn):
     return conn.execute("SELECT s.*, m.kind AS mkind, m.certificate, m.year, m.show_id, m.season, m.episode, m.genres, m.duration"
                         " FROM schedule s JOIN media m ON m.id = s.media_id WHERE s.replay = 0 AND s.kind = 'programme'"
@@ -202,6 +214,7 @@ def test_watershed_respected(conn):
 
 
 def test_episodes_in_order_per_show(conn):
+    _canonical_week(conn)
     rows = _programmes(conn)
     # A series two channels share has one episode position between them, so neither sees every
     # episode and a wrap can land anywhere; the borrowing test covers those. The rest are strict.
