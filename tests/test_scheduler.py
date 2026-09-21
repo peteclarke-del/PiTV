@@ -1535,3 +1535,82 @@ def test_a_fresh_rebuild_keeps_hold_of_the_builder_while_it_works(tmp_path):
     assert result["status"] in ("ok", "warning")
     assert taken == [None], "nobody else can take the builder while the rebuild holds it"
     conn.close()
+
+
+def test_a_helping_for_a_band_that_has_since_filled_is_withdrawn(tmp_path, monkeypatch):
+    """A helping can wait hours for its turn while its band fills from an earlier one. Nothing
+    took the ask back, so eight sat in pitv_content's queue for bands that were fully stocked,
+    promising work already done and standing ahead of episodes that slots were waiting for."""
+    from pitv import tool_client, wanted
+    from pitv.db import tx
+
+    ctx = make_library(tmp_path, max_episodes=2)
+    conn = ctx["conn"]
+    with tx(conn):
+        conn.execute("UPDATE band SET fetch_job_id = 'job-stale' WHERE id = (SELECT MIN(id) FROM band)")
+    band_id = conn.execute("SELECT MIN(id) FROM band").fetchone()[0]
+    cancelled: list[str] = []
+
+    def fake_request(base, method, path, query="", body=None, timeout=15):
+        if path == "jobs":
+            return 200, [{"job_id": "job-stale", "status": "queued"}]
+        if path == "cancel":
+            cancelled.append(body["job_id"])
+            return 200, {"ok": True}
+        return 503, {"error": "offline"}
+
+    monkeypatch.setattr(tool_client, "request", fake_request)
+    monkeypatch.setattr(wanted, "band_needs", lambda c, s: [])          # every band is stocked
+    result = wanted.settle_band_requests(conn, {})
+    assert cancelled == ["job-stale"] and result["cancelled"] == ["job-stale"]
+    assert conn.execute("SELECT fetch_job_id FROM band WHERE id = ?", (band_id,)).fetchone()[0] is None
+    conn.close()
+
+
+def test_a_band_still_short_keeps_its_helping_and_is_not_asked_twice(tmp_path, monkeypatch):
+    """The request is a promise of work in hand, so asking again merely queues the same download
+    behind itself. A band whose helping is still coming is left alone until it arrives."""
+    from pitv import tool_client, wanted
+    from pitv.db import tx
+
+    ctx = make_library(tmp_path, max_episodes=2)
+    conn = ctx["conn"]
+    with tx(conn):
+        conn.execute("UPDATE band SET fetch_job_id = 'job-live' WHERE id = (SELECT MIN(id) FROM band)")
+    band_id = conn.execute("SELECT MIN(id) FROM band").fetchone()[0]
+
+    class FakeBand:
+        id = band_id
+
+    def fake_request(base, method, path, query="", body=None, timeout=15):
+        if path == "jobs":
+            return 200, [{"job_id": "job-live", "status": "running"}]
+        raise AssertionError(f"nothing else should be called, got {path}")
+
+    monkeypatch.setattr(tool_client, "request", fake_request)
+    monkeypatch.setattr(wanted, "band_needs", lambda c, s: [{"band": FakeBand(), "kind": "music",
+                                                             "have": 0, "want": 20, "minutes": 60}])
+    result = wanted.settle_band_requests(conn, {})
+    assert result["outstanding"] == {band_id: "job-live"} and not result["cancelled"]
+    assert conn.execute("SELECT fetch_job_id FROM band WHERE id = ?", (band_id,)).fetchone()[0] == "job-live"
+    conn.close()
+
+
+def test_a_helping_that_has_already_run_is_simply_forgotten(tmp_path, monkeypatch):
+    """A job that is no longer queued or running has done whatever it was going to; the band is
+    free to be asked again if it is still short."""
+    from pitv import tool_client, wanted
+    from pitv.db import tx
+
+    ctx = make_library(tmp_path, max_episodes=2)
+    conn = ctx["conn"]
+    with tx(conn):
+        conn.execute("UPDATE band SET fetch_job_id = 'job-done' WHERE id = (SELECT MIN(id) FROM band)")
+
+    monkeypatch.setattr(tool_client, "request",
+                        lambda *a, **k: (200, [{"job_id": "other", "status": "running"}]))
+    monkeypatch.setattr(wanted, "band_needs", lambda c, s: [])
+    result = wanted.settle_band_requests(conn, {})
+    assert result["forgotten"] == ["job-done"] and not result["cancelled"]
+    assert not conn.execute("SELECT 1 FROM band WHERE fetch_job_id IS NOT NULL").fetchall()
+    conn.close()

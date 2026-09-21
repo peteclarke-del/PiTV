@@ -341,6 +341,16 @@ deletes, touches `running_marker` while working, and calls `POST /api/content/ma
 before a large job. PiTV ignores `.part` files, never evicts a file in the current manifest or
 younger than two hours, and does not evict while the marker is fresh.
 
+`POST {content_tool_url}/api/cancel {"job_id"}` drops a job that is queued, leaving a running one
+alone, and marks it stopped on purpose so nothing revives it. Cancelling one already gone answers
+`{"ok": false}` rather than failing. PiTV withdraws a band helping this way when the band has
+filled since it was asked for: a helping can wait hours for its turn, and one for a band that is
+already stocked would fetch material nobody is waiting for ahead of episodes that slots are.
+
+`GET {content_tool_url}/api/jobs` lists the most recent jobs and, whatever the limit, everything
+queued or running however old. A job PiTV was handed can therefore always be found while it is
+alive, which is what lets PiTV tell "not started yet" from "long gone".
+
 `POST {content_tool_url}/api/reset` is the explicit exception for PiTV's Fresh rebuild. It first
 stops the active job (forcing an encoder down if necessary), then removes partial work,
 acquired/cache files, reports, indexes, source health/status

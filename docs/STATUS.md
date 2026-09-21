@@ -331,6 +331,18 @@ PiTV Toons ran two programmes with nothing between them, which was its configure
 (`show, show, ad, ad, ident`) doing as it was told. It now breaks after every programme like the
 other advert channels.
 
+Band helpings are now taken back when they are no longer wanted. PiTV asked hourly, pitv_content
+served a band about hourly, and the two sat exactly at equilibrium: any hour delivery took more
+of put a helping behind and it never caught up. Eight were found queued in the early hours of the
+21st, the oldest waiting five hours, for bands that `band_needs` by then reported as fully
+stocked, and they would have fetched music nobody was waiting for ahead of episodes that slots
+were waiting for. pitv_content read the depth as its queue being too slow and offered to give
+bands more turns, which would have served the stale requests sooner. A queue depth says how much
+is waiting and nothing about whether it is still wanted, and only the side that raised the work
+can say. PiTV now records the job it is handed (`band.fetch_job_id`), does not ask again while
+that job is alive, and cancels it when the band has filled (`POST /api/cancel`, pitv_content
+39cbc0f lists queued jobs however old so it can be found). The ratio was left alone.
+
 The suite has only ever been run in one order, so a test that passes because an earlier one left
 state behind would never have been caught. Two were found by accident on the night of the 20th:
 a readiness test that needed the test before it to have scheduled remote titles, and a test of

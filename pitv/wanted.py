@@ -177,7 +177,8 @@ def _matching_items(conn: sqlite3.Connection, band: bands.Band, kinds: list[str]
                and (not band.decades or band.dated({"year": r["year"]}) is True))
 
 
-def request_band_material(conn: sqlite3.Connection, settings: dict[str, Any]) -> dict[str, Any]:
+def request_band_material(conn: sqlite3.Connection, settings: dict[str, Any],
+                          outstanding: dict[int, str] | None = None) -> dict[str, Any]:
     """Ask pitv_content for material for the band that needs it most.
 
     pitv_content queues the request and runs one job at a time (contract section 9), so
@@ -202,6 +203,9 @@ def request_band_material(conn: sqlite3.Connection, settings: dict[str, Any]) ->
         body["genres"] = list(band.genres[:12])
     if decades:
         body["years"] = [decades[0], decades[-1] + 9]
+    if band.id in (outstanding or {}):
+        return {"status": "ok", "asked": 0,
+                "summary": f"{band.name}: its last helping has not had its turn yet"}
     url = get_setting(conn, "content_tool_url") or DEFAULT_SETTINGS["content_tool_url"]
     status, payload = tool_client.request(url, "POST", "run", body=body, timeout=15)
     if status in (409, 503):
@@ -209,7 +213,8 @@ def request_band_material(conn: sqlite3.Connection, settings: dict[str, Any]) ->
         # a night for another one.
         return {"status": "ok", "asked": 0, "summary": f"{band.name}: pitv_content is busy; will ask again"}
     with tx(conn):
-        conn.execute("UPDATE band SET last_fetch_at = ? WHERE id = ?", (now_ts(), band.id))
+        conn.execute("UPDATE band SET last_fetch_at = ?, fetch_job_id = ? WHERE id = ?",
+                     (now_ts(), (payload or {}).get("job_id") if isinstance(payload, dict) else None, band.id))
     if status >= 400 or not isinstance(payload, dict) or not payload.get("ok"):
         reason = (payload or {}).get("error") or (payload or {}).get("errors") or f"HTTP {status}"
         log.warning("band %s: pitv_content refused the request: %s", band.name, reason)
@@ -221,6 +226,47 @@ def request_band_material(conn: sqlite3.Connection, settings: dict[str, Any]) ->
     return {"status": "ok", "asked": 1, "summary": summary, "job_id": payload.get("job_id")}
 
 
+def settle_band_requests(conn: sqlite3.Connection, settings: dict[str, Any]) -> dict[str, Any]:
+    """Reconcile the helpings PiTV has asked for with what its bands still need.
+
+    A helping can wait hours for its turn, and a band can fill from an earlier one meanwhile.
+    Nothing used to take the ask back, so the request stayed in pitv_content's queue as a promise
+    of work already done: eight were found waiting up to five hours for bands that were by then
+    fully stocked, and they would have fetched music nobody was waiting for ahead of episodes
+    that slots were waiting for. A band that no longer needs its helping has it cancelled, and
+    one whose helping is still coming is not asked again.
+
+    Returns the ids still outstanding, keyed by band, so the caller knows what not to ask for."""
+    rows = conn.execute("SELECT id, name, fetch_job_id FROM band WHERE fetch_job_id IS NOT NULL").fetchall()
+    if not rows:
+        return {"outstanding": {}, "cancelled": [], "forgotten": []}
+    url = get_setting(conn, "content_tool_url") or DEFAULT_SETTINGS["content_tool_url"]
+    status, payload = tool_client.request(url, "GET", "jobs", timeout=10)
+    if status != 200 or not isinstance(payload, list):
+        # Unreachable: keep what is recorded rather than asking again for what may be coming.
+        return {"outstanding": {int(r["id"]): r["fetch_job_id"] for r in rows}, "cancelled": [], "forgotten": []}
+    alive = {j.get("job_id") for j in payload
+             if isinstance(j, dict) and j.get("status") in ("queued", "running")}
+    wanted_now = {n["band"].id for n in band_needs(conn, settings)}
+    outstanding: dict[int, str] = {}
+    cancelled: list[str] = []
+    forgotten: list[str] = []
+    for row in rows:
+        band_id, job = int(row["id"]), row["fetch_job_id"]
+        if job not in alive:
+            forgotten.append(job)                    # run, given up or cancelled: nothing to hold
+        elif band_id in wanted_now:
+            outstanding[band_id] = job               # still coming, and still wanted
+            continue
+        else:
+            tool_client.request(url, "POST", "cancel", body={"job_id": job}, timeout=10)
+            cancelled.append(job)
+            log.info("band %s is stocked; withdrew its helping %s", row["name"], job)
+        with tx(conn):
+            conn.execute("UPDATE band SET fetch_job_id = NULL WHERE id = ?", (band_id,))
+    return {"outstanding": outstanding, "cancelled": cancelled, "forgotten": forgotten}
+
+
 def request_all_band_material(conn: sqlite3.Connection, settings: dict[str, Any]) -> dict[str, Any]:
     """Queue every currently starved band with pitv_content's single coordinator.
 
@@ -229,9 +275,11 @@ def request_all_band_material(conn: sqlite3.Connection, settings: dict[str, Any]
     Older pitv_content versions that reject work while busy stop the loop and are retried by the
     next maintenance pass.
     """
+    settled = settle_band_requests(conn, settings)
     remaining = len(band_needs(conn, settings))
     if not remaining:
-        return {"status": "ok", "asked": 0, "summary": "every band has material", "jobs": []}
+        return {"status": "ok", "asked": 0, "summary": "every band has material", "jobs": [],
+                "withdrawn": settled["cancelled"]}
     jobs: list[Any] = []
     summaries: list[str] = []
     status = "ok"
@@ -242,7 +290,7 @@ def request_all_band_material(conn: sqlite3.Connection, settings: dict[str, Any]
             break
         first_key = _need_key(needs[0])
         equivalent = [n for n in needs if _need_key(n) == first_key]
-        result = request_band_material(conn, settings)
+        result = request_band_material(conn, settings, settled["outstanding"])
         if not result.get("asked"):
             status = result.get("status", "error")
             if result.get("summary"):
