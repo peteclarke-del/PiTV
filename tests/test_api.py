@@ -45,6 +45,19 @@ def test_now_and_schedule(client):
     assert [x["day"] for x in days["days"]] == [DAY0.isoformat(), DAY1.isoformat()]
 
 
+def _wait_for_jobs(client, timeout=60.0):
+    """Block until no job is running or queued; background jobs run in a thread."""
+    import time as _time
+    end = _time.monotonic() + timeout
+    while _time.monotonic() < end:
+        rows = client.get("/api/jobs").json()
+        rows = rows if isinstance(rows, list) else rows.get("jobs", [])
+        if not [j for j in rows if j.get("status") in ("running", "queued")]:
+            return rows
+        _time.sleep(0.2)
+    raise AssertionError("jobs did not settle")
+
+
 def test_admin_open_until_password(client):
     assert client.get("/api/auth").json() == {"password_set": False, "admin": True}
     assert client.get("/api/sources").status_code == 200
@@ -864,3 +877,27 @@ def test_doctor_says_when_what_is_kept_is_about_to_be_evicted():
     doc["cache"]["room_for_kept_bytes"] = 18 * gb
     finding = next(f for f in doctor._findings(doc) if "start being evicted" in f)
     assert "18 GiB left" in finding and "already hold 23 GiB" in finding
+
+
+def test_a_fresh_schedule_keeps_what_was_fetched_unless_asked_otherwise(client, monkeypatch):
+    """The button said every file was kept while the call threw away everything pitv_content had
+    fetched. A fresh schedule is usually wanted so the material already gathered can be arranged
+    again, and a night's fetching is expensive to replace, so clearing it is now asked for."""
+    from pitv import tool_client
+    called: list[str] = []
+
+    def fake_request(base, method, path, query="", body=None, timeout=15):
+        called.append(path)
+        if path == "reset":
+            return 200, {"ok": True}
+        return 503, {"error": "offline"}
+
+    monkeypatch.setattr(tool_client, "request", fake_request)
+    assert client.post("/api/schedule/fresh-rebuild").status_code == 200
+    _wait_for_jobs(client)
+    assert "reset" not in called, "nothing fetched is thrown away unless it was asked for"
+
+    called.clear()
+    assert client.post("/api/schedule/fresh-rebuild", json={"clear_material": True}).status_code == 200
+    _wait_for_jobs(client)
+    assert "reset" in called, "and it is still available for starting the library over"

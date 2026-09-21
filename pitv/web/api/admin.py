@@ -801,27 +801,35 @@ def schedule_build(request: Request, body: dict[str, Any] = Body(default={})):
 
 
 @router.post("/schedule/fresh-rebuild")
-def schedule_fresh_rebuild(request: Request):
-    """Drop all derived schedule state and rebuild the configured horizon from its inputs."""
+def schedule_fresh_rebuild(request: Request, body: dict[str, Any] = Body(default={})):
+    """Drop all derived schedule state and rebuild the configured horizon from its inputs.
+
+    `clear_material` also has pitv_content throw away everything it has fetched and copied
+    (contract section 7), which starts the library again as well as the schedule. It defaults
+    to off: a fresh schedule is usually wanted precisely so that the material already gathered
+    can be arranged again, and a night's fetching is expensive to replace."""
     app = request.app
+    clear_material = bool(body.get("clear_material"))
 
     def run(job):
         conn = dbm.connect(app.state.cfg.db_path)
         try:
-            # pitv_content stops what it is doing and drops its published index and status;
-            # its media, fingerprints and reports stay. A fresh index then comes back through
-            # the usual import, so the rebuild sees the catalogue as it stands.
-            app.state.jobs.progress(job, "stopping pitv_content's work")
-            status, reset = tool_client.request(tool_url(conn), "POST", "reset", body={}, timeout=30)
-            if status != 200 or not isinstance(reset, dict) or not reset.get("ok"):
-                # Nothing of PiTV's is cleared: the two sides must agree about what exists, and
-                # pitv_content names what it could not remove.
-                if isinstance(reset, dict):
-                    detail = reset.get("error") or ("could not remove " + ", ".join(map(str, reset.get("failed") or []))
-                                                    if reset.get("failed") else "not ok")
-                else:
-                    detail = f"HTTP {status}"
-                raise RuntimeError(f"pitv_content reset failed: {detail}")
+            reset: Any = "kept"
+            if clear_material:
+                # pitv_content stops what it is doing and removes its partial work, its acquired
+                # and cache files, reports, indexes and fingerprints. Source media on the NAS,
+                # its sources, providers and settings stay.
+                app.state.jobs.progress(job, "stopping pitv_content and clearing what it fetched")
+                status, reset = tool_client.request(tool_url(conn), "POST", "reset", body={}, timeout=30)
+                if status != 200 or not isinstance(reset, dict) or not reset.get("ok"):
+                    # Nothing of PiTV's is cleared: the two sides must agree about what exists,
+                    # and pitv_content names what it could not remove.
+                    if isinstance(reset, dict):
+                        detail = reset.get("error") or ("could not remove " + ", ".join(map(str, reset.get("failed") or []))
+                                                        if reset.get("failed") else "not ok")
+                    else:
+                        detail = f"HTTP {status}"
+                    raise RuntimeError(f"pitv_content reset failed: {detail}")
             app.state.jobs.progress(job, "asking pitv_content for a fresh index")
             imported = catalogue.refresh(conn, reindex=True)
             if imported.get("status") == "error":

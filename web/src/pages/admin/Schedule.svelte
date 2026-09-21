@@ -81,9 +81,19 @@
   async function freshRebuild() {
     busy = true;
     const r = await confirmApi(
-      'Stop pitv_content and have it publish a fresh index, then delete the whole generated schedule (past and locked slots included), the viewing history and every wanted request, and rebuild the full horizon from the current settings? Channels, settings, sources, line-ups and every file, fetched or cached, are kept.',
-      { title: 'Fresh rebuild schedule', okLabel: 'Delete & rebuild', danger: true },
+      'Import a fresh index, then delete the whole generated schedule (past and locked slots included), the viewing history and every wanted request the scheduler raised, and build the full horizon again from the current settings? Channels, settings, sources, line-ups and every file, fetched or cached, are kept, so the material already gathered is simply arranged again.',
+      { title: 'Fresh schedule', okLabel: 'Delete & rebuild', danger: true },
       () => post('/api/schedule/fresh-rebuild'));
+    busy = false;
+    if (r) { toast.success('Fresh rebuild started; the schedule will repopulate as it runs'); noteChange('schedule'); }
+  }
+
+  async function freshLibrary() {
+    busy = true;
+    const r = await confirmApi(
+      'Everything above, and pitv_content also throws away every file it has fetched and every cache copy, with its reports, indexes and fingerprints. Only material on the NAS survives, and the fetching starts again from nothing. This is for starting the library over, not for rearranging the schedule.',
+      { title: 'Fresh schedule and library', okLabel: 'Delete everything fetched', danger: true },
+      () => post('/api/schedule/fresh-rebuild', { clear_material: true }));
     busy = false;
     if (r) { toast.success('Fresh rebuild started; the schedule will repopulate as it runs'); noteChange('schedule'); }
   }
@@ -110,7 +120,8 @@
       {#each view.data?.channels ?? [] as c (c.id)}<option value={c.number}>{c.number} {c.name}</option>{/each}
     </select>
     <button class="small" onclick={rebuildDay} disabled={busy || !view.day}>Rebuild this day</button>
-    <button class="small danger" onclick={freshRebuild} disabled={busy}>Fresh rebuild…</button>
+    <button class="small danger" onclick={freshRebuild} disabled={busy}>Fresh schedule…</button>
+    <button class="small danger" onclick={freshLibrary} disabled={busy}>Fresh schedule &amp; library…</button>
     <button class="small primary" onclick={() => openInsert(null)} disabled={!view.data}>Insert programme…</button>
   </div>
 
