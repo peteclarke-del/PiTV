@@ -55,6 +55,22 @@ FONT_CANDIDATES = (
 # A major chord a channel: root frequencies a tone or so apart, so seven channels are seven keys.
 ROOTS = (196.00, 220.00, 246.94, 261.63, 293.66, 329.63, 349.23, 392.00)
 
+# A channel's sting should be known by ear before the name is legible, so pitch alone is not
+# enough: every channel shared one chord and one bell, an octave apart, which is a family
+# resemblance rather than a signature. Each voice names the chord over the root, how bright the
+# bells ring (the weight of the second and third harmonics), how quickly the pad swells, and how
+# far apart the four notes fall. The motif is the same everywhere, four notes rising to the
+# octave under a held chord, so the set still sounds like one station.
+VOICES = (
+    {"chord": (0.5, 1.0, 1.25, 1.5), "bright": (0.45, 0.20), "swell": 5.0, "spacing": 1.00},   # open major
+    {"chord": (0.5, 1.0, 1.125, 1.5), "bright": (0.22, 0.08), "swell": 7.0, "spacing": 1.25},  # soft, unhurried
+    {"chord": (0.5, 1.0, 1.25, 1.875), "bright": (0.70, 0.38), "swell": 3.2, "spacing": 0.80},  # bright, quick
+    {"chord": (0.5, 1.0, 1.2, 1.5), "bright": (0.35, 0.14), "swell": 6.0, "spacing": 1.10},    # minor, cooler
+    {"chord": (0.5, 1.0, 1.25, 1.5, 1.782), "bright": (0.55, 0.30), "swell": 4.0, "spacing": 0.90},  # seventh
+    {"chord": (1.0, 1.25, 1.5, 2.0), "bright": (0.85, 0.50), "swell": 2.4, "spacing": 0.70},   # high and playful
+    {"chord": (0.5, 0.75, 1.0, 1.5), "bright": (0.18, 0.06), "swell": 8.0, "spacing": 1.35},   # low, measured
+)
+
 
 def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     for candidate in FONT_CANDIDATES:
@@ -170,16 +186,23 @@ def frames(channel: dict[str, Any], width: int, height: int) -> Iterator[Image.I
 
 
 def sting(path: Path, channel_number: int) -> None:
-    """The ident's music as a WAV: a held major chord that swells under four bell notes rising
-    to the octave, the last landing as the channel's name appears."""
+    """The ident's music as a WAV: a held chord that swells under four bell notes rising to the
+    octave, the last landing as the channel's name appears. The chord, the brightness of the
+    bells, the speed of the swell and the spacing of the notes are the channel's own (`VOICES`),
+    so one channel is told from another by ear."""
     root = ROOTS[(channel_number - 1) % len(ROOTS)]
-    chord = (root / 2, root, root * 5 / 4, root * 3 / 2)
-    bells = ((0.4, root), (1.5, root * 5 / 4), (2.6, root * 3 / 2), (VOICE_AT - 0.1, root * 2))
+    voice = VOICES[(channel_number - 1) % len(VOICES)]
+    chord = tuple(root * r for r in voice["chord"])
+    second, third = voice["bright"]
+    gap = voice["spacing"]
+    rising = (root, root * voice["chord"][2], root * voice["chord"][-1], root * 2)
+    bells = tuple((min(VOICE_AT - 0.1, 0.4 + n * 1.1 * gap), f) for n, f in enumerate(rising[:3])) \
+        + ((VOICE_AT - 0.1, rising[3]),)
     total = SECONDS * SAMPLE_RATE
     left, right = [0.0] * total, [0.0] * total
     for i in range(total):
         t = i / SAMPLE_RATE
-        swell = _ease(t / 5.0) * min(1.0, (SECONDS - t) / 2.5)
+        swell = _ease(t / voice["swell"]) * min(1.0, (SECONDS - t) / 2.5)
         pad = sum(math.sin(2 * math.pi * f * t) + 0.3 * math.sin(2 * math.pi * f * 2.003 * t) for f in chord) / len(chord)
         tremor = 1 + 0.08 * math.sin(2 * math.pi * 0.45 * t)
         left[i] = right[i] = 0.2 * swell * tremor * pad
@@ -189,8 +212,8 @@ def sting(path: Path, channel_number: int) -> None:
         for i in range(start, min(total, start + int(4.5 * SAMPLE_RATE))):
             t = (i - start) / SAMPLE_RATE
             env = math.exp(-t * (1.1 if k == len(bells) - 1 else 1.8)) * min(1.0, t * 400)
-            tone = math.sin(2 * math.pi * f * t) + 0.45 * math.sin(2 * math.pi * f * 2.0 * t) * math.exp(-t * 3) \
-                + 0.2 * math.sin(2 * math.pi * f * 3.01 * t) * math.exp(-t * 5)
+            tone = math.sin(2 * math.pi * f * t) + second * math.sin(2 * math.pi * f * 2.0 * t) * math.exp(-t * 3) \
+                + third * math.sin(2 * math.pi * f * 3.01 * t) * math.exp(-t * 5)
             left[i] += 0.3 * env * tone * (1 - pan)
             right[i] += 0.3 * env * tone * pan
     peak = max(1e-9, max(max(abs(v) for v in left), max(abs(v) for v in right)))

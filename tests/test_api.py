@@ -577,7 +577,9 @@ def test_lineup_api(client):
     assert moved["channel_id"] == target and moved["pinned"] == 1
     ext = client.post("/api/lineup", json={"channel_id": target, "title": "The Tripods", "year": 1984, "kind": "show",
                                            "episode_minutes": 25}).json()
-    assert ext["external"] is True and ext["transient"] == 1
+    # Kept after it airs: an episode found once is expensive to find again, and a later airing
+    # is meant to be free. Asking for it to go is still one field away.
+    assert ext["external"] is True and ext["transient"] == 0
     upd = client.put(f"/api/lineup/{ext['id']}", json={"remove_after_airing": True, "enabled": False}).json()
     assert upd["remove_after_airing"] == 1 and upd["enabled"] == 0
     doc = client.get("/api/lineup/export").json()

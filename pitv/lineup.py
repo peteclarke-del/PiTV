@@ -373,7 +373,8 @@ def add(conn: sqlite3.Connection, channel_id: int | None, *, show_id: int | None
     owner's word on what an external title is; without it the type is read from the genres.
     `episode_count` is how long a series ran, from the lookup; no episode past it is asked for.
     `certificate` is the match's; without one a title nobody holds yet would be free to air at
-    any hour.
+    any hour. What is fetched is kept unless the caller says otherwise: an episode found once is
+    expensive to find again and the point of fetching it is that a later airing costs nothing.
     Without a channel, an external entry goes where the generator would put that type."""
     if programme_type is not None and programme_type not in genre_rules.PROGRAMME_TYPES:
         raise ValueError(f"programme_type must be one of {', '.join(genre_rules.PROGRAMME_TYPES)}")
@@ -409,7 +410,7 @@ def add(conn: sqlite3.Connection, channel_id: int | None, *, show_id: int | None
                 raise ValueError("title and kind are required for an external entry")
             key = f"ext:{kind}:{title.strip().lower()}:{year or ''}"
             lid = _insert(conn, channel_id, kind, key, title.strip(), year, genres=genres or [], source=source,
-                          transient=1 if transient is None else int(transient), episode_minutes=episode_minutes, pinned=1,
+                          transient=0 if transient is None else int(transient), episode_minutes=episode_minutes, pinned=1,
                           match=clean_match(match), programme_type=programme_type,
                           episode_count=as_int(episode_count) if kind == "show" else None, certificate=certificate)
         sync_home_channels(conn)

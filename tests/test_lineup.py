@@ -978,3 +978,14 @@ def test_a_year_taken_from_the_request_is_noted_rather_than_trusted(conn, tmp_pa
         row = conn.execute("SELECT year, attention FROM media WHERE uid = ?", (f"yt:round{n}",)).fetchone()
         assert row["year"] == (read or 1988)
         assert row["attention"] == expect
+
+
+def test_a_title_added_by_hand_is_kept_after_it_airs(conn):
+    """An episode found once is expensive to find again, and the point of fetching it is that a
+    later airing costs nothing. The default was to discard it, so ninety-two titles added from
+    the catalogue were all marked remove-after-airing."""
+    ch = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
+    kept = lineup.add(conn, ch, title="Kept By Default", year=1985, kind="show", episode_minutes=30)
+    assert not kept["transient"], "what is fetched is kept unless the caller says otherwise"
+    once = lineup.add(conn, ch, title="Asked To Go", year=1985, kind="show", episode_minutes=30, transient=True)
+    assert once["transient"], "and a caller that wants it gone can still say so"
