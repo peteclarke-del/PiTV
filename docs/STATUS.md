@@ -282,11 +282,14 @@ were evicted again, 166.5 GiB copied onto the drive and thrown away, and it will
 day the cap stands. That figure is nearly all NAS copies, which are cheap to make again and are
 meant to come and go; it is the size of the churn, not of anything lost.
 
-By 01:50 the drive had 2.0 TB free rather than 14 GB, the ROM archive on it having dropped from
-11 TB to 8.7 TB, so nothing needs to be deleted to fix this: `cache_max_gb` can simply be raised.
-The doctor reads it straight from the drive, so its finding now ends "it wants about 313 GiB;
-the drive has 2295 GiB spare". Raising the cap is Pete's decision because it spends his disk,
-but it no longer costs him anything else.
+Settled in the early hours of the 21st. The drive had 14 GB free when this was diagnosed and
+2.0 TB by 01:50; by 04:00 Pete had freed over ten terabytes more, and it stands at 31 per cent
+used with 11 TB available. He set the cap to 900 GiB, sized for the 1 TB SSD the target Pi will
+have. Both findings have cleared: the cap holds 3.9 days of schedule where it held 1.2, and 668
+GiB is left for fetched episodes against the 25 GiB they occupy. pitv_content expects its churn
+figure to fall to near nothing and will say so if it does not, which would mean something else
+is evicting. What is left is transient: a little over half of the next day is in the cache and
+the rest is being copied into the room that has just appeared.
 
 Nothing is at fault. `POST /api/content/make-room` protects the current manifest before evicting
 and `evict_fetched` spares anything still scheduled ahead; what goes is NAS copies for airings
