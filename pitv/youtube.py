@@ -1,0 +1,59 @@
+"""Naming a YouTube channel or playlist so pitv_content can fetch from it.
+
+A channel added to the catalogue is a series whose episodes are its videos: an ordinary line-up
+entry whose confirmed identity names the channel instead of a television database. Everything
+after that is the machinery a series already has, and the episode number PiTV keeps is the
+position in the listing.
+
+Two things decide what is sent. pitv_content fetches the `url`, so that is always sent and is
+what must be right. The `id` is for its own state, and a creator can rename a handle at will:
+a handle stops resolving the day it is renamed, and a series keyed on it would quietly stop
+with no error anyone reads. So YouTube's own channel id (`UC...`) is sent where the
+address carries one, and the handle only where it does not.
+"""
+
+from __future__ import annotations
+
+import re
+from urllib.parse import parse_qs, urlsplit
+
+SOURCE = "youtube_channel"   # pitv_content's provider type; a playlist is the same source
+
+_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
+_CHANNEL = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
+_PLAYLIST = re.compile(r"^(?:PL|UU|FL|OL|RD)[A-Za-z0-9_-]{10,}$")
+_HANDLE = re.compile(r"^@[A-Za-z0-9._-]{3,30}$")
+
+
+def parse(url: str) -> dict[str, str] | None:
+    """The confirmed identity for a channel or playlist address, or None when it is neither.
+
+    A playlist is the same source: pitv_content lists both the same way and reads the order from
+    what it was given, a channel reversed to oldest-first and a playlist in the order its maker
+    chose. A playlist is the better thing to point at where one exists, because it survives the
+    channel being reorganised and it is the creator saying what order the thing goes in."""
+    text = (url or "").strip()
+    if not text:
+        return None
+    if "://" not in text:
+        text = "https://" + text
+    parts = urlsplit(text)
+    if parts.hostname not in _HOSTS:
+        return None
+    listed = parse_qs(parts.query).get("list", [None])[0]
+    if listed and _PLAYLIST.match(listed):
+        return {"source": SOURCE, "id": listed, "url": f"https://www.youtube.com/playlist?list={listed}"}
+    segments = [s for s in parts.path.split("/") if s]
+    if segments and _HANDLE.match(segments[0]):
+        return {"source": SOURCE, "id": segments[0], "url": f"https://www.youtube.com/{segments[0]}"}
+    if len(segments) >= 2 and segments[0] == "channel" and _CHANNEL.match(segments[1]):
+        return {"source": SOURCE, "id": segments[1], "url": f"https://www.youtube.com/channel/{segments[1]}"}
+    if len(segments) >= 2 and segments[0] in ("c", "user") and segments[1]:
+        # A legacy vanity address. It has no stable id in it, so the address is all there is.
+        return {"source": SOURCE, "id": segments[1], "url": f"https://www.youtube.com/{segments[0]}/{segments[1]}"}
+    return None
+
+
+def is_channel(match: object) -> bool:
+    """Whether a line-up entry's confirmed identity names a channel or playlist."""
+    return isinstance(match, dict) and match.get("source") == SOURCE

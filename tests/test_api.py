@@ -965,3 +965,29 @@ def test_doctor_reports_what_pitv_content_healed_and_what_is_still_waiting():
     assert any("healed its queue" in f and "9 hours queued" in f for f in findings)
     assert any("queue: index job" in f for f in findings)
     assert not [f for f in doctor._findings({"content": {"reachable": True, "errors": []}}) if "healed" in f]
+
+
+def test_a_youtube_channel_is_added_as_a_series_of_its_videos(client):
+    """Pete's design: a channel is added through the catalogue like any other title and tied to
+    the PiTV channel it belongs to. It is then an ordinary line-up entry whose confirmed identity
+    names the channel, so the episode machinery takes its videos in order with no new mechanism
+    and no cursor beyond the episode number PiTV already keeps."""
+    target = client.get("/api/channels").json()[0]["id"]
+    r = client.post("/api/lineup", json={"channel_id": target, "title": "An Archive",
+                                         "youtube_url": "youtube.com/@ExampleArchive/videos"})
+    assert r.status_code == 200, r.text
+    entry = r.json()
+    assert entry["match"] == {"source": "youtube_channel", "id": "@ExampleArchive",
+                              "url": "https://www.youtube.com/@ExampleArchive"}
+    assert "YouTube" in entry["genres"], "a band collecting YouTube material claims it by this"
+    assert entry["kind"] == "show" and entry["external"] is True
+    assert not entry["transient"], "kept, like anything else fetched"
+
+    # A playlist is the same source: pitv_content lists both the same way and reads the order
+    # from what it was given.
+    r = client.post("/api/lineup", json={"channel_id": target, "title": "A Playlist",
+                                         "youtube_url": "https://www.youtube.com/playlist?list=PLrAXtmRdnEQy6nuLMfO6uJ"})
+    assert r.status_code == 200 and r.json()["match"]["id"] == "PLrAXtmRdnEQy6nuLMfO6uJ"
+
+    assert client.post("/api/lineup", json={"channel_id": target, "title": "Nope",
+                                            "youtube_url": "https://vimeo.com/channels/x"}).status_code == 400

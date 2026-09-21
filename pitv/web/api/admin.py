@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from ... import __version__, catalogue, display, settings_schema, tool_client
+from ... import __version__, catalogue, display, settings_schema, tool_client, youtube
 from ... import db as dbm
 from ... import genres as genre_rules
 from ... import lineup as lineup_mod
@@ -1267,6 +1267,16 @@ def lineup_known(kind: str = "show", conn: sqlite3.Connection = Depends(admin_co
 
 @router.post("/lineup")
 def lineup_add(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
+    # A YouTube channel or playlist is a series whose episodes are its videos, so it is an
+    # ordinary entry whose confirmed identity names the channel instead of a television
+    # database. The address is parsed here rather than in the browser so one reading of it is
+    # tested: pitv_content fetches the url, and the id it keeps must survive a rename.
+    if url := str(body.get("youtube_url") or "").strip():
+        found = youtube.parse(url)
+        if found is None:
+            raise HTTPException(400, "not a YouTube channel or playlist address")
+        body = {**body, "kind": "show", "match": found, "catalogue": True,
+                "genres": genre_rules.canonical_all([*(body.get("genres") or []), "YouTube"])}
     try:
         return lineup_mod.add(conn, optional_int(body.get("channel_id"), "channel_id"), show_id=body.get("show_id"), media_id=body.get("media_id"),
                               title=body.get("title"), year=body.get("year"), kind=body.get("kind"), genres=body.get("genres"),

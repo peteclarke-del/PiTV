@@ -46,9 +46,11 @@ ALIASES: dict[str, str] = {
     "news": "News", "currentaffairs": "News", "entertainment": "Entertainment", "variety": "Entertainment",
     "education": "Education", "educational": "Education", "science": "Science", "technology": "Technology",
     "scienceandtechnology": "Science", "popular": "Pop", "pop": "Pop",
-    # Where a programme came from rather than what it is about. A band that collects from named
-    # creators matches on this, so the spellings have to agree: "YouTube", "You Tube", "youtube"
-    # and "yt" otherwise canonicalise three different ways and a band silently matches nothing.
+    # Not "came from YouTube", which would be most of the library: this marks material curated
+    # from a named channel or playlist somebody chose, so a channel can be built from it and
+    # told apart from everything the ordinary search finds. A band collecting such material
+    # matches on this, so the spellings have to agree: "YouTube", "You Tube", "youtube" and
+    # "yt" otherwise canonicalise three different ways and a band silently matches nothing.
     "youtube": "YouTube", "yt": "YouTube", "ytchannel": "YouTube", "youtubechannel": "YouTube",
 }
 

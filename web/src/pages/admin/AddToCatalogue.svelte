@@ -20,7 +20,8 @@
   // source: at 8 a common title came back as one catalogue entry and seven from TVmaze, with nothing
   // from TMDb, and the ones already held are greyed out of those.
   const LOOKUP_LIMIT = 25;
-  const KINDS = [['show', 'Series'], ['movie', 'Film'], ['advert', 'Advert'], ['music', 'Music video']];
+  const KINDS = [['show', 'Series'], ['movie', 'Film'], ['channel', 'YouTube channel'],
+                 ['advert', 'Advert'], ['music', 'Music video']];
   const blankForm = () => ({ kind: 'show', title: '', year: '', genres: [], programme_type: '', channel: '', transient: false, minutes: '', artist: '', url: '' });
   let f = $state(blankForm());
   let step = $state('search');        // search | place
@@ -43,12 +44,17 @@
     });
   });
 
-  let programme = $derived(f.kind === 'show' || f.kind === 'movie');
+  // A channel or playlist somebody has chosen: its videos become the episodes of a series, taken
+  // earliest first, so it needs an address and a channel to belong to and nothing looked up.
+  let curated = $derived(f.kind === 'channel');
+  let programme = $derived(f.kind === 'show' || f.kind === 'movie' || curated);
+  let searchable = $derived(programme && !curated);
   // What the title would be taken for and where it would go, asked of PiTV so the rule lives in one place.
   let placement = $state(null);
   $effect(() => {
     if (!open || step !== 'place' || !programme) { placement = null; return; }
     const ask = { kind: f.kind, genres: [...f.genres], programme_type: f.programme_type || null, year: num(f.year, { int: true }) };
+    if (curated) { placement = null; return; }
     tryApi(post('/api/lineup/placement', ask)).then((p) => { placement = p ?? null; });
   });
   // pitv_content's fetchable titles as suggestions; a title already on disk is flagged, not duplicated.
@@ -83,7 +89,10 @@
   const add = guard(async () => {
     const year = num(f.year, { min: 1900, max: 2100, int: true });
     const r = programme
-      ? await tryApi(post('/api/lineup', {
+      ? await tryApi(post('/api/lineup', curated ? {
+          title: f.title.trim(), youtube_url: f.url.trim(),
+          channel_id: f.channel === '' ? null : Number(f.channel),
+          episode_minutes: num(f.minutes, { min: 1, max: 240, int: true }) } : {
           kind: f.kind, title: f.title.trim(), year, genres: f.genres, programme_type: f.programme_type || null, transient: f.transient,
           channel_id: f.channel === '' ? null : Number(f.channel), match: chosen?.match ?? null,
           episode_minutes: f.kind === 'show' ? num(f.minutes, { min: 1, max: 240, int: true }) : null,
@@ -92,8 +101,9 @@
       : await tryApi(post('/api/wanted', { kind: f.kind, title: f.title.trim(), year, artist: f.artist.trim() || null, ref: f.url.trim() || null }));
     if (!r) return;
     noteChange('library');
-    onadded?.(programme ? `${r.title} added to ${r.channel_name ?? 'its channel'}; pitv_content fetches it before it airs`
-                        : `${r.title} added to the wanted list for pitv_content`);
+    onadded?.(curated ? `${r.title} added to ${r.channel_name ?? 'its channel'}; its videos are fetched earliest first`
+              : programme ? `${r.title} added to ${r.channel_name ?? 'its channel'}; pitv_content fetches it before it airs`
+                          : `${r.title} added to the wanted list for pitv_content`);
   });
 </script>
 
@@ -120,13 +130,22 @@
         <div class="note small">Matched: <b>{chosen.title}</b>{chosen.year ? ` (${chosen.year})` : ''} from {chosen.match?.source}. pitv_content fetches this one.
           <button class="small ghost" onclick={() => (step = 'search')}>Change</button></div>
       {:else}
-        <div class="warn-box small">No online match: pitv_content will search by title{f.year ? ' and year' : ''} alone and may find a different {f.kind === 'movie' ? 'film' : f.kind === 'show' ? 'series' : 'video'}.
+        <div class="warn-box small" hidden={curated}>No online match: pitv_content will search by title{f.year ? ' and year' : ''} alone and may find a different {f.kind === 'movie' ? 'film' : f.kind === 'show' ? 'series' : 'video'}.
           <button class="small ghost" onclick={() => (step = 'search')}>Search again</button></div>
       {/if}
       <div class="form-grid">
         <label class="field wide">Title<input bind:value={f.title} /></label>
-        <label class="field">Year<input type="number" class="narrow" min="1900" max="2100" bind:value={f.year} /></label>
-        {#if programme}
+        {#if !curated}<label class="field">Year<input type="number" class="narrow" min="1900" max="2100" bind:value={f.year} /></label>{/if}
+        {#if curated}
+          <label class="field wide">Channel or playlist address<input bind:value={f.url} placeholder="https://www.youtube.com/@…" />
+            <span class="help">Its videos become the episodes of this entry, taken earliest first. A playlist keeps the order its maker chose, so point at one where it exists.</span></label>
+          <label class="field">Channel
+            <select bind:value={f.channel}><option value="">Where it belongs</option>{#each channels as c (c.id)}<option value={c.id}>{c.number} {c.name}</option>{/each}</select>
+            <span class="help">Its material carries the YouTube genre, so a band asking for that claims it.</span>
+          </label>
+          <label class="field">Episode length (minutes)<input type="number" class="narrow" min="1" max="240" bind:value={f.minutes} placeholder="default" /></label>
+          <div class="warn-box small wide">Videos are numbered by their place in the listing. If the creator deletes one, everything after it shifts by one and an episode already scheduled becomes a different programme. Nothing detects that.</div>
+        {:else if programme}
           <div class="field"><span>Genres</span><GenrePicker value={f.genres} options={facets?.genres ?? {}} kinds={f.kind === 'show' ? ['episode'] : ['movie']} onchange={(v) => (f.genres = v)} label="Entry genres" empty="Choose genres" /><span class="help">The same programme genres used by Channel settings.</span></div>
           <label class="field">What it is
             <select bind:value={f.programme_type}><option value="">{placement ? `${programmeTypeLabel(placement.programme_type)} (read from its genres)` : 'Read from its genres'}</option>{#each PROGRAMME_TYPES as [v, l] (v)}<option value={v}>{l}</option>{/each}</select>
