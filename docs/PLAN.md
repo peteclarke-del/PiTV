@@ -19,7 +19,7 @@ checklist of what was asked for and where each item lives.
 | Boot | Target about 15 s from power to picture. A test card is drawn on the framebuffer within seconds and stays up until the clock is synchronised and the first file plays |
 | Channels | Rows in the database, each can be enabled or disabled. Six by default: 1 and 2 programmes only, 3 and 4 with adverts, 5 music, 6 cartoons |
 | Broadcast day | 08:00 to 00:00 scheduled; 00:00 to 08:00 replays that day's schedule (section 4.9) |
-| Era | Programmes of any age with a mix either side of 1980 (1920-1979 weight 0.45, 1980-1989 0.40, 1990-1999 0.15; editable globally and per channel). Adverts 1980s and 1990s only. Year from pitv_content's library index, or an admin override |
+| Era | Programmes of any age, weighted by year (1930-1969 0.5, 1970-1979 0.8, 1980-1989 1.0, 1990-1999 0.2, 2000-2030 0.05; editable globally and per channel). Every year a channel may carry needs a span: one no span covers is weighted zero, which bars it whatever the channel's decades allow. Adverts 1980s and 1990s only. Year from pitv_content's library index, or an admin override |
 | Watershed | Films: 12 not before 20:00, 15 not before 21:00, 18 not before 22:00. TV episodes obey only the 15 and 18 rules (a 12-rated series was routinely repeated in the daytime). No children's programmes after 21:00 except on the cartoon channel |
 | Horizon | 7 days built ahead, topped up when fewer than 2 days remain; episodes advance in order per show; repeats minimised |
 | Remote | OSMC RF remote (USB dongle, appears as a keyboard): arrows, OK, Back, Home, Info, Play/Pause, Stop, volume. Any remote with number keys tunes channels 1 to 9 directly |
@@ -211,7 +211,7 @@ override as JSON for backup.
 Era weights are a global setting with per-channel overrides. A series gets the best weight
 of any year in its run (premiere year to premiere year plus number of seasons), so a show
 that started in 1978 and ran to 1986 counts as 80s. Adverts use `advert_era_weights`
-(1980-1989 0.85, 1990-1999 0.15) and anything outside those decades is never scheduled.
+(the 1980s leading, earlier material welcome, later material sparse) and anything outside every span is never scheduled, which is why the spans must cover every year a channel may carry.
 
 ### 3.4 Custom programming and the catalogue mirror
 

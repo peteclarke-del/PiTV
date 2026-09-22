@@ -357,7 +357,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "horizon_days": 7,
     "rebuild_when_days_left": 2,
     # Programmes: anything goes, with a healthy mix either side of 1980. Adverts: 80s/90s only.
-    "era_weights": {"1920-1979": 0.45, "1980-1989": 0.40, "1990-1999": 0.15},
+    # Every year a channel may carry needs a span here: a year no span covers is weighted zero,
+    # which is not "rarely" but "never", whatever the channel's own decades allow. The table
+    # shipped before this one stopped at 1999, so a documentary channel set to carry the 2010s
+    # could not, and it weighted everything before 1980 above the 1980s, which is not what a
+    # station modelled on that decade wants. The 1980s lead, earlier material is welcome without
+    # being the point, and later material shows sparsely.
+    "era_weights": {"1930-1969": 0.5, "1970-1979": 0.8, "1980-1989": 1.0,
+                    "1990-1999": 0.2, "2000-2030": 0.05},
     "unknown_year_weight": 0.2,        # programmes with no year found still get scheduled, at this weight
     "advert_era_weights": {"1980-1989": 0.85, "1990-1999": 0.15},
     "watershed": {"U": "00:00", "PG": "00:00", "12": "20:00", "12A": "20:00", "15": "21:00", "18": "22:00"},
