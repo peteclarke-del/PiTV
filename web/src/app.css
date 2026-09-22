@@ -67,7 +67,12 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 1rem 0; }
 .page-head h1 { margin: 0; flex: 1; }
 .row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
 .stack { display: flex; flex-direction: column; gap: .75rem; }
-.grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+/* Cards share the width they are given. `auto-fit` rather than `auto-fill` is the whole point:
+   auto-fill keeps the empty tracks a wide screen has room for, so three cards stayed 280px wide
+   with half the page blank beside them and their contents stacked into a tall column. Collapsing
+   the empty tracks lets the cards widen instead, which shortens them. `align-items: start` stops
+   a short card being stretched to the height of a long one next to it. */
+.grid { display: grid; gap: 1rem; align-items: start; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
 .spacer { flex: 1; }
 .muted { color: var(--fg-muted); }
 .small { font-size: .85rem; }
