@@ -457,6 +457,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "readiness_hours": [6, 7],         # verify tomorrow's files exist and substitute what is missing
     "catalogue_hour": 4,            # daily import of pitv_content's library index
     "history_keep_days": 180,
+    # The other two things the nightly pass prunes. They were constants beside a setting, which
+    # meant one of three retention periods could be changed and the other two only by a release.
+    "schedule_keep_days": 14,          # aired slots, kept for the history and "what was on" views
+    "run_log_keep_days": 30,
 }
 # Stored settings that are not user configuration and so have no default.
 _EXTRA_SETTING_KEYS = {"session_secret"}

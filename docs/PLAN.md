@@ -1280,8 +1280,8 @@ seeds its sources on its first install. PiTV itself keeps only the cache setting
   player logs its own and mpv's RSS every five minutes and exits for a clean restart above
   `memory_limit_mb` (700), or when mpv exceeds 1.5 times that; playback resumes at the live
   position within seconds. The web process does the same above 400 MB. History older than
-  `history_keep_days` (180), schedule older than 14 days and run logs older than 30 days are
-  pruned; log files rotate.
+  `history_keep_days` (180), schedule older than `schedule_keep_days` (14) and run logs older
+  than `run_log_keep_days` (30) are pruned; log files rotate.
 - Power loss. The schedule is in SQLite (WAL, `synchronous=NORMAL`) and the state file is
   small, so nothing needs replaying. The player derives its position from the wall clock, so
   after a two-hour outage it tunes to what is on now (section 2 covers the clock wait). The

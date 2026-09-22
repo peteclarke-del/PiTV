@@ -247,6 +247,12 @@ FIELDS: tuple[dict[str, Any], ...] = (
        "PiTV checks tomorrow's files at these hours and substitutes anything missing."),
     _f("history_keep_days", "maintenance", "advanced", "Keep airing history (days)", "int",
        "Airing history older than this is pruned.", min=1, max=3650),
+    _f("schedule_keep_days", "maintenance", "advanced", "Keep aired slots (days)", "int",
+       "Slots that have aired are kept this long for the history and the \"what was on\" views, "
+       "then pruned.", min=1, max=3650),
+    _f("run_log_keep_days", "maintenance", "advanced", "Keep run logs (days)", "int",
+       "Builds, imports and readiness checks are logged; entries older than this are pruned.",
+       min=1, max=3650),
 )
 
 BY_KEY: dict[str, dict[str, Any]] = {f["key"]: f for f in FIELDS}

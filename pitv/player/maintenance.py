@@ -33,8 +33,6 @@ STARTUP_DELAY = 20        # seconds; let playback start before the first pass
 PASS_INTERVAL = 600       # seconds between passes
 EMPTY_BUILD_RETRY = 3600  # a build that produced nothing (empty library) is not retried every pass
 GAP_BUILD_RETRY = 3600    # retry holding-card gaps as remote entries become eligible
-SCHEDULE_KEEP_DAYS = 14   # aired slots kept for the history and "what was on" views
-RUN_LOG_KEEP_DAYS = 30
 
 
 class Maintenance:
@@ -207,6 +205,8 @@ class Maintenance:
             keep = int(settings["history_keep_days"]) * 86400
             with tx(conn):
                 conn.execute("DELETE FROM history WHERE started_at < ?", (now - keep,))
-                conn.execute("DELETE FROM schedule WHERE end_ts < ?", (now - SCHEDULE_KEEP_DAYS * 86400,))
-                conn.execute("DELETE FROM run_log WHERE started_at < ?", (now - RUN_LOG_KEEP_DAYS * 86400,))
+                conn.execute("DELETE FROM schedule WHERE end_ts < ?",
+                             (now - int(settings["schedule_keep_days"]) * 86400,))
+                conn.execute("DELETE FROM run_log WHERE started_at < ?",
+                             (now - int(settings["run_log_keep_days"]) * 86400,))
             self._pruned_on = today
