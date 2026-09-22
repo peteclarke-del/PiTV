@@ -23,6 +23,16 @@ _HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"
 _CHANNEL = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
 _PLAYLIST = re.compile(r"^(?:PL|UU|FL|OL|RD)[A-Za-z0-9_-]{10,}$")
 _HANDLE = re.compile(r"^@[A-Za-z0-9._-]{3,30}$")
+# A vanity address from before handles: youtube.com/<name>, with no /c/ or /user/ in front of
+# it. These are still the address a creator prints, so they are still what somebody copies.
+_VANITY = re.compile(r"^[A-Za-z0-9_-]{3,50}$")
+# First segments of youtube.com that are the site rather than somebody's channel. Without this
+# a link to a video would be read as a channel called "watch" and quietly fetch nothing.
+_NOT_A_CHANNEL = frozenset({
+    "watch", "playlist", "shorts", "live", "embed", "feed", "results", "hashtag", "about",
+    "account", "premium", "gaming", "music", "movies", "sports", "news", "upload", "post",
+    "clip", "oembed", "redirect", "t", "source", "howyoutubeworks", "creators", "ads",
+})
 # YouTube's own browse id for a playlist: the playlist id with VL in front of it, which is what
 # a "show" address carries. What can actually be listed is the playlist inside it.
 _BROWSE_LIST = re.compile(r"^VL(?P<list>[A-Za-z0-9_-]{10,})$")
@@ -39,7 +49,10 @@ def parse(url: str) -> dict[str, str] | None:
     what it was given, a channel reversed to oldest-first and a playlist in the order its maker
     chose. A playlist is the better thing to point at where one exists, because it survives the
     channel being reorganised and it is the creator saying what order the thing goes in."""
-    text = (url or "").strip()
+    # Every space is dropped rather than the ends trimmed: an address copied out of a message
+    # that wrapped it arrives with the break inside the id, and a channel id with a space in it
+    # matches nothing and reads as "not a YouTube address" when it plainly is one.
+    text = re.sub(r"\s+", "", url or "")
     if not text:
         return None
     if "://" not in text:
@@ -65,6 +78,8 @@ def parse(url: str) -> dict[str, str] | None:
     if len(segments) >= 2 and segments[0] in ("c", "user") and segments[1]:
         # A legacy vanity address. It has no stable id in it, so the address is all there is.
         return {"source": SOURCE, "id": segments[1], "url": f"https://www.youtube.com/{segments[0]}/{segments[1]}"}
+    if len(segments) == 1 and segments[0].lower() not in _NOT_A_CHANNEL and _VANITY.match(segments[0]):
+        return {"source": SOURCE, "id": segments[0], "url": f"https://www.youtube.com/{segments[0]}"}
     return None
 
 

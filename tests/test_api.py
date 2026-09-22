@@ -998,6 +998,20 @@ def test_a_youtube_channel_is_added_as_a_series_of_its_videos(client):
         "source": "youtube_channel", "id": "PLrAXtmRdnEQy6nuLMfO6uJ",
         "url": "https://www.youtube.com/playlist?list=PLrAXtmRdnEQy6nuLMfO6uJ"}
 
-    for wrong in ("https://vimeo.com/channels/x", "https://www.youtube.com/show/notaplaylist"):
+    # The forms a creator actually prints. A bare name with no /c/ or /user/ in front of it is a
+    # vanity address from before handles and is still what gets copied; an address pasted out of
+    # a message that wrapped it arrives with the break inside the id.
+    for url, expected in (("https://www.youtube.com/plainvanity", "plainvanity"),
+                          ("https://www.youtube.com/user/OldStyle", "OldStyle"),
+                          ("https://www.youtube.com/channel/UCaaaaaaaaaaaa  aaaaaaaaaa", "UCaaaaaaaaaaaaaaaaaaaaaa")):
+        r = client.post("/api/lineup", json={"channel_id": target, "title": f"T {expected}", "youtube_url": url})
+        assert r.status_code == 200, r.text
+        assert r.json()["match"]["id"] == expected
+
+    # The site itself is not somebody's channel: without that a link to a video would be added as
+    # a creator called "watch" and quietly fetch nothing for ever.
+    for wrong in ("https://vimeo.com/channels/x", "https://www.youtube.com/show/notaplaylist",
+                  "https://www.youtube.com/watch?v=abcdefghijk", "https://www.youtube.com/feed/subscriptions",
+                  "https://www.youtube.com/shorts/abcdefghijk"):
         assert client.post("/api/lineup", json={"channel_id": target, "title": "Nope",
                                                 "youtube_url": wrong}).status_code == 400
