@@ -188,6 +188,57 @@ def channel_fit(channel: dict[str, Any], genres: set[str], ptype: str, *, kids: 
     return (matched / len(allowed)) * where if matched else None
 
 
+def resolve_youtube_ids(conn: sqlite3.Connection, settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Re-key YouTube entries on the channel's permanent id instead of its creator's handle.
+
+    A handle belongs to the creator and they may change it whenever they like; the day they do,
+    the address stops resolving and a series that has run for months stops with it, one failed
+    fetch at a time and nothing saying why. The channel's own `UC...` id never changes, and
+    pitv_content's channel search returns it, so an entry keyed on a handle can be moved onto
+    the permanent one while the handle still works.
+
+    An entry is only moved where the search returns a candidate carrying the very handle it
+    already holds (`youtube.same_channel`). Matching on the title instead would be the same
+    fault in a new place: two creators share a name, and an entry quietly repointed at the wrong
+    one would fetch their videos under the right title with nothing to show for it. What cannot
+    be confirmed is counted and left exactly as it was."""
+    from . import youtube
+    from .catalogue import _ask_lookup
+
+    settings = settings if settings is not None else all_settings(conn)
+    rows = rows_to_dicts(conn.execute(
+        "SELECT id, title, match FROM lineup WHERE enabled = 1 AND match IS NOT NULL ORDER BY id"))
+    moved, left, asked, failed = 0, 0, 0, ""
+    for row in rows:
+        match = row["match"]
+        if isinstance(match, str):
+            try:
+                match = json.loads(match)
+            except ValueError:
+                continue
+        if not youtube.is_channel(match) or youtube.survives_a_rename(match):
+            continue
+        asked += 1
+        payload, reason = _ask_lookup(settings, {"kind": "channel", "title": row["title"], "limit": 8})
+        if payload is None:
+            failed = failed or reason
+            left += 1
+            continue
+        found = next((c for c in payload.get("candidates") or []
+                      if youtube.same_channel(match, c) and youtube.survives_a_rename(c.get("match"))), None)
+        if found is None:
+            left += 1
+            continue
+        with tx(conn):
+            conn.execute("UPDATE lineup SET match = ? WHERE id = ?",
+                         (json.dumps(clean_match(found["match"])), row["id"]))
+        moved += 1
+        log.info("re-keyed %s from %s to %s", row["title"], match.get("id"), found["match"].get("id"))
+    summary = f"{moved} of {asked} re-keyed on the channel's own id, {left} left as they were"
+    return {"status": "error" if failed and not moved else "ok", "asked": asked, "moved": moved,
+            "left": left, "summary": f"{summary}; {failed}" if failed else summary}
+
+
 def carries_programmes(channel: dict[str, Any]) -> bool:
     """Whether a channel schedules programmes of its own, and so needs a line-up. A channel
     whose pattern is empty is built from its bands alone (a music channel, say)."""

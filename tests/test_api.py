@@ -1,3 +1,4 @@
+import json
 import os
 from datetime import timedelta
 from types import SimpleNamespace
@@ -876,6 +877,39 @@ def test_the_add_dialog_is_told_what_the_catalogue_already_holds(client):
     client.delete(f"/api/lineup/{added['id']}")
     assert client.get("/api/lineup/known", params={"kind": "music"}).json()
     assert client.get("/api/lineup/known", params={"kind": "series"}).status_code == 400
+
+
+def test_re_keying_an_entry_needs_the_handle_to_agree_not_the_name(tmp_path, monkeypatch):
+    """A handle stops resolving the day its creator changes it, so an entry is moved onto the
+    channel's permanent id while the handle still works. The move is only made where the search
+    returns the very handle the entry already holds: two creators share a name, and one quietly
+    repointed at the other would fetch their videos under the right title with nothing to show
+    for it, which is the fault this exists to prevent rather than to introduce."""
+    from pitv import catalogue, lineup as lineup_mod, youtube
+    from conftest import make_library
+
+    ctx = make_library(tmp_path / "rekey", max_episodes=1)
+    conn = ctx["conn"]
+    channel = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
+    for title, handle in (("Right One", "@theirhandle"), ("Name Twin", "@someoneelse")):
+        lineup_mod.add(conn, channel, title=title, kind="show", genres=["Comedy"], source="catalogue",
+                       match=youtube.parse(f"https://www.youtube.com/{handle}"))
+
+    permanent = {"source": "youtube_channel", "id": "UCaaaaaaaaaaaaaaaaaaaaaa",
+                 "url": "https://www.youtube.com/channel/UCaaaaaaaaaaaaaaaaaaaaaa"}
+    # The search answers both titles with the same candidate: the right channel for one of them,
+    # a different creator who happens to share a name for the other.
+    monkeypatch.setattr(catalogue, "_ask_lookup", lambda settings, params: (
+        {"candidates": [{"match": permanent, "kind": "channel", "title": params["title"],
+                         "uploader": "@theirhandle"}]}, ""))
+
+    result = lineup_mod.resolve_youtube_ids(conn, dbm.all_settings(conn))
+    assert result["moved"] == 1 and result["left"] == 1, result
+    keys = {r["title"]: json.loads(r["match"])["id"]
+            for r in conn.execute("SELECT title, match FROM lineup WHERE title IN ('Right One', 'Name Twin')")}
+    assert keys["Right One"] == "UCaaaaaaaaaaaaaaaaaaaaaa", "the handle agreed, so it takes the permanent id"
+    assert keys["Name Twin"] == "@someoneelse", "the handle did not, so it is left exactly as it was"
+    conn.close()
 
 
 def test_an_entry_keyed_on_a_renameable_name_is_reported(tmp_path):

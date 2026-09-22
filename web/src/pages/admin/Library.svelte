@@ -3,7 +3,7 @@
   // hand (custom programming pitv_content fetches). Each list loads whole; DataTable filters,
   // sorts and pages it in the browser.
   import { untrack } from 'svelte';
-  import { del, get, put, tryApi, confirmApi } from '../../lib/api.js';
+  import { del, get, post, put, tryApi, confirmApi } from '../../lib/api.js';
   import { changes, clock, route, toast } from '../../lib/stores.svelte.js';
   import { navigate } from '../../lib/router.js';
   import { fmtDuration, fmtAgo, fmtEpisode, isYouTube, lineupState, safeUrl, CERTIFICATES, WEEKDAYS } from '../../lib/format.js';
@@ -115,6 +115,7 @@
     youtube: [
       { key: 'title', label: 'Title', cell: youtubeTitleCell },
       { key: 'address', label: 'Channel or playlist', class: 'small', get: (e) => e.match?.id ?? '', cell: youtubeAddressCell },
+      { key: 'keyed', label: 'Keyed on', class: 'small', get: (e) => (permanentId(e) ? 'permanent' : 'by name'), cell: youtubeKeyCell },
       channel((e) => e.channel_id, lineupChannelCell),
       { key: 'state', label: 'State', get: (e) => lineupState(e)[1], cell: stateCell },
       { key: 'actions', label: '', class: 'right', sortable: false, cell: removeCell },
@@ -129,6 +130,15 @@
     adverts: 'No adverts.', idents: 'No idents.', custom: 'Nothing added by hand yet: use Add to the catalogue.',
     youtube: 'No YouTube channels yet: use Add to the catalogue and choose YouTube channel.', attention: 'Nothing needs attention.',
   };
+  // A handle belongs to the creator and stops resolving the day they change it. The channel's
+  // own id never does, so an entry can be moved onto it while the handle still works.
+  let fragile = $derived(tab === 'youtube' ? (rows ?? []).filter((e) => !permanentId(e)).length : 0);
+  const permanentId = (e) => /^(UC[\w-]{22}|(PL|UU|FL|OL|RD)[\w-]{10,})$/.test(e?.match?.id ?? '');
+  const resolveIds = guard(async () => {
+    const r = await tryApi(post('/api/lineup/resolve-ids', {}));
+    if (r) { toast.success(r.summary); load(); }
+  });
+
   const edit = (r) => (tab === 'shows' ? (showId = r.id) : KIND[tab] ? (mediaId = r.id)
     : tab === 'custom' || tab === 'youtube' ? (lineupEntry = r) : undefined);
 </script>
@@ -138,6 +148,11 @@
   <div class="row">
     <Tabs tabs={TABS} active={tab} onselect={(id) => navigate(`/admin/library/${id}`)} label="Catalogue lists" />
     <span class="spacer"></span>
+    {#if tab === 'youtube' && fragile}
+      <button onclick={resolveIds} disabled={resolveIds.busy}
+              title="Ask pitv_content for each channel's permanent id, while the handles still work">
+        {resolveIds.busy ? 'Asking…' : `Re-key ${fragile} on permanent ids`}</button>
+    {/if}
     <button class="primary" onclick={() => (adding = true)}>Add to the catalogue</button>
   </div>
   {#key tab}
@@ -162,6 +177,7 @@
 {#snippet familySafeCell(m)}<span role="presentation" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}><label class="check small" title={m.family_safe ? 'May air on family-safe channels' : 'Never airs on family-safe channels'}><input type="checkbox" checked={!!m.family_safe} onchange={(e) => setFamilySafe(m, e.currentTarget.checked)} />{m.family_safe ? 'yes' : 'no'}</label></span>{/snippet}
 {#snippet customTitleCell(e)}<b>{e.title}</b>{#if e.match}{@const link = safeUrl(e.match.url)}<span class="badge ok" title="Confirmed online; pitv_content fetches this title">{#if link}<a href={link} target="_blank" rel="noopener noreferrer">{e.match.source} ↗</a>{:else}{e.match.source}{/if}</span>{:else}<span class="badge warn" title="Added without an online match; pitv_content searches by title">unmatched</span>{/if}{#if e.genres?.length}<div class="tiny muted">{e.genres.join(', ')}</div>{/if}{/snippet}
 {#snippet youtubeTitleCell(e)}<b>{e.title}</b>{#if e.genres?.length}<div class="tiny muted">{e.genres.filter((g) => g !== 'YouTube').join(', ') || 'no subject yet'}</div>{/if}{/snippet}
+{#snippet youtubeKeyCell(e)}{#if permanentId(e)}<span class="badge ok" title="The channel's own id: it survives a rename">permanent</span>{:else}<span class="badge warn" title="A handle or vanity name: it stops resolving if the creator changes it">by name</span>{/if}{/snippet}
 {#snippet youtubeAddressCell(e)}{@const link = safeUrl(e.match?.url)}{#if link}<a href={link} target="_blank" rel="noopener noreferrer">{e.match.id} ↗</a>{:else}<span class="muted">{e.match?.id ?? '–'}</span>{/if}{/snippet}
 {#snippet stateCell(e)}{@const [cls, text] = lineupState(e)}<span class="badge {cls}">{text}</span>{/snippet}
 {#snippet removeCell(e)}<button class="small ghost" onclick={(event) => { event.stopPropagation(); removeCustom(e); }}>Remove</button>{/snippet}

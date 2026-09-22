@@ -97,6 +97,22 @@ def survives_a_rename(match: object) -> bool:
     return bool(_CHANNEL.match(ident) or _PLAYLIST.match(ident))
 
 
+def same_channel(stored: object, candidate: object) -> bool:
+    """Whether a lookup candidate is certainly the channel an entry already names.
+
+    The comparison is on the handle, never on the title. Two creators can share a name and a
+    search asked for one will happily return the other, which is the fault this exists to
+    prevent rather than to introduce: an entry silently repointed at somebody else would fetch
+    their videos under the right name and nothing would say so. A handle is unique while it
+    lasts, so a candidate carrying the handle we already hold is that channel and its permanent
+    id can be taken. Anything less certain is left alone for a person to look at."""
+    if not (is_channel(stored) and isinstance(candidate, dict)):
+        return False
+    ours = str((stored or {}).get("id") or "").lstrip("@").lower()
+    theirs = str(candidate.get("uploader") or "").lstrip("@").lower()
+    return bool(ours) and ours == theirs
+
+
 def is_channel(match: object) -> bool:
     """Whether a line-up entry's confirmed identity names a channel or playlist."""
     return isinstance(match, dict) and match.get("source") == SOURCE

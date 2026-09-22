@@ -1172,6 +1172,12 @@ def bands_fetch_kinds(conn: sqlite3.Connection = Depends(admin_conn)):
     return get_setting(conn, "content_fetch_kinds") or []
 
 
+@router.post("/lineup/resolve-ids")
+def lineup_resolve_ids(conn: sqlite3.Connection = Depends(admin_conn)):
+    """Re-key YouTube entries on the channel's permanent id while their handles still work."""
+    return lineup_mod.resolve_youtube_ids(conn, all_settings(conn))
+
+
 @router.post("/bands/material")
 def bands_material(conn: sqlite3.Connection = Depends(admin_conn)):
     """Declare every band's current shortfall to pitv_content now."""

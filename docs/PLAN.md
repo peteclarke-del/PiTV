@@ -285,6 +285,15 @@ nothing before it. The number of adverts in a break does not depend on the order
 limit is counted across whatever adverts are already running, so two cycles meeting cannot make
 a longer break than one.
 
+A YouTube entry is keyed on the channel's own id (`UC...`) wherever it can be. A handle belongs
+to its creator and stops resolving the day they change it, at which point a series that has run
+for months stops too, one failed fetch at a time with nothing saying why. Pasting an address
+gives whatever form the creator prints, usually the handle, so Catalogue, Added YouTube offers
+to re-key them: each is looked up and moved onto the permanent id only where the search returns
+the very handle the entry already holds. Matching on the title instead would be the same fault
+in a new place, since two creators share a name and an entry repointed at the wrong one would
+fetch their videos under the right title. What cannot be confirmed is left alone and counted.
+
 Each general channel also carries the broadcasters it stands for. A programme whose index knows
 which network showed it goes to the channel that stands for that network before any genre rule
 is consulted, which is what stops a drama landing on whichever channel happens to list the most
