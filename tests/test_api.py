@@ -127,13 +127,14 @@ def test_channels_and_settings(client):
     assert [c["content"] for c in chans][-2:] == ["music", "cartoons"]
     assert next(c for c in chans if c["content"] == "music")["has_lineup"] is False
     assert next(c for c in chans if c["content"] == "cartoons")["has_lineup"] is True
-    c5 = client.post("/api/channels", json={"name": "PiTV Seven", "short_name": "Seven",
-                                            "content": "documentaries", "pattern": "show, break"}).json()
-    assert c5["number"] == 7 and c5["pattern"] == "show, break" and c5["has_lineup"] is True
-    assert client.put(f"/api/channels/{c5['id']}", json={"content": "bogus"}).status_code == 400
-    off = client.put(f"/api/channels/{c5['id']}", json={"enabled": False}).json()
+    # A channel added here takes the next free number, whatever the station already has.
+    added = client.post("/api/channels", json={"name": "PiTV Extra", "short_name": "Extra",
+                                               "content": "documentaries", "pattern": "show, break"}).json()
+    assert added["number"] == len(chans) + 1 and added["pattern"] == "show, break" and added["has_lineup"] is True
+    assert client.put(f"/api/channels/{added['id']}", json={"content": "bogus"}).status_code == 400
+    off = client.put(f"/api/channels/{added['id']}", json={"enabled": False}).json()
     assert off["enabled"] == 0
-    assert client.delete(f"/api/channels/{c5['id']}").json()["ok"]
+    assert client.delete(f"/api/channels/{added['id']}").json()["ok"]
     s = client.get("/api/settings").json()
     assert "admin_password_hash" not in s
     s2 = client.put("/api/settings", json={"movie_repeat_days": 10}).json()

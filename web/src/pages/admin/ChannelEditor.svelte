@@ -47,9 +47,18 @@
     ident_ids: (c.idents ?? []).filter((i) => i.channel_id === c.id).map((i) => i.id),
     fetch_kind: c.fetch_kind ?? '', band_item_max_minutes: c.band_item_max_minutes ?? '',
     strict_matching: c.strict_matching ?? false,
-    decades: c.decades ?? [], kids_any_time: !!c.kids_any_time, bands: (c.bands ?? []).map((b) => ({ ...b, fill: { ...b.fill } })),
+    // Tolerant of either form: an older service hands this back as the JSON text it is stored
+    // as, and calling join on that threw and left the whole editor unusable for any channel
+    // that had one.
+    decades: c.decades ?? [], networks: asList(c.networks).join(', '),
+    kids_any_time: !!c.kids_any_time, bands: (c.bands ?? []).map((b) => ({ ...b, fill: { ...b.fill } })),
     band_item_repeat_hours: c.band_item_repeat_hours ?? '', band_feature_repeat_days: c.band_feature_repeat_days ?? '',
   });
+  function asList(v) {
+    if (Array.isArray(v)) return v;
+    if (typeof v !== 'string' || !v.trim()) return [];
+    try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; }
+  }
   // The types a daypart can ask for (pitv/scheduler/select.py, Selector._borrowed).
   const BORROWABLE = [['cartoon', 'Cartoons'], ['sport', 'Sport'], ['documentary', 'Documentaries']];
   const CONTENT = [['general', 'General (shows and films)'], ['music', 'Music videos'], ['cartoons', 'Cartoons'],
@@ -96,7 +105,8 @@
       ident_ids: f.ident_ids,
       fetch_kind: f.fetch_kind || null, strict_matching: f.strict_matching,
       band_item_max_minutes: f.band_item_max_minutes === '' ? null : Number(f.band_item_max_minutes),
-      decades: f.decades, kids_any_time: f.kids_any_time, bands: f.bands,
+      decades: f.decades, networks: f.networks.split(',').map((s) => s.trim()).filter(Boolean),
+      kids_any_time: f.kids_any_time, bands: f.bands,
       band_item_repeat_hours: num(f.band_item_repeat_hours, { min: 0, max: 8760, int: true }),
       band_feature_repeat_days: num(f.band_feature_repeat_days, { min: 0, max: 8760, int: true }),
     };
@@ -138,6 +148,11 @@
           <span>Decades</span><DecadePicker bind:value={f.decades} decades={decadeOptions} label="Channel decades" />
           <span class="help">Only programmes from these decades; empty means any. A series that ran into one of them counts, and a programme with no year is still allowed.</span>
         </div>
+        {#if shown('standard')}
+          <label class="field wide">Broadcasters it stands for<input bind:value={f.networks} placeholder="BBC One, BBC Two" />
+            <span class="help">Its own first. A series goes to the channel that first broadcast it, and may land on a later one in the list when the first is full. A broadcaster no channel names constrains nothing, which is what keeps the imports. Empty takes anything.</span>
+          </label>
+        {/if}
         {#if shown('standard')}
           <label class="field">Group episodes shorter than (minutes)<input type="number" class="narrow" min="0" max="60" bind:value={f.short_episode_minutes} placeholder="as Settings says" /><span class="help">Episodes shorter than a normal programme run together under the series title, with no advert break between them.</span></label>
           <label class="field">Run them together for (minutes)<input type="number" class="narrow" min="5" max="120" bind:value={f.short_episode_run_minutes} placeholder="as Settings says" /></label>

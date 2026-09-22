@@ -459,33 +459,52 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 # Stored settings that are not user configuration and so have no default.
 _EXTRA_SETTING_KEYS = {"session_secret"}
 
+# The station a fresh install comes up as, and what the four general channels stand for: the
+# broadcasters decide where a series goes, so a programme lands on the channel that actually
+# showed it. A documentary channel is not seeded: the four general channels, music and cartoons
+# are the station, and a themed channel beyond them is added in the admin like any other.
+# Every value here is editable in the admin; this is where an empty database starts,
+# not a thing the code depends on.
+#
+# No general channel bars an era. Which decades a channel will carry depends on the library
+# somebody has, and a channel that bars most of what it holds runs out and repeats: how sparse
+# later material is belongs to the era weights, which bend when the library cannot meet them.
+#
+# The ident follows the show because it closes the programme that has ended and hands over to the
+# break. Written the other way round, `ident, ad, ad, show`, it reads the same cyclically and is
+# not: when the ident is skipped, because the slot before it is not a programme, one cycle's two
+# advert tokens meet the next cycle's two and the channel runs four adverts together where it
+# allows two. The advert accounting does not see across that join.
 DEFAULT_CHANNELS = [
     {"number": 1, "name": "PiTV One", "short_name": "One", "colour": "#e63946", "ads_enabled": 0,
-     "pattern": "show", "description": "Mainstream: drama, sitcoms, light entertainment, afternoon films",
-     "kind_weights": {"tv": 0.75, "movie": 0.25},
+     "pattern": "ident, show", "description": "Mainstream: drama, sitcoms, light entertainment, afternoon films",
+     "kind_weights": {"tv": 0.75, "movie": 0.25}, "networks": ["BBC One", "BBC Two"],
      "allowed_genres": ["Drama", "Comedy", "Family", "Adventure", "Romance", "Game Show", "History"],
      "fetch_kind": "shows"},
     {"number": 2, "name": "PiTV Two", "short_name": "Two", "colour": "#457b9d", "ads_enabled": 0,
-     "pattern": "show", "description": "Alternative: documentaries, cult, older films, comedy",
-     "kind_weights": {"tv": 0.6, "movie": 0.4},
-     "allowed_genres": ["Documentary", "Science Fiction", "Fantasy", "Mystery", "Comedy", "Horror", "Thriller", "Sport"],
+     "pattern": "ident, show", "description": "Alternative: documentaries, cult, older films, comedy",
+     "kind_weights": {"tv": 0.6, "movie": 0.4}, "networks": ["BBC Two", "BBC One"],
+     "allowed_genres": ["Documentary", "Science Fiction", "Fantasy", "Mystery", "Comedy", "Horror", "Thriller",
+                        "Sport", "News"],
      "fetch_kind": "shows"},
     {"number": 3, "name": "PiTV Three", "short_name": "Three", "colour": "#f4a261", "ads_enabled": 1,
-     "pattern": "show, ad, ad", "description": "Commercial: soaps, quiz, action drama, kids' teatime",
-     "kind_weights": {"tv": 0.8, "movie": 0.2},
+     "pattern": "show, ident, ad, ad", "description": "Commercial: soaps, quiz, action drama, kids' teatime",
+     "kind_weights": {"tv": 0.8, "movie": 0.2}, "networks": ["ITV", "Channel 4"],
      "allowed_genres": ["Soap", "Game Show", "Action", "Crime", "Drama", "Children", "Sport", "Comedy"],
      "fetch_kind": "shows"},
-    {"number": 4, "name": "PiTV Four", "short_name": "Four", "colour": "#2a9d8f", "ads_enabled": 1,
-     "pattern": "show, ad, ad", "description": "Alternative commercial: comedy, imports, films, late night",
-     "kind_weights": {"tv": 0.55, "movie": 0.45},
-     "allowed_genres": ["Comedy", "Science Fiction", "Thriller", "Horror", "Documentary", "Crime", "Action"],
+    {"number": 4, "name": "PiTV Four", "short_name": "Four", "colour": "#386641", "ads_enabled": 1,
+     "pattern": "show, ident, ad, ad", "description": "Alternative commercial: comedy, imports, films, late night",
+     "kind_weights": {"tv": 0.55, "movie": 0.45}, "networks": ["Channel 4", "ITV"],
+     "allowed_genres": ["Comedy", "Science Fiction", "Thriller", "Horror", "Documentary", "Crime", "Action", "Talk"],
      "fetch_kind": "shows"},
     {"number": 5, "name": "PiTV Music", "short_name": "Music", "colour": "#b5179e", "ads_enabled": 0,
      "pattern": "", "description": "Music videos by genre and decade, with two full concerts a day",
      "kind_weights": {"tv": 1.0, "movie": 0.0}, "content": "music", "bands": DEFAULT_MUSIC_BANDS,
-     "decades": [1970, 1980, 1990, 2000], "fetch_kind": "music"},
+     # Music is the one channel that names its decades: a video belongs to the decade it was made
+     # in far more sharply than a drama does, and the bands are written around that.
+     "decades": [1930, 1940, 1950, 1960, 1970, 1980, 1990, 2000], "fetch_kind": "music"},
     {"number": 6, "name": "PiTV Toons", "short_name": "Toons", "colour": "#ffb703", "ads_enabled": 1,
-     "pattern": "show, show, ad, ad", "description": "Cartoons all day; child-friendly adverts only",
+     "pattern": "show, ident, ad, ad", "description": "Cartoons all day; child-friendly adverts only",
      # Animated films are cartoons too and belong here, so they need some share of the day.
      "kind_weights": {"tv": 0.85, "movie": 0.15}, "content": "cartoons", "family_safe_ads": 1, "kids_any_time": 1,
      "allowed_genres": ["Animation", "Cartoon", "Anime", "Children"], "fetch_kind": "cartoons"},
@@ -535,6 +554,7 @@ def init_db(conn: sqlite3.Connection) -> None:
                     "kids_any_time": ch.get("kids_any_time", 0), "decades": json.dumps(ch.get("decades") or []),
                     "allowed_genres": json.dumps(ch.get("allowed_genres") or []),
                     "fetch_kind": ch.get("fetch_kind"),
+                    "networks": json.dumps(ch["networks"]) if ch.get("networks") else None,
                     "also_carries": json.dumps(ALSO_CARRIES_FOR_CONTENT.get(ch.get("content", "general"), [])),
                     "daypart_profile": json.dumps(BY_DEFAULT_CHANNEL[ch["number"]])
                     if ch["number"] in BY_DEFAULT_CHANNEL else None})
@@ -961,7 +981,7 @@ def all_settings(conn: sqlite3.Connection) -> dict[str, Any]:
 
 _JSON_COLUMNS = ("genres", "enriched", "ids", "overrides", "also_carries", "anchor_days", "era_weights", "genre_weights",
                  "kind_weights", "daypart_profile", "details", "allowed_genres", "excluded_genres",
-                 "decades")
+                 "decades", "networks")
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:

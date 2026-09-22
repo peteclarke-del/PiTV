@@ -5,7 +5,7 @@ the design behind each row is in [PLAN.md](PLAN.md).
 
 | # | Requirement | Where | Verified by |
 |---|---|---|---|
-| 1 | Four general channels: 1 and 2 programmes only, 3 and 4 with adverts in a show, ad, ad pattern | `DEFAULT_CHANNELS` in `db.py`; patterns in `scheduler/build.py` and `rules.parse_pattern` | `test_ads_only_on_ad_channels` |
+| 1 | Four general channels: 1 and 2 programmes only, 3 and 4 with adverts; the pattern decides where breaks fall and the ident follows the programme | `DEFAULT_CHANNELS` in `db.py`; patterns in `scheduler/build.py` and `rules.parse_pattern` | `test_ads_only_on_ad_channels` |
 | 2 | Content from the NAS TV, movie, advert, sport and music video shares; the NAS is read-only | pitv_content's sources, seeded from the installer's share list (`/etc/pitv/nas-sources.json`); its index imported by `catalogue.py`; shares mounted `ro` (`systemd/mnt-share.mount.template`) | `test_import_creates_catalogue_and_is_idempotent`; manual on the Pi |
 | 3 | Schedule 08:00 to midnight; overnight replays the day until 08:00 | `rules.day_bounds`, `scheduler/overnight.py` | `test_every_channel_day_is_covered`, `test_no_slot_crosses_into_next_day_start` |
 | 4 | Watershed at 21:00 with certificate and kids rules; date- and time-appropriate placement | `rules.allowed_at`, `watershed` and `tv_watershed` settings, dayparts | `test_watershed_respected`, `test_watershed_movie_vs_tv`, `test_kids_cutoff` |

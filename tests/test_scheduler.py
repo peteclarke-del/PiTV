@@ -57,13 +57,17 @@ def test_daily_show_limit_holds_until_the_rules_relax(tmp_path):
     """A series airs at most its daily limit while anything else fits; when nothing does, a
     further airing beats a holding card (docs/PLAN.md section 4.5), with the next episode."""
     c = make_library(tmp_path / "daily-cap", max_episodes=3)["conn"]
-    now = local_ts(parse_day("2026-09-14"), "21:00", tz_of(c))     # its one series is post-watershed
+    now = local_ts(parse_day("2026-09-14"), "21:00", tz_of(c))
     with dbm.tx(c):
         c.execute("UPDATE channels SET enabled=0")
         channel_id = c.execute("SELECT id FROM channels WHERE number=1").fetchone()[0]
-        c.execute("UPDATE channels SET enabled=1,kind_weights='{\"tv\":1,\"movie\":0}' WHERE id=?",
-                  (channel_id,))
-        keep = c.execute("SELECT id FROM shows WHERE home_channel_id=? LIMIT 1", (channel_id,)).fetchone()[0]
+        # A daily cadence keeps the one series due whatever day the run lands on: the daily limit
+        # is what is under test, not which day of the week the series takes as its own.
+        c.execute("UPDATE channels SET enabled=1,kind_weights='{\"tv\":1,\"movie\":0}',"
+                  "series_cadence_days=1 WHERE id=?", (channel_id,))
+        # Adult viewing at nine o'clock, so the watershed is not what decides the answer.
+        keep = c.execute("SELECT id FROM shows WHERE home_channel_id=? AND kids=0 ORDER BY id LIMIT 1",
+                         (channel_id,)).fetchone()[0]
         c.execute("UPDATE shows SET excluded=1 WHERE id!=?", (keep,))
     builder = Builder(c, now=now)
     channel = next(ch for ch in builder.channels if ch["id"] == channel_id)
@@ -495,10 +499,16 @@ def test_family_safe_adverts_on_cartoon_channel(conn):
 
 
 def test_music_channel_decades(conn):
+    """Read from the channel rather than written in here. The old bound said 1970 while the
+    channel carried a "Sixties & Seventies" band, so the configuration contradicted itself and
+    the test agreed with the wrong half."""
     music = _channel(conn, 5)
+    stored = music["decades"]
+    allowed = {int(d) for d in (json.loads(stored) if isinstance(stored, str) else (stored or []))}
+    assert allowed, "the music channel names the decades it plays"
     years = [r["year"] for r in conn.execute("SELECT m.year FROM schedule s JOIN media m ON m.id = s.media_id"
                                              " WHERE s.channel_id = ? AND m.kind = 'music' AND m.year IS NOT NULL", (music["id"],))]
-    assert years and all(1970 <= y <= 2009 for y in years)
+    assert years and all((y // 10) * 10 in allowed for y in years), sorted({(y // 10) * 10 for y in years} - allowed)
 
 
 def test_readiness_substitutes_missing_file(conn, tmp_path):
@@ -1043,9 +1053,8 @@ def test_remote_cutoff_and_weekly_series_cadence_are_hour_accurate():
 
 def test_a_channel_with_a_daily_cadence_shows_its_series_every_day(tmp_path):
     """A cartoon channel whose series waited a week between episodes filled its days with films.
-    With the channel's cadence set to a day, each series it holds airs on each day built. Left
-    alone, the same channel gives most series one day in the four (the fixture is small enough
-    that one or two come round early as the last step before a holding card)."""
+    With the channel's cadence set to a day, every series it holds comes round on nearly every day
+    built; under the weekly rule at least one is still waiting its turn at the end of the run."""
     c = make_library(tmp_path, 12)["conn"]
     now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(c))
     # The general channel with the most films: they carry the day, so the weekly rule holds there
@@ -1054,21 +1063,23 @@ def test_a_channel_with_a_daily_cadence_shows_its_series_every_day(tmp_path):
                         " WHERE ch.content = 'general' GROUP BY 1 ORDER BY SUM(l.kind = 'movie') DESC, 1").fetchone()[0]
 
     def days_aired() -> dict[int, int]:
+        """How many of the four days each of the channel's own series aired on. Series borrowed
+        from elsewhere are left out: the cadence under test is this channel's, and how often a
+        guest turns up says more about the day it is offered on than about the rule."""
         build_horizon(c, start_day=parse_day("2026-09-14"), days=4, now=now, seed=3, force=True)
         return {r[0]: r[1] for r in c.execute(
             "SELECT m.show_id, COUNT(DISTINCT s.day) FROM schedule s JOIN media m ON m.id = s.media_id"
-            " JOIN shows sh ON sh.id = m.show_id WHERE s.channel_id = ? AND s.replay = 0 AND sh.category != 'sport'"
-            " GROUP BY 1", (channel,))}
+            " JOIN shows sh ON sh.id = m.show_id WHERE s.channel_id = ? AND s.replay = 0"
+            " AND sh.category != 'sport' AND sh.home_channel_id = s.channel_id GROUP BY 1", (channel,))}
     weekly = days_aired()
     assert weekly and min(weekly.values()) == 1 and sum(weekly.values()) < 4 * len(weekly), "weekly by default"
     with dbm.tx(c):
         c.execute("UPDATE channels SET series_cadence_days = 1 WHERE id = ?", (channel,))
     daily = days_aired()
-    every_day = [show for show, days in daily.items() if days >= 3]    # the peak hours may not reach one on a given day
-    # Which series a run happens to reach varies; the comparison is over those that aired in both.
-    both = set(daily) & set(weekly)
-    assert len(both) >= 4 and sum(daily[s] for s in both) > sum(weekly[s] for s in both), (weekly, daily)
-    assert len(every_day) >= len(daily) - 1, daily     # a series kept to weekends, say, is the exception
+    assert set(daily) == set(weekly) and sum(daily.values()) > sum(weekly.values()), (weekly, daily)
+    # A series may still miss a day when the peak hours fill before it is reached.
+    every_day = [show for show, days in daily.items() if days >= 3]
+    assert len(every_day) >= len(daily) - 1, daily
     c.close()
 
 

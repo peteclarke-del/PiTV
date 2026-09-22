@@ -60,3 +60,36 @@ def test_table_definitions_survive_comments_with_brackets():
     stmt = dbm._create_statement("shows")
     assert stmt.startswith("CREATE TABLE IF NOT EXISTS shows (") and stmt.rstrip().endswith(");")
     sqlite3.connect(":memory:").execute(stmt.replace("IF NOT EXISTS shows", "IF NOT EXISTS t"))
+
+
+def test_an_empty_install_comes_up_as_the_whole_station(tmp_path):
+    """Deploying empty and rebuilding to the configured station must need nobody editing rows by
+    hand, so what the seed omits is a thing somebody has to know to set. The seed had drifted
+    behind the scheduler: patterns written before the ident led the break, no broadcasters on the
+    general channels, and a cartoon channel that ran two programmes together. The checks here are
+    on the properties the rest of the code relies on, not on the values themselves, which are
+    configuration and are meant to be edited."""
+    from pitv.db import DEFAULT_CHANNELS, connect, init_db, rows_to_dicts
+
+    conn = connect(tmp_path / "fresh.db")
+    init_db(conn)
+    channels = rows_to_dicts(conn.execute("SELECT * FROM channels"))
+    assert {c["number"] for c in channels} == {c["number"] for c in DEFAULT_CHANNELS}, "the whole station"
+
+    for c in channels:
+        tokens = [t.strip() for t in (c["pattern"] or "").split(",") if t.strip()]
+        if "ident" in tokens:
+            assert tokens[tokens.index("ident") - 1] == "show", f"{c['name']}: the ident follows the programme"
+    general = [c for c in channels if (c["content"] or "general") == "general"]
+    # Each general channel stands for a broadcaster of its own, which is what places a series on
+    # the channel that actually showed it. Two sharing a first broadcaster would both claim it.
+    assert general and all(c["networks"] for c in general), "every general channel names a broadcaster"
+    assert len({c["networks"][0] for c in general}) == len(general), "no two stand for the same one"
+    # No general channel bars an era: which decades suit depends on the library somebody has,
+    # and how sparse later material is belongs to the era weights rather than to a bar.
+    assert not any(c["decades"] for c in general), "the general channels bar no era"
+    assert conn.execute("SELECT COUNT(*) FROM band").fetchone()[0] > 0, "the music channel has its bands"
+
+    colours = [c["colour"] for c in channels]
+    assert len(set(colours)) == len(colours), "every channel is told apart at a glance"
+    conn.close()

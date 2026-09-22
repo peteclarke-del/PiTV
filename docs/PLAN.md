@@ -264,12 +264,22 @@ editable in the admin UI.
 
 | Ch | Name | Pattern | TV/movie | Lean |
 |---|---|---|---|---|
-| 1 | PiTV One | `show` | 0.75/0.25 | Mainstream: drama, sitcoms, light entertainment, afternoon films |
-| 2 | PiTV Two | `show` | 0.60/0.40 | Alternative: documentaries, cult, older films, comedy |
-| 3 | PiTV Three | `show, ad, ad` | 0.80/0.20 | Commercial: soaps, quiz, action drama, kids' teatime |
-| 4 | PiTV Four | `show, ad, ad` | 0.55/0.45 | Alternative commercial: comedy, imports, films, late night |
+| 1 | PiTV One | `ident, show` | 0.75/0.25 | Mainstream: drama, sitcoms, light entertainment, afternoon films |
+| 2 | PiTV Two | `ident, show` | 0.60/0.40 | Alternative: documentaries, cult, older films, comedy |
+| 3 | PiTV Three | `show, ident, ad, ad` | 0.80/0.20 | Commercial: soaps, quiz, action drama, kids' teatime |
+| 4 | PiTV Four | `show, ident, ad, ad` | 0.55/0.45 | Alternative commercial: comedy, imports, films, late night |
 | 5 | PiTV Music | blocks (section 4.5) | | Music videos by genre and decade, two concerts a day |
-| 6 | PiTV Toons | `show, show, ad, ad` | 1.0/0.0 | Cartoons all day; family-safe adverts only |
+| 6 | PiTV Toons | `show, ident, ad, ad` | 0.85/0.15 | Cartoons all day; family-safe adverts only |
+
+The ident is written after the show because it closes the programme that has ended and hands
+over to the break. `ident, ad, ad, show` reads the same going round but is not: the ident is
+dropped when the slot before it is not a programme, and one cycle's two advert tokens then meet
+the next cycle's two, running four adverts together on a channel that allows two.
+
+Each general channel also carries the broadcasters it stands for. A programme whose index knows
+which network showed it goes to the channel that stands for that network before any genre rule
+is consulted, which is what stops a drama landing on whichever channel happens to list the most
+drama genres. The broadcasters are a field on the channel, edited in the admin like the rest.
 
 The lean is the description. What a channel actually carries is its line-up (section 4.2),
 generated from the allowed genre lists (for example drama, comedy, family and quiz on One;

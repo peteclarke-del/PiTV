@@ -131,9 +131,14 @@ def test_external_entry_scheduled_ahead_and_requested(conn):
     build_horizon(conn, start_day=parse_day("2026-09-14"), days=4, now=now, seed=9, force=True)
     assert conn.execute("SELECT COUNT(*) FROM schedule s JOIN wanted w ON w.id = s.wanted_id"
                         " WHERE w.lineup_id = ?", (entry["id"],)).fetchone()[0] == 0
+    ceiling = dbm.get_setting(conn, "external_new_per_day")
     with dbm.tx(conn):
         dbm.set_setting(conn, "nas_only", False)
         dbm.set_setting(conn, "external_weight", 50.0)  # make the entry win often in the test library
+        # Every other test in this module leaves its own remote titles in the shared database, and
+        # by the end of a run they far outnumber the few new ones a day the schedule will promise.
+        # Which of them wins that handful is not what is under test, so the ceiling is lifted here.
+        dbm.set_setting(conn, "external_new_per_day", 40)
     build_horizon(conn, start_day=parse_day("2026-09-14"), days=4, now=now, seed=9, force=True)
     # This entry's own slots. Other tests in this module add remote titles of their own, and
     # every one of them raises requests that look exactly like these.
@@ -170,6 +175,7 @@ def test_external_entry_scheduled_ahead_and_requested(conn):
     with dbm.tx(conn):
         dbm.set_setting(conn, "nas_only", True)
         dbm.set_setting(conn, "external_weight", 1.0)
+        dbm.set_setting(conn, "external_new_per_day", ceiling)
 
 
 REMOTE_TITLES = ("Remote History One", "Remote History Two", "Remote History Three")
@@ -1004,3 +1010,24 @@ def test_a_genre_nothing_carries_yet_is_still_offered(conn):
     assert set(KNOWN) <= set(offered), "every genre the vocabulary knows is choosable"
     carried = {g for g, counts in offered.items() if any(counts.values())}
     assert carried, "what the library does hold still counts"
+
+
+def test_the_broadcasters_a_channel_stands_for_are_read_as_a_list(tmp_path):
+    """Stored as JSON and read back through the same decoding as every other list column. Left
+    out of it, placement received the raw text and iterated its characters: every channel then
+    scored neutral for every broadcaster and the rule had no effect at all, silently."""
+    from pitv.db import connect, init_db, rows_to_dicts
+    from pitv.lineup import claimed_networks, network_fit
+
+    conn = connect(tmp_path / "fresh.db")
+    init_db(conn)
+    channels = rows_to_dicts(conn.execute("SELECT * FROM channels ORDER BY number"))
+    one = channels[0]
+    assert one["networks"] == ["BBC One", "BBC Two"], "a list, not the text it was stored as"
+
+    claimed = claimed_networks(channels)
+    assert claimed >= {"bbc one", "bbc two", "itv", "channel 4"}
+    assert network_fit(one, "BBC One", claimed) == 1.0
+    assert network_fit(one, "ITV1", claimed) is None, "claimed by another channel"
+    assert network_fit(one, "ABC", claimed) == 1.0, "claimed by nobody, so unconstrained"
+    conn.close()
