@@ -196,6 +196,14 @@ at `GET /api/genres`; each catalogue import compares the two and logs anything t
 Rows written before the vocabulary existed are rewritten once, on the next start. So a channel
 that allows Children cannot miss a series a provider tagged Kids, which is the whole point.
 
+A genre also belongs to the kinds it makes sense for (`genres.BY_KIND`): a film is never Synth
+Pop and a music video is never a Sitcom. Every picker is offered the genres for the kinds in
+play, so a band of music videos sees the music vocabulary and a films channel the film one, each
+comprehensive for its kind without being every word a metadata site has used. A curated
+channel's videos draw on the television list, being television as far as the scheduler is
+concerned. A genre already carried is offered wherever it is carried, so an unusual tag somebody
+typed never disappears from its own editor.
+
 A channel may be told to schedule only material the index has labelled, in its bands and in its
 ordinary programmes alike: no genre or no year, no airing. It plays less, but nothing it cannot
 vouch for, which suits a channel built around genres when the library is a mix of tagged and
