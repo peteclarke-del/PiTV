@@ -7,7 +7,7 @@
   import { get, post, tryApi } from '../../lib/api.js';
   import { isOffline, toolGet } from '../../lib/toolapi.js';
   import { num } from '../../lib/util.js';
-  import { safeUrl, PROGRAMME_TYPES, programmeTypeLabel } from '../../lib/format.js';
+  import { fmtCount, safeUrl, PROGRAMME_TYPES, programmeTypeLabel } from '../../lib/format.js';
   import { guard } from '../../lib/guard.svelte.js';
   import { noteChange } from '../../lib/stores.svelte.js';
   import Modal from '../../components/Modal.svelte';
@@ -137,7 +137,15 @@
       {#if found}<LookupResults candidates={found} {known} onpick={pick} />{/if}
     {:else}
       {#if chosen}
-        <div class="note small">Matched: <b>{chosen.title}</b>{chosen.year ? ` (${chosen.year})` : ''} from {chosen.match?.source}. pitv_content fetches this one.
+        <div class="note small">
+          {#if curated}
+            <!-- The handle is the only part of a channel anybody recognises. The address below is
+                 the canonical one, which survives the creator renaming themselves and is what is
+                 actually fetched from, but it reads as a wall of identifier. -->
+            Matched: <b>{chosen.title}</b>{#if chosen.uploader} <span class="muted">{chosen.uploader}</span>{/if}{#if typeof chosen.subscribers === 'number'} <span class="muted">· {fmtCount(chosen.subscribers)} subscribers</span>{/if}. Its videos become the episodes of this entry.
+          {:else}
+            Matched: <b>{chosen.title}</b>{chosen.year ? ` (${chosen.year})` : ''} from {chosen.match?.source}. pitv_content fetches this one.
+          {/if}
           <button class="small ghost" onclick={() => (step = 'search')}>Change</button></div>
       {:else}
         <div class="warn-box small" hidden={curated}>No online match: pitv_content will search by title{f.year ? ' and year' : ''} alone and may find a different {f.kind === 'movie' ? 'film' : f.kind === 'show' ? 'series' : 'video'}.
@@ -146,7 +154,11 @@
       <div class="form-grid">
         {#if curated}
           <label class="field wide">Channel or playlist address<input bind:value={f.url} placeholder="https://www.youtube.com/@…" />
-            <span class="help">Paste the address from the browser. Its videos become the episodes of this entry, taken earliest first. A playlist keeps the order its maker chose, so point at one where it exists.</span></label>
+            <span class="help">Paste the address from the browser, or search by name and this is filled in.
+              A channel found by searching gives its <code>/channel/UC…</code> address rather than its handle,
+              which is deliberate: that one still works after the creator renames themselves. Its videos become
+              the episodes of this entry, taken earliest first, and a playlist keeps the order its maker
+              chose, so point at one where it exists.</span></label>
           <label class="field wide">Title<input bind:value={f.title} placeholder="What the guide calls it" />
             <span class="help">The name this becomes a series under, not the address. Call it what you want to read in the guide.</span></label>
         {:else}

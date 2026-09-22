@@ -479,7 +479,7 @@ PiTV never contacts the sources itself, as all online access is pitv_content's.
   ```json
   {"candidates": [
     {"match": {"source": "youtube_channel", "id": "UCr0d0Gw5RUqSG2ljy-4PQ2g",
-               "url": "https://www.youtube.com/@SomeCreator"},
+               "url": "https://www.youtube.com/channel/UCr0d0Gw5RUqSG2ljy-4PQ2g"},
      "kind": "channel", "title": "Some Creator", "uploader": "@SomeCreator",
      "subscribers": 412000, "summary": "The channel's description, plain text.",
      "image": "https://.../avatar.jpg"}
@@ -487,9 +487,11 @@ PiTV never contacts the sources itself, as all online access is pitv_content's.
    "sources": ["youtube"], "errors": {}}
   ```
 
-  `match.id` is the canonical channel id (`UC...`), never the handle: a handle stops resolving
-  the day its creator renames it, and a series keyed on one would stop with no error anyone
-  reads. The handle goes in `uploader`, where a person can recognise it. `subscribers` stands in
+  `match.id` is the canonical channel id (`UC...`), never the handle, and `match.url` is that
+  id's own address rather than the handle's: a handle stops resolving the day its creator
+  renames it, and a series keyed on one would stop with no error anyone reads. Neither is what
+  a person recognises, so the handle comes too, in `uploader`, and PiTV's admin shows that while
+  keeping the canonical address as the thing it fetches from. `subscribers` stands in
   for the episode count the other kinds carry: an exact video count means listing the whole
   channel, ten to twenty seconds for each candidate in a dialog somebody is waiting in front of,
   while the subscriber count comes free with the same probe and tells two same-named creators
@@ -512,6 +514,9 @@ PiTV never contacts the sources itself, as all online access is pitv_content's.
   would invent it. `NR`, `Not Rated`, `Unrated` and `N/A` are no certificate, and the field is
   then absent. With both film keys set, OMDb fills what TMDb left empty, the certificate
   included.
+- A search that matches nothing is 200 with no candidates; one where no source could be reached
+  is 502, as for the other kinds. The two are worth telling apart on screen, because only one of
+  them is worth doing anything about.
 - Candidates are ordered best first. Every field but `match`, `kind` and `title` may be
   missing or null. `summary` is plain text; `image` is an https URL the admin may show.
 - `sources` names what was asked; `errors` maps a source that failed to its message, so
