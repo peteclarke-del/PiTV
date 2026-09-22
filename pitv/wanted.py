@@ -57,7 +57,7 @@ def queue_gaps(conn: sqlite3.Connection) -> int:
 
 # --- material for bands ---------------------------------------------------------------------
 
-BAND_ITEM_MINUTES = 4                  # rough length of a band item, for judging how many a band needs
+BAND_ITEM_MINUTES = 4                  # assumed length of a band item until the band holds some
 BAND_ITEM_KINDS = {"music": ("music",), "episode": ("episode",), "movie": ("movie",)}
 
 
@@ -115,10 +115,15 @@ def band_needs(conn: sqlite3.Connection, settings: dict[str, Any]) -> list[dict[
                 if repeat_days is None:
                     repeat_days = settings.get("band_feature_repeat_days", 14)
                 want = _airings_within(int(repeat_days) * 24, band)
-                have = _matching_items(conn, band, item_kinds, minutes * 60, feature=True)
+                have, _ = _matching_items(conn, band, item_kinds, minutes * 60, feature=True)
             else:
                 longest = max(end - start for start, end in mine) // 60
-                items_per_airing = max(1, (longest + BAND_ITEM_MINUTES - 1) // BAND_ITEM_MINUTES)
+                have, typical = _matching_items(conn, band, item_kinds, minutes * 60)
+                # What the band already holds says how long its items run; until it holds any,
+                # the assumed length stands. Never longer than the band, or a band shorter than
+                # one of its own items would decide it needs none.
+                each = min(typical or BAND_ITEM_MINUTES, longest) or BAND_ITEM_MINUTES
+                items_per_airing = max(1, int((longest + each - 1) // each))
                 repeat_hours = channel.get("band_item_repeat_hours")
                 if repeat_hours is None:
                     repeat_hours = settings.get("band_item_repeat_hours", 36)
@@ -129,7 +134,6 @@ def band_needs(conn: sqlite3.Connection, settings: dict[str, Any]) -> list[dict[
                 # can live on, not the point at which collecting for it should stop.
                 stock_hours = int(settings.get("band_stock_days", 7)) * 24
                 want = items_per_airing * _airings_within(max(int(repeat_hours), stock_hours), band)
-                have = _matching_items(conn, band, item_kinds, minutes * 60)
             if have < want and now - (band.last_fetch_at or 0) >= int(settings.get("band_fetch_gap_hours", 1)) * 3600:
                 out.append({"band": band, "channel": channel, "kind": kind, "have": have, "want": want,
                             "minutes": minutes, "next_ts": min(start for start, _ in mine),
@@ -266,18 +270,28 @@ def request_band_lineup(conn: sqlite3.Connection, settings: dict[str, Any]) -> d
 
 
 def _matching_items(conn: sqlite3.Connection, band: bands.Band, kinds: list[str], limit_seconds: int,
-                    feature: bool = False) -> int:
-    """How many items in the library the band could use: of its kinds, a feature or one of
-    several as the band wants, and what the band itself would take at its first, exact step
-    (its genres, and a known year in its decades)."""
+                    feature: bool = False) -> tuple[int, float]:
+    """How many items in the library the band could use, and how long the middle one runs.
+
+    Usable means: of its kinds, a feature or one of several as the band wants, and what the band
+    itself would take at its first, exact step (its genres, and a known year in its decades).
+
+    The length matters because it says how many the band needs. A music band runs through videos
+    of three or four minutes; a band of talks or podcasts gets through two an afternoon. Judging
+    both by one assumed length asked for thirty items where two would do, and the same request
+    came back every hour because the shortfall it was answering was imaginary."""
     rows = conn.execute(
         f"SELECT id, genres, year, duration, concert FROM media WHERE kind IN ({','.join('?' * len(kinds))})"
         f" AND {USABLE} AND duration > 0", tuple(kinds)).fetchall()
     minutes = max(1, limit_seconds // 60)
-    return sum(1 for r in rows
-               if bands.is_feature({"duration": r["duration"], "concert": r["concert"]}, minutes) == feature
-               and band.wants({"genres": genre_list(r["genres"]), "year": r["year"]})
-               and (not band.decades or band.dated({"year": r["year"]}) is True))
+    usable = [float(r["duration"]) for r in rows
+              if bands.is_feature({"duration": r["duration"], "concert": r["concert"]}, minutes) == feature
+              and band.wants({"genres": genre_list(r["genres"]), "year": r["year"]})
+              and (not band.decades or band.dated({"year": r["year"]}) is True)]
+    if not usable:
+        return 0, 0.0
+    usable.sort()
+    return len(usable), usable[len(usable) // 2] / 60
 
 
 def request_band_material(conn: sqlite3.Connection, settings: dict[str, Any],

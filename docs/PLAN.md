@@ -456,6 +456,12 @@ the band retains its own holding card rather than admitting mismatched content. 
 retained from an earlier run are rechecked against the current
 band's genres and decades, so an eighties video cannot satisfy a sixties request.
 
+How many a band needs comes from how long its items run, which it reads off the ones it already
+holds and assumes to be short until it holds any. A music band gets through videos of three or
+four minutes; a band of talks or podcasts gets through two an afternoon. Judging both by one
+length asked for thirty items where two would do, and the same request came back every hour
+because the shortfall it answered was imaginary.
+
 What to ask for is configuration, not something the code knows. A channel says what pitv_content
 should fetch for it (`fetch_kind`: shows, cartoons, sport, music, whatever the tool offers, read
 from the tool itself), and a band may name a different one. A channel set to nothing is never
