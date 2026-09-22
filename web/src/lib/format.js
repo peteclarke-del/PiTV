@@ -125,6 +125,12 @@ export const hasLineup = (channel) => channel?.has_lineup === true;
 /** Whether this channel goes to a break, which its pattern alone decides. */
 export const hasAds = (channel) => (channel?.pattern_tokens ?? []).includes('ad');
 
+// A catalogue entry that is somebody's YouTube channel or playlist rather than a broadcast
+// title (pitv/youtube.py SOURCE). They are listed apart from the rest: a shelf of creators reads
+// nothing like a shelf of programmes, and mixed together neither can be scanned.
+export const YOUTUBE_SOURCE = 'youtube_channel';
+export const isYouTube = (entry) => entry?.match?.source === YOUTUBE_SOURCE;
+
 export function plural(n, word) {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
 }

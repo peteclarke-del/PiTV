@@ -106,7 +106,7 @@
     noteChange('library');
     onadded?.(curated ? `${r.title} added to ${r.channel_name ?? 'its channel'}; its videos are fetched earliest first`
               : programme ? `${r.title} added to ${r.channel_name ?? 'its channel'}; pitv_content fetches it before it airs`
-                          : `${r.title} added to the wanted list for pitv_content`);
+                          : `${r.title} added to the wanted list for pitv_content`, r);
   });
 </script>
 

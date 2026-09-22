@@ -6,7 +6,7 @@
   import { del, get, put, tryApi, confirmApi } from '../../lib/api.js';
   import { changes, clock, route, toast } from '../../lib/stores.svelte.js';
   import { navigate } from '../../lib/router.js';
-  import { fmtDuration, fmtAgo, fmtEpisode, lineupState, safeUrl, CERTIFICATES, WEEKDAYS } from '../../lib/format.js';
+  import { fmtDuration, fmtAgo, fmtEpisode, isYouTube, lineupState, safeUrl, CERTIFICATES, WEEKDAYS } from '../../lib/format.js';
   import { num } from '../../lib/util.js';
   import { guard } from '../../lib/guard.svelte.js';
   import ChannelBadge from '../../components/ChannelBadge.svelte';
@@ -22,7 +22,8 @@
 
   const TABS = [
     { id: 'shows', label: 'Series', level: 'basic' }, { id: 'movies', label: 'Films', level: 'basic' },
-    { id: 'custom', label: 'Added here', level: 'basic', title: 'Titles added by hand that pitv_content fetches' },
+    { id: 'custom', label: 'Added here', level: 'basic', title: 'Broadcast titles added by hand that pitv_content fetches; YouTube has its own list' },
+    { id: 'youtube', label: 'Added YouTube', level: 'basic', title: 'Channels and playlists added by hand, whose videos become episodes' },
     { id: 'music', label: 'Music', level: 'standard' }, { id: 'adverts', label: 'Adverts', level: 'standard' },
     { id: 'idents', label: 'Idents', level: 'advanced' }, { id: 'attention', label: 'Needs attention', level: 'standard' },
   ];
@@ -48,10 +49,14 @@
     if (!channels.length) channels = (await tryApi(get('/api/channels'))) ?? [];
     const r = await tryApi(t === 'shows' ? get('/api/shows')
       : t === 'attention' ? get('/api/library/attention')
-      : t === 'custom' ? get('/api/lineup')
+      : t === 'custom' || t === 'youtube' ? get('/api/lineup')
       : get('/api/media', { kind: KIND[t], limit: ALL }));
     if (n !== seq) return;
-    rows = t === 'custom' ? (r ?? []).filter((e) => e.external) : KIND[t] ? r?.items ?? [] : r ?? [];
+    // The two added-by-hand lists divide the same rows between them: a creator's channel is not a
+    // broadcast title and reads nothing like one, so neither list can be scanned while both are in it.
+    rows = t === 'custom' ? (r ?? []).filter((e) => e.external && !isYouTube(e))
+      : t === 'youtube' ? (r ?? []).filter((e) => e.external && isYouTube(e))
+      : KIND[t] ? r?.items ?? [] : r ?? [];
   }
   $effect(() => { tab; changes.library; untrack(() => { rows = null; load(); }); });
 
@@ -74,7 +79,13 @@
   });
   const removeCustom = (e) => confirmApi(`Remove ${e.title} from the catalogue? Its request to pitv_content is withdrawn.`,
     { title: 'Remove title', okLabel: 'Remove', danger: true }, () => del(`/api/lineup/${e.id}`), { success: 'Removed' }).then((r) => { if (r) load(); });
-  function added(message) { adding = false; toast.success(message); if (tab === 'custom') load(); else navigate('/admin/library/custom'); }
+  // A new entry is shown in the list it belongs to, which is not always the one being looked at.
+  function added(message, entry) {
+    adding = false;
+    toast.success(message);
+    const want = isYouTube(entry) ? 'youtube' : 'custom';
+    if (tab === want) load(); else navigate(`/admin/library/${want}`);
+  }
 
   const title = { key: 'title', label: 'Title', cell: titleCell };
   const year = { key: 'year', label: 'Year' };
@@ -101,6 +112,13 @@
       { key: 'transient', label: 'After airing', get: (e) => (e.transient ? 'removed' : 'kept') },
       { key: 'actions', label: '', class: 'right', sortable: false, cell: removeCell },
     ],
+    youtube: [
+      { key: 'title', label: 'Title', cell: youtubeTitleCell },
+      { key: 'address', label: 'Channel or playlist', class: 'small', get: (e) => e.match?.id ?? '', cell: youtubeAddressCell },
+      channel((e) => e.channel_id, lineupChannelCell),
+      { key: 'state', label: 'State', get: (e) => lineupState(e)[1], cell: stateCell },
+      { key: 'actions', label: '', class: 'right', sortable: false, cell: removeCell },
+    ],
     attention: [
       { key: 'title', label: 'Item', get: (i) => `${i.show_title ?? ''} ${i.title}`, cell: attentionItemCell },
       { key: 'attention', label: 'Reason', class: 'small' }, { key: 'fix', label: 'Quick fix', sortable: false, cell: fixCell },
@@ -108,9 +126,11 @@
   }[tab]);
   const EMPTY = {
     shows: 'No series in the catalogue.', movies: 'No films in the catalogue.', music: 'No music videos. Add a music source under pitv_content, Sources, then import the catalogue.',
-    adverts: 'No adverts.', idents: 'No idents.', custom: 'Nothing added by hand yet: use Add to the catalogue.', attention: 'Nothing needs attention.',
+    adverts: 'No adverts.', idents: 'No idents.', custom: 'Nothing added by hand yet: use Add to the catalogue.',
+    youtube: 'No YouTube channels yet: use Add to the catalogue and choose YouTube channel.', attention: 'Nothing needs attention.',
   };
-  const edit = (r) => (tab === 'shows' ? (showId = r.id) : KIND[tab] ? (mediaId = r.id) : tab === 'custom' ? (lineupEntry = r) : undefined);
+  const edit = (r) => (tab === 'shows' ? (showId = r.id) : KIND[tab] ? (mediaId = r.id)
+    : tab === 'custom' || tab === 'youtube' ? (lineupEntry = r) : undefined);
 </script>
 
 <div class="stack">
@@ -122,7 +142,7 @@
   </div>
   {#key tab}
     <DataTable id="catalogue-{tab}" {columns} {rows} search="Filter titles…" empty={EMPTY[tab]}
-      onrow={tab === 'shows' || tab === 'custom' || KIND[tab] ? edit : null} rowClass={(r) => (r.excluded ? 'off' : '')} />
+      onrow={tab === 'shows' || tab === 'custom' || tab === 'youtube' || KIND[tab] ? edit : null} rowClass={(r) => (r.excluded ? 'off' : '')} />
   {/key}
 </div>
 
@@ -141,6 +161,8 @@
 {#snippet identChannelCell(m)}{#if chById.get(m.home_channel_id)}<ChannelBadge channel={chById.get(m.home_channel_id)} size="sm" />{:else}<span class="muted">any</span>{/if}{/snippet}
 {#snippet familySafeCell(m)}<span role="presentation" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}><label class="check small" title={m.family_safe ? 'May air on family-safe channels' : 'Never airs on family-safe channels'}><input type="checkbox" checked={!!m.family_safe} onchange={(e) => setFamilySafe(m, e.currentTarget.checked)} />{m.family_safe ? 'yes' : 'no'}</label></span>{/snippet}
 {#snippet customTitleCell(e)}<b>{e.title}</b>{#if e.match}{@const link = safeUrl(e.match.url)}<span class="badge ok" title="Confirmed online; pitv_content fetches this title">{#if link}<a href={link} target="_blank" rel="noopener noreferrer">{e.match.source} ↗</a>{:else}{e.match.source}{/if}</span>{:else}<span class="badge warn" title="Added without an online match; pitv_content searches by title">unmatched</span>{/if}{#if e.genres?.length}<div class="tiny muted">{e.genres.join(', ')}</div>{/if}{/snippet}
+{#snippet youtubeTitleCell(e)}<b>{e.title}</b>{#if e.genres?.length}<div class="tiny muted">{e.genres.filter((g) => g !== 'YouTube').join(', ') || 'no subject yet'}</div>{/if}{/snippet}
+{#snippet youtubeAddressCell(e)}{@const link = safeUrl(e.match?.url)}{#if link}<a href={link} target="_blank" rel="noopener noreferrer">{e.match.id} ↗</a>{:else}<span class="muted">{e.match?.id ?? '–'}</span>{/if}{/snippet}
 {#snippet stateCell(e)}{@const [cls, text] = lineupState(e)}<span class="badge {cls}">{text}</span>{/snippet}
 {#snippet removeCell(e)}<button class="small ghost" onclick={(event) => { event.stopPropagation(); removeCustom(e); }}>Remove</button>{/snippet}
 {#snippet attentionItemCell(item)}<button class="ghost small" onclick={() => (mediaId = item.id)}><b>{item.show_title ? `${item.show_title} · ` : ''}{item.title}</b></button>
