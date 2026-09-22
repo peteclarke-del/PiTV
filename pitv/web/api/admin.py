@@ -1092,9 +1092,15 @@ def list_jobs(request: Request):
 
 
 @router.get("/export")
-def export_configuration(conn: sqlite3.Connection = Depends(admin_conn)):
-    """Everything the owner has set, for backup."""
-    return backup.export(conn)
+def export_configuration(request: Request, secrets: bool = True, conn: sqlite3.Connection = Depends(admin_conn)):
+    """Everything the owner has set, for backup, including pitv_content's own configuration.
+
+    `secrets=0` leaves out pitv_content's keys and share passwords, for a file that is going
+    somewhere less private than the backup it is meant to be. The default keeps them, because a
+    backup that cannot put the station back is not one. The shared token goes with the request
+    for them: pitv_content has no authentication of its own, so it hands them only to a caller
+    that can read the token file, which is a smaller set than "any process on this machine"."""
+    return backup.export(conn, content_secrets=secrets, token=request.app.state.content_token)
 
 
 @router.post("/import")
@@ -1102,7 +1108,7 @@ def import_configuration(request: Request, body: dict[str, Any] = Depends(admin_
                          conn: sqlite3.Connection = Depends(admin_conn)):
     """Put a backup document back. The result counts what was applied and what found no home."""
     try:
-        result = backup.restore(conn, body)
+        result = backup.restore(conn, body, token=request.app.state.content_token)
     except (TypeError, ValueError) as exc:
         raise HTTPException(400, str(exc)) from exc
     request.app.state.player.call("settings-changed")

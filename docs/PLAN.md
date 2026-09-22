@@ -229,6 +229,19 @@ or media override. The library is deliberately outside it: shows, episodes, film
 come back from pitv_content's index and the cache refills itself, so what a backup holds is
 only what somebody decided and nothing else can regenerate.
 
+pitv_content's configuration travels with it. Its sources, providers and keys are typed into
+PiTV's admin and relayed straight through, because pitv_content has no interface of its own, so
+the application that owns the interface holds none of the data behind it. Rather than PiTV
+keeping a second copy that could disagree with the one in use, pitv_content is asked for its
+configuration at the moment of backup (`GET /api/export` on its own API) and handed it back on a
+restore (`POST /api/import`). Its keys and share passwords are masked on an ordinary read, which
+is right for a screen and useless for a backup, so they are asked for by `POST` with the shared
+token rather than a query string: pitv_content's API has no authentication of its own, and a URL
+saying `secrets=1` would be logged by everything that records a request line. `GET
+/api/export?secrets=0` on PiTV asks for the masked document instead, and either way the file
+says which of the two it holds. A pitv_content without those endpoints is recorded as absent with its reason, and the
+restore of PiTV's own half still stands.
+
 Nothing is invented on the way back in. Row ids are not carried, because a rebuilt database
 numbers its rows afresh: a channel is matched on its number, a source on its name and root, an
 override on the identity the index gives its title. A channel the station does not have is

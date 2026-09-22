@@ -50,17 +50,25 @@ def _body(response: Any) -> bytes | None:
 
 
 def request(base: str, method: str, path: str, query: str = "", body: dict[str, Any] | None = None,
-            timeout: float = 15) -> tuple[int, Any]:
+            timeout: float = 15, token: str = "") -> tuple[int, Any]:
     """One JSON request, as (HTTP status, decoded body). An unreachable or silent service, or
     anything that is not JSON (an unrelated service on that port answering with an HTML page),
     means the tool is not there: 503 with `offline`. A redirect or an oversized answer is a 502.
     The URL must be http(s); the setting is validated when saved, and this keeps a hand-edited
-    database from reaching file:// URLs."""
+    database from reaching file:// URLs.
+
+    `token` is the shared credential PiTV writes and pitv_content reads, sent as a bearer on the
+    few calls that carry or set secrets. pitv_content's API binds loopback and has no
+    authentication of its own, so on those calls being a local process is not enough: the caller
+    must also be able to read a file only the service user can."""
     if urlsplit(base).scheme not in ("http", "https"):
         return _offline(f"pitv_content API URL {base!r} is not http(s)")
     url = f"{base.rstrip('/')}/api/{path}" + (f"?{query}" if query else "")
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         try:
             with _OPENER.open(req, timeout=timeout) as r:

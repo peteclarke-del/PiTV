@@ -350,7 +350,36 @@ pitv_content's API owns the source configuration; PiTV's admin Sources page is a
   `root`, which would mount the share inside itself). It is reached through the adverts
   source's mount, and the mount check still holds through the subfolder: with the share away
   the source is unreachable, never readable and empty.
-- Online providers stay on `GET/PUT /api/providers` as already agreed.
+- Online providers stay on `GET/PUT /api/providers` as already agreed. A provider row says what
+  it `serves`, the id space it can fetch, which is not the same as its `type`: a provider that
+  searches inside one channel is of its own type and serves the video site's ids. PiTV's doctor
+  reads `serves`, never the type name, which is pitv_content's to rename.
+- Backup. `GET {content_tool_url}/api/export` returns pitv_content's whole configuration as one
+  document (settings, providers, sources), and `POST {content_tool_url}/api/import` applies one.
+  This exists because every part of that configuration is typed into PiTV's admin and relayed
+  straight through: the application that owns the interface holds none of the data behind it, so
+  a PiTV backup carried none of it. Ownership does not move. PiTV asks for the document when
+  backing up and hands it back when restoring, rather than keeping a copy that could disagree
+  with the one in use.
+  Keys and share passwords are masked on an ordinary read, which is right for a screen and
+  useless for a backup, since restoring a mask would write asterisks over a working key. They
+  come in the clear only for `POST {content_tool_url}/api/export {"secrets": true}` carrying the
+  shared token as a bearer, and the document then holds `"secrets": true` so PiTV can tell the
+  owner their file wants keeping like a password. A secret pitv_content does not hold is left
+  out rather than sent as an empty string, so a restore cannot quietly blank a key that was set.
+  `POST /api/import` takes the token too: writing this is at least as sensitive as reading it,
+  since an import could point every source at another machine's shares.
+
+  The form and the token are the shape they are because pitv_content's API has no authentication
+  of its own. It binds loopback and relies on PiTV's admin login gating the proxy, which holds
+  for a person at a browser and not for any other local process, so masking is the only thing
+  protecting those keys today. A GET saying `secrets=1` would be written down by everything that
+  records a request line and the answer would be cacheable; a body plus a token that only the
+  service user can read restores roughly the protection the masking gives. PiTV's own
+  `GET /api/export?secrets=0` asks for the masked document instead.
+  A pitv_content without these endpoints answers 404; PiTV records the backup as not holding
+  that half, with the reason, and says so. The restore of pitv_content happens after PiTV's own
+  and outside its transaction, so PiTV's half stands whether or not pitv_content is running.
 
 ## 5. Shared cache rules
 

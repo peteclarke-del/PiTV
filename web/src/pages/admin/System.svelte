@@ -43,9 +43,14 @@
   }
   onMount(load);
 
+  // pitv_content's keys and share passwords travel by default, because a backup that cannot put
+  // the station back is not one. Turning them off is for a file going somewhere less private.
+  let withSecrets = $state(true);
   const exportJson = guard(async () => {
-    const data = await tryApi(get('/api/export'));
-    if (data) downloadJson(data, `pitv-backup-${new Date().toISOString().slice(0, 10)}.json`);
+    const data = await tryApi(get(`/api/export${withSecrets ? '' : '?secrets=0'}`));
+    if (!data) return;
+    downloadJson(data, `pitv-backup-${new Date().toISOString().slice(0, 10)}.json`);
+    if (data.content?.available === false) toast.info(`pitv_content's configuration is not in this file: ${data.content.reason}`);
   });
 
   // A restore overwrites the settings, channels, bands, sources and line-ups now in place, so it
@@ -68,6 +73,8 @@
       const waiting = r.waiting ? `, ${r.waiting} override${r.waiting === 1 ? '' : 's'} waiting on the library` : '';
       toast.success(`Restored ${r.settings} settings, ${r.channels} channels, ${r.bands} bands, `
         + `${r.sources} sources, ${r.lineup_entries} line-up entries${waiting}`);
+      // pitv_content is restored over HTTP after PiTV's own, so it can fail by itself.
+      if (typeof r.content === 'string') toast.info(`pitv_content: ${r.content}`);
       load();
     }
   }
@@ -167,10 +174,14 @@
       {/if}
     </div>
     <div class="card">
-      <div class="card-title"><h3>Backup</h3><AppBadge app="pitv" /></div>
-      <p class="small muted">Everything you have set: settings, channels and their bands, sources, line-ups and every
-        show or media override. Not the library or the cache, which come back from pitv_content's index.</p>
-      <div class="row">
+      <div class="card-title"><h3>Backup</h3><AppBadge app="pitv" /><AppBadge app="content" /></div>
+      <p class="small muted">Everything you have set in this admin: settings, channels and their bands, line-ups, every
+        show or media override, and pitv_content's own sources, providers and keys. Not the library or the cache,
+        which come back from pitv_content's index.</p>
+      <label class="check"><input type="checkbox" bind:checked={withSecrets} /> Include pitv_content's keys and passwords<span
+        class="help">The file then holds them as plain text, so keep it as you would a password. Without them a restore
+        puts everything else back and you re-enter the keys.</span></label>
+      <div class="row mt">
         <button onclick={exportJson} disabled={exportJson.busy}>Export</button>
         <button onclick={() => restoreFile.click()} disabled={restoring}>Restore…</button>
       </div>
