@@ -147,6 +147,25 @@ def in_decades(year: int | None, decades: tuple[int, ...] | list[int], end_year:
     return any((y // 10) * 10 in decades for y in range(year, last + 1))
 
 
+def keyword_pattern(keywords: Any) -> re.Pattern[str] | None:
+    """One pattern for a list of keywords, matching whole words only ("ale" must not match "sale",
+    nor "gin" "engineering"). Lookarounds rather than \\b, so keywords that start or end with
+    punctuation ("18+") still match when followed by a space."""
+    words = [re.escape(str(k).strip().lower()) for k in (keywords if isinstance(keywords, list) else [])
+             if k and str(k).strip()]
+    return re.compile(rf"(?<!\w)(?:{'|'.join(words)})(?!\w)") if words else None
+
+
+def names_a_product(title: Any, unnamed: re.Pattern[str] | None) -> bool:
+    """Whether an advert's title says what it is advertising.
+
+    A compilation split into chapters yields titles like "Unknown Advert <id> 04": a file with
+    nothing to call it in the guide and nothing to tell it from the twenty beside it. The words
+    that mark one are the `unnamed_advert_keywords` setting, so the list is the owner's to
+    extend as new sources bring their own way of saying "no idea"."""
+    text = str(title or "").strip()
+    return bool(text) and (unnamed is None or unnamed.search(text.lower()) is None)
+
 def parse_pattern(pattern: str) -> list[str]:
     """A channel's pattern (``show, ident, ad, ad``) as tokens. A token that was retired is read
     as what replaced it, so a pattern saved by an older version still means what it said;

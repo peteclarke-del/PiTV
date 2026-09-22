@@ -69,7 +69,8 @@ def test_advert_family_safety_precedence(ctx):
 
 
 def test_advert_keywords_match_whole_words():
-    from pitv.catalogue import family_safe, keyword_pattern
+    from pitv.catalogue import family_safe
+    from pitv.scheduler.rules import keyword_pattern
     kw = keyword_pattern(["ale", "gin", "lager", "18+"])
     assert family_safe({"title": "MFI furniture sale"}, kw) == 1
     assert family_safe({"title": "Castrol GTX (Liquid engineering)"}, kw) == 1
@@ -79,6 +80,30 @@ def test_advert_keywords_match_whole_words():
     assert family_safe({"title": "Club 18+ holidays"}, kw) == 0
     assert family_safe({"title": "Tags as text", "tags": "alcohol"}, kw) == 0
     assert family_safe({"title": "Milk Tray"}, None) == 1
+
+
+def test_an_advert_that_names_no_product_is_not_put_in_a_break(ctx):
+    """A compilation split into chapters arrives as "Unknown Advert <id> 04": a file the guide
+    has nothing to call and that nothing tells from the twenty beside it. It stays in the
+    library, flagged for the admin, and out of the breaks until somebody names it."""
+    from pitv.scheduler.library import Library
+    from pitv.scheduler.policy import SchedulerPolicy
+    from pitv.scheduler.rules import keyword_pattern, names_a_product
+
+    kw = keyword_pattern(["unknown", "untitled"])
+    assert names_a_product("Hula Hoops", kw) and names_a_product("Anything at all", None)
+    for nameless in ("Unknown Advert gYyX_P8aAHs 01", "<Untitled Chapter 1>", "   ", None):
+        assert not names_a_product(nameless, kw)
+
+    conn = ctx["conn"]
+    advert = conn.execute("SELECT id FROM media WHERE kind = 'advert' AND missing = 0 LIMIT 1").fetchone()["id"]
+    with dbm.tx(conn):
+        conn.execute("UPDATE media SET title = 'Unknown Advert aB3dE5gH7jK 02' WHERE id = ?", (advert,))
+        dbm.set_setting(conn, "unnamed_advert_keywords", ["unknown"])
+    settings = dbm.all_settings(conn)
+    library = Library(conn, SchedulerPolicy(settings, dbm.now_ts()), now=dbm.now_ts())
+    assert advert not in {a["id"] for a in library.adverts}, "it is not offered to a break"
+    assert conn.execute("SELECT COUNT(*) FROM media WHERE id = ?", (advert,)).fetchone()[0] == 1, "it stays in the library"
 
 
 def test_cache_located_items_count_as_cached(ctx, tmp_path):

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from . import display, tool_client
-from .catalogue import KINDS, family_safe, keyword_pattern, write_mirror
+from .catalogue import KINDS, family_safe, write_mirror
 from .db import (
     all_settings,
     as_bool,
@@ -39,7 +39,7 @@ from .lineup import attach_delivery, clean_match
 from .player.cache import MediaCache
 from .player.hwdec import PI_HW_CODECS, is_raspberry_pi, pi_can_play
 from .scheduler.horizon import rebuild_from
-from .scheduler.rules import broadcast_day_for, day_bounds, normalise_cert, tz_of
+from .scheduler.rules import keyword_pattern, broadcast_day_for, day_bounds, normalise_cert, tz_of
 
 MANIFEST_SCHEMA = 2
 RESIZE_THRESHOLD = 30   # seconds; smaller differences between scheduled and delivered length are absorbed

@@ -379,6 +379,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
                               "cigar", "cigarette", "tobacco", "hamlet", "benson", "silk cut", "marlboro", "rothmans",
                               "embassy", "condom", "durex", "lingerie", "adult", "18+", "xxx", "bookmaker", "betting",
                               "casino", "lottery"],
+    # An advert whose title carries one of these names no product: it is a chapter of a
+    # compilation that nothing could identify, and the guide has nothing to call it. It stays in
+    # the library, flagged in the admin, and is not put in a break until it has a name.
+    "unnamed_advert_keywords": ["unknown", "untitled", "unnamed", "no title", "untagged"],
     # Bands (a titled stretch of a day filled with several items, pitv/scheduler/bands.py)
     "band_feature_repeat_days": 14,    # a long item (a concert, a film) is not repeated within this
     "band_item_repeat_hours": 36,      # nor a short one (a video, an episode) within this

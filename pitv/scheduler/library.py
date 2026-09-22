@@ -19,7 +19,7 @@ from ..db import LIVE, effective, rows_to_dicts
 from ..genres import matches, programme_type, scheduling_class
 from . import bands
 from .policy import SchedulerPolicy
-from .rules import era_spans, era_weight_spans, is_kids
+from .rules import era_spans, era_weight_spans, is_kids, keyword_pattern, names_a_product
 from .slots import Show, json_field
 
 # Per channel, the window of unlocked slots a build is about to replace: (from_ts, to_ts) with
@@ -121,7 +121,11 @@ class Library:
             m["kids"] = is_kids(m)
             m["lineup_pinned"] = m["id"] in pinned_movies
         self._era_pools()
-        self.adverts = self.playable("advert")
+        # An advert with nothing to call it is not put in a break: the guide would list a
+        # nameless minute, and one chapter of a split compilation is indistinguishable from the
+        # twenty beside it. It stays in the library, flagged in the admin, until it has a name.
+        unnamed = keyword_pattern(self.policy.value("unnamed_advert_keywords"))
+        self.adverts = [a for a in self.playable("advert") if names_a_product(a.get("title"), unnamed)]
         self.bands = bands.load(self.conn)
         self._pools: dict[str, list[dict[str, Any]]] = {}
         self.idents = self.playable("ident")

@@ -25,6 +25,7 @@ from .config import Config
 from .db import all_settings, now_ts
 from .hostinfo import host_info
 from .logsetup import log_dir, tail
+from .scheduler.rules import keyword_pattern, names_a_product
 from .player.cache import MediaCache
 from .player.hwdec import is_raspberry_pi
 from .scheduler.rules import tz_of
@@ -156,7 +157,14 @@ def _bands(conn: sqlite3.Connection, settings: dict[str, Any], now: int) -> dict
 def _library(conn: sqlite3.Connection) -> dict[str, Any]:
     rows = conn.execute("SELECT kind, origin, SUM(missing = 0 AND excluded = 0) AS live, SUM(missing) AS missing"
                         " FROM media GROUP BY kind, origin ORDER BY kind, origin").fetchall()
+    # Adverts held out of the breaks for want of a name. They are on the drive and cost cache
+    # room, so the count belongs in the report rather than only in the admin's attention list.
+    unnamed = keyword_pattern(all_settings(conn).get("unnamed_advert_keywords"))
+    adverts = [r["title"] for r in conn.execute(
+        "SELECT title FROM media WHERE kind = 'advert' AND missing = 0 AND excluded = 0")]
     return {"media": [dict(r) for r in rows],
+            "adverts_usable": sum(1 for t in adverts if names_a_product(t, unnamed)),
+            "adverts_unnamed": sum(1 for t in adverts if not names_a_product(t, unnamed)),
             "channels_enabled": conn.execute("SELECT COUNT(*) FROM channels WHERE enabled = 1").fetchone()[0]}
 
 
@@ -244,6 +252,11 @@ def _findings(doc: dict[str, Any]) -> list[str]:
         # Worth a finding rather than a log line: the queue put itself right, and the rule that
         # held the job is still there to hold the next one.
         out.append(f"pitv_content healed its queue: {healed}")
+    library = doc.get("library") or {}
+    if isinstance(library, dict) and (held := library.get("adverts_unnamed") or 0):
+        usable = library.get("adverts_usable") or 0
+        out.append(f"{held} adverts name no product and are not put in a break, leaving {usable} that do. "
+                   "They are chapters of a compilation nothing could identify; pitv_content is the one to name them.")
     # pitv_content is never to be idle while anything is left to fetch.
     waiting = sum(r["n"] for r in doc.get("wanted") or [] if isinstance(r, dict) and r.get("status") == "queued")
     short = sum(1 for b in doc.get("bands") or [] if isinstance(b, dict) and (b.get("have") or 0) < (b.get("want") or 0))

@@ -50,7 +50,7 @@ from .db import (
 from .lineup import generate, restore_if_empty
 from .player.hwdec import PI_HW_CODECS
 from .scheduler.horizon import refill_empty_days
-from .scheduler.rules import normalise_cert
+from .scheduler.rules import keyword_pattern, names_a_product, normalise_cert
 
 log = logging.getLogger("pitv.catalogue")
 
@@ -154,13 +154,6 @@ def _reindex(base: str, timeout: float = REINDEX_TIMEOUT) -> None:
     log.warning("re-index %s still running after %ds; importing the current index", job_id, timeout)
 
 
-def keyword_pattern(keywords: Any) -> re.Pattern[str] | None:
-    """One pattern for the adult advert keywords, matching whole words only ("ale" must not match
-    "sale", nor "gin" "engineering"). Lookarounds rather than \\b, so keywords that start or end
-    with punctuation ("18+") still match when followed by a space."""
-    names = (as_text(k) for k in (keywords if isinstance(keywords, list) else []))
-    words = [re.escape(k.lower()) for k in names if k and k.strip()]
-    return re.compile(rf"(?<!\w)(?:{'|'.join(words)})(?!\w)") if words else None
 
 
 def family_safe(item: dict[str, Any], unsafe: re.Pattern[str] | None) -> int:
@@ -178,9 +171,13 @@ def family_safe(item: dict[str, Any], unsafe: re.Pattern[str] | None) -> int:
     return int(unsafe is None or unsafe.search(name) is None)
 
 
-def _attention(fields: dict[str, Any]) -> str | None:
+
+
+def _attention(fields: dict[str, Any], unnamed: re.Pattern[str] | None = None) -> str | None:
     """Why an imported item needs a look in the admin, from its stored fields."""
     notes = []
+    if fields["kind"] == "advert" and not names_a_product(fields.get("title"), unnamed):
+        notes.append("No product named; not put in a break until it has one")
     if not fields["duration"]:
         notes.append("No duration in the library index")
     if fields["year"] is None and fields["kind"] in ("episode", "movie", "advert"):
@@ -190,7 +187,8 @@ def _attention(fields: dict[str, Any]) -> str | None:
     return "; ".join(notes) or None
 
 
-def _refresh_attention(conn: sqlite3.Connection, media_id: int) -> None:
+def _refresh_attention(conn: sqlite3.Connection, media_id: int,
+                       unnamed: re.Pattern[str] | None = None) -> None:
     """Recompute an item's note from what is known about it now: the index, an online check and
     the owner's edits. An episode with no year of its own takes its series' year, exactly as it
     does when it is scheduled, so a series the online check has dated stops flagging every one
@@ -202,7 +200,7 @@ def _refresh_attention(conn: sqlite3.Connection, media_id: int) -> None:
     if known.get("year") is None and known.get("show_id"):
         show = row_to_dict(conn.execute("SELECT * FROM shows WHERE id = ?", (known["show_id"],)).fetchone())
         known = {**known, "year": effective(show).get("year") if show else None}
-    conn.execute("UPDATE media SET attention = ? WHERE id = ?", (_attention(known), media_id))
+    conn.execute("UPDATE media SET attention = ? WHERE id = ?", (_attention(known, unnamed), media_id))
 
 
 def _save(conn: sqlite3.Connection, table: str, row_id: int | None, fields: dict[str, Any]) -> int:
@@ -231,6 +229,7 @@ def import_index(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, Any
     sources_in, shows_in, items_in = (_records(doc, k) for k in ("sources", "shows", "items"))
     settings = all_settings(conn)
     unsafe = keyword_pattern(settings.get("adult_advert_keywords"))
+    unnamed = keyword_pattern(settings.get("unnamed_advert_keywords"))
     complete = bool(doc.get("complete", True))
     now = now_ts()
     counts: dict[str, Any] = {"sources": 0, "shows": 0, "items": 0, "new": 0, "missing": 0, "rejected": 0}
@@ -335,7 +334,7 @@ def import_index(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, Any
                 "family_safe": family_safe(it, unsafe) if kind == "advert" else 1,
                 "ids": json.dumps(_online_ids(it.get("ids"))), "missing": 0, "updated_at": now,
             }
-            fields["attention"] = _attention(fields)
+            fields["attention"] = _attention(fields, unnamed)
             if src["location"] == "cache":
                 fields["cache_path"] = path   # already where playback wants it
             row_id = find_id(conn, "media", "uid", uid)
@@ -343,7 +342,7 @@ def import_index(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, Any
                 row_id = find_id(conn, "media", "path", path)
             try:
                 saved_id = _save(conn, "media", row_id, fields)
-                _refresh_attention(conn, saved_id)
+                _refresh_attention(conn, saved_id, unnamed)
             except sqlite3.IntegrityError as exc:   # e.g. its path already belongs to another uid
                 reject("item", uid, str(exc))
                 continue
@@ -589,7 +588,7 @@ def enrich_missing_metadata(conn: sqlite3.Connection, *, limit: int = 50, force:
                 conn.execute(f"UPDATE {table} SET enriched = ?, metadata_checked_at = ?, metadata_source = ? WHERE id = ?",
                              (json.dumps(enriched), now, source, row["id"]))
                 if table == "media":
-                    _refresh_attention(conn, row["id"])
+                    _refresh_attention(conn, row["id"], keyword_pattern(settings.get("unnamed_advert_keywords")))
                 else:
                     if enriched.get("year"):
                         # The series has a year now, which its episodes inherit when scheduled.

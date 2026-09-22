@@ -126,6 +126,10 @@ FIELDS: tuple[dict[str, Any], ...] = (
     _f("adult_advert_keywords", "adverts", "standard", "Adult advert keywords", "chips",
        "Used only when pitv_content gives no family-safety verdict: a whole word from this list in "
        "the title keeps the advert off family channels.", options={"lower": True}),
+    _f("unnamed_advert_keywords", "adverts", "standard", "Words that mean an advert has no name", "chips",
+       "A whole word from this list in the title means nothing could identify the advert, usually a "
+       "chapter of a compilation. It stays in the library, flagged for attention, and is not put in a "
+       "break: the guide has nothing to call it.", options={"lower": True}),
     _f("max_break_minutes", "adverts", "standard", "Longest advert break (minutes)", "int",
        "Adverts stop here however wide the gap they are filling, so a hole in the day never becomes"
        " twenty minutes of advertising. What is left takes idents, then the caption.", min=1, max=30),

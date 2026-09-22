@@ -162,6 +162,13 @@ pitv_content supplies the facts; PiTV applies admin overrides and its own schedu
 | Scheduling class | source/show class (`general` or `sport`); editable per show | general |
 | Family-safe (adverts) | pitv_content's `family_safe` flag; else its tags (alcohol, tobacco, adult, gambling or 18 make an advert unsafe); else `adult_advert_keywords` matched as whole words against the title and file name; editable per advert | safe |
 | Concert (music) | the index's `concert` flag, else any music item of 35 minutes or more | no |
+| Names a product (adverts) | a title with no whole word from `unnamed_advert_keywords` in it, and not blank | named |
+
+An advert that names no product is not put in a break. A compilation split into chapters
+arrives as "Unknown Advert <id> 04": a file the guide has nothing to call, and one that nothing
+tells from the twenty beside it. It stays in the library and keeps its place in the cache
+accounting, is flagged for attention in the admin, and the doctor reports how many are held back,
+because naming them is pitv_content's work and the count is what says how much there is to do.
 
 The keyword list is only a fallback: pitv_content sees the files and their metadata, PiTV
 sees names. It matches whole words so that "ale" does not catch "sale" or "gin" catch
