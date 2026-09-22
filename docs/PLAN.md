@@ -892,6 +892,11 @@ new name, and a channel that has been renumbered keeps the idents named after it
 be a list to tick, which let the database say one thing while the file said another, and left a
 renamed channel announcing its old name until somebody noticed.
 
+`Generic ident.mp4` carries the mark, the four bars and the station's own colours with no name
+under it, and a sting in a key no channel uses. A name there would announce the wrong channel on
+whichever one happened to be showing it, so an empty short name is read as an answer rather than
+as a missing value.
+
 Without `--flat` the files land in `<out>/ch<number>/` (default `<data>/idents`), the layout
 pitv_content reads a channel from directly; that number is read where the name says nothing.
 Either way they are ordinary library material, copied to the cache and placed where a channel's

@@ -75,6 +75,10 @@ VOICES = (
     # off air. There are as many voices as roots again, so no two channels share a character.
     {"chord": (1.0, 1.125, 1.5, 2.0), "bright": (0.80, 0.44), "swell": 1.8, "spacing": 0.55},   # bright, modern
 )
+# The generic ident belongs to the station rather than to any channel, so it does not take a
+# channel's key: a plain fifth held under a slow rise, the most neutral thing in the set.
+GENERIC_ROOT = 233.08
+GENERIC_VOICE = {"chord": (0.5, 1.0, 1.5, 2.0), "bright": (0.30, 0.12), "swell": 6.5, "spacing": 1.20}
 
 
 def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -147,16 +151,22 @@ def frames(channel: dict[str, Any], width: int, height: int) -> Iterator[Image.I
     ground.paste(Image.new("RGB", (width, height), _mix(colour, (255, 255, 255), 0.15)), mask=glow.filter(ImageFilter.GaussianBlur(width // 7)))
 
     mark = _mark(height // 4, colour)
-    name = (channel.get("short_name") or channel.get("name") or "").upper()
+    # An empty short name is an answer, not a missing value: the generic ident carries the mark
+    # and nothing else, because it plays on whichever channel has none of its own and naming a
+    # channel there would announce the wrong one.
+    short = channel.get("short_name")
+    name = (short if short is not None else (channel.get("name") or "")).upper()
     # The name is drawn as large as it goes and then shrunk until it fits the frame with a
     # margin. A short name is unaffected; a long one used to be drawn at the same size and run
     # off both edges, so "DOCUMENTARIES" read as "OCUMENTARIE".
     ink, shadow = _mix(colour, (255, 255, 255), 0.35), (10, 10, 10)
-    size = height // 7
-    title = _text(name, size, ink, shadow)
-    while title.width > width * 0.9 and size > height // 20:
-        size -= max(1, size // 20)
+    title = None
+    if name:
+        size = height // 7
         title = _text(name, size, ink, shadow)
+        while title.width > width * 0.9 and size > height // 20:
+            size -= max(1, size // 20)
+            title = _text(name, size, ink, shadow)
     bar_h, bar_gap = max(4, height // 60), max(2, width // 180)
     bars_w = mark.width
     total = SECONDS * FPS
@@ -190,7 +200,7 @@ def frames(channel: dict[str, Any], width: int, height: int) -> Iterator[Image.I
             canvas.alpha_composite(_faded(shown, p), (cx - shown.width // 2, cy - shown.height // 2))
         # 7 s: the channel's name rises into place under the bars.
         p = _ease((t - VOICE_AT) / 1.4)
-        if p > 0:
+        if p > 0 and title is not None:
             ty = bar_y + bar_h * 3 + int((1 - p) * height * 0.08)
             canvas.alpha_composite(_faded(title, p), (cx - title.width // 2, ty))
         out = canvas.convert("RGB")
@@ -203,8 +213,9 @@ def sting(path: Path, channel_number: int) -> None:
     octave, the last landing as the channel's name appears. The chord, the brightness of the
     bells, the speed of the swell and the spacing of the notes are the channel's own (`VOICES`),
     so one channel is told from another by ear."""
-    root = ROOTS[(channel_number - 1) % len(ROOTS)]
-    voice = VOICES[(channel_number - 1) % len(VOICES)]
+    generic = channel_number == 0
+    root = GENERIC_ROOT if generic else ROOTS[(channel_number - 1) % len(ROOTS)]
+    voice = GENERIC_VOICE if generic else VOICES[(channel_number - 1) % len(VOICES)]
     chord = tuple(root * r for r in voice["chord"])
     second, third = voice["bright"]
     gap = voice["spacing"]
@@ -307,7 +318,9 @@ def make(channel: dict[str, Any], out_dir: Path, width: int, height: int, voices
 # The ident a channel falls back on when it has none of its own: a new channel announces itself
 # from the moment it is created, rather than running a break with silence in it until somebody
 # renders its own. Number 0 belongs to no channel, so the import files it as generic.
-GENERIC = {"number": 0, "name": "Generic", "short_name": "PiTV", "colour": "#8d99ae"}
+# The mark, the station's colours and a sting, with no name under it: it belongs to no channel,
+# and writing one there would announce the wrong thing on whichever channel showed it.
+GENERIC = {"number": 0, "name": "Generic", "short_name": "", "colour": "#8d99ae"}
 
 
 def make_all(conn: sqlite3.Connection, out_dir: Path, voices: Path | None = None,
