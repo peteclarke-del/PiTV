@@ -48,10 +48,11 @@
   // earliest first, so it needs an address and a channel to belong to and nothing looked up.
   let curated = $derived(f.kind === 'channel');
   let programme = $derived(f.kind === 'show' || f.kind === 'movie' || curated);
-  // Nothing online knows about somebody's YouTube channel, so there is nothing to look up and no
-  // match to confirm: the address is the identity. It goes straight to the details rather than
-  // sending the owner through a search that cannot succeed and out by "Add without a match".
-  let stage = $derived(curated ? 'place' : step);
+  // A creator's channel is searched for by name like anything else, and the address is still
+  // accepted for when somebody already has it. Which is why the second button says what it does
+  // rather than "Add without a match": for this kind there is no match to be without, and going
+  // that way is the ordinary route rather than the resigned one.
+  let stage = $derived(step);
   // What the title would be taken for and where it would go, asked of PiTV so the rule lives in one place.
   let placement = $state(null);
   $effect(() => {
@@ -84,7 +85,9 @@
     if (c.genres?.length) f.genres = [...c.genres];
     if (c.runtime_minutes) f.minutes = c.runtime_minutes;
     if (c.artist) f.artist = c.artist;
-    if (!programme) f.url = safeUrl(c.match?.url) ?? '';
+    // A creator's channel is identified by its address, so the chosen candidate's is what the
+    // details step fetches from; for an advert or a music video it is the video itself.
+    if (!programme || curated) f.url = safeUrl(c.match?.url) ?? '';
     step = 'place';
   }
   function withoutMatch() { chosen = null; step = 'place'; }
@@ -121,7 +124,8 @@
     {/if}
     {#if stage === 'search'}
       <div class="form-grid">
-        <label class="field wide">Title<input bind:value={f.title} list="catalogue-suggestions" placeholder={f.kind === 'music' ? 'Song title' : 'As it was broadcast'}
+        <label class="field wide">Title<input bind:value={f.title} list="catalogue-suggestions"
+          placeholder={f.kind === 'music' ? 'Song title' : curated ? "The creator's name" : 'As it was broadcast'}
           onkeydown={(e) => { if (e.key === 'Enter' && f.title.trim()) search(); }} />
           {#if existing}<span class="help">Already in the catalogue{existing.channel_number ? ` on channel ${existing.channel_number}` : ''}; move it from the channel's line-up instead.</span>{/if}
         </label>
@@ -184,7 +188,9 @@
   {#snippet footer()}
     <button onclick={onclose}>Cancel</button>
     {#if stage === 'search'}
-      <button onclick={withoutMatch} disabled={!f.title.trim() || !!existing} title="Skip the online check">Add without a match</button>
+      <button onclick={withoutMatch} disabled={!f.title.trim() || !!existing}
+              title={curated ? 'Give the address yourself' : 'Skip the online check'}>
+        {curated ? 'Enter an address instead' : 'Add without a match'}</button>
       <button class="primary" onclick={search} disabled={search.busy || !f.title.trim() || !!existing}>{search.busy ? 'Searching…' : 'Search online'}</button>
     {:else}
       <button class="primary" onclick={add}

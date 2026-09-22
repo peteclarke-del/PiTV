@@ -131,6 +131,14 @@ export const hasAds = (channel) => (channel?.pattern_tokens ?? []).includes('ad'
 export const YOUTUBE_SOURCE = 'youtube_channel';
 export const isYouTube = (entry) => entry?.match?.source === YOUTUBE_SOURCE;
 
+/** A large count in the short form people read it in: 1.2M, 48K, 900. */
+export function fmtCount(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '';
+  if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace('.0', '')}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(n >= 1e4 ? 0 : 1).replace('.0', '')}K`;
+  return String(n);
+}
+
 export function plural(n, word) {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
 }

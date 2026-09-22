@@ -444,7 +444,7 @@ the platform is `null`.
 
 ## 8. Lookup (PiTV's admin asks, pitv_content answers)
 
-`GET {content_tool_url}/api/lookup?kind=show|movie|advert|music&title=...&year=1988&artist=...&limit=25`
+`GET {content_tool_url}/api/lookup?kind=show|movie|advert|music|channel&title=...&year=1988&artist=...&limit=25`
 searches the internet for what the admin is about to add, so the right title is added and
 later fetched. PiTV's admin calls it through PiTV's proxy (`/api/content/tool/api/lookup`);
 PiTV never contacts the sources itself, as all online access is pitv_content's.
@@ -471,6 +471,31 @@ PiTV never contacts the sources itself, as all online access is pitv_content's.
   video site, `match.url` the video, and `duration_seconds`, `uploader`, `max_height` (the
   best resolution the video offers) and a thumbnail as `image` replace the series fields. A music candidate may carry `artist` and the release
   `year` from a music database.
+- `kind=channel` searches YouTube for a creator's channel, so one can be added by name instead
+  of by pasting an address. A channel is added to PiTV as a series whose episodes are its
+  videos, and `match` is what every later fetch request for it carries, so it is the field that
+  has to be right:
+
+  ```json
+  {"candidates": [
+    {"match": {"source": "youtube_channel", "id": "UCr0d0Gw5RUqSG2ljy-4PQ2g",
+               "url": "https://www.youtube.com/@SomeCreator"},
+     "kind": "channel", "title": "Some Creator", "uploader": "@SomeCreator",
+     "subscribers": 412000, "summary": "The channel's description, plain text.",
+     "image": "https://.../avatar.jpg"}
+   ],
+   "sources": ["youtube"], "errors": {}}
+  ```
+
+  `match.id` is the canonical channel id (`UC...`), never the handle: a handle stops resolving
+  the day its creator renames it, and a series keyed on one would stop with no error anyone
+  reads. The handle goes in `uploader`, where a person can recognise it. `subscribers` stands in
+  for the episode count the other kinds carry: an exact video count means listing the whole
+  channel, ten to twenty seconds for each candidate in a dialog somebody is waiting in front of,
+  while the subscriber count comes free with the same probe and tells two same-named creators
+  apart as well. PiTV's admin shows the avatar, the description, the handle and the subscribers,
+  and keeps `match` on the line-up entry. Playlists may appear among the same candidates, since a
+  playlist and a channel are one thing to the fetcher and the candidate says which it is.
 - `imdb=tt...`, `tmdb=N` and `tvdb=N` (any combination) ask for one programme by identifier;
   `title`, `year` and `artist` are then ignored, and `kind` stays required because a TMDb
   number names a film or a series depending on it. The reply has the same shape. A film is

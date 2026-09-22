@@ -2,7 +2,7 @@
   // What pitv_content found online for a title about to be added (contract section 8), so the
   // admin can pick the right one. Images and links come from outside sources: https images
   // only, no referrer, links open in a new tab without access back to this page.
-  import { fmtDuration, safeUrl } from '../../lib/format.js';
+  import { fmtCount, fmtDuration, safeUrl } from '../../lib/format.js';
 
   let { candidates = [], known = [], onpick } = $props();
 
@@ -26,7 +26,12 @@
     const years = c.year ? `${c.year}${c.end_year && c.end_year !== c.year ? `–${c.end_year}` : ''}` : null;
     return [years, c.artist, c.network, c.country, c.uploader, (c.genres ?? []).slice(0, 4).join(', ') || null,
       c.runtime_minutes ? `${c.runtime_minutes} min` : null, c.duration_seconds ? fmtDuration(c.duration_seconds) : null,
-      c.episodes ? `${c.episodes} episodes` : null, c.certificate].filter(Boolean).join(' · ');
+      c.episodes ? `${c.episodes} episodes` : null,
+      // A creator's channel has no episode count worth the wait: an exact one means listing the
+      // whole channel, twenty seconds a candidate, in a dialog somebody is standing in front of.
+      // Subscribers come free with the same probe and tell two same-named creators apart as well.
+      typeof c.subscribers === 'number' ? `${fmtCount(c.subscribers)} subscribers` : null,
+      c.certificate].filter(Boolean).join(' · ');
   }
 </script>
 
