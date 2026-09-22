@@ -1151,6 +1151,7 @@ def test_a_band_asking_for_all_its_genres_picks_by_the_same_rule_it_counts_by(tm
     what it shows, and the two disagreed the moment "all of these genres" arrived: a band asked
     for a subject within a source, was told it had nothing, and aired the whole source anyway."""
     import random
+
     from pitv.scheduler import bands as band_rules
     ctx = make_library(tmp_path, max_episodes=2)
     conn = ctx["conn"]

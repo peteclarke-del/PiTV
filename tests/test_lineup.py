@@ -116,8 +116,9 @@ def test_a_request_that_keeps_failing_stops_being_asked_for(tmp_path):
     can only fail. The ceiling used to guard the requests with no slot alone, so one a slot was
     waiting for went out on every manifest however often it had failed: two were asked for
     twenty-five times. What a slot cannot have, readiness replaces or the channel cards."""
-    from pitv.content import MAX_WANTED_ATTEMPTS, manifest
     from conftest import make_library
+
+    from pitv.content import MAX_WANTED_ATTEMPTS, manifest
 
     ctx = make_library(tmp_path / "attempts", max_episodes=1)
     conn = ctx["conn"]
@@ -145,9 +146,10 @@ def test_an_unscheduled_request_is_ranked_by_the_gap_it_would_fill(tmp_path):
     line-up raised it" becomes true of every channel eventually; a card on screen at eight
     tomorrow does not. A gap in a series that already plays is waited on by nothing and goes
     last, however long it has been queued."""
-    from pitv import lineup as lineup_mod, wanted as wanted_mod
-    from pitv.content import NOT_WAITED_ON, manifest
     from conftest import make_library
+
+    from pitv import lineup as lineup_mod
+    from pitv.content import NOT_WAITED_ON, manifest
 
     ctx = make_library(tmp_path / "urgency", max_episodes=2)
     conn = ctx["conn"]

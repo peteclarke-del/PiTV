@@ -26,10 +26,9 @@ from .config import Config
 from .db import all_settings, now_ts, rows_to_dicts
 from .hostinfo import host_info
 from .logsetup import log_dir, tail
-from .scheduler.rules import keyword_pattern, names_a_product
 from .player.cache import MediaCache
 from .player.hwdec import is_raspberry_pi
-from .scheduler.rules import tz_of
+from .scheduler.rules import keyword_pattern, names_a_product, tz_of
 
 DAY = 86400
 CACHED_TARGET = 95      # per cent of the next day's files expected in the cache

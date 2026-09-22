@@ -907,8 +907,10 @@ def test_re_keying_an_entry_needs_the_handle_to_agree_not_the_name(tmp_path, mon
     returns the very handle the entry already holds: two creators share a name, and one quietly
     repointed at the other would fetch their videos under the right title with nothing to show
     for it, which is the fault this exists to prevent rather than to introduce."""
-    from pitv import catalogue, lineup as lineup_mod, youtube
     from conftest import make_library
+
+    from pitv import catalogue, youtube
+    from pitv import lineup as lineup_mod
 
     ctx = make_library(tmp_path / "rekey", max_episodes=1)
     conn = ctx["conn"]
@@ -939,8 +941,10 @@ def test_an_entry_keyed_on_a_renameable_name_is_reported(tmp_path):
     creator renaming themselves. The day that happens the address stops resolving, the fetches
     fail one by one with nothing to say why, and a series that ran for months simply stops. It
     is worth knowing which entries depend on nobody renaming anything before that day."""
-    from pitv import doctor, lineup as lineup_mod, youtube
     from conftest import make_library
+
+    from pitv import doctor, youtube
+    from pitv import lineup as lineup_mod
 
     ctx = make_library(tmp_path / "keys", max_episodes=1)
     conn = ctx["conn"]

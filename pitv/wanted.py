@@ -23,8 +23,8 @@ from typing import Any
 
 from . import tool_client
 from .db import DEFAULT_SETTINGS, LIVE, genre_list, get_setting, now_ts, rows_to_dicts, tx
-from .scheduler import bands
 from .lineup import carries_programmes
+from .scheduler import bands
 from .scheduler.library import USABLE
 from .scheduler.rules import tz_of
 

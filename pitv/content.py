@@ -39,7 +39,7 @@ from .lineup import attach_delivery, clean_match
 from .player.cache import MediaCache
 from .player.hwdec import PI_HW_CODECS, is_raspberry_pi, pi_can_play
 from .scheduler.horizon import rebuild_from
-from .scheduler.rules import keyword_pattern, broadcast_day_for, day_bounds, normalise_cert, tz_of
+from .scheduler.rules import broadcast_day_for, day_bounds, keyword_pattern, normalise_cert, tz_of
 
 MANIFEST_SCHEMA = 2
 RESIZE_THRESHOLD = 30   # seconds; smaller differences between scheduled and delivered length are absorbed
@@ -80,8 +80,9 @@ def _identity(row: dict[str, Any], show_title: str | None) -> dict[str, Any]:
             "artist": row.get("artist")}
 
 
-def _fetch_fields(w: dict[str, Any], show_title: str | None, acquire: str) -> dict[str, Any]:
-    hints = _search_hints(w, show_title)
+def _fetch_fields(w: dict[str, Any], show_title: str | None, acquire: str,
+                  networks: list[str] | None = None) -> dict[str, Any]:
+    hints = _search_hints(w, show_title, networks)
     return {"search": {"phrase": hints[0], "hints": hints[1:],
                        "duration_minutes": WANTED_MINUTES.get(w["kind"], [1, 240]),
                        # A music video must be the exact release; a film or episode may carry a nearby year.
@@ -116,7 +117,8 @@ def _media_request(m: dict[str, Any], cache: MediaCache, acquire: str) -> dict[s
         return {**base, "action": "copy", "source": None, "target": str(copy)}
     if not m.get("requested_by"):
         return None
-    return {**base, "action": "fetch", "source": None, **_fetch_fields(m, m.get("show_title"), acquire)}
+    return {**base, "action": "fetch", "source": None,
+            **_fetch_fields(m, m.get("show_title"), acquire, _networks(m.get("networks")))}
 
 
 def _match(raw: Any) -> dict[str, str] | None:
@@ -133,7 +135,7 @@ def _wanted_request(w: dict[str, Any], show_title: str | None, acquire: str) -> 
             "genre": w.get("genre"), "ref": w.get("ref"), "match": _match(w.get("lineup_match")),
             "action": "fetch", "source": None,
             "already_cached": False, "transient": bool(w.get("transient")), "attempts": w.get("attempts", 0),
-            **_fetch_fields(w, show_title, acquire)}
+            **_fetch_fields(w, show_title, acquire, _networks(w.get("networks")))}
 
 
 def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) -> dict[str, Any]:
@@ -172,7 +174,7 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
             it["channels"].append(slot["channel"])
 
     for r in rows_to_dicts(conn.execute(
-            "SELECT s.start_ts, c.number AS channel, m.*, sh.title AS show_title,"
+            "SELECT s.start_ts, c.number AS channel, c.networks AS networks, m.*, sh.title AS show_title,"
             " (SELECT w.id FROM wanted w WHERE w.dest_path IS NOT NULL AND w.dest_path IN (m.path, m.cache_path)"
             "  LIMIT 1) AS requested_by FROM schedule s"
             " JOIN media m ON m.id = s.media_id JOIN channels c ON c.id = s.channel_id"
@@ -187,7 +189,8 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
     # hour, and told only a day ahead it was given sixty new episodes each morning and delivered
     # three. Listed a week ahead with their air times, they are worked in the order they air.
     for r in rows_to_dicts(conn.execute(
-            "SELECT s.start_ts, s.end_ts, c.number AS channel, w.*, l.title AS lineup_title, l.match AS lineup_match"
+            "SELECT s.start_ts, s.end_ts, c.number AS channel, c.networks AS networks, w.*,"
+            " l.title AS lineup_title, l.match AS lineup_match"
             " FROM schedule s"
             " JOIN wanted w ON w.id = s.wanted_id JOIN channels c ON c.id = s.channel_id"
             " LEFT JOIN lineup l ON l.id = w.lineup_id"
@@ -213,7 +216,7 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
     # scale as the items above so the two lists can be read together. Ranking by what raised a
     # request instead goes stale, because "a line-up raised it" becomes true of everything;
     # a card on screen at eight tomorrow does not.
-    from .wanted import card_waiting_for      # imported here: wanted reads this module's manifest
+    from .wanted import card_waiting_for  # imported here: wanted reads this module's manifest
     waiting = card_waiting_for(conn, now)
     def urgency(w: dict[str, Any]) -> int:
         at = waiting.get(w["lineup_id"]) if w.get("lineup_id") else None
@@ -224,8 +227,14 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
                **_wanted_request(w, w.get("show_title") or (w.get("lineup_title") if w["kind"] == "episode" else None),
                                  acquire)}
               for w in rows_to_dicts(conn.execute(
-                  "SELECT w.*, sh.title AS show_title, l.title AS lineup_title, l.match AS lineup_match FROM wanted w"
+                  "SELECT w.*, sh.title AS show_title, l.title AS lineup_title, l.match AS lineup_match,"
+                  # A request belongs to a channel either way: an added title through its line-up
+                  # entry, a gap through the series it fills. The channel's broadcasters are what
+                  # the search is told to look under.
+                  " COALESCE(cl.networks, cs.networks) AS networks FROM wanted w"
                   " LEFT JOIN shows sh ON sh.id = w.show_id LEFT JOIN lineup l ON l.id = w.lineup_id"
+                  " LEFT JOIN channels cl ON cl.id = l.channel_id"
+                  " LEFT JOIN channels cs ON cs.id = sh.home_channel_id"
                   " WHERE w.status IN ('queued', 'failed') AND w.attempts < ? ORDER BY w.id",
                   (MAX_WANTED_ATTEMPTS,)))
               if w["id"] not in scheduled]
@@ -270,20 +279,38 @@ def protect_manifest(conn: sqlite3.Connection, cache: MediaCache, now: int | Non
         if not pi_can_play(m)})
 
 
-def _search_hints(w: dict[str, Any], show_title: str | None) -> list[str]:
-    """hints[0] is the exact search phrase pitv_content tries first; the rest are extra words."""
+def _networks(raw: Any) -> list[str]:
+    """A channel's broadcasters as stored (JSON text) or already decoded."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return []
+    return [str(n) for n in raw] if isinstance(raw, list) else []
+
+
+def _search_hints(w: dict[str, Any], show_title: str | None, networks: list[str] | None = None) -> list[str]:
+    """hints[0] is the exact search phrase pitv_content tries first; the rest are extra words.
+
+    The extra words used to name two British broadcasters outright, whatever the request was
+    for. That is the station's configuration and not something this code knows: it made every
+    search for a creator's YouTube video carry "BBC" and "ITV", and it would be wrong for any
+    station not modelled on British television. They now come from the broadcasters the
+    request's own channel stands for (`channels.networks`), so a channel that names none sends
+    none and a station built on other broadcasters sends those."""
     yr = f" {w['year']}" if w.get("year") else ""
+    extra = [n for n in (networks or []) if str(n).strip()][:3]
     if w["kind"] == "music":
         artist = f"{w['artist']} " if w.get("artist") else ""
-        return [f"{artist}{w['title']} official video".strip(), "Top of the Pops"]
+        return [f"{artist}{w['title']} official video".strip(), *extra]
     if w["kind"] == "advert":
-        return [f"{w['title']}{yr} UK advert", "ITV", "TV ad"]
+        return [f"{w['title']}{yr} advert", "TV ad", *extra]
     if w["kind"] == "episode":
         se = ""
         if w.get("season") is not None and w.get("episode") is not None:
             se = f" S{int(w['season']):02d}E{int(w['episode']):02d}"
-        return [f"{show_title or w['title']}{se}{yr} full episode", "BBC", "ITV"]
-    return [f"{w['title']}{yr} full film"]
+        return [f"{show_title or w['title']}{se}{yr} full episode", *extra]
+    return [f"{w['title']}{yr} full film", *extra]
 
 
 def _folder(name: str) -> str:
