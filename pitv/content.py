@@ -193,11 +193,17 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
             **_wanted_request(w, w["lineup_title"] if w["kind"] == "episode" else None, acquire),
             "duration": w["end_ts"] - w["start_ts"]})
 
-    # Requests not tied to a slot: adverts and music videos added by hand, series gaps.
+    # Requests not tied to a slot: adverts and music videos added by hand, series gaps, and the
+    # episodes a band asked its line-up for before anything is scheduled to air them. A line-up
+    # row carries the series title on the entry rather than in `shows`, exactly as the scheduled
+    # placeholders above read it; without that the request is filed and searched for as
+    # "Episode 1" rather than under the series it belongs to.
     scheduled = {it["wanted_id"] for it in items.values() if it.get("wanted_id")}
-    wanted = [{"request_id": f"w:{w['id']}", **_wanted_request(w, w.get("show_title"), acquire)}
+    wanted = [{"request_id": f"w:{w['id']}",
+               **_wanted_request(w, w.get("show_title") or (w.get("lineup_title") if w["kind"] == "episode" else None),
+                                 acquire)}
               for w in rows_to_dicts(conn.execute(
-                  "SELECT w.*, sh.title AS show_title, l.match AS lineup_match FROM wanted w"
+                  "SELECT w.*, sh.title AS show_title, l.title AS lineup_title, l.match AS lineup_match FROM wanted w"
                   " LEFT JOIN shows sh ON sh.id = w.show_id LEFT JOIN lineup l ON l.id = w.lineup_id"
                   " WHERE w.status IN ('queued', 'failed') AND w.attempts < ? ORDER BY w.id", (MAX_WANTED_ATTEMPTS,)))
               if w["id"] not in scheduled]

@@ -104,7 +104,7 @@
       short_episode_minutes: f.short_episode_minutes === '' ? null : Number(f.short_episode_minutes),
       short_episode_run_minutes: f.short_episode_run_minutes === '' ? null : Number(f.short_episode_run_minutes),
       series_cadence_days: num(f.series_cadence_days, { min: 1, max: 28, int: true }), also_carries: f.also_carries,
-      fetch_kind: f.fetch_kind || null, strict_matching: f.strict_matching,
+      fetch_kind: f.fetch_kind ?? '', strict_matching: f.strict_matching,
       band_item_max_minutes: f.band_item_max_minutes === '' ? null : Number(f.band_item_max_minutes),
       decades: f.decades, networks: f.networks.split(',').map((s) => s.trim()).filter(Boolean),
       kids_any_time: f.kids_any_time, bands: f.bands,

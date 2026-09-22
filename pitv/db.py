@@ -922,7 +922,12 @@ FETCH_KIND_FOR_CONTENT = {"music": "music", "cartoons": "cartoons", "kids": "car
 
 def _seed_fetch_kinds(conn: sqlite3.Connection) -> None:
     """Channels created before bands could ask for material have nothing in `fetch_kind`. Fill it
-    in from what each channel says it carries; a channel set to nothing asks for nothing."""
+    in once from what each channel says it carries.
+
+    NULL means nobody has ever set it and empty means somebody set it to nothing, which is the
+    difference that makes the setting switchable off at all: while the two were the same value,
+    clearing it lasted until the next start and then came back, so a channel whose material is
+    named rather than searched for could not be told to stop searching."""
     for content, kind in FETCH_KIND_FOR_CONTENT.items():
         if kind:
             conn.execute("UPDATE channels SET fetch_kind = ? WHERE content = ? AND fetch_kind IS NULL",

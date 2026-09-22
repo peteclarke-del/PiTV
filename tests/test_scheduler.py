@@ -1146,6 +1146,60 @@ def test_external_repeat_reuses_request_without_advancing_episode():
     c.close()
 
 
+def test_a_band_fills_from_the_line_up_its_channel_names(tmp_path):
+    """A channel built from named sources has nothing to search for: the sources are the answer.
+    Its starved bands ask each line-up entry they would take for its next episode, which is an
+    ordinary request pitv_content already knows how to meet, and the manifest carries it under
+    the series it belongs to rather than as "Episode 1"."""
+    from pitv import lineup as lineup_mod
+    from pitv import wanted
+    from pitv.content import manifest
+    ctx = make_library(tmp_path, max_episodes=2)
+    conn = ctx["conn"]
+    channel = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
+    with dbm.tx(conn):
+        # A channel of curated material: it names no kind to search for, and a band takes the
+        # subject within the source rather than either on its own.
+        conn.execute("UPDATE channels SET fetch_kind = '', pattern = '' WHERE id = ?", (channel,))
+        conn.execute("UPDATE channels SET enabled = 0 WHERE id != ?", (channel,))
+        _band_row(conn, channel, "Subject Hour", "20:00", 120, ["episode"], genres=["Curated", "Subject"])
+        conn.execute("UPDATE band SET fill = json_set(fill, '$.all_genres', json('true'))"
+                     " WHERE channel_id = ?", (channel,))
+    for n in (1, 2, 3):
+        lineup_mod.add(conn, channel, title=f"Source {n}", kind="show", genres=["Curated", "Subject"],
+                       match={"source": "elsewhere", "id": f"src{n}", "url": f"https://example.invalid/src{n}"})
+    settings = dbm.all_settings(conn)
+
+    need = next(n for n in wanted.band_needs(conn, settings) if n["channel"]["id"] == channel)
+    assert need["kind"] == "", "it asks pitv_content to search for nothing"
+    assert len(need["entries"]) == 3, "but its line-up is what it fills from"
+
+    result = wanted.request_band_lineup(conn, settings)
+    rows = conn.execute("SELECT l.title, w.episode FROM wanted w JOIN lineup l ON l.id = w.lineup_id"
+                        " WHERE l.channel_id = ?", (channel,)).fetchall()
+    assert result["asked"] == len(rows) > 0
+    spread = {r["title"] for r in rows}
+    assert spread == {"Source 1", "Source 2", "Source 3"}, "round robin: one source cannot take the band"
+    assert len(rows) == len({(r["title"], r["episode"]) for r in rows}), "no episode asked for twice"
+
+    # Asking again in the same pass adds nothing: the band has been stamped and the numbers taken.
+    again = wanted.request_band_lineup(conn, settings)
+    assert again["asked"] == 0
+    assert conn.execute("SELECT COUNT(*) FROM wanted WHERE lineup_id IS NOT NULL").fetchone()[0] == len(rows)
+
+    # Nothing is scheduled to air them yet, so they travel as wanted rather than as items, and
+    # each is filed under its source rather than under the episode's own placeholder title.
+    doc = manifest(conn, days=1, now=dbm.now_ts())
+    ids = {f"w:{r['id']}" for r in conn.execute("SELECT w.id FROM wanted w JOIN lineup l ON l.id = w.lineup_id"
+                                                " WHERE l.channel_id = ?", (channel,))}
+    mine = [w for w in doc["wanted"] if w["request_id"] in ids]
+    assert len(mine) == len(rows)
+    assert all(w["show_title"] in spread for w in mine)
+    assert all(w["show_title"] in w["search"]["phrase"] and w["show_title"] in w["dest_dir"] for w in mine)
+    assert all(w["match"]["id"].startswith("src") for w in mine), "the source it comes from travels with it"
+    conn.close()
+
+
 def test_a_band_short_of_material_asks_for_more(tmp_path, monkeypatch):
     """A band with nothing of its own in the library has material fetched for it, of the kind its
     channel asks for, carrying the band's genres and decades. Nothing about this is particular to

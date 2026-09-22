@@ -463,6 +463,14 @@ topped up, however thin its bands. The request carries the band's genres, its de
 range and the length limit (contract section 2); results arrive in the next index like anything
 else. Admin, Channels, Bands has a button to ask at once rather than wait for the night.
 
+A channel whose material is named rather than searched for fills the other way round. Its
+line-up entries are the sources, so a starved band asks each entry it would take for its next
+episode: ordinary wanted rows, which pitv_content meets as it meets any other, and which the
+manifest carries under the series they belong to. Without it such a channel could never fill at
+all, because a band draws only on what is on disk and nothing was putting anything there. One
+pass declares a night's work rather than a year's, round robin over the bands and over the
+sources within them, so no band and no creator takes the whole budget.
+
 pitv_content is never to sit idle while anything is left to fetch, so a band is asked for at any
 hour (`band_fetch_hours`, all of them by default; pitv_content puts delivery first and collects
 for bands in the turns between), an hour apart (`band_fetch_gap_hours`), and not merely until it

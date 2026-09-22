@@ -25,6 +25,7 @@ from ...db import (
     DEFAULT_SETTINGS,
     LIVE,
     all_settings,
+    as_text,
     get_setting,
     now_ts,
     row_to_dict,
@@ -644,6 +645,10 @@ def _clean_channel_fields(body: dict[str, Any]) -> dict[str, Any]:
         elif k == "pattern":
             # Empty means the channel places no programmes of its own: its day is its bands.
             fields[k] = ", ".join(parse_pattern(str(v))) if str(v).strip() else ""
+        elif k == "fetch_kind":
+            # Empty is stored as empty, not as NULL: NULL is "never set" and is filled in from
+            # the channel's content on the next start (`db._seed_fetch_kinds`).
+            fields[k] = (as_text(v) or "")[:40]
         elif k == "content":
             if v not in CHANNEL_CONTENT:
                 raise HTTPException(400, f"content must be one of {', '.join(CHANNEL_CONTENT)}")

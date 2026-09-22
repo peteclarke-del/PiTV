@@ -5,7 +5,14 @@ Two kinds of request. A wanted row names one title (a missing episode, a song so
 for) and travels in the manifest. A band request names no title at all: it says that a stretch
 of a channel's day wants short items of certain genres and decades, and asks pitv_content to go
 and find some (contract section 2). Bands are how a channel of music videos is built, and a
-library of concert films cannot fill one."""
+library of concert films cannot fill one.
+
+A band short of material is met either way round. Where the channel says what to go and look
+for, pitv_content searches. Where the channel's material is named rather than searched for, as
+a channel built from particular creators is, the band asks for the next episode of each line-up
+entry it would take, which is the first kind of request again. Without the second, such a
+channel could never fill: its bands draw only on what is on disk, and nothing was putting
+anything there."""
 
 from __future__ import annotations
 
@@ -78,8 +85,10 @@ def band_needs(conn: sqlite3.Connection, settings: dict[str, Any]) -> list[dict[
 
     What a band asks for is configuration, not something this module knows: the channel says
     what pitv_content should fetch for it (`fetch_kind`, for instance shows, cartoons, sport or
-    music), and a band may name its own instead. A channel that asks for nothing is left alone,
-    however thin its bands, because its material comes from somewhere else."""
+    music), and a band may name its own instead. A channel that names no kind is still reported
+    where its line-up holds entries the band would take, because those are what it fills from
+    (`request_band_lineup`). One with neither is left alone, however thin its bands: nothing
+    could act on the shortfall, and a finding nobody can answer is noise."""
     default_minutes = int(settings.get("band_item_max_minutes", bands.ITEM_MINUTES))
     channels = {c["id"]: c for c in rows_to_dicts(conn.execute("SELECT * FROM channels WHERE enabled = 1"))}
     now = now_ts()
@@ -90,11 +99,13 @@ def band_needs(conn: sqlite3.Connection, settings: dict[str, Any]) -> list[dict[
         if channel is None:
             continue
         airings = _airings(band_list, settings, now, tz)
+        entries = _lineup_entries(conn, channel_id)
         for band in band_list:
             kind = band.fetch or (channel.get("fetch_kind") or "")
             item_kinds = sorted({k for b in band.kinds for k in BAND_ITEM_KINDS.get(b, ())})
             mine = airings.get(band.id, [])
-            if not kind or not item_kinds or not mine:
+            mine_entries = [e for e in entries if band.wants(e)]
+            if (not kind and not mine_entries) or not item_kinds or not mine:
                 continue
             minutes = band.max_minutes or int(channel.get("band_item_max_minutes") or default_minutes)
             if band.feature:
@@ -121,7 +132,8 @@ def band_needs(conn: sqlite3.Connection, settings: dict[str, Any]) -> list[dict[
                 have = _matching_items(conn, band, item_kinds, minutes * 60)
             if have < want and now - (band.last_fetch_at or 0) >= int(settings.get("band_fetch_gap_hours", 1)) * 3600:
                 out.append({"band": band, "channel": channel, "kind": kind, "have": have, "want": want,
-                            "minutes": minutes, "next_ts": min(start for start, _ in mine)})
+                            "minutes": minutes, "next_ts": min(start for start, _ in mine),
+                            "entries": mine_entries})
     # Preparation follows the timetable: the next band to air is more urgent than a larger
     # shortfall several hours later. The shortfall breaks ties between simultaneous bands.
     return sorted(out, key=lambda n: (n["next_ts"], n["have"] - n["want"]))
@@ -162,6 +174,97 @@ def _need_key(need: dict[str, Any]) -> tuple[Any, ...]:
             tuple(sorted(band.decades)), need["minutes"])
 
 
+def _lineup_entries(conn: sqlite3.Connection, channel_id: int) -> list[dict[str, Any]]:
+    """A channel's line-up entries that name material rather than hold it: a series somebody
+    added whose episodes are fetched one at a time. Shaped like an item so a band's own test
+    can be used on it unchanged, which is what stops this module having a second opinion about
+    what a band wants."""
+    rows = rows_to_dicts(conn.execute(
+        "SELECT id, title, year, genres, next_episode, episode_count, episode_minutes, transient"
+        " FROM lineup WHERE channel_id = ? AND enabled = 1 AND source != 'library'"
+        " AND kind = 'show' AND show_id IS NULL ORDER BY id", (channel_id,)))
+    for e in rows:
+        e["genres"] = genre_list(e.get("genres"))
+    return rows
+
+
+def _asked_episodes(conn: sqlite3.Connection, lineup_ids: list[int]) -> dict[int, set[int]]:
+    """Episode numbers already requested for each entry, so none is asked for twice. What is
+    already on disk counts as asked: a first season's numbers are the entry's place in its run,
+    which is how PiTV asks for them (`library._load_externals` reads them the same way)."""
+    if not lineup_ids:
+        return {}
+    marks = ",".join("?" * len(lineup_ids))
+    out: dict[int, set[int]] = {i: set() for i in lineup_ids}
+    for w in conn.execute(f"SELECT lineup_id, episode FROM wanted WHERE lineup_id IN ({marks})", lineup_ids):
+        out[int(w["lineup_id"])].add(int(w["episode"] or 0))
+    return out
+
+
+def request_band_lineup(conn: sqlite3.Connection, settings: dict[str, Any]) -> dict[str, Any]:
+    """Ask for the next videos from the line-up entries a starved band draws on.
+
+    A channel built from named sources has nothing to search for: the sources are the answer.
+    So the shortfall is met by asking each entry the band would take for its next episode, in
+    turn, until the band has enough on order. They are ordinary wanted rows, so pitv_content
+    fetches them as it does any other and nothing at its end changes.
+
+    Round robin rather than one entry at a time, or a band of twelve creators would air the
+    first of them for a fortnight. An entry whose run is known to have ended is passed over."""
+    needs = [n for n in band_needs(conn, settings) if n.get("entries")]
+    if not needs:
+        return {"status": "ok", "asked": 0, "summary": "no band is waiting on its line-up"}
+    # One pass declares a night's work, not a year's. Eight bands asking for their whole
+    # shortfall at once put four hundred requests in front of the episodes tonight's schedule is
+    # waiting for; the passes come round every few minutes and the bands fill over days.
+    budget = max(1, int(settings.get("band_fetch_max", 60)))
+    now = now_ts()
+    every_id = sorted({int(e["id"]) for n in needs for e in n["entries"]})
+    asked = _asked_episodes(conn, every_id)      # shared: a creator in two bands is asked once
+    rows: list[tuple[Any, ...]] = []
+    by_band: dict[int, int] = {}
+    # Round robin over the bands as well as within them, so the neediest band by the timetable
+    # gets its turn first but no band takes the whole budget.
+    pending = [(n, list(n["entries"])) for n in needs]
+    while len(rows) < budget and pending:
+        before = len(rows)
+        for need, entries in pending:
+            if len(rows) >= budget:
+                break
+            want = max(int(settings.get("band_fetch_min", 20)), need["want"] - need["have"])
+            if by_band.get(need["band"].id, 0) >= want:
+                continue
+            entry = entries.pop(0) if entries else None
+            if entry is None:
+                continue
+            entries.append(entry)
+            lineup_id = int(entry["id"])
+            number = max(1, int(entry.get("next_episode") or 1))
+            while number in asked[lineup_id]:
+                number += 1
+            count = entry.get("episode_count")
+            if count and number > int(count):
+                continue     # the run is known to end before this
+            asked[lineup_id].add(number)
+            by_band[need["band"].id] = by_band.get(need["band"].id, 0) + 1
+            rows.append(("episode", f"Episode {number}", entry.get("year"), 1, number,
+                         lineup_id, int(entry.get("transient") or 0), now))
+        if len(rows) == before:
+            break            # every entry has been asked for everything it has
+    if not rows:
+        return {"status": "ok", "asked": 0, "summary": "every band's line-up has been asked for"}
+    with tx(conn):
+        conn.executemany(
+            "INSERT INTO wanted(kind, title, year, season, episode, lineup_id, transient,"
+            " created_at, provider, auto) VALUES (?,?,?,?,?,?,?,?,'auto',1)", rows)
+        conn.executemany("UPDATE band SET last_fetch_at = ? WHERE id = ?",
+                         [(now, bid) for bid in by_band])
+    summaries = [f"{n['band'].name}: {by_band[n['band'].id]}" for n in needs if by_band.get(n["band"].id)]
+    summary = f"asked for {len(rows)} from the line-up ({', '.join(summaries)})"
+    log.info("band line-up: %s", summary)
+    return {"status": "ok", "asked": len(rows), "summary": summary}
+
+
 def _matching_items(conn: sqlite3.Connection, band: bands.Band, kinds: list[str], limit_seconds: int,
                     feature: bool = False) -> int:
     """How many items in the library the band could use: of its kinds, a feature or one of
@@ -185,7 +288,7 @@ def request_band_material(conn: sqlite3.Connection, settings: dict[str, Any],
     `request_all_band_material` calls this once per starved band and the whole night's work is
     declared up front. A band is stamped once its request is accepted, so one whose genre
     nothing can satisfy does not block the rest night after night."""
-    needs = band_needs(conn, settings)
+    needs = [n for n in band_needs(conn, settings) if n["kind"]]
     if not needs:
         return {"status": "ok", "asked": 0, "summary": "every band has material"}
     need = needs[0]
@@ -276,16 +379,20 @@ def request_all_band_material(conn: sqlite3.Connection, settings: dict[str, Any]
     next maintenance pass.
     """
     settled = settle_band_requests(conn, settings)
-    remaining = len(band_needs(conn, settings))
+    # The line-up first: it names exactly what is wanted, costs pitv_content no search, and a
+    # band it satisfies is one the searcher does not have to guess at.
+    from_lineup = request_band_lineup(conn, settings)
+    remaining = len([n for n in band_needs(conn, settings) if n["kind"]])
     if not remaining:
-        return {"status": "ok", "asked": 0, "summary": "every band has material", "jobs": [],
-                "withdrawn": settled["cancelled"]}
+        return {"status": "ok", "asked": from_lineup["asked"],
+                "summary": from_lineup["summary"] if from_lineup["asked"] else "every band has material",
+                "jobs": [], "withdrawn": settled["cancelled"]}
     jobs: list[Any] = []
     summaries: list[str] = []
     status = "ok"
     covered = 0
     for _ in range(remaining):
-        needs = band_needs(conn, settings)
+        needs = [n for n in band_needs(conn, settings) if n["kind"]]
         if not needs:
             break
         first_key = _need_key(needs[0])
