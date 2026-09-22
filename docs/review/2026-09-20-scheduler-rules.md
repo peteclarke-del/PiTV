@@ -39,7 +39,7 @@ The most useful findings first:
 | E1 | A certificate may not start before its watershed. Films and TV have separate tables, and a 00:00 entry means unrestricted. | `rules.py:151 allowed_at`, `rules.py:136 cert_earliest_minutes` | settings `watershed`, `tv_watershed`, `day_start` | Called only from `select.py:116,126,252`. Not applied to bands (`bands.py`), free time (`bands.py:374`), anchors (`build.py:246-259`) or manual inserts. |
 | E2 | A missing certificate is assumed to be 15 for a film and PG for TV. | `rules.py:127 effective_cert` | settings `unknown_movie_certificate`, `unknown_tv_certificate`; literal fallbacks at `rules.py:132-133` | none |
 | E3 | Certificate spellings (US ratings, `UK:PG`, lists) normalise to BBFC, with a British entry preferred. | `rules.py:110 normalise_cert`, table at `rules.py:16-21` | module constant | Used by `lineup.py:201,366`, `catalogue.py`, `content.py`, `admin.py`. Single implementation. |
-| E4 | A remote title tagged Adult is forced to 18 when unrated, or to 15 when its match rated it lower. | `library.py:234-235` | hardcoded | none. This is a certificate rule living in the loader. |
+| E4 | Removed. A remote title tagged Adult was forced to 18 when unrated, or to 15 when its match rated it lower. The rating alone now decides when a title may air; the genre only describes it. | `library.py` | n/a | n/a |
 | E5 | Children's TV may not start at or after the kids cutoff. Films are exempt, and a channel flag turns the rule off. | `rules.py:166-167` | setting `kids_cutoff` (literal "21:00" at `rules.py:166`), channel `kids_any_time` | `kids_rule = not channel.get("kids_any_time")` is computed twice: `select.py:109` and `select.py:224`. |
 | E6 | An item is children's when it is flagged so or carries a children's genre. | `rules.py:145 is_kids` using `genres.py:107 is_childrens`, list at `genres.py:53` | `genres.CHILDRENS` | `library.py:102,121,217`, `catalogue.py:249,508,540`, `lineup.py:310`, `admin.py:1208`. `allowed_at` recomputes it (`rules.py:167`) while the selector reads the cached `item["kids"]` (`select.py:116,125,256,321,385`). `lineup.generate` hardcodes films as `kids: 0` (`lineup.py:238`). |
 | E7 | A channel plays only its decades. A series that ran into a decade counts, and an unknown year is allowed unless the channel is strict. | `rules.py:179 in_decades`, called at `select.py:239` | channel `decades` (JSON) | `build.py:474` (band pool), `lineup.py:106-107` (placement, without the strict flag), `bands.py:62-72 Band.dated` (its own decade arithmetic), `lineup.py:471,482` (facets). The decades column is parsed twice: `select.py:183-190` and `lineup.py:106`. |
@@ -288,7 +288,6 @@ Never relaxed:
 | `library.py:33` `USABLE` | season 0 excluded | Rotation eligibility |
 | `library.py:108` | strip Monday to Friday; weekly Monday | Default anchor days |
 | `library.py:117` | year + seasons - 1 | Series end-year approximation. Repeated at `lineup.py:232`. |
-| `library.py:234-235` | Adult tag gives 18, or 15 | Certificate floor for remote adult titles |
 | `slots.py:85` | `look_ahead=6` | How far a short run looks past long episodes |
 | `slots.py:16` | "Programmes will continue shortly" | Filler title. Overnight card text is at `build.py:624,638`; band card text at `build.py:534`. |
 | `lineup.py:117,119` | 0.01, 0.05 | Token fit scores |

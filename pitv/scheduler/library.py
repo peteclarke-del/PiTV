@@ -16,7 +16,7 @@ import sqlite3
 from typing import Any
 
 from ..db import LIVE, effective, rows_to_dicts
-from ..genres import matches, programme_type, scheduling_class
+from ..genres import programme_type, scheduling_class
 from . import bands
 from .policy import SchedulerPolicy
 from .rules import era_spans, era_weight_spans, is_kids, keyword_pattern, names_a_product
@@ -241,10 +241,11 @@ class Library:
                 latest = max(open_requests, key=lambda w: (int(w["episode"] or 0), int(w["id"])))
                 number = int(latest["episode"] or 1)
                 e["last_spec"] = episode_request(lineup_id, number, e.get("year"), int(latest["id"]))
-            # Nobody holds it yet, so its certificate is the match's or the owner's. A title tagged
-            # Adult is kept after the watershed even when no source rated it, or one rated it 12.
-            if matches(e["genres"], ("Adult",)) and e.get("certificate") not in ("15", "18"):
-                e["certificate"] = "18" if not e.get("certificate") else "15"     # a lenient match does not outrank the tag
+            # Nobody holds it yet, so its certificate is the match's or the owner's, and that is
+            # the whole of it: when a title may air is decided by its rating alone. Genres stay
+            # descriptive here, "Adult" among them, because a second source for the watershed
+            # could disagree with the rating. What has no certificate takes the setting for its
+            # kind, which is what the watershed reads for everything else in the library.
             e["duration"] = float(e.get("episode_minutes") or default_minutes) * 60
             e["category"] = scheduling_class("general", e["genres"])
             e["kind"] = "episode" if e["kind"] == "show" else "movie"

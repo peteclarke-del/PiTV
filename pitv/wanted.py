@@ -21,7 +21,8 @@ import sqlite3
 from datetime import timedelta
 from typing import Any
 
-from . import genres as genre_rules, tool_client
+from . import genres as genre_rules
+from . import tool_client
 from .db import DEFAULT_SETTINGS, LIVE, genre_list, get_setting, now_ts, rows_to_dicts, tx
 from .lineup import carries_programmes
 from .scheduler import bands

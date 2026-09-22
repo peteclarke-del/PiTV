@@ -852,9 +852,11 @@ def test_a_remote_series_is_asked_for_from_its_first_episode_and_not_past_its_la
 
 
 def test_a_remote_title_keeps_its_match_certificate_and_obeys_it():
-    """A series nobody holds yet is unrated, and an unrated series is treated as PG: "The Benny
-    Hill Show" was scheduled at 08:30. The entry keeps the certificate of its online match, an
-    Adult tag stands in for a missing one, and the scheduler holds both to the watershed."""
+    """A series nobody holds yet was scheduled as if it were unrated whatever its online match
+    said, so a 15 could open the morning. The entry keeps the certificate of its match and the
+    watershed holds it to that. The rating is the only thing the watershed reads: a genre saying
+    the same could disagree with it, so a title tagged Adult and rated nothing is placed as
+    anything unrated is, and the tag is left to describe the programme."""
     c = dbm.connect(":memory:")
     dbm.init_db(c)
     ch = c.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
@@ -869,7 +871,10 @@ def test_a_remote_title_keeps_its_match_certificate_and_obeys_it():
     slots = c.execute("SELECT s.title, CAST(strftime('%H', s.start_ts, 'unixepoch', 'localtime') AS INTEGER) AS hour FROM schedule s"
                       " JOIN wanted w ON w.id = s.wanted_id WHERE s.channel_id = ? AND s.replay = 0", (ch,)).fetchall()
     assert {r["title"] for r in slots} == {"The Young Ones", "The Benny Hill Show"}
-    assert all(r["hour"] >= 21 or r["hour"] < 6 for r in slots), [(r["title"], r["hour"]) for r in slots]
+    late = [r["hour"] for r in slots if r["title"] == "The Young Ones"]
+    assert late and all(h >= 21 or h < 6 for h in late), late
+    assert any(6 <= r["hour"] < 21 for r in slots if r["title"] == "The Benny Hill Show"), \
+        "an unrated title is placed by the unrated setting, not by a genre"
     c.close()
 
 

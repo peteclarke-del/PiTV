@@ -254,7 +254,10 @@ A title nobody holds yet has no certificate of its own, and an unrated series is
 so without more a late-night comedy added by name could air at breakfast. The line-up entry
 therefore keeps the match's certificate (`lineup.certificate`): taken from the candidate when
 the title is added, learned by the online check for earlier entries, editable in the admin.
-A title tagged Adult with no certificate is scheduled as an 18.
+The certificate is the only thing the watershed reads. Genres describe a title and never place
+it: "Adult" is a genre like any other, and a title carrying it with no certificate is scheduled
+as anything unrated is. A second source for the watershed could disagree with the rating, so
+where a title belongs is answered once, by the rating, and corrected by editing the rating.
 
 `catalogue.json` beside the database lists every series and film PiTV can schedule, where
 each comes from and whether it is cached, plus the custom line-up entries. It is rewritten

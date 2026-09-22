@@ -91,14 +91,16 @@ _STORY = ("Action", "Adventure", "Animation", "Anime", "Biography", "Comedy", "C
 # A film is a story, plus the two labels that describe the film rather than the story.
 # "Sport" describes what a film is about, as in a boxing documentary; what a programme is
 # scheduled as is its programme type, not its genre, so a drama about football stays a drama.
-# "Adult" is a marker the watershed reads, so it has to be sayable here.
+# "Adult" describes what a title is, the way any other genre does, and a band can ask for it or
+# avoid it. It says nothing about when the title may air: that is the certificate's answer, and
+# the only one, so nothing reads this genre to place a programme against the watershed.
 FILM_GENRES = tuple(sorted({*_STORY, "Adult", "Music", "Short", "Sport", "TV Movie"}))
 # Television is stories too, plus everything that is not one: the formats, the subjects a
 # factual programme is about, and the sports a broadcast covers. A curated channel's videos are
 # television as far as the scheduler is concerned, so they draw on this list.
 _FORMATS = ("Children", "Game Show", "Magazine", "Mini-series", "News", "Reality TV", "Sitcom", "Soap", "Talk")
-_SUBJECTS = ("Adult", "Concert", "DIY", "Education", "Entertainment", "Food", "Informational", "Medical",
-             "Music", "Nature", "Science", "Technology", "Travel", "YouTube")
+_SUBJECTS = ("Adult", "Concert", "DIY", "Education", "Entertainment", "Food", "Informational",
+             "Medical", "Music", "Nature", "Science", "Technology", "Travel", "YouTube")
 _SPORTS = ("Athletics", "Boxing", "Cricket", "Darts", "Football", "Golf", "Horse Racing", "Ice Skating",
            "Motorsport", "Rugby", "Snooker", "Sport", "Tennis", "Wrestling")
 SERIES_GENRES = tuple(sorted({*_STORY, *_FORMATS, *_SUBJECTS, *_SPORTS}))
