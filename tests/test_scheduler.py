@@ -21,6 +21,7 @@ from pitv.scheduler.rules import (
     effective_cert,
     local_ts,
     minutes_of_day,
+    parse_pattern,
     tz_of,
 )
 from pitv.scheduler.slots import Show, Slot, parse_day, slot_titles
@@ -266,10 +267,12 @@ def test_movies_spread_evenly(conn):
 
 
 def test_ads_only_on_ad_channels(conn):
-    rows = conn.execute("SELECT c.number, c.ads_enabled, COUNT(*) AS n FROM schedule s JOIN channels c ON c.id = s.channel_id"
+    """A channel goes to a break only where its pattern asks for one. The pattern is the only
+    place that is said, so there is nothing an advert can slip in behind."""
+    rows = conn.execute("SELECT c.number, c.pattern, COUNT(*) AS n FROM schedule s JOIN channels c ON c.id = s.channel_id"
                         " WHERE s.kind = 'advert' GROUP BY c.number").fetchall()
     for r in rows:
-        assert r["ads_enabled"] == 1 and r["n"] > 0
+        assert "ad" in parse_pattern(r["pattern"]) and r["n"] > 0
 
 
 def test_rebuild_from_keeps_past_and_locked(conn):
@@ -653,7 +656,7 @@ def test_kept_slots_inform_the_rebuild(conn):
     the next day's same-slot bonus alongside the new ones."""
     tz = tz_of(conn)
     ch = _channel(conn, 3)
-    assert ch["ads_enabled"]
+    assert "ad" in parse_pattern(ch["pattern"]), "the fixture's channel 3 carries adverts"
     day = parse_day("2026-09-17")
     cut = local_ts(day, "15:00", tz)
     kept_ads = conn.execute("SELECT media_id, start_ts FROM schedule WHERE channel_id = ? AND day = ? AND replay = 0"
@@ -710,7 +713,9 @@ def test_overnight_drops_break_when_its_programme_is_skipped(conn):
 
 def test_advert_runs_obey_channel_count(conn):
     """Rounding and gap padding share the configured per-break advert count."""
-    for channel in conn.execute("SELECT id, ads_per_break FROM channels WHERE ads_enabled = 1"):
+    for channel in conn.execute("SELECT id, ads_per_break, pattern FROM channels"):
+        if "ad" not in parse_pattern(channel["pattern"]):
+            continue
         run = 0
         for slot in conn.execute(
                 "SELECT kind FROM schedule WHERE channel_id = ? AND replay = 0 ORDER BY start_ts", (channel["id"],)):
@@ -774,6 +779,9 @@ def test_channel_without_idents_gets_the_stand_in(tmp_path):
     toons, one = (conn.execute("SELECT id FROM channels WHERE number = ?", (n,)).fetchone()["id"] for n in (6, 1))
     with dbm.tx(conn):
         conn.execute("UPDATE channels SET pattern = 'show, ident' WHERE id IN (?, ?)", (toons, one))
+        # Toons has no ident of its own; taking the generic one away as well leaves it with none
+        # at all, which is the case under test.
+        conn.execute("UPDATE media SET excluded = 1 WHERE kind = 'ident' AND home_channel_id IS NULL")
     build_horizon(conn, start_day=parse_day("2026-09-14"), days=1, seed=3, force=True)
     idents = {cid: conn.execute("SELECT media_id FROM schedule WHERE channel_id = ? AND kind = 'ident'", (cid,)).fetchall()
               for cid in (toons, one)}
@@ -991,8 +999,8 @@ def test_explicit_channel_assignment_beats_automatic_year_and_metadata_filters()
     with dbm.tx(c):
         c.execute("UPDATE channels SET enabled = 0")
         channel = c.execute("SELECT id FROM channels WHERE number = 1").fetchone()[0]
-        c.execute("UPDATE channels SET enabled = 1, pattern = 'show', ads_enabled = 0,"
-                  " idents_enabled = 0, strict_matching = 1, decades = '[1980]',"
+        c.execute("UPDATE channels SET enabled = 1, pattern = 'show',"
+                  " strict_matching = 1, decades = '[1980]',"
                   " kind_weights = '{\"tv\":1,\"movie\":0}' WHERE id = ?", (channel,))
         source = c.execute("INSERT INTO sources(uid,type,name,path) VALUES ('tv','tv','TV','/tv')").lastrowid
         show = c.execute("INSERT INTO shows(source_id,path,title,year,certificate,genres,home_channel_id,updated_at)"
@@ -1440,8 +1448,8 @@ def test_a_break_never_carries_two_idents(tmp_path):
     could add two of its own, and beside a pattern that asks for one a channel showed two running."""
     c = make_library(tmp_path, 6)["conn"]
     with dbm.tx(c):
-        c.execute("UPDATE channels SET pattern = 'show, ad, ad, ident' WHERE ads_enabled = 1 AND pattern != ''")
-        c.execute("UPDATE channels SET pattern = 'ident, show' WHERE ads_enabled = 0 AND pattern != ''")
+        c.execute("UPDATE channels SET pattern = 'show, ident, ad, ad' WHERE pattern LIKE '%ad%'")
+        c.execute("UPDATE channels SET pattern = 'ident, show' WHERE pattern NOT LIKE '%ad%' AND pattern != ''")
     day = parse_day("2026-09-14")
     build_horizon(c, start_day=day, days=2, now=local_ts(day, "07:00", tz_of(c)), seed=12, force=True)
     assert c.execute("SELECT COUNT(*) FROM schedule WHERE kind = 'ident'").fetchone()[0] > 10

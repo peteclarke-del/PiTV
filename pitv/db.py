@@ -62,15 +62,13 @@ CREATE TABLE IF NOT EXISTS channels (
     short_name TEXT NOT NULL,
     colour TEXT NOT NULL DEFAULT '#ffffff',
     enabled INTEGER NOT NULL DEFAULT 1,
-    ads_enabled INTEGER NOT NULL DEFAULT 0,
-    ads_per_break INTEGER NOT NULL DEFAULT 2,
-    pattern TEXT NOT NULL DEFAULT 'show',     -- comma separated tokens
+    ads_per_break INTEGER NOT NULL DEFAULT 2,  -- most adverts in one break, however many the pattern asks for
+    pattern TEXT NOT NULL DEFAULT 'show',     -- comma separated tokens; it alone says what a day is made of
     era_weights TEXT,                          -- JSON or NULL (use global)
     genre_weights TEXT,                        -- JSON {genre: weight} or NULL
     kind_weights TEXT,                         -- JSON {"tv": w, "movie": w} or NULL
     daypart_profile TEXT,                      -- JSON or NULL (use global)
     overnight_replay_from TEXT NOT NULL DEFAULT '08:00',
-    idents_enabled INTEGER NOT NULL DEFAULT 1,
     content TEXT NOT NULL DEFAULT 'general',   -- what the channel is for; general channels also take untagged material
     kids_any_time INTEGER NOT NULL DEFAULT 0,  -- children's programmes are not held to the kids cutoff
     decades TEXT,                  -- JSON list of decade start years the channel plays; empty = any
@@ -470,40 +468,39 @@ _EXTRA_SETTING_KEYS = {"session_secret"}
 # somebody has, and a channel that bars most of what it holds runs out and repeats: how sparse
 # later material is belongs to the era weights, which bend when the library cannot meet them.
 #
-# The ident follows the show because it closes the programme that has ended and hands over to the
-# break. Written the other way round, `ident, ad, ad, show`, it reads the same cyclically and is
-# not: when the ident is skipped, because the slot before it is not a programme, one cycle's two
-# advert tokens meet the next cycle's two and the channel runs four adverts together where it
-# allows two. The advert accounting does not see across that join.
+# The ident is written after the show because that is the order it airs in: it closes the
+# programme that has ended and hands over to the break. Starting the pattern with it instead
+# costs the day its first ident, since an ident is placed only directly after a programme and
+# the day opens with nothing before it; the rest of the day is the same either way.
 DEFAULT_CHANNELS = [
-    {"number": 1, "name": "PiTV One", "short_name": "One", "colour": "#e63946", "ads_enabled": 0,
-     "pattern": "ident, show", "description": "Mainstream: drama, sitcoms, light entertainment, afternoon films",
+    {"number": 1, "name": "PiTV One", "short_name": "One", "colour": "#e63946",
+     "pattern": "show, ident", "description": "Mainstream: drama, sitcoms, light entertainment, afternoon films",
      "kind_weights": {"tv": 0.75, "movie": 0.25}, "networks": ["BBC One", "BBC Two"],
      "allowed_genres": ["Drama", "Comedy", "Family", "Adventure", "Romance", "Game Show", "History"],
      "fetch_kind": "shows"},
-    {"number": 2, "name": "PiTV Two", "short_name": "Two", "colour": "#457b9d", "ads_enabled": 0,
-     "pattern": "ident, show", "description": "Alternative: documentaries, cult, older films, comedy",
+    {"number": 2, "name": "PiTV Two", "short_name": "Two", "colour": "#457b9d",
+     "pattern": "show, ident", "description": "Alternative: documentaries, cult, older films, comedy",
      "kind_weights": {"tv": 0.6, "movie": 0.4}, "networks": ["BBC Two", "BBC One"],
      "allowed_genres": ["Documentary", "Science Fiction", "Fantasy", "Mystery", "Comedy", "Horror", "Thriller",
                         "Sport", "News"],
      "fetch_kind": "shows"},
-    {"number": 3, "name": "PiTV Three", "short_name": "Three", "colour": "#f4a261", "ads_enabled": 1,
+    {"number": 3, "name": "PiTV Three", "short_name": "Three", "colour": "#f4a261",
      "pattern": "show, ident, ad, ad", "description": "Commercial: soaps, quiz, action drama, kids' teatime",
      "kind_weights": {"tv": 0.8, "movie": 0.2}, "networks": ["ITV", "Channel 4"],
      "allowed_genres": ["Soap", "Game Show", "Action", "Crime", "Drama", "Children", "Sport", "Comedy"],
      "fetch_kind": "shows"},
-    {"number": 4, "name": "PiTV Four", "short_name": "Four", "colour": "#386641", "ads_enabled": 1,
+    {"number": 4, "name": "PiTV Four", "short_name": "Four", "colour": "#386641",
      "pattern": "show, ident, ad, ad", "description": "Alternative commercial: comedy, imports, films, late night",
      "kind_weights": {"tv": 0.55, "movie": 0.45}, "networks": ["Channel 4", "ITV"],
      "allowed_genres": ["Comedy", "Science Fiction", "Thriller", "Horror", "Documentary", "Crime", "Action", "Talk"],
      "fetch_kind": "shows"},
-    {"number": 5, "name": "PiTV Music", "short_name": "Music", "colour": "#b5179e", "ads_enabled": 0,
+    {"number": 5, "name": "PiTV Music", "short_name": "Music", "colour": "#b5179e",
      "pattern": "", "description": "Music videos by genre and decade, with two full concerts a day",
      "kind_weights": {"tv": 1.0, "movie": 0.0}, "content": "music", "bands": DEFAULT_MUSIC_BANDS,
      # Music is the one channel that names its decades: a video belongs to the decade it was made
      # in far more sharply than a drama does, and the bands are written around that.
      "decades": [1930, 1940, 1950, 1960, 1970, 1980, 1990, 2000], "fetch_kind": "music"},
-    {"number": 6, "name": "PiTV Toons", "short_name": "Toons", "colour": "#ffb703", "ads_enabled": 1,
+    {"number": 6, "name": "PiTV Toons", "short_name": "Toons", "colour": "#ffb703",
      "pattern": "show, ident, ad, ad", "description": "Cartoons all day; child-friendly adverts only",
      # Animated films are cartoons too and belong here, so they need some share of the day.
      "kind_weights": {"tv": 0.85, "movie": 0.15}, "content": "cartoons", "family_safe_ads": 1, "kids_any_time": 1,
@@ -548,7 +545,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             for ch in DEFAULT_CHANNELS:
                 channel_id = insert_row(conn, "channels", {
                     "number": ch["number"], "name": ch["name"], "short_name": ch["short_name"],
-                    "colour": ch["colour"], "ads_enabled": ch["ads_enabled"], "pattern": ch["pattern"],
+                    "colour": ch["colour"], "pattern": ch["pattern"],
                     "description": ch["description"], "kind_weights": json.dumps(ch["kind_weights"]),
                     "content": ch.get("content", "general"), "family_safe_ads": ch.get("family_safe_ads", 0),
                     "kids_any_time": ch.get("kids_any_time", 0), "decades": json.dumps(ch.get("decades") or []),
@@ -729,7 +726,51 @@ def _migrate_steps(conn: sqlite3.Connection) -> None:
     # Tables of work PiTV no longer does itself: pitv_content probes and transcodes.
     conn.execute("DROP TABLE IF EXISTS probe_cache")
     conn.execute("DROP TABLE IF EXISTS transcode_queue")
+    _migrate_break_switches(conn)
     _migrate_music_blocks(conn)
+
+
+def _migrate_break_switches(conn: sqlite3.Connection) -> None:
+    """Fold the `ads_enabled` and `idents_enabled` switches into the pattern, then drop them.
+
+    A channel used to say twice what its breaks were made of, once in the pattern and once in a
+    tickbox, and the two could disagree: a pattern asking for adverts on a channel with the
+    tickbox clear ran none, which is not what the admin showed. The pattern is now the whole
+    answer, so a switch that was off takes its token out of the pattern as it goes.
+
+    The two retired tokens are rewritten here as well, so what is stored matches what the admin
+    offers: `tv` becomes `show`, since the kind weights already decide between an episode and a
+    film, and `break` becomes the adverts it stood for, which is the channel's own limit."""
+    # Imported here rather than at the top: the scheduler's clock reads settings from this
+    # module, so the vocabulary cannot be pulled in while this module is still being defined.
+    from .scheduler.rules import PATTERN_TOKENS, PROGRAMME_TOKENS
+
+    columns = set(_columns(conn, "channels"))
+    if not columns & {"ads_enabled", "idents_enabled"}:
+        return
+    rows = conn.execute("SELECT id, pattern, ads_per_break,"
+                        f" {'ads_enabled' if 'ads_enabled' in columns else '1 AS ads_enabled'},"
+                        f" {'idents_enabled' if 'idents_enabled' in columns else '1 AS idents_enabled'}"
+                        " FROM channels").fetchall()
+    for row in rows:
+        tokens: list[str] = []
+        for token in (t.strip().lower() for t in (row["pattern"] or "").replace(";", ",").split(",")):
+            if token == "tv":
+                token = "show"
+            if token == "break":
+                tokens += ["ad"] * max(1, int(row["ads_per_break"] or 1))
+                continue
+            if token in PATTERN_TOKENS:
+                tokens.append(token)
+        if not row["ads_enabled"]:
+            tokens = [t for t in tokens if t != "ad"]
+        if not row["idents_enabled"]:
+            tokens = [t for t in tokens if t != "ident"]
+        # A pattern that said nothing said "bands alone", and still does.
+        text = ", ".join(tokens) if any(t in PROGRAMME_TOKENS for t in tokens) else ""
+        if text != (row["pattern"] or ""):
+            conn.execute("UPDATE channels SET pattern = ? WHERE id = ?", (text, row["id"]))
+    _rebuild_table(conn, "channels")
 
 
 def _migrate_music_blocks(conn: sqlite3.Connection) -> None:
@@ -1044,17 +1085,30 @@ def find_id(conn: sqlite3.Connection, table: str, column: str, value: Any) -> in
 
 
 def assign_ident_channels(conn: sqlite3.Connection) -> None:
-    """Give each ident without a channel the one it was made for: the channel whose number its
-    folder names (`channel_hint`), else the channel whose name its title begins with, the longest
-    name first, so "PiTV One ident" in a flat folder of idents still finds PiTV One. This runs
-    once per ident: afterwards the channel is the owner's to change (Channels, the channel's
-    idents) and follows the channel's id, so renumbering channels never strands an ident on the
-    wrong one. An ident that matches nothing stays generic, which any channel may show."""
-    conn.execute("UPDATE media SET home_channel_id = (SELECT c.id FROM channels c WHERE c.number = media.channel_hint)"
+    """Give each ident the channel it was made for, from its name.
+
+    An ident is named after its channel: `<channel name> ident.mp4`, which is what `pitv idents`
+    writes and what the admin documents. The name is read first, and the longest channel name
+    that fits wins, so a station with both "PiTV" and "PiTV One" files each correctly. A folder
+    naming a channel number (`channel_hint`) is how pitv_content lays them out and stands in
+    where the name says nothing. `Generic ident.mp4` matches neither and is the one any channel
+    falls back on when it has none of its own.
+
+    The name is read before the number because the name is what the owner controls: renumbering
+    the channels leaves every ident where it belongs, and renaming a channel is a deliberate act
+    that the ident is expected to follow.
+
+    This runs on every import rather than once per ident, because the file is the whole answer
+    and nothing may contradict it. There used to be a list in the admin for pointing idents at
+    channels by hand, which let the database say one thing while the file said another, and a
+    renamed channel kept announcing its old name until somebody noticed."""
+    conn.execute("UPDATE media SET home_channel_id = ("
+                 "SELECT c.id FROM channels c WHERE lower(media.title) LIKE lower(c.name) || '%'"
+                 " ORDER BY length(c.name) DESC LIMIT 1)"
+                 " WHERE kind = 'ident' AND missing = 0")
+    conn.execute("UPDATE media SET home_channel_id = ("
+                 "SELECT c.id FROM channels c WHERE c.number = media.channel_hint)"
                  " WHERE kind = 'ident' AND home_channel_id IS NULL AND channel_hint IS NOT NULL")
-    conn.execute("UPDATE media SET home_channel_id = (SELECT c.id FROM channels c"
-                 " WHERE lower(media.title) LIKE lower(c.name) || '%' ORDER BY length(c.name) DESC LIMIT 1)"
-                 " WHERE kind = 'ident' AND home_channel_id IS NULL AND channel_hint IS NULL AND missing = 0")
 
 
 def enabled_channels(conn: sqlite3.Connection) -> list[dict[str, Any]]:

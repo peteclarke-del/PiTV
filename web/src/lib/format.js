@@ -109,10 +109,21 @@ export const CERTIFICATES = ['U', 'PG', '12', '12A', '15', '18'];
 export const PROGRAMME_TYPES = [['film', 'Film'], ['series', 'TV series'], ['documentary', 'Documentary'],
                                 ['cartoon', 'Cartoon'], ['music', 'Music'], ['sport', 'Sport']];
 export const programmeTypeLabel = (t) => PROGRAMME_TYPES.find(([v]) => v === t)?.[1] ?? t;
-export const PATTERN_TOKENS = ['show', 'tv', 'movie', 'ad', 'ident', 'break'];
+// A channel's pattern (pitv/scheduler/rules.py PATTERN_TOKENS), with what each token means where
+// it is offered. The pattern is the whole answer to what a day is made of: there is no separate
+// switch for adverts or idents, so the two can never disagree.
+export const PATTERN_TOKENS = [
+  ['show', 'A programme, film or episode as the channel\'s mix decides'],
+  ['movie', 'A film, whatever the mix says'],
+  ['ad', 'One advert; a longer break is written as more of them'],
+  ['ident', 'The channel announcing itself, after a programme and once per break'],
+];
 
 /** Whether the backend says this channel's scheduling pattern draws from a line-up. */
 export const hasLineup = (channel) => channel?.has_lineup === true;
+
+/** Whether this channel goes to a break, which its pattern alone decides. */
+export const hasAds = (channel) => (channel?.pattern_tokens ?? []).includes('ad');
 
 export function plural(n, word) {
   return `${n} ${word}${n === 1 ? '' : 's'}`;

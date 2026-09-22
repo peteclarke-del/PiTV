@@ -33,18 +33,17 @@
   const isNew = !c.id;
   let f = $state({
     number: c.number ?? '', name: c.name ?? '', short_name: c.short_name ?? '', colour: c.colour ?? '#e63946',
-    enabled: !!(c.enabled ?? 1), ads_enabled: !!c.ads_enabled, ads_per_break: c.ads_per_break ?? 2, family_safe_ads: !!c.family_safe_ads,
+    enabled: !!(c.enabled ?? 1), ads_per_break: c.ads_per_break ?? 2, family_safe_ads: !!c.family_safe_ads,
     pattern: c.pattern_tokens ?? (c.pattern ? c.pattern.split(',').map((t) => t.trim()) : ['show']),
     eraUse: !!c.era_weights, era: c.era_weights ?? { '1980-1989': 0.85, '1990-1999': 0.15 },
     kindUse: !!c.kind_weights, kind: { tv: c.kind_weights?.tv ?? 0.7, movie: c.kind_weights?.movie ?? 0.3 },
     genreUse: !!c.genre_weights, genre: c.genre_weights ?? {},
     dp: splitProfile(c.daypart_profile),
-    overnight_replay_from: c.overnight_replay_from ?? '08:00', idents_enabled: !!(c.idents_enabled ?? 1),
+    overnight_replay_from: c.overnight_replay_from ?? '08:00',
     description: c.description ?? '', content: c.content ?? 'general',
     allowed_genres: c.allowed_genres ?? [], excluded_genres: c.excluded_genres ?? [], nas_only: c.nas_only ?? 'inherit',
     short_episode_minutes: c.short_episode_minutes ?? '', short_episode_run_minutes: c.short_episode_run_minutes ?? '',
     series_cadence_days: c.series_cadence_days ?? '', also_carries: c.also_carries ?? [],
-    ident_ids: (c.idents ?? []).filter((i) => i.channel_id === c.id).map((i) => i.id),
     fetch_kind: c.fetch_kind ?? '', band_item_max_minutes: c.band_item_max_minutes ?? '',
     strict_matching: c.strict_matching ?? false,
     // Tolerant of either form: an older service hands this back as the JSON text it is stored
@@ -59,6 +58,9 @@
     if (typeof v !== 'string' || !v.trim()) return [];
     try { const p = JSON.parse(v); return Array.isArray(p) ? p : []; } catch { return []; }
   }
+  // What the pattern asks for decides which of the break settings apply, so the two can never
+  // contradict each other the way a separate tickbox for each did.
+  const patternHas = (token) => f.pattern.includes(token);
   // The types a daypart can ask for (pitv/scheduler/select.py, Selector._borrowed).
   const BORROWABLE = [['cartoon', 'Cartoons'], ['sport', 'Sport'], ['documentary', 'Documentaries']];
   const CONTENT = [['general', 'General (shows and films)'], ['music', 'Music videos'], ['cartoons', 'Cartoons'],
@@ -92,17 +94,16 @@
 
   const save = guard(async () => {
     const body = {
-      name: f.name, short_name: f.short_name, colour: f.colour, enabled: f.enabled, ads_enabled: f.ads_enabled, family_safe_ads: f.family_safe_ads,
+      name: f.name, short_name: f.short_name, colour: f.colour, enabled: f.enabled, family_safe_ads: f.family_safe_ads,
       ads_per_break: num(f.ads_per_break, { min: 1, max: 10, int: true, fallback: 1 }), pattern: f.pattern.join(', '),
       era_weights: f.eraUse ? f.era : null,
       kind_weights: f.kindUse ? { tv: num(f.kind.tv, { min: 0, max: 1, fallback: 0 }), movie: num(f.kind.movie, { min: 0, max: 1, fallback: 0 }) } : null,
       genre_weights: f.genreUse ? f.genre : null, daypart_profile: joinProfile(f.dp),
-      overnight_replay_from: f.overnight_replay_from, idents_enabled: f.idents_enabled, description: f.description, content: f.content,
+      overnight_replay_from: f.overnight_replay_from, description: f.description, content: f.content,
       allowed_genres: f.allowed_genres, excluded_genres: f.excluded_genres, nas_only: f.nas_only,
       short_episode_minutes: f.short_episode_minutes === '' ? null : Number(f.short_episode_minutes),
       short_episode_run_minutes: f.short_episode_run_minutes === '' ? null : Number(f.short_episode_run_minutes),
       series_cadence_days: num(f.series_cadence_days, { min: 1, max: 28, int: true }), also_carries: f.also_carries,
-      ident_ids: f.ident_ids,
       fetch_kind: f.fetch_kind || null, strict_matching: f.strict_matching,
       band_item_max_minutes: f.band_item_max_minutes === '' ? null : Number(f.band_item_max_minutes),
       decades: f.decades, networks: f.networks.split(',').map((s) => s.trim()).filter(Boolean),
@@ -191,33 +192,41 @@
         </div>
       {/if}
     {:else if section === 'breaks'}
-      <div class="form-grid">
-        <label class="check"><input type="checkbox" bind:checked={f.ads_enabled} /> Ad breaks on this channel</label>
-        <label class="field">Ads per break<input type="number" class="narrow" min="1" max="10" bind:value={f.ads_per_break} disabled={!f.ads_enabled} /></label>
-        <label class="check wide"><input type="checkbox" bind:checked={f.family_safe_ads} /> Family-safe adverts only<span class="help">No alcohol, tobacco, adult or gambling adverts (pitv_content's verdict, else the keywords in Settings, Adverts).</span></label>
-        <label class="check"><input type="checkbox" bind:checked={f.idents_enabled} /> Idents between programmes</label>
-        {#if (c.idents ?? []).length}
-          <div class="field wide"><span>This channel's idents</span>
-            <div class="stack" style="gap:.2rem">
-              {#each c.idents as i (i.id)}
-                <label class="check"><input type="checkbox" checked={f.ident_ids.includes(i.id)}
-                  onchange={(e) => (f.ident_ids = e.currentTarget.checked ? [...f.ident_ids, i.id] : f.ident_ids.filter((x) => x !== i.id))} />
-                  {i.title} <span class="muted small">{i.seconds}s{i.channel_id && i.channel_id !== c.id ? `, now ${i.channel_name}'s` : i.channel_id ? '' : ', generic'}</span></label>
-              {/each}
-            </div>
-            <span class="help">Tick the idents that are this channel's own. One that belongs to no channel is generic and may be shown by any channel without its own; one ticked here is never shown by another.</span>
-          </div>
-        {/if}
+      <p class="small muted">The sequence the channel's day is built from, repeated from the start of the day
+        and picked up again after each band. It is the whole answer: the channel goes to a break because the
+        pattern says <code>ad</code>, and announces itself because it says <code>ident</code>. An empty
+        pattern means a channel of bands alone.</p>
+      <div class="row chips">
+        {#each f.pattern as tok, i (i)}
+          <span class="chip"><button onclick={() => moveItem(f.pattern, i, -1)} disabled={i === 0} aria-label="Earlier">‹</button><b>{tok}</b><button onclick={() => moveItem(f.pattern, i, 1)} disabled={i === f.pattern.length - 1} aria-label="Later">›</button><button onclick={() => f.pattern.splice(i, 1)} aria-label="Remove">✕</button></span>
+        {/each}
+        {#if !f.pattern.length}<span class="muted small">Bands alone.</span>{/if}
       </div>
-      {#if shown('standard')}
-        <h3>Pattern</h3>
-        <p class="small muted">The sequence repeated through the day. <code>show</code> is any programme, <code>tv</code> and <code>movie</code> force a kind, <code>ad</code> is one advert, <code>break</code> a full ad break, <code>ident</code> the channel ident.</p>
-        <div class="row chips">
-          {#each f.pattern as tok, i (i)}
-            <span class="chip"><button onclick={() => moveItem(f.pattern, i, -1)} disabled={i === 0} aria-label="Earlier">‹</button><b>{tok}</b><button onclick={() => moveItem(f.pattern, i, 1)} disabled={i === f.pattern.length - 1} aria-label="Later">›</button><button onclick={() => f.pattern.splice(i, 1)} aria-label="Remove">✕</button></span>
-          {/each}
+      <div class="row">{#each PATTERN_TOKENS as [t, what] (t)}<button class="small" title={what} onclick={() => f.pattern.push(t)}>+ {t}</button>{/each}</div>
+      <dl class="tokens">
+        {#each PATTERN_TOKENS as [t, what] (t)}<dt><code>{t}</code></dt><dd>{what}</dd>{/each}
+      </dl>
+
+      {#if patternHas('ad')}
+        <h3>Adverts</h3>
+        <div class="form-grid">
+          <label class="field">Most adverts in one break<input type="number" class="narrow" min="1" max="10" bind:value={f.ads_per_break} />
+            <span class="help">The ceiling on a break however many <code>ad</code> the pattern asks for, so a long run of them cannot become a longer break than this.</span></label>
+          <label class="check wide"><input type="checkbox" bind:checked={f.family_safe_ads} /> Family-safe adverts only<span class="help">No alcohol, tobacco, adult or gambling adverts (pitv_content's verdict, else the keywords in Settings, Adverts).</span></label>
         </div>
-        <div class="row">{#each PATTERN_TOKENS as t (t)}<button class="small" onclick={() => f.pattern.push(t)}>+ {t}</button>{/each}</div>
+      {/if}
+
+      {#if patternHas('ident')}
+        <h3>Ident</h3>
+        <p class="small muted">A channel's ident is the file named <code>{f.name || 'Channel name'} ident.mp4</code>, and
+          renaming the channel renames the file it looks for. A channel with none of its own shows
+          <code>Generic ident.mp4</code>. There is nothing to choose here: <code>pitv idents</code> writes both, and the
+          library files them by name on every import.</p>
+        {#if c.ident}
+          <p class="small">Showing <b>{c.ident.title}</b> <span class="muted">({Math.round(c.ident.duration ?? 0)}s)</span></p>
+        {:else}
+          <p class="small warn">No ident on file, of this channel's own or generic. The break will run a short caption under the channel's badge until one is made.</p>
+        {/if}
       {/if}
     {:else if section === 'mix'}
       <p class="small muted">Each is optional: unticked, the channel follows Settings, Programming.</p>
@@ -264,5 +273,9 @@
 
 <style>
   .chips { min-height: 2rem; }
+  .tokens { display: grid; grid-template-columns: auto 1fr; gap: .2rem .8rem; margin: .6rem 0 0; font-size: .9em; }
+  .tokens dt { color: var(--muted, #999); }
+  .tokens dd { margin: 0; color: var(--muted, #999); }
+  .warn { color: var(--warn, #c88); }
   .sliders { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: .5rem; }
 </style>

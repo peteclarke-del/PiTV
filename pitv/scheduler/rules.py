@@ -23,7 +23,16 @@ _CERTIFICATE_ALIASES = {
     "PG-13": "12", "TV-14": "12", "12": "12", "12A": "12A",
     "R": "15", "15": "15", "TV-MA": "18", "NC-17": "18", "18": "18",
 }
-PATTERN_TOKENS = frozenset({"show", "tv", "movie", "ad", "ident", "break"})
+# What a channel's pattern may say. `show` is a programme of any kind and `movie` insists on a
+# film; there is no token for an episode, because that is what `show` already asks for on a
+# channel whose kind weights favour television. One advert is `ad`, and a longer break is written
+# as more of them, bounded by the channel's own limit. `ident` is the channel's own ident.
+PATTERN_TOKENS = frozenset({"show", "movie", "ad", "ident"})
+PROGRAMME_TOKENS = frozenset({"show", "movie"})   # a channel asking for one of these has a line-up
+# Patterns written before the tokens were reduced. `tv` said "an episode rather than a film",
+# which `show` and the kind weights already decide between, and `break` stood for a whole break,
+# which is now written as the adverts it holds.
+_TOKEN_WAS = {"tv": "show", "break": "ad"}
 log = logging.getLogger("pitv.rules")
 
 
@@ -139,8 +148,11 @@ def in_decades(year: int | None, decades: tuple[int, ...] | list[int], end_year:
 
 
 def parse_pattern(pattern: str) -> list[str]:
-    """A channel's pattern (``show, ad, ad``) as tokens; unknown tokens are dropped."""
+    """A channel's pattern (``show, ident, ad, ad``) as tokens. A token that was retired is read
+    as what replaced it, so a pattern saved by an older version still means what it said;
+    anything else is dropped, and a pattern that says nothing is a plain run of programmes."""
     tokens = (t.strip().lower() for t in pattern.replace(";", ",").split(","))
+    tokens = (_TOKEN_WAS.get(t, t) for t in tokens)
     return [t for t in tokens if t in PATTERN_TOKENS] or ["show"]
 
 

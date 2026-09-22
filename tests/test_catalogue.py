@@ -330,23 +330,32 @@ def test_fetched_titles_cannot_leave_the_acquire_folder():
     assert _wanted_dest({"kind": "music", "title": "x", "genre": "rock/../../x"}, "/acq") == "/acq/music videos/Rock-..-..-X"
 
 
-def test_idents_follow_their_channel_not_its_number(tmp_path):
-    """An ident is tied to a channel by id once, from the number its file was made for, so
-    renumbering channels does not move it; the builder never borrows another channel's."""
+def test_an_ident_named_after_its_channel_survives_renumbering(tmp_path):
+    """An ident belongs to the channel its name says, so moving the channels about leaves it
+    where it is. One filed only by folder number has nothing to hold it when the numbers move,
+    and becomes generic rather than announcing whichever channel took that number. Either way
+    no channel shows another's ident."""
     from pitv.scheduler.build import Builder
     ctx = make_library(tmp_path, max_episodes=1)
     conn, doc = ctx["conn"], ctx["lib"]["index"]
-    ident = dict(conn.execute("SELECT id, channel_hint, home_channel_id FROM media WHERE kind = 'ident'"
-                              " AND channel_hint IS NOT NULL LIMIT 1").fetchone())
-    home = conn.execute("SELECT id FROM channels WHERE number = ?", (ident["channel_hint"],)).fetchone()["id"]
-    assert ident["home_channel_id"] == home
-    with dbm.tx(conn):
+    def ident(hint, place):
+        return dict(conn.execute("SELECT id, title, channel_hint, home_channel_id FROM media WHERE kind = 'ident'"
+                                 " AND channel_hint = ? ORDER BY title LIMIT 1 OFFSET ?", (hint, place)).fetchone())
+    # Two idents with different titles, so renaming one channel after the first cannot claim both.
+    named, numbered = ident(1, 0), ident(2, 1)
+    assert named["title"] != numbered["title"]
+    home = conn.execute("SELECT id FROM channels WHERE number = 1").fetchone()["id"]
+    assert named["home_channel_id"] == home, "the folder number files it to begin with"
+    with dbm.tx(conn):          # the channel takes the name its ident file already carries
+        conn.execute("UPDATE channels SET name = ? WHERE id = ?", (named["title"], home))
         conn.execute("UPDATE channels SET number = number + 100")
     import_index(conn, doc)
-    assert conn.execute("SELECT home_channel_id FROM media WHERE id = ?", (ident["id"],)).fetchone()[0] == home
+    homes = {r["id"]: r["home_channel_id"] for r in conn.execute(
+        "SELECT id, home_channel_id FROM media WHERE id IN (?, ?)", (named["id"], numbered["id"]))}
+    assert homes[named["id"]] == home, "the name still says whose it is"
+    assert homes[numbered["id"]] is None, "the number no longer does, so it is generic"
     b = Builder(conn)
-    others = [c for c in b.channels if c["id"] != home]
-    for c in others:
+    for c in (x for x in b.channels if x["id"] != home):
         picked = b.select.ident(c, random.Random(1), 3600)
         assert picked is None or picked.get("home_channel_id") in (None, c["id"])
 
@@ -494,8 +503,8 @@ def test_make_room_measures_the_whole_cache_folder(tmp_path):
 
 def test_an_ident_in_a_flat_folder_finds_its_channel_by_name(tmp_path):
     """Idents kept in one folder carry no channel in their path. One whose title begins with a
-    channel's name is that channel's, the longest name winning; one that matches nothing stays
-    generic; and an owner's choice is never undone by a later import."""
+    channel's name is that channel's, the longest name winning, and one that matches nothing is
+    generic. The file is the only say: a channel set on an ident by hand is put back."""
     ctx = make_library(tmp_path, 1)
     conn = ctx["conn"]
     one, two = (conn.execute("SELECT id FROM channels WHERE number = ?", (n,)).fetchone()["id"] for n in (1, 2))
@@ -510,9 +519,10 @@ def test_an_ident_in_a_flat_folder_finds_its_channel_by_name(tmp_path):
     homes = [conn.execute("SELECT home_channel_id FROM media WHERE id = ?", (i,)).fetchone()[0] for i in ids]
     assert homes == [one, two, None]
     with dbm.tx(conn):
-        conn.execute("UPDATE media SET home_channel_id = ? WHERE id = ?", (two, ids[0]))   # the owner points it elsewhere
+        conn.execute("UPDATE media SET home_channel_id = ? WHERE id = ?", (two, ids[0]))   # pointed elsewhere by hand
         dbm.assign_ident_channels(conn)
-    assert conn.execute("SELECT home_channel_id FROM media WHERE id = ?", (ids[0],)).fetchone()[0] == two
+    assert conn.execute("SELECT home_channel_id FROM media WHERE id = ?", (ids[0],)).fetchone()[0] == one, \
+        "the name is the answer, so the next import puts it back"
 
 
 def test_a_reindex_job_nobody_can_see_is_not_waited_on(monkeypatch):

@@ -71,9 +71,9 @@ SHOW_DIRECT_FIELDS = {"home_channel_id", "mode", "anchor_time", "anchor_days", "
 SHOW_CATEGORIES = genre_rules.SCHEDULING_CLASSES
 MEDIA_OVERRIDE_FIELDS = {"title", "year", "certificate", "genres", "plot", "season", "episode", "artist", "programme_type"}
 MEDIA_DIRECT_FIELDS = {"excluded", "concert", "family_safe", "home_channel_id"}
-CHANNEL_FIELDS = {"number", "name", "short_name", "colour", "enabled", "ads_enabled", "ads_per_break",
+CHANNEL_FIELDS = {"number", "name", "short_name", "colour", "enabled", "ads_per_break",
                   "pattern", "era_weights", "genre_weights", "kind_weights", "daypart_profile",
-                  "overnight_replay_from", "idents_enabled", "description", "content", "family_safe_ads",
+                  "overnight_replay_from", "description", "content", "family_safe_ads",
                   "allowed_genres", "excluded_genres", "nas_only", "kids_any_time", "decades", "networks", "bands",
                   "band_item_repeat_hours", "band_feature_repeat_days",
                   "short_episode_minutes", "short_episode_run_minutes", "series_cadence_days", "also_carries", "fetch_kind",
@@ -496,14 +496,15 @@ def update_media(mid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Conne
     if not row:
         raise HTTPException(404, "media not found")
     direct = {k: body[k] for k in MEDIA_DIRECT_FIELDS & body.keys()}
+    # The column itself is never written here. A film's channel is a line-up entry, made below;
+    # an ident's follows the file's name (`db.assign_ident_channels`), so asking for a different
+    # one does nothing rather than holding until the next import undoes it.
     home = optional_int(direct.pop("home_channel_id", None), "home_channel_id")
+    if home is not None and row["kind"] == "movie":
+        _require_channel(conn, home)
     for k in ("excluded", "concert", "family_safe"):
         if k in direct:
             direct[k] = int(bool(direct[k]))
-    if row["kind"] == "ident" and "home_channel_id" in body:
-        if home is not None:
-            _require_channel(conn, home)
-        direct["home_channel_id"] = home          # an ident's channel is set here, not by a line-up
     overrides = _merge_overrides(row, body, MEDIA_OVERRIDE_FIELDS)
     direct["overrides"] = json.dumps(overrides)
     if "year" in overrides or "certificate" in overrides:
@@ -572,14 +573,16 @@ def _channel(conn: sqlite3.Connection, cid: int) -> dict[str, Any]:
     # A line-up belongs to any channel whose pattern schedules programmes.  Content is only a
     # descriptive label, so using it here would hide valid line-ups on new/specialist channels.
     d["has_lineup"] = lineup_mod.carries_programmes(d)
+    d["has_ads"] = lineup_mod.carries_adverts(d)
     d["bands"] = band_rules.export(conn, cid)
-    # Every ident in the library with whose it is, so the channel can be pointed at its own:
-    # this channel's, another's by name, or generic (no channel: any channel may show it).
-    d["idents"] = [{"id": r["id"], "title": r["title"], "seconds": round(r["duration"] or 0),
-                    "channel_id": r["home_channel_id"], "channel_name": r["channel_name"]}
-                   for r in conn.execute("SELECT m.id, m.title, m.duration, m.home_channel_id, c.name AS channel_name FROM media m"
-                                         " LEFT JOIN channels c ON c.id = m.home_channel_id"
-                                         " WHERE m.kind = 'ident' AND m.missing = 0 AND m.excluded = 0 ORDER BY m.title")]
+    # The ident this channel will actually show: its own by name, else the generic one. The admin
+    # states the naming convention rather than offering a list to choose from, so what is on
+    # screen always follows the file (`db.assign_ident_channels`).
+    d["ident"] = dbm.row_to_dict(conn.execute(
+        "SELECT title, duration FROM media WHERE kind = 'ident' AND missing = 0 AND excluded = 0"
+        " AND home_channel_id IS ? ORDER BY title LIMIT 1", (cid,)).fetchone()) or dbm.row_to_dict(conn.execute(
+        "SELECT title, duration FROM media WHERE kind = 'ident' AND missing = 0 AND excluded = 0"
+        " AND home_channel_id IS NULL ORDER BY title LIMIT 1").fetchone())
     return d
 
 
@@ -603,8 +606,8 @@ def _clean_bands(body: dict[str, Any]) -> list[dict[str, Any]] | None:
 def _clean_channel_fields(body: dict[str, Any]) -> dict[str, Any]:
     fields: dict[str, Any] = {}
     for k, v in body.items():
-        if k in ("bands", "ident_ids"):
-            continue          # written apart: bands by _clean_bands, idents by _point_idents
+        if k == "bands":
+            continue          # written apart, by _clean_bands
         if k not in CHANNEL_FIELDS:
             continue
         if k in JSON_CHANNEL_FIELDS:
@@ -616,8 +619,7 @@ def _clean_channel_fields(body: dict[str, Any]) -> dict[str, Any]:
                 v = {name: weight for raw, weight in v.items()
                      if (name := genre_rules.canonical(raw)) is not None}
             fields[k] = json.dumps(v) if v not in (None, "", {}, []) else None
-        elif k in ("enabled", "ads_enabled", "idents_enabled", "family_safe_ads", "kids_any_time",
-                   "strict_matching"):
+        elif k in ("enabled", "family_safe_ads", "kids_any_time", "strict_matching"):
             fields[k] = int(bool(v))
         elif k in ("band_item_repeat_hours", "band_feature_repeat_days", "band_item_max_minutes",
                    "short_episode_minutes", "short_episode_run_minutes"):
@@ -694,22 +696,9 @@ def update_channel(cid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Con
             dbm.update_row(conn, "channels", cid, fields)
             if new_bands is not None:
                 band_rules.save(conn, cid, new_bands, now_ts())
-            _point_idents(conn, cid, body)
     except sqlite3.IntegrityError as exc:
         raise HTTPException(409, f"channel number {fields.get('number')} is already used") from exc
     return _channel(conn, cid)
-
-
-def _point_idents(conn: sqlite3.Connection, cid: int, body: dict[str, Any]) -> None:
-    """`ident_ids` is the whole answer to "which idents are this channel's": those listed become
-    its own, and any it had that are not listed go back to being generic."""
-    if "ident_ids" not in body:
-        return
-    ids = body["ident_ids"]
-    if not isinstance(ids, list) or not all(isinstance(i, int) and not isinstance(i, bool) for i in ids):
-        raise HTTPException(400, "ident_ids must be a list of ident ids")
-    conn.execute("UPDATE media SET home_channel_id = NULL WHERE kind = 'ident' AND home_channel_id = ?", (cid,))
-    conn.executemany("UPDATE media SET home_channel_id = ? WHERE kind = 'ident' AND id = ?", [(cid, i) for i in ids])
 
 
 @router.delete("/channels/{cid}")

@@ -4,7 +4,7 @@
   import { get, post, put, del, tryApi, confirmApi } from '../../lib/api.js';
   import { changes, noteChange, toast } from '../../lib/stores.svelte.js';
   import { guard } from '../../lib/guard.svelte.js';
-  import { hasLineup } from '../../lib/format.js';
+  import { hasAds, hasLineup } from '../../lib/format.js';
   import { downloadJson } from '../../lib/util.js';
   import ChannelBadge from '../../components/ChannelBadge.svelte';
   import DataTable from '../../components/DataTable.svelte';
@@ -69,7 +69,7 @@
     { key: 'content', label: 'Content', get: (c) => c.content || 'general', cell: contentCell },
     { key: 'short_name', label: 'Short' },
     { key: 'pattern', label: 'Pattern', class: 'mono small' },
-    { key: 'ads', label: 'Ads', class: 'small nowrap', get: (c) => (c.ads_enabled ? c.ads_per_break : 0), cell: adsCell },
+    { key: 'ads', label: 'Ads', class: 'small nowrap', get: (c) => (hasAds(c) ? c.ads_per_break : 0), cell: adsCell },
     { key: 'lineup', label: 'Line-up', class: 'num', get: (c) => (hasLineup(c) ? counts[c.id] ?? 0 : null), cell: lineupCell },
     { key: 'description', label: 'Description', class: 'small muted', cell: descriptionCell },
     { key: 'actions', label: '', class: 'right nowrap', sortable: false, cell: actionsCell },
@@ -109,7 +109,7 @@
   checked={!!c.enabled} onclick={stop} onchange={(e) => toggle(c, e.currentTarget.checked)} />{/snippet}
 {#snippet channelCell(c)}<ChannelBadge channel={c} />{/snippet}
 {#snippet contentCell(c)}{#if c.content && c.content !== 'general'}<span class="badge info">{c.content}</span>{:else}<span class="muted small">general</span>{/if}{/snippet}
-{#snippet adsCell(c)}{c.ads_enabled ? `${c.ads_per_break} per break` : 'off'}{#if c.family_safe_ads}<span class="badge ok" title="Family-safe adverts only">🛡 family</span>{/if}{/snippet}
+{#snippet adsCell(c)}{hasAds(c) ? `up to ${c.ads_per_break} per break` : 'none'}{#if c.family_safe_ads}<span class="badge ok" title="Family-safe adverts only">🛡 family</span>{/if}{/snippet}
 {#snippet lineupCell(c)}{#if hasLineup(c)}<button class="small" onclick={(e) => { stop(e); lineupFor = c; }}>{counts[c.id] ?? 0} · Line-up</button>{:else}<span class="muted">–</span>{/if}{/snippet}
 {#snippet descriptionCell(c)}<div class="truncate" style="max-width:280px">{c.description}</div>{/snippet}
 {#snippet actionsCell(c)}<button class="small danger" onclick={(e) => { stop(e); remove(c); }}>Delete</button>{/snippet}

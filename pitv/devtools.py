@@ -320,6 +320,11 @@ def build_fake_library(root: Path, seed: int = 1, with_nfo: bool = True,
             seconds = rnd.choice([8, 10, 15])
             _make_video(f, seconds, templates)
             idx.item("idents", f, seconds, "ident", f"Ident {i}", channel_hint=ch)
+    # The ident a channel with none of its own falls back on, as `pitv idents` writes it. It
+    # belongs to no channel folder, which is what makes it generic.
+    generic = pitv / "Idents" / "Generic ident.mp4"
+    _make_video(generic, 10, templates)
+    idx.item("idents", generic, 10, "ident", "Generic ident")
     _make_video(pitv / "Static" / "static.mp4", 2, templates)
 
     doc = idx.document()

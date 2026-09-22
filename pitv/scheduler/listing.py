@@ -32,7 +32,7 @@ def print_listing(conn: sqlite3.Connection, day: str | None = None,
     day_start = day_bounds(d, settings, tz)[0]
     print(f"=== {d.strftime('%A %d %B %Y')} ===")
     for ch in channels:
-        print(f"\n--- {ch['number']} {ch['name']}  ({ch['pattern']}{', ads' if ch['ads_enabled'] else ''}) ---")
+        print(f"\n--- {ch['number']} {ch['name']}  ({ch['pattern'] or 'bands alone'}) ---")
         rows = day_slots(conn, ch["id"], d, overnight)
         if not rows:
             print("  (no schedule)")

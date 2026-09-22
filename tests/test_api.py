@@ -127,10 +127,13 @@ def test_channels_and_settings(client):
     assert [c["content"] for c in chans][-2:] == ["music", "cartoons"]
     assert next(c for c in chans if c["content"] == "music")["has_lineup"] is False
     assert next(c for c in chans if c["content"] == "cartoons")["has_lineup"] is True
-    # A channel added here takes the next free number, whatever the station already has.
+    # A channel added here takes the next free number, whatever the station already has. A pattern
+    # is stored as the tokens it means, so one written with a retired token comes back rewritten
+    # and the admin never shows a word it no longer offers.
     added = client.post("/api/channels", json={"name": "PiTV Extra", "short_name": "Extra",
-                                               "content": "documentaries", "pattern": "show, break"}).json()
-    assert added["number"] == len(chans) + 1 and added["pattern"] == "show, break" and added["has_lineup"] is True
+                                               "content": "documentaries", "pattern": "tv, break"}).json()
+    assert added["number"] == len(chans) + 1 and added["pattern"] == "show, ad" and added["has_lineup"] is True
+    assert added["has_ads"] is True
     assert client.put(f"/api/channels/{added['id']}", json={"content": "bogus"}).status_code == 400
     off = client.put(f"/api/channels/{added['id']}", json={"enabled": False}).json()
     assert off["enabled"] == 0
@@ -875,24 +878,20 @@ def test_the_add_dialog_is_told_what_the_catalogue_already_holds(client):
     assert client.get("/api/lineup/known", params={"kind": "series"}).status_code == 400
 
 
-def test_a_channel_is_pointed_at_its_idents(client):
-    """The channel editor lists every ident with whose it is, and saving `ident_ids` is the whole
-    answer: those listed become the channel's own, any it had that are not listed go generic."""
+def test_an_idents_channel_comes_from_its_name_and_cannot_be_overridden(client):
+    """Which channel an ident belongs to is the file's name and nothing else. The admin used to
+    carry a list for pointing idents at channels by hand, which let the database say one thing
+    while the file said another, and a renamed channel kept announcing its old name."""
     channels = client.get("/api/channels").json()
-    first, second = channels[0], channels[1]
-    idents = first["idents"]
-    assert len(idents) >= 2 and {"id", "title", "seconds", "channel_id", "channel_name"} <= set(idents[0])
-    a, b = idents[0]["id"], idents[1]["id"]
-    got = client.put(f"/api/channels/{first['id']}", json={"ident_ids": [a, b]}).json()
-    assert {i["id"] for i in got["idents"] if i["channel_id"] == first["id"]} == {a, b}
-    got = client.put(f"/api/channels/{first['id']}", json={"ident_ids": [a]}).json()
-    mine = {i["id"]: i for i in got["idents"]}
-    assert mine[a]["channel_id"] == first["id"] and mine[b]["channel_id"] is None, "the one left out went generic"
-    client.put(f"/api/channels/{second['id']}", json={"ident_ids": [a]})           # pointing another channel at it moves it
-    assert {i["id"]: i for i in client.get("/api/channels").json()[0]["idents"]}[a]["channel_name"] == second["name"]
-    assert client.put(f"/api/channels/{first['id']}", json={"ident_ids": ["x"]}).status_code == 400
-    assert client.put(f"/api/channels/{first['id']}", json={"name": first["name"]}).status_code == 200, "a save that says nothing about idents leaves them"
-    assert {i["id"]: i for i in client.get("/api/channels").json()[1]["idents"]}[a]["channel_id"] == second["id"]
+    channel = channels[0]
+    assert channel["ident"]["title"] and channel["ident"]["duration"] > 0, "it says which ident will air"
+    idents = client.get("/api/media", params={"kind": "ident", "limit": 100}).json()["items"]
+    mine = [i for i in idents if i["home_channel_id"] == channel["id"]]
+    generic = [i for i in idents if i["home_channel_id"] is None]
+    assert mine and generic, "the fixture has a channel's own idents and a generic one"
+    # Pointing one somewhere else is refused silently: the save succeeds, the ident does not move.
+    moved = client.put(f"/api/media/{generic[0]['id']}", json={"home_channel_id": channel["id"]})
+    assert moved.status_code == 200 and moved.json()["home_channel_id"] is None
 
 
 def test_doctor_says_when_the_cache_cannot_hold_the_schedule():

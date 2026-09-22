@@ -291,10 +291,17 @@ def make(channel: dict[str, Any], out_dir: Path, width: int, height: int, voices
     return target
 
 
+# The ident a channel falls back on when it has none of its own: a new channel announces itself
+# from the moment it is created, rather than running a break with silence in it until somebody
+# renders its own. Number 0 belongs to no channel, so the import files it as generic.
+GENERIC = {"number": 0, "name": "Generic", "short_name": "PiTV", "colour": "#8d99ae"}
+
+
 def make_all(conn: sqlite3.Connection, out_dir: Path, voices: Path | None = None,
              numbers: set[int] | None = None, *, flat: bool = False) -> list[Path]:
-    """An ident for every enabled channel (or those in `numbers`), at the screen's own frame."""
+    """An ident for every enabled channel (or those in `numbers`), at the screen's own frame,
+    and the generic one any channel without its own may show."""
     profile = display.profile(all_settings(conn))
-    channels = rows_to_dicts(conn.execute("SELECT * FROM channels WHERE enabled = 1 ORDER BY number"))
+    channels = [*rows_to_dicts(conn.execute("SELECT * FROM channels WHERE enabled = 1 ORDER BY number")), GENERIC]
     return [make(c, out_dir, profile.width, profile.height, voices, flat=flat) for c in channels
             if numbers is None or int(c["number"]) in numbers]

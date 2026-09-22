@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 from ..db import DEFAULT_SETTINGS
 from ..genres import canonical, canonical_all
-from ..lineup import nas_only_for
+from ..lineup import carries_idents, nas_only_for
 from .clock import bday_minutes
 from .library import Library
 from .policy import LADDER, SchedulerPolicy
@@ -497,7 +497,7 @@ class Selector:
         return rng.choices(pool, weights=[c[0] for c in pool], k=1)[0][1]
 
     def ident(self, channel: dict[str, Any], rng: random.Random, gap: int) -> dict[str, Any] | None:
-        if not channel.get("idents_enabled", 1):
+        if not carries_idents(channel):
             return None
         fits = [i for i in self.library.idents if float(i["duration"]) <= gap]
         # The channel's own idents, else generic ones; never another channel's, which name it.
@@ -509,7 +509,7 @@ class Selector:
         """For a channel whose pattern asks for idents but which has none, of its own or generic:
         a slot with no file, which the player fills with the test signal under the channel's
         badge. Only where the pattern asks; gaps are never padded with it."""
-        if not channel.get("idents_enabled", 1) or gap < STAND_IN_IDENT_SECONDS:
+        if not carries_idents(channel) or gap < STAND_IN_IDENT_SECONDS:
             return None
         if any(i.get("home_channel_id") in (None, channel["id"]) for i in self.library.idents):
             return None   # it has idents; none fitted this gap

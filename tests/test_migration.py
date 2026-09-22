@@ -79,7 +79,10 @@ def test_an_empty_install_comes_up_as_the_whole_station(tmp_path):
     for c in channels:
         tokens = [t.strip() for t in (c["pattern"] or "").split(",") if t.strip()]
         if "ident" in tokens:
-            assert tokens[tokens.index("ident") - 1] == "show", f"{c['name']}: the ident follows the programme"
+            # An ident is placed only directly after a programme, so one written at the head of
+            # the pattern is skipped on the day's first pass and the day opens without one.
+            at = tokens.index("ident")
+            assert at > 0 and tokens[at - 1] == "show", f"{c['name']}: the ident follows the programme"
     general = [c for c in channels if (c["content"] or "general") == "general"]
     # Each general channel stands for a broadcaster of its own, which is what places a series on
     # the channel that actually showed it. Two sharing a first broadcaster would both claim it.

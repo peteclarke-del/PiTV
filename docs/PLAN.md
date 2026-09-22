@@ -251,8 +251,8 @@ day, a number of days, a channel subset and a force flag, as a background job wi
 
 ### 4.1 Channels are data
 
-A channel row holds: number, name, short name, colour, enabled, pattern, ads enabled, adverts
-per break, idents enabled, era weights, genre weights, kind (TV/movie) weights, daypart
+A channel row holds: number, name, short name, colour, enabled, pattern, most adverts in one
+break, era weights, genre weights, kind (TV/movie) weights, daypart
 profile (weekday, Saturday, Sunday), overnight replay start, content label, family-safe
 adverts flag, children's programmes at any hour, allowed and excluded genre lists, the decades
 it plays (empty means any; a series that ran into one counts and an unknown year is still
@@ -264,17 +264,19 @@ editable in the admin UI.
 
 | Ch | Name | Pattern | TV/movie | Lean |
 |---|---|---|---|---|
-| 1 | PiTV One | `ident, show` | 0.75/0.25 | Mainstream: drama, sitcoms, light entertainment, afternoon films |
-| 2 | PiTV Two | `ident, show` | 0.60/0.40 | Alternative: documentaries, cult, older films, comedy |
+| 1 | PiTV One | `show, ident` | 0.75/0.25 | Mainstream: drama, sitcoms, light entertainment, afternoon films |
+| 2 | PiTV Two | `show, ident` | 0.60/0.40 | Alternative: documentaries, cult, older films, comedy |
 | 3 | PiTV Three | `show, ident, ad, ad` | 0.80/0.20 | Commercial: soaps, quiz, action drama, kids' teatime |
 | 4 | PiTV Four | `show, ident, ad, ad` | 0.55/0.45 | Alternative commercial: comedy, imports, films, late night |
 | 5 | PiTV Music | blocks (section 4.5) | | Music videos by genre and decade, two concerts a day |
 | 6 | PiTV Toons | `show, ident, ad, ad` | 0.85/0.15 | Cartoons all day; family-safe adverts only |
 
-The ident is written after the show because it closes the programme that has ended and hands
-over to the break. `ident, ad, ad, show` reads the same going round but is not: the ident is
-dropped when the slot before it is not a programme, and one cycle's two advert tokens then meet
-the next cycle's two, running four adverts together on a channel that allows two.
+The ident is written after the show because that is the order it airs in: it closes the
+programme that has ended and hands over to the break. Starting the pattern with it costs the day
+its first ident, since an ident is placed only directly after a programme and the day opens with
+nothing before it. The number of adverts in a break does not depend on the order: the channel's
+limit is counted across whatever adverts are already running, so two cycles meeting cannot make
+a longer break than one.
 
 Each general channel also carries the broadcasters it stands for. A programme whose index knows
 which network showed it goes to the channel that stands for that network before any genre rule
@@ -366,14 +368,19 @@ A pattern is an ordered list of tokens the channel cycles through when filling g
 
 | Token | Meaning |
 |---|---|
-| `show` | any programme (TV episode or film, chosen by daypart and weights) |
-| `tv` | a TV episode |
-| `movie` | a film |
+| `show` | any programme, TV episode or film, chosen by daypart and weights |
+| `movie` | a film, whatever the weights say |
 | `ad` | one advert |
-| `ident` | a channel ident |
-| `break` | the channel's configured number of adverts |
+| `ident` | the channel's own ident |
 
-`ad` and `break` tokens are dropped when the channel's adverts are off. An anchored show
+The pattern is the only place a channel says what its day is made of. It used to carry a
+tickbox for adverts and another for idents as well, either of which could contradict it, and
+which of the two won was not visible from the admin. A channel goes to a break because its
+pattern says `ad`, and a longer break is written as more of them, up to the channel's own limit
+on adverts in one break. Two tokens were retired with the tickboxes: `tv`, which asked for an
+episode rather than a film, a choice the kind weights already make, and `break`, which stood
+for a whole break. A pattern saved before that is read as what it said and rewritten the first
+time it is saved. An anchored show
 (section 4.4) counts as a `show` token where it lands, so the pattern resumes cleanly. When
 no programme fits a gap the scheduler pads with adverts or idents and then writes a
 `filler` slot (the player shows the test signal), noting it in the run log. Where the pattern
@@ -834,13 +841,21 @@ Idents live in the `idents` folder of the adverts share, flat, beside the advert
 `pitv idents --flat --out <adverts share>/idents` writes `<channel name> ident.mp4` there. In
 pitv_content that folder is a source of its own (type `ident`, location `nas`), nested inside the
 adverts source, which leaves it out of its own scan (contract section 4). A flat folder carries no
-channel in its path, so an ident whose title begins with a channel's name is given to that channel
-on import (`db.assign_ident_channels`, the longest name first so "PiTV Three" is never taken for
-"PiTV"), and Channels, the channel, lists every ident so the owner can point the channel at its
-own. An ident that belongs to no channel is generic and any channel without its own may show it.
+channel in its path, so the name is what says whose an ident is: one whose title begins with a
+channel's name is that channel's, the longest name first so "PiTV Three" is never taken for
+"PiTV" (`db.assign_ident_channels`). `Generic ident.mp4`, which `pitv idents` also writes,
+matches no channel and is what a channel without one of its own shows.
+
+This runs on every import, and there is nothing in the admin for pointing an ident at a channel
+by hand. The file is the whole answer: a channel renamed in the admin looks for a file under its
+new name, and a channel that has been renumbered keeps the idents named after it. There used to
+be a list to tick, which let the database say one thing while the file said another, and left a
+renamed channel announcing its old name until somebody noticed.
+
 Without `--flat` the files land in `<out>/ch<number>/` (default `<data>/idents`), the layout
-pitv_content reads a channel from directly. Either way they are ordinary library material, copied
-to the cache and placed where a channel's pattern asks.
+pitv_content reads a channel from directly; that number is read where the name says nothing.
+Either way they are ordinary library material, copied to the cache and placed where a channel's
+pattern asks.
 
 The ident heads the break, directly after the programme that has just ended and before any
 adverts, so the viewer is told whose programme has just finished. A break carries exactly one,
@@ -986,7 +1001,7 @@ PiTV:
 |---|---|
 | Dashboard | Catalogue counts (cached, NAS only, fetched online), line-up summary per channel with unfetched placeholders and unplaced items, schedule horizon, readiness result, recent runs and jobs; import the catalogue (optionally re-indexing first), build or force-rebuild the week, check readiness |
 | Catalogue | The last import (when, from where, counts) with import, re-index and import, and upload an index file; Add to the catalogue, in two steps: pitv_content first looks the title up online (series from TVmaze, films from OMDb with a key, adverts and music videos as candidate videos; contract section 8) and the admin picks the right one from posters, years, network, genres, running time and summary, or adds without a match with a warning; then a series or film (year, genres, channel or "choose by genres", episode length, remove after airing, prefilled from the match) becomes a line-up entry carrying the confirmed identity (`match`), which every fetch request for it passes on that pitv_content fetches before it airs, and an advert or music video (optionally with a link) joins the wanted list; lists of series, films, titles added here (with their state), music, adverts, idents and items needing attention, each with where it comes from and whether it is cached; per-show editor (overrides, channel, strip or weekly anchor, rest weeks, category, next-episode cursor, upcoming airings); per-item editor (overrides, channel for films and idents, exclude, family-safe, concert, cache status, recent and upcoming airings); "needs attention" list with inline year and certificate fixes, including items no channel accepts |
-| Channels | Add, edit, delete channels. The editor has five sections: Channel (number, name, colour, enabled, description, content type), Programmes (allowed and excluded genres with catalogue counts; NAS-only override at Standard), Breaks (adverts on or off and per break, family-safe adverts, idents; the pattern editor at Standard), Mix (Standard: TV and film balance, era and genre weights) and Dayparts (Advanced: weekday, Saturday and Sunday tables, overnight replay start). Each channel's line-up in a drawer: add from a searchable list or by title, remove, move, enable, transient and remove-after-airing toggles, state per entry (on disk, not on disk, fetching, scheduled). Generate, rebalance, export and import line-ups |
+| Channels | Add, edit, delete channels. The editor has five sections: Channel (number, name, colour, enabled, description, content type), Programmes (allowed and excluded genres with catalogue counts; NAS-only override at Standard), Breaks (the pattern, which alone decides what a day is made of, then the settings that follow from it: most adverts in one break and family-safe adverts where it asks for `ad`, and which ident will air where it asks for `ident`), Mix (Standard: TV and film balance, era and genre weights) and Dayparts (Advanced: weekday, Saturday and Sunday tables, overnight replay start). Each channel's line-up in a drawer: add from a searchable list or by title, remove, move, enable, transient and remove-after-airing toggles, state per entry (on disk, not on disk, fetching, scheduled). Generate, rebalance, export and import line-ups |
 | Settings | PiTV's settings in nine panes: Screen and quality (the screen profile, what it asks of pitv_content, text size, and at Advanced shape, margin and output), Broadcast day, Programming, Certificates, Adverts, Music, Player, Cache and pitv_content, Maintenance. The Content page's manifest card shows the quality in force with a link to change it. Drawn from `GET /api/settings/schema` (`pitv/settings_schema.py`), which gives each setting its pane, level, label, help and range; validation takes its ranges from the same table. Edits in several panes are saved together, only the changed keys are sent, values are cleaned for their type and clamped to their range, and a pane's fields can be put back to their defaults before saving. The old `#/admin/weighting` address opens it |
 | Schedule | The EPG grid, with independent “Show ads & idents” and “Show band items” detail controls; editable: lock, remove, replace, insert at a time or before a slot, rebuild from here; "Rebuild this day" for one channel or all of them, so a change to a band or a setting reaches a day already built; "Fresh schedule" discards the whole generated schedule, locks, history, run log and every wanted request the scheduler raised, imports a fresh index, rebuilds the horizon and starts filling deficient bands. It keeps configuration and source material (channels, bands, settings, NAS/local sources, provider and catalogue choices, line-up entries) and every file, fetched or cached, so what has been gathered is arranged again. "Fresh schedule & library" does all of that and has pitv_content throw away its acquired and cache files, reports, indexes and fingerprints as well (`clear_material`, contract section 7), which starts the library over; build jobs and notes from the last edit |
 | Wanted | The wanted list for pitv_content: requests raised by line-up placeholders (marked with their channel and as transient) and items added by hand (film, episode, advert or music video, optionally with a URL); retry, delete, queue missing episodes |

@@ -39,12 +39,11 @@ from .db import (
     update_row,
     write_data_file,
 )
-from .scheduler.rules import in_decades, normalise_cert, parse_pattern
+from .scheduler.rules import PROGRAMME_TOKENS, in_decades, normalise_cert, parse_pattern
 from .scheduler.slots import slot_titles
 
 log = logging.getLogger("pitv.lineup")
 
-PROGRAMME_TOKENS = {"show", "tv", "movie"}   # a channel carrying one of these has a line-up
 MIRROR = "lineups.json"
 EXTERNAL_SOURCES = ("catalogue", "manual")  # entries not generated from the catalogue (source 'library')
 _MATCH_SOURCE = re.compile(r"^[a-z0-9_-]{1,40}$")
@@ -194,6 +193,20 @@ def carries_programmes(channel: dict[str, Any]) -> bool:
     whose pattern is empty is built from its bands alone (a music channel, say)."""
     text = (channel.get("pattern") or "").strip()
     return bool(text) and bool(PROGRAMME_TOKENS & set(parse_pattern(text)))
+
+
+def carries_adverts(channel: dict[str, Any]) -> bool:
+    """Whether a channel goes to a break. The pattern is the whole answer: a channel used to
+    carry a separate switch as well, which could say no while the pattern asked for adverts, and
+    which of the two won was not something anyone could see from the admin."""
+    text = (channel.get("pattern") or "").strip()
+    return bool(text) and "ad" in parse_pattern(text)
+
+
+def carries_idents(channel: dict[str, Any]) -> bool:
+    """Whether a channel announces itself between programmes, on the same footing as adverts."""
+    text = (channel.get("pattern") or "").strip()
+    return bool(text) and "ident" in parse_pattern(text)
 
 
 def programme_channels(conn: sqlite3.Connection) -> list[dict[str, Any]]:

@@ -33,7 +33,7 @@ from ..db import (
     tx,
 )
 from ..genres import is_childrens
-from ..lineup import carries_programmes
+from ..lineup import carries_adverts, carries_programmes
 from . import bands, overnight
 from .clock import bday_minutes
 from .library import Library, Rebuild
@@ -324,9 +324,7 @@ class Builder:
         # bands, and anything they leave is its own free time.
         pattern_text = (channel.get("pattern") or "").strip()
         pattern = parse_pattern(pattern_text) if pattern_text else []
-        ads_on = bool(channel.get("ads_enabled"))
-        if not ads_on and pattern:
-            pattern = [tok for tok in pattern if tok not in ("ad", "break")] or ["show"]
+        ads_on = carries_adverts(channel)
         rounding = self.policy.start_rounding_seconds
         tol = self.policy.duration_tolerance_seconds
         pat_idx = 0
@@ -388,13 +386,12 @@ class Builder:
             token = pattern[pat_idx % len(pattern)]
             pat_idx += 1
 
-            if token in ("ad", "break"):
-                requested = w.ads_per_break if token == "break" else 1
-                for _ in range(min(requested, w.advert_count_room())):
-                    room = min(boundary - w.t, w.break_room())
-                    ad = self.select.advert(channel, rng, w.t, room, w.last_programme_year) if room > 0 else None
-                    if ad is None:
-                        break
+            if token == "ad":
+                # One token, one advert. A longer break is written as more of them, and the
+                # channel's own limit is what stops a run of them running past what it allows.
+                room = min(boundary - w.t, w.break_room()) if w.advert_count_room() else 0
+                ad = self.select.advert(channel, rng, w.t, room, w.last_programme_year) if room > 0 else None
+                if ad is not None:
                     slot = self._media_slot(channel, day_str, w.t, ad, "advert")
                     w.emit(slot)
                     self.library.ad_last[(channel["id"], ad["id"])] = w.t
@@ -684,7 +681,7 @@ class Builder:
                     # The adverts' own allowance runs from the first of them, so an ident at the
                     # head of the break does not come out of it.
                     break_end = t + advert_room
-                if (channel.get("ads_enabled") and t < break_end
+                if (carries_adverts(channel) and t < break_end
                         and (advert_limit is None or adverts < advert_limit)):
                     item = self.select.advert(channel, rng, t, min(gap, break_end - t), near_year)
             if item is None:
