@@ -879,6 +879,28 @@ def test_the_add_dialog_is_told_what_the_catalogue_already_holds(client):
     assert client.get("/api/lineup/known", params={"kind": "series"}).status_code == 400
 
 
+def test_a_catalogue_entry_can_be_renamed_and_readdressed(client):
+    """The editor classifies an added title, and for a creator's channel the two things most
+    likely to be wrong were the two it would not let you change: what the guide calls it, and
+    which channel it fetches from. Re-keying an entry by hand was impossible for that reason."""
+    target = client.get("/api/channels").json()[0]["id"]
+    made = client.post("/api/lineup", json={"channel_id": target, "title": "Wrong Name",
+                                            "youtube_url": "https://www.youtube.com/@wronghandle"}).json()
+    assert made["match"]["id"] == "@wronghandle"
+
+    fixed = client.put(f"/api/lineup/{made['id']}", json={
+        "title": "Right Name", "youtube_url": "https://www.youtube.com/channel/UCccccccccccccccccccccc1"})
+    assert fixed.status_code == 200, fixed.text
+    assert fixed.json()["title"] == "Right Name"
+    assert fixed.json()["match"]["id"] == "UCccccccccccccccccccccc1", "keyed on what survives a rename"
+
+    # An address that is not one is refused rather than stored as given.
+    assert client.put(f"/api/lineup/{made['id']}",
+                      json={"youtube_url": "https://vimeo.com/nope"}).status_code == 400
+    assert client.put(f"/api/lineup/{made['id']}", json={"title": "  "}).status_code == 400
+    client.delete(f"/api/lineup/{made['id']}")
+
+
 def test_re_keying_an_entry_needs_the_handle_to_agree_not_the_name(tmp_path, monkeypatch):
     """A handle stops resolving the day its creator changes it, so an entry is moved onto the
     channel's permanent id while the handle still works. The move is only made where the search

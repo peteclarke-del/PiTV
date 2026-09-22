@@ -34,6 +34,7 @@ from .db import (
     genre_list,
     get_setting,
     now_ts,
+    row_to_dict,
     rows_to_dicts,
     tx,
     update_row,
@@ -489,7 +490,7 @@ def add(conn: sqlite3.Connection, channel_id: int | None, *, show_id: int | None
 
 
 _EDITABLE = {"channel_id", "enabled", "transient", "remove_after_airing", "episode_minutes", "next_episode", "notes",
-             "pinned", "year", "genres", "programme_type", "episode_count", "certificate"}
+             "pinned", "year", "genres", "programme_type", "episode_count", "certificate", "title"}
 _FLAGS = {"enabled", "transient", "remove_after_airing", "pinned"}
 
 
@@ -513,13 +514,34 @@ def update(conn: sqlite3.Connection, lineup_id: int, fields: dict[str, Any]) -> 
             v = str(v).strip().casefold() if v not in (None, "") else None     # empty: read it from the genres
             if v is not None and v not in genre_rules.PROGRAMME_TYPES:
                 raise ValueError(f"programme_type must be one of {', '.join(genre_rules.PROGRAMME_TYPES)}")
+        elif k == "title":
+            v = str(v).strip()
+            if not v:
+                raise ValueError("a title is what the guide shows; it cannot be empty")
         elif v is not None:
             v = int(v)
         sets[k] = v
+    # An address is read here rather than stored as given, so one reading of it serves the add
+    # and the edit alike: a channel renamed by its creator, or one keyed on a handle that should
+    # be on the channel's own id, is corrected by pasting the address from the browser.
+    if (url := as_text(fields.get("youtube_url"))) is not None and url.strip():
+        from . import youtube
+        found = youtube.parse(url)
+        if found is None:
+            raise ValueError("not a YouTube channel or playlist address")
+        sets["match"] = json.dumps(found)
     if "channel_id" in sets:
         sets["pinned"] = 1
     if sets:
         sets["updated_at"] = now_ts()
+        if "title" in sets:
+            # The key is the entry's identity and is built from its title, so a renamed entry
+            # keeps it in step. Otherwise adding the same title again would make a second entry
+            # beside the first and both would ask for the same episodes.
+            row = row_to_dict(conn.execute("SELECT kind, year, source FROM lineup WHERE id = ?", (lineup_id,)).fetchone())
+            if row and row["source"] != "library":
+                year = sets.get("year", row["year"])
+                sets["key"] = f"ext:{row['kind']}:{sets['title'].lower()}:{year or ''}"
         with tx(conn):
             update_row(conn, "lineup", lineup_id, sets)
             sync_home_channels(conn)

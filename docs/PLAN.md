@@ -292,7 +292,7 @@ gives whatever form the creator prints, usually the handle, so Catalogue, Added 
 to re-key them: each is looked up and moved onto the permanent id only where the search returns
 the very handle the entry already holds. Matching on the title instead would be the same fault
 in a new place, since two creators share a name and an entry repointed at the wrong one would
-fetch their videos under the right title. What cannot be confirmed is left alone and counted.
+fetch their videos under the right title. What cannot be confirmed is left alone and counted, and its entry can be corrected by hand: the catalogue editor takes the title and the address, so pasting the `/channel/UC…` form from the creator's page is all it needs.
 
 Each general channel also carries the broadcasters it stands for. A programme whose index knows
 which network showed it goes to the channel that stands for that network before any genre rule
