@@ -148,7 +148,15 @@ def frames(channel: dict[str, Any], width: int, height: int) -> Iterator[Image.I
 
     mark = _mark(height // 4, colour)
     name = (channel.get("short_name") or channel.get("name") or "").upper()
-    title = _text(name, height // 7, _mix(colour, (255, 255, 255), 0.35), (10, 10, 10))
+    # The name is drawn as large as it goes and then shrunk until it fits the frame with a
+    # margin. A short name is unaffected; a long one used to be drawn at the same size and run
+    # off both edges, so "DOCUMENTARIES" read as "OCUMENTARIE".
+    ink, shadow = _mix(colour, (255, 255, 255), 0.35), (10, 10, 10)
+    size = height // 7
+    title = _text(name, size, ink, shadow)
+    while title.width > width * 0.9 and size > height // 20:
+        size -= max(1, size // 20)
+        title = _text(name, size, ink, shadow)
     bar_h, bar_gap = max(4, height // 60), max(2, width // 180)
     bars_w = mark.width
     total = SECONDS * FPS
