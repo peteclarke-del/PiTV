@@ -1146,6 +1146,32 @@ def test_external_repeat_reuses_request_without_advancing_episode():
     c.close()
 
 
+def test_a_band_asking_for_all_its_genres_picks_by_the_same_rule_it_counts_by(tmp_path):
+    """The rule was written twice, once for counting what a band could use and once for choosing
+    what it shows, and the two disagreed the moment "all of these genres" arrived: a band asked
+    for a subject within a source, was told it had nothing, and aired the whole source anyway."""
+    import random
+    from pitv.scheduler import bands as band_rules
+    ctx = make_library(tmp_path, max_episodes=2)
+    conn = ctx["conn"]
+    band = band_rules.Band(1, 8, "Subject Hour", "20:00", 120, (), ("episode",),
+                           ("Curated", "Subject"), (), False, all_genres=True, max_minutes=120)
+    both = {"id": 1, "kind": "episode", "duration": 20 * 60, "year": 2015, "concert": 0,
+            "genres": ["Curated", "Subject"]}
+    source_only = {"id": 2, "kind": "episode", "duration": 20 * 60, "year": 2015, "concert": 0,
+                   "genres": ["Curated", "Something Else"]}
+    subject_only = {"id": 3, "kind": "episode", "duration": 20 * 60, "year": 2015, "concert": 0,
+                    "genres": ["Subject", "Elsewhere"]}
+    assert [band.wants(i) for i in (both, source_only, subject_only)] == [True, False, False]
+
+    # What it counts is what it picks: a strict band offered all three takes only the one.
+    filler = band_rules.Filler([band], [both, source_only, subject_only], item_repeat=0, feature_repeat=0,
+                               rng=random.Random(1), last_placed={}, strict=True)
+    picked = filler.pick(band, 0, 3600, feature=False)
+    assert picked is not None and picked["id"] == 1, picked
+    conn.close()
+
+
 def test_material_no_band_could_ever_air_is_reported(tmp_path):
     """A band takes what suits its genres, is short enough to be one of several, and fits inside
     its stretch. Material that fails every band on every count is not waiting its turn: it will
@@ -1218,6 +1244,15 @@ def test_a_band_fills_from_the_line_up_its_channel_names(tmp_path):
     again = wanted.request_band_lineup(conn, settings)
     assert again["asked"] == 0
     assert conn.execute("SELECT COUNT(*) FROM wanted WHERE lineup_id IS NOT NULL").fetchone()[0] == len(rows)
+
+    # A build must leave them alone. They have no slot by design, which is exactly what the
+    # orphan sweep looks for, and sweeping them away undid the asking on the very next build:
+    # the channel asked for the same material for ever and never kept any of it.
+    from pitv.scheduler.horizon import build_horizon
+    build_horizon(conn, start_day=parse_day("2026-09-14"), days=1, seed=3, force=True)
+    assert conn.execute("SELECT COUNT(*) FROM wanted w JOIN lineup l ON l.id = w.lineup_id"
+                        " WHERE l.channel_id = ?", (channel,)).fetchone()[0] == len(rows), \
+        "a band's standing requests survive a rebuild"
 
     # Nothing is scheduled to air them yet, so they travel as wanted rather than as items, and
     # each is filed under its source rather than under the episode's own placeholder title.

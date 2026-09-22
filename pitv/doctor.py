@@ -13,6 +13,7 @@ way to change anything and nothing listens for it: remote support is SSH to the 
 
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
 import time
@@ -22,7 +23,7 @@ from typing import Any
 
 from . import __version__, tool_client
 from .config import Config
-from .db import all_settings, now_ts
+from .db import all_settings, now_ts, rows_to_dicts
 from .hostinfo import host_info
 from .logsetup import log_dir, tail
 from .scheduler.rules import keyword_pattern, names_a_product
@@ -49,6 +50,7 @@ def report(conn: sqlite3.Connection, cfg: Config, now: int | None = None) -> dic
         "cache": lambda: _cache(conn, settings, now),
         "bands": lambda: _bands(conn, settings, now),
         "library": lambda: _library(conn),
+        "fragile_matches": lambda: _fragile_matches(conn),
         "wanted": lambda: _wanted(conn),
         "runs": lambda: _runs(conn),
         "content": lambda: _content(settings),
@@ -155,6 +157,24 @@ def _bands(conn: sqlite3.Connection, settings: dict[str, Any], now: int) -> dict
             "no_band_can_air": unairable(conn, settings)}
 
 
+def _fragile_matches(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Line-up entries keyed on a name their creator could change (`youtube.survives_a_rename`)."""
+    from . import youtube
+    out = []
+    for r in rows_to_dicts(conn.execute(
+            "SELECT l.title, l.match, c.name AS channel FROM lineup l JOIN channels c ON c.id = l.channel_id"
+            " WHERE l.enabled = 1 AND l.match IS NOT NULL ORDER BY c.number, l.title")):
+        match = r["match"]
+        if isinstance(match, str):
+            try:
+                match = json.loads(match)
+            except ValueError:
+                continue
+        if youtube.is_channel(match) and not youtube.survives_a_rename(match):
+            out.append({"channel": r["channel"], "title": r["title"], "keyed_on": match.get("id")})
+    return out
+
+
 def _library(conn: sqlite3.Connection) -> dict[str, Any]:
     rows = conn.execute("SELECT kind, origin, SUM(missing = 0 AND excluded = 0) AS live, SUM(missing) AS missing"
                         " FROM media GROUP BY kind, origin ORDER BY kind, origin").fetchall()
@@ -258,6 +278,12 @@ def _findings(doc: dict[str, Any]) -> list[str]:
         usable = library.get("adverts_usable") or 0
         out.append(f"{held} adverts name no product and are not put in a break, leaving {usable} that do. "
                    "They are chapters of a compilation nothing could identify; pitv_content is the one to name them.")
+    if fragile := doc.get("fragile_matches") or []:
+        # Not broken, and not urgent: both forms fetch. But the day a creator renames themselves
+        # the address stops resolving, and what anybody sees is a series that quietly stopped.
+        out.append(f"{len(fragile)} catalogue entries are keyed on a handle or vanity name rather than the "
+                   f"channel's own id, so each depends on its creator never renaming it "
+                   f"(for example \"{fragile[0]['title']}\" on {fragile[0]['channel']})")
     for stranded in (doc.get("bands") or {}).get("no_band_can_air") or []:
         # Not a shortfall: this material is held and can never be shown, so nothing about it
         # will change until a band is lengthened or given to it.

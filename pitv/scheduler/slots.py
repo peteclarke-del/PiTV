@@ -125,7 +125,9 @@ def slot_titles(item: dict[str, Any], show_title: str | None = None) -> tuple[st
     title (never the SxxEyy code). Films: '(year) certificate'. Music videos: '(year) genres'."""
     year = f"({item['year']})" if item.get("year") else ""
     if item.get("kind") == "episode":
-        return show_title or item["title"], episode_subtitle(item)
+        # A band places an episode with no series beside it, so the series name travels on the
+        # item. Without it the guide billed a whole evening as "Episode 2".
+        return show_title or item.get("show_title") or item["title"], episode_subtitle(item)
     if item.get("kind") == "music":
         detail = ", ".join(json_field(item.get("genres")) or [])
     else:

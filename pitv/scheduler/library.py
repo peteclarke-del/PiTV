@@ -150,9 +150,19 @@ class Library:
             self.externals_on.setdefault(e["channel_id"], []).append(e)
 
     def band_pool(self, kind: str) -> list[dict[str, Any]]:
-        """Every item of a kind a band may use, loaded once per build."""
+        """Every item of a kind a band may use, loaded once per build.
+
+        An episode carries its series' title, because a band places one with no series beside it
+        and the guide would otherwise bill it by its own name, which for most series is the word
+        "Episode" and a number."""
         if kind not in self._pools:
-            self._pools[kind] = self.playable(kind)
+            items = self.playable(kind)
+            if kind == "episode":
+                titles = {sid: show.title for sid, show in self.shows.items()}
+                for item in items:
+                    if (title := titles.get(item.get("show_id"))) is not None:
+                        item["show_title"] = title
+            self._pools[kind] = items
         return self._pools[kind]
 
     def rebuilt(self, channel_id: int, ts: int) -> bool:

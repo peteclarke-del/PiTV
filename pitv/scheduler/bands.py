@@ -53,19 +53,29 @@ class Band:
     def on(self, weekday: int) -> bool:
         return not self.days or weekday in self.days
 
+    def genre_hit(self, item: dict[str, Any]) -> bool:
+        """Whether an item carries the genres this band asked for.
+
+        One of the list is enough by default, which is what a band of a broad subject wants.
+        `all_genres` asks for every one of them instead, which is how a band names a subject
+        within a source: "YouTube" and "Motorcycles" together mean the motorcycling among the
+        YouTube material, where either alone would also bring in the other's.
+
+        The one implementation of the rule. It used to be written twice, once here for counting
+        what a band could use and once in the search for choosing what it actually shows, and
+        the two disagreed the moment `all_genres` arrived: a band asked for a subject within a
+        source, was told it had nothing, and then aired the whole source anyway."""
+        if not self.genres:
+            return True
+        wanted = {g.lower() for g in self.genres}
+        held = {str(g).lower() for g in (item.get("genres") or [])}
+        return bool(wanted <= held if self.all_genres else wanted & held)
+
     def wants(self, item: dict[str, Any], strict: bool = True) -> bool:
         """Whether an item suits this band. Without `strict` the genres are ignored, which is
-        how a band widens its search when nothing matches exactly.
-
-        One genre of the list is enough by default, which is what a band of a broad subject
-        wants. `all_genres` asks for every one of them instead, which is how a band names a
-        subject within a source: "YouTube" and "Motorcycles" together mean the motorcycling
-        among the YouTube material, where either alone would also bring in the other's."""
-        if strict and self.genres:
-            wanted = {g.lower() for g in self.genres}
-            held = {g.lower() for g in (item.get("genres") or [])}
-            if not (wanted <= held if self.all_genres else wanted & held):
-                return False
+        how a band widens its search when nothing matches exactly."""
+        if strict and not self.genre_hit(item):
+            return False
         return self.dated(item) is not False
 
     def dated(self, item: dict[str, Any]) -> bool | None:
@@ -234,12 +244,14 @@ class Filler:
         if strict and not (m.get("genres") and m.get("year")):
             return False      # this channel takes only what the index has labelled
         if band.genres:
-            wanted = {g.lower() for g in band.genres}
             theirs = {str(g).lower() for g in (m.get("genres") or [])}
-            if genres == "match" and wanted.isdisjoint(theirs):
+            if genres == "match" and not band.genre_hit(m):
                 return False
-            if genres == "unknown" and theirs and wanted.isdisjoint(theirs):
-                return False    # tagged as something else: not this band's, unless nothing else is left
+            # Widening: an item sharing none of the band's genres is tagged as something else and
+            # is not this band's, unless nothing else is left. Sharing some is enough here even
+            # where the band asked for all of them, because that is what widening is for.
+            if genres == "unknown" and theirs and {g.lower() for g in band.genres}.isdisjoint(theirs):
+                return False
         return True
 
     def note(self, item: dict[str, Any], at: int) -> None:

@@ -196,9 +196,16 @@ def bring_requests_forward(conn: sqlite3.Connection) -> int:
 
 def withdraw_orphaned_requests(conn: sqlite3.Connection) -> int:
     """Line-up requests that no slot uses any more (their slots were rebuilt away) are withdrawn,
-    so pitv_content is never asked for material nothing will air and numbering cannot drift."""
+    so pitv_content is never asked for material nothing will air and numbering cannot drift.
+
+    A request a slot raised is the only kind that can be orphaned, which is what `auto = 0`
+    says. One raised by a standing rule has no slot by design: a band asks its line-up for stock
+    before anything is scheduled to air it, and sweeping those away as orphans undid the asking
+    on the very next build, so the channel asked for the same material for ever and never kept
+    any of it."""
     with tx(conn):
-        cur = conn.execute("DELETE FROM wanted WHERE lineup_id IS NOT NULL AND status IN ('queued', 'failed')"
+        cur = conn.execute("DELETE FROM wanted WHERE lineup_id IS NOT NULL AND auto = 0"
+                           " AND status IN ('queued', 'failed')"
                            " AND id NOT IN (SELECT wanted_id FROM schedule WHERE wanted_id IS NOT NULL)")
     return cur.rowcount
 
@@ -209,10 +216,20 @@ def horizon_end(conn: sqlite3.Connection) -> int | None:
 
 
 def needs_rebuild(conn: sqlite3.Connection, now: int | None = None) -> bool:
+    """Whether the schedule wants extending: when the nearest channel runs out, not the furthest.
+
+    A channel switched on after the last build has nothing at all, and judging the horizon by
+    its furthest edge made that invisible: the other channels were built a week ahead, so
+    nothing was due, and the new one stayed blank until the whole horizon happened to run down.
+    Overnight is a long time for a channel somebody has just turned on to show nothing."""
     now = now or now_ts()
-    end = horizon_end(conn)
     threshold = int(all_settings(conn).get("rebuild_when_days_left", 2)) * 86400
-    return end is None or end - now < threshold
+    ends = [r["e"] for r in conn.execute(
+        "SELECT MAX(s.end_ts) AS e FROM channels c LEFT JOIN schedule s ON s.channel_id = c.id"
+        " WHERE c.enabled = 1 GROUP BY c.id")]
+    if not ends:
+        return False        # no channels: nothing to build, and a build would say the same
+    return any(end is None or end - now < threshold for end in ends)
 
 
 def refill_empty_days(conn: sqlite3.Connection, now: int | None = None) -> dict[str, Any]:

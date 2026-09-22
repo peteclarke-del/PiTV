@@ -83,6 +83,20 @@ def parse(url: str) -> dict[str, str] | None:
     return None
 
 
+def survives_a_rename(match: object) -> bool:
+    """Whether a confirmed identity is keyed on something its creator cannot change.
+
+    A channel id (`UC...`) and a playlist id are permanent. A handle or a vanity name is the
+    creator's to change at will, and the day they do, the address stops resolving: the fetches
+    fail one by one with nothing to say why, and a series that has run for months simply stops.
+    Both forms are valid to fetch from, so this is not an error; it is the difference between an
+    entry that will still work in a year and one that depends on nobody renaming anything."""
+    if not is_channel(match):
+        return False
+    ident = str((match or {}).get("id") or "")
+    return bool(_CHANNEL.match(ident) or _PLAYLIST.match(ident))
+
+
 def is_channel(match: object) -> bool:
     """Whether a line-up entry's confirmed identity names a channel or playlist."""
     return isinstance(match, dict) and match.get("source") == SOURCE

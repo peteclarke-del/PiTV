@@ -878,6 +878,33 @@ def test_the_add_dialog_is_told_what_the_catalogue_already_holds(client):
     assert client.get("/api/lineup/known", params={"kind": "series"}).status_code == 400
 
 
+def test_an_entry_keyed_on_a_renameable_name_is_reported(tmp_path):
+    """A handle and a channel id both fetch, so neither is an error, but only one survives its
+    creator renaming themselves. The day that happens the address stops resolving, the fetches
+    fail one by one with nothing to say why, and a series that ran for months simply stops. It
+    is worth knowing which entries depend on nobody renaming anything before that day."""
+    from pitv import doctor, lineup as lineup_mod, youtube
+    from conftest import make_library
+
+    ctx = make_library(tmp_path / "keys", max_episodes=1)
+    conn = ctx["conn"]
+    channel = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
+    for title, url in (("By Handle", "https://www.youtube.com/@somecreator"),
+                       ("By Vanity", "https://www.youtube.com/somecreator"),
+                       ("By Channel Id", "https://www.youtube.com/channel/UCaaaaaaaaaaaaaaaaaaaaaa"),
+                       ("By Playlist", "https://www.youtube.com/playlist?list=PLaaaaaaaaaaaa")):
+        lineup_mod.add(conn, channel, title=title, kind="show", source="catalogue",
+                       genres=["Comedy"], match=youtube.parse(url))
+
+    assert youtube.survives_a_rename({"source": "youtube_channel", "id": "UCaaaaaaaaaaaaaaaaaaaaaa"})
+    assert not youtube.survives_a_rename({"source": "youtube_channel", "id": "@somecreator"})
+    assert not youtube.survives_a_rename({"source": "tvmaze", "id": "UCaaaaaaaaaaaaaaaaaaaaaa"}), "only YouTube's"
+
+    reported = {r["title"] for r in doctor._fragile_matches(conn)}
+    assert reported == {"By Handle", "By Vanity"}, reported
+    conn.close()
+
+
 def test_an_idents_channel_comes_from_its_name_and_cannot_be_overridden(client):
     """Which channel an ident belongs to is the file's name and nothing else. The admin used to
     carry a list for pointing idents at channels by hand, which let the database say one thing
