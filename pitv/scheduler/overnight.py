@@ -26,7 +26,8 @@ MAX_LOOPS = 12      # a thin day is replayed again until morning, but not foreve
 def replay(channel: dict[str, Any], day: date, day_end: int, next_day_start: int, day_slots: list[Slot], *,
            policy: SchedulerPolicy, tz: ZoneInfo, day_start_min: int,
            next_day_slots: Callable[[], list[Slot]], tomorrow_first: int | None,
-           caption: Callable[[int, int], Slot], leave_out: Callable[[Slot], bool] | None = None) -> list[Slot]:
+           caption: Callable[[int, int], Slot], ident: Callable[[int, int], Slot | None],
+           leave_out: Callable[[Slot], bool] | None = None) -> list[Slot]:
     """Replay the day from the channel's `overnight_replay_from` until the next day starts.
     `leave_out` says which of the day's slots are not to be repeated: what has been withdrawn
     since it aired, and what may not air in the small hours at all (children's programmes on a
@@ -35,7 +36,12 @@ def replay(channel: dict[str, Any], day: date, day_end: int, next_day_start: int
     `next_day_slots` is consulted only when there is nothing to replay: a day built before the
     library had anything in it. Showing a caption until morning is worse than opening tomorrow
     early. `tomorrow_first` is the series tomorrow opens with, which the replay must not end
-    on. `caption` makes the closedown card for whatever is left."""
+    on. `caption` makes the closedown card for whatever is left.
+
+    `ident` makes the channel's ident for a gap, or None. The handover from the day into the
+    small hours is a break like any other and is announced like one: the day's last programme
+    ends, the ident says whose channel this is, and the replay begins. Without it the night
+    began mid-sentence, cutting from the end of one programme straight into another."""
     day_str = day.isoformat()
     replay_from = channel.get("overnight_replay_from") or policy.day_start
     from_ts = broadcast_ts(day, replay_from, day_start_min, tz)
@@ -66,6 +72,13 @@ def replay(channel: dict[str, Any], day: date, day_end: int, next_day_start: int
         source = source[first:]
     out: list[Slot] = []
     t = max(day_end, max((s.end_ts for s in day_slots), default=day_end))
+    # The day closed on a programme, so the handover into the night carries an ident. A day that
+    # ended on a caption or a break has had its say already.
+    if last_prog is not None and ordered and ordered[-1].kind == "programme" and t < next_day_start:
+        opener = ident(t, next_day_start - t)
+        if opener is not None:
+            out.append(opener)
+            t = opener.end_ts
     queue = deque(source)
     loops = 0
     suppress_break = False

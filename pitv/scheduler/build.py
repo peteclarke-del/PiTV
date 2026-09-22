@@ -731,9 +731,18 @@ class Builder:
             day_start_min=self.day_start_min,
             next_day_slots=lambda: self._next_day_slots(channel["id"], next_day_start),
             tomorrow_first=self._adjacent_show(channel["id"], next_day_start, before=False),
+            ident=lambda start, gap: self._handover_ident(channel, day_str, start, gap),
             caption=lambda start, end: self._filler(channel, day_str, start, end,
                                                     title=f"Programmes will resume at {self.policy.day_start}",
                                                     replay=1))
+
+    def _handover_ident(self, channel: dict[str, Any], day_str: str, start: int, gap: int) -> Slot | None:
+        """The ident that announces the channel as the day hands over to the small hours, chosen
+        the same way as any other. It is marked as a replay because everything after closedown
+        is, and the guide and the player both read that to tell the night from the day."""
+        rng = self._rng(channel["id"], date.fromisoformat(day_str))
+        item = self.select.ident(channel, rng, gap) or self.select.stand_in_ident(channel, gap)
+        return None if item is None else replace(self._media_slot(channel, day_str, start, item, "ident"), replay=1)
 
     def _overnight_from_pool(self, channel: dict[str, Any], day: date, day_end: int, next_day_start: int,
                              day_slots: list[Slot], filler: bands.Filler,

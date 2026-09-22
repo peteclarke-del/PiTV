@@ -789,6 +789,21 @@ def test_channel_without_idents_gets_the_stand_in(tmp_path):
     assert idents[one] and all(r["media_id"] is not None for r in idents[one])
 
 
+def test_the_night_opens_with_an_ident(conn):
+    """Closedown is a break like any other and is announced like one. The day used to end on a
+    programme and the replay begin on another, cutting between the two with nothing said."""
+    day = "2026-09-14"
+    for channel in conn.execute("SELECT id, name, pattern FROM channels WHERE enabled = 1"):
+        if "ident" not in parse_pattern(channel["pattern"] or ""):
+            continue
+        rows = conn.execute("SELECT kind, replay FROM schedule WHERE channel_id = ? AND day = ?"
+                            " ORDER BY start_ts", (channel["id"], day)).fetchall()
+        night = next((i for i, r in enumerate(rows) if r["replay"]), None)
+        if night is None or not night or rows[night - 1]["kind"] != "programme":
+            continue      # the day did not close on a programme, so it has had its say
+        assert rows[night]["kind"] == "ident", f"{channel['name']} cuts straight into the night"
+
+
 def _band_row(conn, channel_id, name, start, minutes, kinds, genres=(), decades=(), feature=False):
     conn.execute("INSERT INTO band(channel_id, name, start, minutes, days, fill, enabled, created_at)"
                  " VALUES (?,?,?,?,'[]',?,1,?)",

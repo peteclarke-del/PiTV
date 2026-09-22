@@ -860,7 +860,8 @@ pattern asks.
 The ident heads the break, directly after the programme that has just ended and before any
 adverts, so the viewer is told whose programme has just finished. A break carries exactly one,
 whether a pattern asks for it or a gap is being padded (`Walk.ident_shown`); two idents never run
-together. A channel's pattern is where this is expressed (`show, ident, ad, ad`), and the padding
+together. Closedown is such a break: where the day ends on a programme, the handover into the
+overnight replay opens with the ident rather than cutting from one programme into another. A channel's pattern is where this is expressed (`show, ident, ad, ad`), and the padding
 of a gap follows the same order.
 
 The snow over a channel change is animated. The renderer draws several frames once per screen
