@@ -110,6 +110,24 @@ MUSIC_GENRES = ("Blues", "Concert", "Country", "Dance", "Disco", "Electronic", "
 BY_KIND: dict[str, tuple[str, ...]] = {"episode": SERIES_GENRES, "movie": FILM_GENRES, "music": MUSIC_GENRES}
 
 
+def satisfied_by(wanted: object, families: object) -> set[str]:
+    """Every genre name that satisfies `wanted`, itself included, folded to canonical spellings.
+
+    A family widens and never narrows, so the wanted name is always in the answer however the
+    configuration is written. It is read per genre rather than as a rule about which genres are
+    alike: a Metal band is happy with Black Sabbath, whom most sources call Hard Rock, while a
+    Hard Rock band is not necessarily happy with death metal."""
+    name = canonical(wanted)
+    if name is None:
+        return set()
+    out = {name.lower()}
+    table = families if isinstance(families, dict) else {}
+    for near in table.get(name) or []:
+        if (folded := canonical(near)) is not None:
+            out.add(folded.lower())
+    return out
+
+
 def for_kinds(kinds: object) -> tuple[str, ...]:
     """Every genre that makes sense for any of these kinds; all of them when none is named."""
     wanted = [k for k in (kinds if isinstance(kinds, (list, tuple, set)) else []) if k in BY_KIND]

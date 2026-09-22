@@ -82,6 +82,37 @@ def test_daily_show_limit_holds_until_the_rules_relax(tmp_path):
     c.close()
 
 
+def test_a_genre_is_satisfied_by_its_family_and_only_one_way_round():
+    """A lookup is reliable about broad genres and unreliable about fine ones, so a band says what
+    else will satisfy it: a Metal band takes Black Sabbath, whom most sources call Hard Rock, and
+    never takes Serbian folk. It widens and never narrows, and it is read one way at a time,
+    because a Hard Rock band is not obliged to accept everything a Metal band would."""
+    from pitv.genres import satisfied_by
+    from pitv.scheduler import bands as band_rules
+
+    families = {"Metal": ["Hard Rock", "Thrash Metal"], "Hard Rock": ["Heavy Rock"]}
+    assert satisfied_by("Metal", families) == {"metal", "hard rock", "thrash metal"}
+    assert satisfied_by("Hard Rock", families) == {"hard rock", "heavy rock"}, "not the other way"
+    assert satisfied_by("Metal", {}) == {"metal"}, "no family is still the genre itself"
+    # A name the spelling table already folds needs no family entry: "Heavy Metal" is Metal.
+    assert satisfied_by("Metal", {"Metal": ["Heavy Metal"]}) == {"metal"}
+
+    def band(genres, all_genres=False):
+        return band_rules.Band(1, 5, "B", "20:00", 60, (), ("music",), genres, (), False,
+                               all_genres=all_genres, families=families, max_minutes=60)
+
+    sabbath = {"genres": ["Hard Rock"], "year": 1970}
+    ceca = {"genres": ["Folk"], "year": 1991}
+    assert band(("Metal",)).genre_hit(sabbath) and not band(("Metal",)).genre_hit(ceca)
+    assert not band(("Hard Rock",)).genre_hit({"genres": ["Death Metal"], "year": 1990}), "one way round"
+    # Asking for all of them reads each through its own family. Stored genres are canonical
+    # already (`db.genre_list` is the one door they come through), so a family is folded and an
+    # item's tags are compared as they are.
+    both = band(("Metal", "Reggae"), all_genres=True)
+    assert not both.genre_hit(sabbath)
+    assert both.genre_hit({"genres": ["Thrash Metal", "Reggae"], "year": 1980})
+
+
 def test_a_band_can_ask_for_every_genre_it_lists_rather_than_any():
     """A subject within a source needs both names to count. Curated material carries the source
     as a genre and the subject as another, so a band listing one of each takes that subject from

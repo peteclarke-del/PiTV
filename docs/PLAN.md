@@ -204,6 +204,13 @@ channel's videos draw on the television list, being television as far as the sch
 concerned. A genre already carried is offered wherever it is carried, so an unusual tag somebody
 typed never disappears from its own editor.
 
+Genres can also satisfy one another (`genre_families`, Settings, Programming). Each genre lists
+what else will do: a Metal band takes what a source called Hard Rock, a Soul band takes Motown.
+It widens and never narrows, so nothing correctly labelled is refused, and it is read one way at
+a time, since a Hard Rock band is not obliged to accept everything a Metal band would. Bands
+match by it here and pitv_content is sent it with every request for band material, so what it
+collects is judged by the rule the band will judge it by.
+
 A channel may be told to schedule only material the index has labelled, in its bands and in its
 ordinary programmes alike: no genre or no year, no airing. It plays less, but nothing it cannot
 vouch for, which suits a channel built around genres when the library is a mix of tagged and

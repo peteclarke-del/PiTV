@@ -537,6 +537,14 @@ PiTV never contacts the sources itself, as all online access is pitv_content's.
   video's URL is kept as the wanted request's `ref`.
 
 ## 9. Material for bands (PiTV asks, pitv_content fetches)
+The request carries `genre_families` alongside `genres`: for each genre asked for, the other
+names that satisfy it. A Metal band sends `{"Metal": ["hard rock", "thrash metal", ...]}`, so
+something an online check calls Hard Rock counts and something it calls Folk never does. It
+widens only, never narrows, and is read one way at a time, because Hard Rock satisfying Metal
+does not make Metal satisfy Hard Rock. The table is PiTV's `genre_families` setting, editable in
+Settings, Programming, and it exists because a genre lookup is reliable about broad genres and
+unreliable about fine ones: with a family behind each name, the coarse answer is enough.
+
 
 A band is a titled stretch of a channel's day filled with short items of certain kinds, genres
 and decades (PiTV, PLAN section 4.5). When PiTV finds a band short of material it asks

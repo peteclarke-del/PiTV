@@ -16,12 +16,13 @@ import json
 import random
 import sqlite3
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ..db import as_bool, as_int, as_text, genre_list, rows_to_dicts
+from .. import genres as genre_rules
+from ..db import DEFAULT_SETTINGS, as_bool, as_int, as_text, genre_list, get_setting, rows_to_dicts
 from .clock import broadcast_ts
 from .slots import seconds
 
@@ -45,6 +46,7 @@ class Band:
     decades: tuple[int, ...]
     feature: bool              # open with one long item, then fill the rest
     all_genres: bool = False   # every genre listed, not merely one of them
+    families: dict[str, list[str]] = field(default_factory=dict)   # what else satisfies each genre
     fetch: str = ""            # what to ask pitv_content for; empty follows the channel
     only_matching: bool | None = None  # None follows the channel; True: only labelled matches
     max_minutes: int | None = None     # longest item this band treats as one of its own
@@ -67,9 +69,11 @@ class Band:
         source, was told it had nothing, and then aired the whole source anyway."""
         if not self.genres:
             return True
-        wanted = {g.lower() for g in self.genres}
         held = {str(g).lower() for g in (item.get("genres") or [])}
-        return bool(wanted <= held if self.all_genres else wanted & held)
+        # Each of the band's genres is satisfied by itself or by anything its family names, so a
+        # Metal band takes what a source called Hard Rock without a Folk record ever qualifying.
+        hits = [bool(genre_rules.satisfied_by(g, self.families) & held) for g in self.genres]
+        return all(hits) if self.all_genres else any(hits)
 
     def wants(self, item: dict[str, Any], strict: bool = True) -> bool:
         """Whether an item suits this band. Without `strict` the genres are ignored, which is
@@ -144,7 +148,7 @@ def _is_hhmm(value: str) -> bool:
     return len(parts) == 2 and all(p.isdigit() for p in parts) and int(parts[0]) < 24 and int(parts[1]) < 60
 
 
-def _row_to_band(row: dict[str, Any]) -> Band:
+def _row_to_band(row: dict[str, Any], families: dict[str, list[str]] | None = None) -> Band:
     fill = row.get("fill")
     fill = json.loads(fill) if isinstance(fill, str) and fill else (fill or {})
     days = row.get("days")
@@ -153,6 +157,7 @@ def _row_to_band(row: dict[str, Any]) -> Band:
                 minutes=as_int(row.get("minutes")), days=tuple(int(d) for d in days),
                 kinds=tuple(k for k in (fill.get("kinds") or KINDS) if k in KINDS) or KINDS,
                 genres=tuple(genre_list(fill.get("genres"))), all_genres=bool(fill.get("all_genres")),
+                families=families or {},
                 decades=tuple(int(d) for d in (fill.get("decades") or [])),
                 feature=bool(fill.get("feature")), fetch=as_text(fill.get("fetch")) or "",
                 only_matching=_tri(fill.get("only_matching")), max_minutes=as_int(fill.get("max_minutes")),
@@ -160,10 +165,15 @@ def _row_to_band(row: dict[str, Any]) -> Band:
 
 
 def load(conn: sqlite3.Connection) -> dict[int, list[Band]]:
-    """Every enabled band, by channel, in the order they run."""
+    """Every enabled band, by channel, in the order they run.
+
+    Each carries the genre families, which say what else satisfies the genres it asked for. They
+    are read once here rather than looked up per item: a band tests every candidate in the
+    library against them."""
+    families = get_setting(conn, "genre_families") or DEFAULT_SETTINGS["genre_families"]
     out: dict[int, list[Band]] = {}
     for row in rows_to_dicts(conn.execute("SELECT * FROM band WHERE enabled = 1 ORDER BY channel_id, start")):
-        out.setdefault(row["channel_id"], []).append(_row_to_band(row))
+        out.setdefault(row["channel_id"], []).append(_row_to_band(row, families))
     return out
 
 

@@ -390,6 +390,53 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # compilation that nothing could identify, and the guide has nothing to call it. It stays in
     # the library, flagged in the admin, and is not put in a break until it has a name.
     "unnamed_advert_keywords": ["unknown", "untitled", "unnamed", "no title", "untagged"],
+    # Genres near enough to satisfy one another, read as "a band that asked for the name on the
+    # left will also take something labelled with any name on the right". It widens and never
+    # narrows: nothing correctly labelled is refused because of it.
+    #
+    # It is asymmetric on purpose. A Metal band is happy with Black Sabbath, who most sources
+    # call Hard Rock; a Hard Rock band is not necessarily happy with death metal. So each genre
+    # says who satisfies it rather than a rule declaring two genres alike.
+    #
+    # This is also what makes an online genre lookup usable. Such a lookup is reliable at the
+    # coarse end and unreliable at fine distinctions, and with a family behind each name the
+    # coarse end is enough: Hard Rock satisfies Metal, while Folk never will.
+    "genre_families": {
+        "Metal": ["Hard Rock", "Heavy Metal", "Thrash Metal", "Power Metal", "Hair Metal", "Glam Metal",
+                  "Speed Metal", "Doom Metal", "Gothic Metal", "Death Metal", "Black Metal", "Nu Metal"],
+        # Not plain "Rock": the widening runs the other way. A Rock band is happy with hard rock,
+        # a Hard Rock band is not happy with everything anybody calls rock, and a family that
+        # widened both ways would have taken all seventy-six rock videos into a Metal band.
+        "Hard Rock": ["Heavy Rock", "Metal", "Heavy Metal", "Glam Rock"],
+        "Rock": ["Hard Rock", "Rock and Roll", "Classic Rock", "Blues Rock", "Glam Rock", "Pub Rock"],
+        "Punk": ["Post Punk", "New Wave", "Punk Rock", "Hardcore Punk"],
+        "Post Punk": ["Punk", "New Wave", "Goth"],
+        "New Wave": ["Synth Pop", "Post Punk", "New Romantic"],
+        "Synth Pop": ["New Wave", "Electronic", "New Romantic", "Electropop"],
+        "Electronic": ["Dance", "Synth Pop", "Techno", "House", "Electronica"],
+        "Dance": ["Electronic", "House", "Techno", "Disco", "Eurodance"],
+        "Disco": ["Funk", "Dance", "Boogie"],
+        "Funk": ["Soul", "Disco", "R&B"],
+        "Soul": ["Motown", "R&B", "Funk", "Northern Soul"],
+        "R&B": ["Soul", "Funk", "Motown"],
+        "Motown": ["Soul", "R&B"],
+        "Hip Hop": ["Rap", "R&B"],
+        "Rap": ["Hip Hop"],
+        "Indie": ["Alternative", "Indie Rock", "Post Punk"],
+        "Pop": ["Synth Pop", "Dance", "Pop Rock"],
+        "Reggae": ["Ska", "Dub", "Rocksteady"],
+        "Ska": ["Reggae", "Two Tone"],
+        "Country": ["Country and Western", "Folk"],
+        "Folk": ["Country", "Acoustic"],
+        "Jazz": ["Swing", "Big Band", "Bebop"],
+        "Blues": ["Rhythm and Blues", "Blues Rock"],
+        # Programmes, where the families are looser and mostly about how a source words a thing.
+        "Documentary": ["Factual", "Informational"],
+        "Informational": ["Documentary", "Educational", "Education"],
+        "Science Fiction": ["Fantasy", "Sci-Fi"],
+        "Children": ["Family", "Animation"],
+        "Sport": ["Sports"],
+    },
     # Bands (a titled stretch of a day filled with several items, pitv/scheduler/bands.py)
     "band_feature_repeat_days": 14,    # a long item (a concert, a film) is not repeated within this
     "band_item_repeat_hours": 36,      # nor a short one (a video, an episode) within this

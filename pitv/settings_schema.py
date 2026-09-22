@@ -126,6 +126,13 @@ FIELDS: tuple[dict[str, Any], ...] = (
     _f("adult_advert_keywords", "adverts", "standard", "Adult advert keywords", "chips",
        "Used only when pitv_content gives no family-safety verdict: a whole word from this list in "
        "the title keeps the advert off family channels.", options={"lower": True}),
+    _f("genre_families", "programming", "advanced", "Genres that satisfy one another", "weights",
+       "Each genre lists what else will satisfy a band or channel asking for it: Metal is satisfied "
+       "by Hard Rock and the metal subgenres, Soul by Motown. It only ever widens, so nothing "
+       "correctly labelled is refused, and it is read one way at a time: Hard Rock satisfying Metal "
+       "does not make Metal satisfy Hard Rock. pitv_content is sent these with every request for "
+       "band material, so what it collects is judged by the same rule.",
+       options={"keyLabel": "Genre", "keyPlaceholder": "Metal", "addLabel": "Add genre", "values": "list"}),
     _f("unnamed_advert_keywords", "adverts", "standard", "Words that mean an advert has no name", "chips",
        "A whole word from this list in the title means nothing could identify the advert, usually a "
        "chapter of a compilation. It stays in the library, flagged for attention, and is not put in a "

@@ -21,7 +21,7 @@ import sqlite3
 from datetime import timedelta
 from typing import Any
 
-from . import tool_client
+from . import genres as genre_rules, tool_client
 from .db import DEFAULT_SETTINGS, LIVE, genre_list, get_setting, now_ts, rows_to_dicts, tx
 from .lineup import carries_programmes
 from .scheduler import bands
@@ -419,6 +419,12 @@ def request_band_material(conn: sqlite3.Connection, settings: dict[str, Any],
                             "urgent": need["have"] == 0, "max_minutes": need["minutes"]}
     if band.genres:
         body["genres"] = list(band.genres[:12])
+        # What else satisfies each of them, so pitv_content judges what it finds by the same rule
+        # the band will judge it by here. Without it an open search has only the bare name, which
+        # is reliable at the coarse end and not at fine distinctions: Black Sabbath comes back
+        # Hard Rock, which is the right answer and satisfies a Metal band only if this says so.
+        body["genre_families"] = {g: sorted(genre_rules.satisfied_by(g, band.families) - {g.lower()})
+                                  for g in band.genres}
     if decades:
         body["years"] = [decades[0], decades[-1] + 9]
     if band.id in (outstanding or {}):
