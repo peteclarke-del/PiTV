@@ -14,9 +14,12 @@
   let root = $state(null);
   const count = (name) => kinds.reduce((n, k) => n + (options[name]?.[k] ?? 0), 0);
   let selected = $derived(new Set((value ?? []).map((v) => String(v).toLowerCase())));
-  // Anything already chosen stays listed even if nothing carries it now, so it can be cleared.
-  let names = $derived([...new Set([...Object.keys(options).filter((n) => count(n) > 0),
-                                    ...(value ?? []).map(String)])].sort((a, b) => a.localeCompare(b)));
+  // Every genre the server offers, whether or not the library holds any of it yet, plus anything
+  // already chosen so it can always be cleared. Offering only what is already here made a channel
+  // or band of material nobody has collected impossible to set up, which is the case a band asking
+  // for something absent exists to serve (pitv/genres.py KNOWN).
+  let names = $derived([...new Set([...Object.keys(options), ...(value ?? []).map(String)])]
+                       .sort((a, b) => a.localeCompare(b)));
   let shown = $derived(names.filter((n) => !filter || n.toLowerCase().includes(filter.toLowerCase())));
   // A typed name that is not already a choice, tidied the way the server would tidy it.
   let fresh = $derived.by(() => {
@@ -52,7 +55,7 @@
              onkeydown={(e) => { if (e.key === 'Enter' && fresh) { e.preventDefault(); addFresh(); } }} />
       <div class="list">
         {#each shown as n (n)}
-          <label class="opt"><input type="checkbox" checked={selected.has(n.toLowerCase())} onchange={() => toggle(n)} /><span class="truncate">{n}</span><span class="cnt">{count(n)}</span></label>
+          <label class="opt"><input type="checkbox" checked={selected.has(n.toLowerCase())} onchange={() => toggle(n)} /><span class="truncate">{n}</span><span class="cnt" class:none={!count(n)} title={count(n) ? '' : 'Nothing carries it yet'}>{count(n)}</span></label>
         {:else}
           <div class="muted small" style="padding:.3rem">{names.length ? 'No genre matches.' : 'No genres in the library yet.'}</div>
         {/each}
@@ -75,6 +78,7 @@
   .opt { display: flex; align-items: center; gap: .4rem; padding: .2rem .3rem; border-radius: 4px; cursor: pointer; font-size: .85rem; }
   .opt:hover { background: var(--bg-sunken); }
   .opt input { flex: none; }
+  .cnt.none { opacity: .45; }
   .opt .truncate { flex: 1; }
   .cnt { font-size: .7rem; color: var(--fg-muted); white-space: nowrap; }
   .foot { display: flex; justify-content: space-between; }

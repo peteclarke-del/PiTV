@@ -86,13 +86,28 @@ def cmd_listing(cfg: Config, args: Args) -> int:
     return 0
 
 
+# How long to let open connections finish before closing them anyway. It must stay well inside
+# the unit's TimeoutStopSec, because everything the application releases on the way down happens
+# after this wait: the encoders are stopped and their segments cleared by the lifespan's shutdown,
+# and uvicorn does not reach it while a connection is still open. Waiting indefinitely, which is
+# the default, meant systemd timed the service out and killed it, so none of that ever ran and
+# every restart left ffmpeg processes and a segment directory behind.
+GRACEFUL_SHUTDOWN_SECONDS = 5
+
+
 def cmd_web(cfg: Config, args: Args) -> int:
     import uvicorn
 
     from .web.app import create_app
     app = create_app(cfg)
-    uvicorn.run(app, host=args.host or cfg.web_host, port=args.port or cfg.web_port,
-                log_level="info", access_log=False, log_config=None)
+    config = uvicorn.Config(app, host=args.host or cfg.web_host, port=args.port or cfg.web_port,
+                            log_level="info", access_log=False, log_config=None,
+                            timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS)
+    server = uvicorn.Server(config)
+    # The event stream reads this to end itself as soon as the server starts going down, rather
+    # than holding a connection open that nothing else will close (`api/public.py`, events).
+    app.state.server = server
+    server.run()
     return 0
 
 

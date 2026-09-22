@@ -30,6 +30,12 @@ from ...scheduler.rules import broadcast_day_for, day_bounds, tz_of
 from ...scheduler.slots import parse_day
 from .. import auth
 from ..events import format_sse
+
+# A quiet stream sends a comment this often so proxies do not time it out, and wakes this often
+# to notice a shutdown. The poll is the smaller of the two because a second's delay on the way
+# down is nothing, while a keepalive every second would be chatter.
+SSE_KEEPALIVE_SECONDS = 15.0
+SSE_POLL_SECONDS = 1.0
 from .deps import get_conn, player_public, slot_public
 
 router = APIRouter()
@@ -273,12 +279,24 @@ async def api_events(request: Request):
                 shown = visible(msg)
                 if shown:
                     yield format_sse(shown)
+            # A stream ends when its client goes away, when there is nothing more to say for a
+            # while, or when the server is going down. That last one matters: nothing else closes
+            # this connection, so a browser left on a page held the whole shutdown open until
+            # systemd lost patience and killed the process with its work half done.
+            server = getattr(request.app.state, "server", None)
+            quiet = 0.0
             while not await request.is_disconnected():
+                if server is not None and server.should_exit:
+                    break
                 try:
-                    msg = await asyncio.wait_for(q.get(), timeout=15)
+                    msg = await asyncio.wait_for(q.get(), timeout=SSE_POLL_SECONDS)
                 except TimeoutError:
-                    yield ": keepalive\n\n"
+                    quiet += SSE_POLL_SECONDS
+                    if quiet >= SSE_KEEPALIVE_SECONDS:
+                        quiet = 0.0
+                        yield ": keepalive\n\n"
                     continue
+                quiet = 0.0
                 shown = visible(msg)
                 if shown:
                     yield format_sse(shown)

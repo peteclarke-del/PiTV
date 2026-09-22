@@ -46,6 +46,11 @@ ALIASES: dict[str, str] = {
     "news": "News", "currentaffairs": "News", "entertainment": "Entertainment", "variety": "Entertainment",
     "education": "Education", "educational": "Education", "science": "Science", "technology": "Technology",
     "scienceandtechnology": "Science", "popular": "Pop", "pop": "Pop",
+    # Cookery and food programmes. "Food & Drink" is split on the spaced ampersand before it gets
+    # here, so "drink" is listed too or half the tag would become a genre of its own.
+    "food": "Food", "foods": "Food", "fooddrink": "Food", "foodanddrink": "Food", "drink": "Food",
+    "cooking": "Food", "cookery": "Food", "cookingshow": "Food", "culinary": "Food",
+    "baking": "Food", "gastronomy": "Food",
     # Not "came from YouTube", which would be most of the library: this marks material curated
     # from a named channel or playlist somebody chose, so a channel can be built from it and
     # told apart from everything the ordinary search finds. A band collecting such material
