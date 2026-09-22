@@ -111,6 +111,34 @@ def test_move_and_remove_entries(conn, data_dir):
     assert dbm.data_path(conn, lineup.MIRROR) == data_dir / "lineups.json" and (data_dir / "lineups.json").exists()
 
 
+def test_a_request_that_keeps_failing_stops_being_asked_for(tmp_path):
+    """A video deleted from its site can never be fetched, and asking again costs a search that
+    can only fail. The ceiling used to guard the requests with no slot alone, so one a slot was
+    waiting for went out on every manifest however often it had failed: two were asked for
+    twenty-five times. What a slot cannot have, readiness replaces or the channel cards."""
+    from pitv.content import MAX_WANTED_ATTEMPTS, manifest
+    from conftest import make_library
+
+    ctx = make_library(tmp_path / "attempts", max_episodes=1)
+    conn = ctx["conn"]
+    channel = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
+    now = dbm.now_ts()
+    with dbm.tx(conn):
+        wid = conn.execute("INSERT INTO wanted(kind, title, season, episode, provider, ref, created_at, status)"
+                           " VALUES ('episode','Gone',1,1,'url','https://example.invalid/gone',?, 'failed')",
+                           (now,)).lastrowid
+        conn.execute("INSERT INTO schedule(channel_id, day, start_ts, end_ts, kind, title, wanted_id, replay, offset)"
+                     " VALUES (?,?,?,?,'programme','Gone',?,0,0)",
+                     (channel, "2026-09-24", now + 7200, now + 9000, wid))
+
+    published = lambda: [i for i in manifest(conn, days=2, now=now)["items"] if i.get("wanted_id") == wid]
+    assert published(), "while it may still be tried, a slot's request is published"
+    with dbm.tx(conn):
+        conn.execute("UPDATE wanted SET attempts = ? WHERE id = ?", (MAX_WANTED_ATTEMPTS, wid))
+    assert not published(), "past the ceiling it is not asked for again, slot or no slot"
+    conn.close()
+
+
 def test_an_unscheduled_request_is_ranked_by_the_gap_it_would_fill(tmp_path):
     """Nothing in the manifest's `wanted` list has an air time of its own, so it is judged by the
     soonest holding card it could fill. Ranking by what raised a request goes stale, because "a

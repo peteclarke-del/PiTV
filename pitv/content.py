@@ -191,8 +191,13 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
             " FROM schedule s"
             " JOIN wanted w ON w.id = s.wanted_id JOIN channels c ON c.id = s.channel_id"
             " LEFT JOIN lineup l ON l.id = w.lineup_id"
-            " WHERE s.media_id IS NULL AND s.end_ts > ? AND w.status != 'done'"
-            " ORDER BY s.start_ts", (now,))):
+            # The attempts ceiling applies here too. It used to guard only the requests with no
+            # slot, so one a slot was waiting for went out again on every manifest however often
+            # it had failed: two videos deleted from their site were asked for twenty-five times,
+            # each costing a search that could only fail. What a slot cannot have, readiness
+            # replaces or the channel cards; asking again is not what fixes it.
+            " WHERE s.media_id IS NULL AND s.end_ts > ? AND w.status != 'done' AND w.attempts < ?"
+            " ORDER BY s.start_ts", (now, MAX_WANTED_ATTEMPTS))):
         add(f"w:{r['id']}", r, lambda w: {
             **_wanted_request(w, w["lineup_title"] if w["kind"] == "episode" else None, acquire),
             "duration": w["end_ts"] - w["start_ts"]})
