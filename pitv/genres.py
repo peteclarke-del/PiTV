@@ -44,6 +44,10 @@ ALIASES: dict[str, str] = {
     "trackandfield": "Athletics", "figureskating": "Ice Skating", "iceskating": "Ice Skating",
     "horseracing": "Horse Racing", "suspense": "Thriller", "warfilm": "War", "warmovie": "War",
     "news": "News", "currentaffairs": "News", "entertainment": "Entertainment", "variety": "Entertainment",
+    # "Reality" and "Reality TV" are the same thing and were two genres, so a band asking for one
+    # silently missed everything tagged the other. The longer name is the canonical one because
+    # the rule that a reality show is not sport is written against it.
+    "reality": "Reality TV", "realitytv": "Reality TV", "realityshow": "Reality TV", "docusoap": "Reality TV",
     "education": "Education", "educational": "Education", "science": "Science", "technology": "Technology",
     "scienceandtechnology": "Science", "popular": "Pop", "pop": "Pop",
     # Cookery and food programmes. "Food & Drink" is split on the spaced ampersand before it gets
