@@ -16,7 +16,7 @@ from typing import Any
 
 from .library import Library
 from .policy import SchedulerPolicy
-from .slots import Show, Slot, programme_slot, seconds
+from .slots import Show, Slot, episode_name, episode_request, programme_slot, seconds
 
 
 def next_episode_number(entry: dict[str, Any]) -> int | None:
@@ -48,16 +48,14 @@ class Runs:
             elif e["spare_wanted"]:
                 spare = e["spare_wanted"].pop(0)
                 number, reuse = int(spare["episode"] or 1), int(spare["id"])
-                spec = {"kind": "episode", "lineup_id": e["lineup_id"], "title": f"Episode {number}", "season": 1,
-                        "episode": number, "year": e.get("year"), "reuse": reuse}
+                spec = episode_request(e["lineup_id"], number, e.get("year"), reuse)
             else:
                 number, reuse = next_episode_number(e), None
                 if number is None:
                     raise ValueError(f"{e['title']}: nothing left to ask for")    # the selector does not offer it
                 e["taken"].add(number)
-                spec = {"kind": "episode", "lineup_id": e["lineup_id"], "title": f"Episode {number}", "season": 1,
-                        "episode": number, "year": e.get("year"), "reuse": reuse}
-            subtitle = f"Episode {number}"
+                spec = episode_request(e["lineup_id"], number, e.get("year"), reuse)
+            subtitle = episode_name(number)
             if not e.get("_external_repeat"):
                 e["last_spec"] = dict(spec)
         else:

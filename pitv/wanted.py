@@ -27,6 +27,7 @@ from .lineup import carries_programmes
 from .scheduler import bands
 from .scheduler.library import USABLE
 from .scheduler.rules import tz_of
+from .scheduler.slots import episode_name
 
 log = logging.getLogger("pitv.wanted")
 
@@ -349,7 +350,7 @@ def request_band_lineup(conn: sqlite3.Connection, settings: dict[str, Any]) -> d
                 continue     # the run is known to end before this
             asked[lineup_id].add(number)
             by_band[need["band"].id] = by_band.get(need["band"].id, 0) + 1
-            rows.append(("episode", f"Episode {number}", entry.get("year"), 1, number,
+            rows.append(("episode", episode_name(number), entry.get("year"), 1, number,
                          lineup_id, int(entry.get("transient") or 0), now))
         if len(rows) == before:
             break            # every entry has been asked for everything it has

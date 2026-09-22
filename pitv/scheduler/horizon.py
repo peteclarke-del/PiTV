@@ -16,6 +16,7 @@ from typing import Any
 from ..db import all_settings, enabled_channels, now_ts, run_log_finish, run_log_start, tx
 from .build import Builder, Progress
 from .rules import broadcast_day_for, day_bounds, tz_of
+from .slots import episode_name
 
 log = logging.getLogger("pitv.scheduler")
 
@@ -185,9 +186,9 @@ def bring_requests_forward(conn: sqlite3.Connection) -> int:
                 asked = int(w["episode"] or 0)
                 if number < asked:
                     conn.execute("UPDATE wanted SET episode = ?, title = ?, updated_at = ? WHERE id = ?",
-                                 (number, f"Episode {number}", now_ts(), w["id"]))
+                                 (number, episode_name(number), now_ts(), w["id"]))
                     conn.execute("UPDATE schedule SET subtitle = ? WHERE wanted_id = ? AND media_id IS NULL",
-                                 (f"Episode {number}", w["id"]))
+                                 (episode_name(number), w["id"]))
                     moved += 1
                     asked = number
                 number = max(number, asked + 1)

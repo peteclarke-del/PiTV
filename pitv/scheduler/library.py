@@ -20,7 +20,7 @@ from ..genres import matches, programme_type, scheduling_class
 from . import bands
 from .policy import SchedulerPolicy
 from .rules import era_spans, era_weight_spans, is_kids, keyword_pattern, names_a_product
-from .slots import Show, json_field
+from .slots import Show, episode_request, json_field
 
 # Per channel, the window of unlocked slots a build is about to replace: (from_ts, to_ts) with
 # to_ts None for "everything from from_ts on" (a forced horizon build).
@@ -240,9 +240,7 @@ class Library:
             if e["kind"] == "show" and open_requests:
                 latest = max(open_requests, key=lambda w: (int(w["episode"] or 0), int(w["id"])))
                 number = int(latest["episode"] or 1)
-                e["last_spec"] = {"kind": "episode", "lineup_id": lineup_id,
-                                  "title": f"Episode {number}", "season": 1, "episode": number,
-                                  "year": e.get("year"), "reuse": int(latest["id"])}
+                e["last_spec"] = episode_request(lineup_id, number, e.get("year"), int(latest["id"]))
             # Nobody holds it yet, so its certificate is the match's or the owner's. A title tagged
             # Adult is kept after the watershed even when no source rated it, or one rated it 12.
             if matches(e["genres"], ("Adult",)) and e.get("certificate") not in ("15", "18"):

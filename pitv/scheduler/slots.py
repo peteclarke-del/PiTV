@@ -110,13 +110,30 @@ class Show:
         return None
 
 
+def episode_name(number: int) -> str:
+    """What an episode nobody holds yet is called, in the guide and in the request alike.
+
+    One place, because it was four: the request a slot raises, the one a band raises, the spare
+    a rebuild reuses and the renumbering that moves them all wrote it out themselves. Four
+    spellings of one convention is three chances for the guide and the fetch to disagree about
+    which episode a viewer is being shown."""
+    return f"Episode {int(number)}"
+
+
+def episode_request(lineup_id: int, number: int, year: int | None = None,
+                    reuse: int | None = None) -> dict[str, Any]:
+    """The request for one episode of a line-up entry: what is asked for and what it is called."""
+    return {"kind": "episode", "lineup_id": lineup_id, "title": episode_name(number),
+            "season": 1, "episode": int(number), "year": year, "reuse": reuse}
+
+
 def episode_subtitle(item: dict[str, Any]) -> str:
     """The episode's own title; falls back to 'Episode N' when the file has no title."""
     title = (item.get("title") or "").strip()
     if title:
         return title
     if item.get("episode") is not None:
-        return f"Episode {int(item['episode'])}"
+        return episode_name(item["episode"])
     return ""
 
 
