@@ -48,11 +48,14 @@
   // earliest first, so it needs an address and a channel to belong to and nothing looked up.
   let curated = $derived(f.kind === 'channel');
   let programme = $derived(f.kind === 'show' || f.kind === 'movie' || curated);
-  let searchable = $derived(programme && !curated);
+  // Nothing online knows about somebody's YouTube channel, so there is nothing to look up and no
+  // match to confirm: the address is the identity. It goes straight to the details rather than
+  // sending the owner through a search that cannot succeed and out by "Add without a match".
+  let stage = $derived(curated ? 'place' : step);
   // What the title would be taken for and where it would go, asked of PiTV so the rule lives in one place.
   let placement = $state(null);
   $effect(() => {
-    if (!open || step !== 'place' || !programme) { placement = null; return; }
+    if (!open || stage !== 'place' || !programme) { placement = null; return; }
     const ask = { kind: f.kind, genres: [...f.genres], programme_type: f.programme_type || null, year: num(f.year, { int: true }) };
     if (curated) { placement = null; return; }
     tryApi(post('/api/lineup/placement', ask)).then((p) => { placement = p ?? null; });
@@ -110,10 +113,12 @@
 <Modal {open} title="Add to the catalogue" {onclose} width="640px">
   <div class="stack">
     <p class="scope" style="margin:0"><AppBadge app="pitv" /> For titles that are not on the NAS. pitv_content looks the title up online so the right one is added, then fetches it into the cache; nothing is written to the NAS.</p>
-    {#if step === 'search'}
+    {#if stage === 'search' || curated}
       <div class="row">
         {#each KINDS as [id, label] (id)}<label class="check"><input type="radio" name="kind" value={id} bind:group={f.kind} onchange={() => (found = null)} /> {label}</label>{/each}
       </div>
+    {/if}
+    {#if stage === 'search'}
       <div class="form-grid">
         <label class="field wide">Title<input bind:value={f.title} list="catalogue-suggestions" placeholder={f.kind === 'music' ? 'Song title' : 'As it was broadcast'}
           onkeydown={(e) => { if (e.key === 'Enter' && f.title.trim()) search(); }} />
@@ -134,11 +139,16 @@
           <button class="small ghost" onclick={() => (step = 'search')}>Search again</button></div>
       {/if}
       <div class="form-grid">
-        <label class="field wide">Title<input bind:value={f.title} /></label>
-        {#if !curated}<label class="field">Year<input type="number" class="narrow" min="1900" max="2100" bind:value={f.year} /></label>{/if}
         {#if curated}
           <label class="field wide">Channel or playlist address<input bind:value={f.url} placeholder="https://www.youtube.com/@…" />
-            <span class="help">Its videos become the episodes of this entry, taken earliest first. A playlist keeps the order its maker chose, so point at one where it exists.</span></label>
+            <span class="help">Paste the address from the browser. Its videos become the episodes of this entry, taken earliest first. A playlist keeps the order its maker chose, so point at one where it exists.</span></label>
+          <label class="field wide">Title<input bind:value={f.title} placeholder="What the guide calls it" />
+            <span class="help">The name this becomes a series under, not the address. Call it what you want to read in the guide.</span></label>
+        {:else}
+          <label class="field wide">Title<input bind:value={f.title} /></label>
+          <label class="field">Year<input type="number" class="narrow" min="1900" max="2100" bind:value={f.year} /></label>
+        {/if}
+        {#if curated}
           <label class="field">Channel
             <select bind:value={f.channel}><option value="">Where it belongs</option>{#each channels as c (c.id)}<option value={c.id}>{c.number} {c.name}</option>{/each}</select>
             <span class="help">Its material carries the YouTube genre, so a band asking for that claims it.</span>
@@ -166,11 +176,12 @@
   </div>
   {#snippet footer()}
     <button onclick={onclose}>Cancel</button>
-    {#if step === 'search'}
+    {#if stage === 'search'}
       <button onclick={withoutMatch} disabled={!f.title.trim() || !!existing} title="Skip the online check">Add without a match</button>
       <button class="primary" onclick={search} disabled={search.busy || !f.title.trim() || !!existing}>{search.busy ? 'Searching…' : 'Search online'}</button>
     {:else}
-      <button class="primary" onclick={add} disabled={add.busy || !f.title.trim() || !!existing}>Add</button>
+      <button class="primary" onclick={add}
+              disabled={add.busy || !f.title.trim() || !!existing || (curated && !f.url.trim())}>Add</button>
     {/if}
   {/snippet}
 </Modal>
