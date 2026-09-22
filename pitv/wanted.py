@@ -193,17 +193,22 @@ def _lineup_entries(conn: sqlite3.Connection, channel_id: int) -> list[dict[str,
     return rows
 
 
-def _asked_episodes(conn: sqlite3.Connection, lineup_ids: list[int]) -> dict[int, set[int]]:
-    """Episode numbers already requested for each entry, so none is asked for twice. What is
-    already on disk counts as asked: a first season's numbers are the entry's place in its run,
-    which is how PiTV asks for them (`library._load_externals` reads them the same way)."""
+def _asked_episodes(conn: sqlite3.Connection, lineup_ids: list[int]) -> tuple[dict[int, set[int]], dict[int, int]]:
+    """Per entry: the episode numbers ever requested, so none is asked for twice, and how many
+    of those are still outstanding. The second is what says whether a band has enough on order:
+    a band is not short merely because its material has not arrived yet, and asking again for
+    what is already queued is how a queue becomes a list nobody can work through."""
     if not lineup_ids:
-        return {}
+        return {}, {}
     marks = ",".join("?" * len(lineup_ids))
-    out: dict[int, set[int]] = {i: set() for i in lineup_ids}
-    for w in conn.execute(f"SELECT lineup_id, episode FROM wanted WHERE lineup_id IN ({marks})", lineup_ids):
-        out[int(w["lineup_id"])].add(int(w["episode"] or 0))
-    return out
+    asked: dict[int, set[int]] = {i: set() for i in lineup_ids}
+    open_now: dict[int, int] = dict.fromkeys(lineup_ids, 0)
+    for w in conn.execute(f"SELECT lineup_id, episode, status FROM wanted WHERE lineup_id IN ({marks})", lineup_ids):
+        lineup_id = int(w["lineup_id"])
+        asked[lineup_id].add(int(w["episode"] or 0))
+        if w["status"] not in ("done", "failed"):
+            open_now[lineup_id] += 1
+    return asked, open_now
 
 
 def unairable(conn: sqlite3.Connection, settings: dict[str, Any]) -> list[dict[str, Any]]:
@@ -268,7 +273,7 @@ def request_band_lineup(conn: sqlite3.Connection, settings: dict[str, Any]) -> d
     budget = max(1, int(settings.get("band_fetch_max", 60)))
     now = now_ts()
     every_id = sorted({int(e["id"]) for n in needs for e in n["entries"]})
-    asked = _asked_episodes(conn, every_id)      # shared: a creator in two bands is asked once
+    asked, on_order = _asked_episodes(conn, every_id)   # shared: a creator in two bands is asked once
     rows: list[tuple[Any, ...]] = []
     by_band: dict[int, int] = {}
     # Round robin over the bands as well as within them, so the neediest band by the timetable
@@ -279,7 +284,13 @@ def request_band_lineup(conn: sqlite3.Connection, settings: dict[str, Any]) -> d
         for need, entries in pending:
             if len(rows) >= budget:
                 break
-            want = max(int(settings.get("band_fetch_min", 20)), need["want"] - need["have"])
+            # A band keeps about `band_fetch_min` videos on order and no more, topping up as
+            # they arrive. Its shortfall can be hundreds: asking for all of them at once buries
+            # the episodes tonight's schedule is waiting for under a list nobody can work
+            # through, and a request queued for a week is a promise of work already overtaken.
+            standing = sum(on_order.get(int(e["id"]), 0) for e in need["entries"])
+            depth = max(1, int(settings.get("band_fetch_min", 20)))
+            want = min(need["want"] - need["have"], depth) - standing
             if by_band.get(need["band"].id, 0) >= want:
                 continue
             entry = entries.pop(0) if entries else None
@@ -305,8 +316,10 @@ def request_band_lineup(conn: sqlite3.Connection, settings: dict[str, Any]) -> d
         conn.executemany(
             "INSERT INTO wanted(kind, title, year, season, episode, lineup_id, transient,"
             " created_at, provider, auto) VALUES (?,?,?,?,?,?,?,?,'auto',1)", rows)
-        conn.executemany("UPDATE band SET last_fetch_at = ? WHERE id = ?",
-                         [(now, bid) for bid in by_band])
+    # `last_fetch_at` is deliberately not stamped: it records a helping asked of pitv_content and
+    # is what stops a band asking for another while one is queued there. These are wanted rows,
+    # which the shortfall above already accounts for, and stamping it silenced the doctor and
+    # the catalogue remedy for an hour over work that was not pitv_content's to do.
     summaries = [f"{n['band'].name}: {by_band[n['band'].id]}" for n in needs if by_band.get(n["band"].id)]
     summary = f"asked for {len(rows)} from the line-up ({', '.join(summaries)})"
     log.info("band line-up: %s", summary)

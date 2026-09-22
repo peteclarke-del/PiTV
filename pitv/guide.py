@@ -100,7 +100,14 @@ def collapse_blocks(slots: list[dict[str, Any]], feature: int = ITEM_MINUTES * 6
         # it fills half the band, or it is long enough to be a programme in its own right.
         leads = bool(title) and (seconds * 2 >= entry["end_ts"] - entry["start_ts"] or seconds >= feature)
         entry["title"] = title if leads else entry["block"]
-        entry["subtitle"] = entry["block"] if leads else ""
+        if leads:
+            entry["subtitle"] = entry["block"]
+        elif entry["items"]:
+            entry["subtitle"] = ""
+        # A band that placed nothing is its holding card for the whole stretch, and the card
+        # says so ("More is on its way. Service resumes at ..."). Blanking the subtitle threw
+        # that away and billed an empty two hours exactly as it bills a full one, so the guide
+        # read "2 Wheels & More" for a stretch that was waiting for its first video.
     return out
 
 
