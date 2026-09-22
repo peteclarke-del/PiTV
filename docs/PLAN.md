@@ -496,6 +496,13 @@ for the kinds the band draws on (`lineup.facets`), so a band of music videos is 
 Westerns. The same list, counted over series and films, backs a channel's allowed and excluded
 genres.
 
+Material a band could never air is reported rather than left in the cache unnoticed. An item has
+to suit a band's genres, be short enough to be one of several (or be the one feature of a band
+billed that way), and fit inside the band's stretch; one that fails every band on every count is
+not waiting its turn, and nothing else in the system would ever mention it. A full concert among
+three-minute videos and a three-hour podcast in a two-hour band both land there, and both are
+answered by lengthening a band or giving the material one of its own.
+
 One of a band's genres is enough by default, which is what a band of a broad subject wants. A
 band may instead ask for every genre it lists, which is how a subject within a source is named:
 curated material carries the source it came from as one genre and its subject as another, so a

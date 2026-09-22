@@ -1146,6 +1146,38 @@ def test_external_repeat_reuses_request_without_advancing_episode():
     c.close()
 
 
+def test_material_no_band_could_ever_air_is_reported(tmp_path):
+    """A band takes what suits its genres, is short enough to be one of several, and fits inside
+    its stretch. Material that fails every band on every count is not waiting its turn: it will
+    sit in the cache for ever and nothing else would say so. A full concert among three-minute
+    videos is the case this exists for, and the answer is a longer band, not a quieter failure."""
+    from pitv import wanted
+    ctx = make_library(tmp_path, max_episodes=2)
+    conn = ctx["conn"]
+    channel = conn.execute("SELECT id FROM channels WHERE content = 'music'").fetchone()["id"]
+    with dbm.tx(conn):
+        conn.execute("DELETE FROM band WHERE channel_id = ?", (channel,))
+        _band_row(conn, channel, "Short Videos", "20:00", 60, ["music"], genres=["Disco"])
+        conn.execute("UPDATE band SET fill = json_set(fill, '$.max_minutes', 5) WHERE channel_id = ?", (channel,))
+        src = conn.execute("SELECT id FROM sources LIMIT 1").fetchone()["id"]
+        for title, minutes in (("A Short One", 3), ("A Whole Concert", 95)):
+            conn.execute("INSERT INTO media(source_id, kind, title, path, duration, genres, year, home_channel_id)"
+                         " VALUES (?,'music',?,?,?,'[\"Disco\"]',1979,?)",
+                         (src, title, f"/m/{title}.mp4", minutes * 60, channel))
+    settings = dbm.all_settings(conn)
+
+    report = [r for r in wanted.unairable(conn, settings) if r["items"]]
+    assert len(report) == 1, report
+    assert report[0]["longest_title"] == "A Whole Concert"
+    assert report[0]["longest_minutes"] == 95 and report[0]["longest_band_minutes"] == 60
+
+    # Give it a band that could hold it and it stops being stranded: the fix is configuration.
+    with dbm.tx(conn):
+        _band_row(conn, channel, "Concert", "21:00", 120, ["music"], genres=["Disco"], feature=True)
+    assert not [r for r in wanted.unairable(conn, settings) if r["items"]]
+    conn.close()
+
+
 def test_a_band_fills_from_the_line_up_its_channel_names(tmp_path):
     """A channel built from named sources has nothing to search for: the sources are the answer.
     Its starved bands ask each line-up entry they would take for its next episode, which is an

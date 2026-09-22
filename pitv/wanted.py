@@ -24,6 +24,7 @@ from typing import Any
 from . import tool_client
 from .db import DEFAULT_SETTINGS, LIVE, genre_list, get_setting, now_ts, rows_to_dicts, tx
 from .scheduler import bands
+from .lineup import carries_programmes
 from .scheduler.library import USABLE
 from .scheduler.rules import tz_of
 
@@ -202,6 +203,49 @@ def _asked_episodes(conn: sqlite3.Connection, lineup_ids: list[int]) -> dict[int
     out: dict[int, set[int]] = {i: set() for i in lineup_ids}
     for w in conn.execute(f"SELECT lineup_id, episode FROM wanted WHERE lineup_id IN ({marks})", lineup_ids):
         out[int(w["lineup_id"])].add(int(w["episode"] or 0))
+    return out
+
+
+def unairable(conn: sqlite3.Connection, settings: dict[str, Any]) -> list[dict[str, Any]]:
+    """A channel's own material that no band of it could ever air, and why.
+
+    A band takes an item that suits its genres, is short enough to be one of several (or is the
+    one feature of a band billed that way), and fits inside the band's stretch. Material that
+    fails every band on every count is not merely waiting its turn: it will sit in the cache for
+    ever, and nothing else in the system would say so. A full concert among three-minute videos
+    and a three hour podcast in a two hour band both land here, and both are answered by
+    lengthening a band or giving the material one of its own.
+
+    Only a channel built from bands is examined: where a pattern places programmes, anything the
+    bands cannot use is aired by the pattern instead."""
+    out = []
+    default_minutes = int(settings.get("band_item_max_minutes", bands.ITEM_MINUTES))
+    channels = {c["id"]: c for c in rows_to_dicts(conn.execute("SELECT * FROM channels WHERE enabled = 1"))}
+    now, tz = now_ts(), tz_of(conn)
+    for channel_id, band_list in bands.load(conn).items():
+        channel = channels.get(channel_id)
+        if channel is None or carries_programmes(channel):
+            continue
+        longest = {b.id: max((e - s for s, e in _airings(band_list, settings, now, tz).get(b.id, [])), default=0)
+                   for b in band_list}
+        rows = rows_to_dicts(conn.execute(
+            f"SELECT id, title, genres, year, duration, concert, kind FROM media"
+            f" WHERE home_channel_id = ? AND {USABLE} AND duration > 0", (channel_id,)))
+        stranded = []
+        for r in rows:
+            item = {"genres": genre_list(r["genres"]), "year": r["year"], "duration": r["duration"],
+                    "concert": r["concert"], "kind": r["kind"]}
+            if any(b.wants(item) and float(r["duration"]) <= longest[b.id]
+                   and bands.is_feature(item, b.max_minutes or int(channel.get("band_item_max_minutes") or default_minutes)) == b.feature
+                   for b in band_list):
+                continue
+            stranded.append(r)
+        if stranded:
+            worst = max(stranded, key=lambda r: float(r["duration"]))
+            out.append({"channel": channel["name"], "items": len(stranded),
+                        "longest_minutes": round(float(worst["duration"]) / 60),
+                        "longest_title": worst["title"],
+                        "longest_band_minutes": round(max(longest.values(), default=0) / 60)})
     return out
 
 

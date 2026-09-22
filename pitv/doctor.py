@@ -144,14 +144,15 @@ def _cap_against_schedule(conn: sqlite3.Connection, cap: int, now: int) -> dict[
 
 
 def _bands(conn: sqlite3.Connection, settings: dict[str, Any], now: int) -> dict[str, Any]:
-    from .wanted import band_needs
+    from .wanted import band_needs, unairable
     cards = conn.execute(
         "SELECT c.name AS channel, s.block AS band, s.day, (s.end_ts - s.start_ts) / 60 AS card_minutes"
         " FROM schedule s JOIN channels c ON c.id = s.channel_id WHERE s.kind = 'filler' AND s.block IS NOT NULL"
         " AND s.replay = 0 AND s.end_ts > ? AND s.start_ts < ? ORDER BY s.start_ts", (now, now + 2 * DAY)).fetchall()
     needs = [{"channel": n["channel"]["name"], "band": n["band"].name, "kind": n["kind"], "have": n["have"], "want": n["want"]}
              for n in band_needs(conn, settings)]
-    return {"holding_cards_next_two_days": [dict(r) for r in cards], "due_a_top_up": needs}
+    return {"holding_cards_next_two_days": [dict(r) for r in cards], "due_a_top_up": needs,
+            "no_band_can_air": unairable(conn, settings)}
 
 
 def _library(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -257,6 +258,12 @@ def _findings(doc: dict[str, Any]) -> list[str]:
         usable = library.get("adverts_usable") or 0
         out.append(f"{held} adverts name no product and are not put in a break, leaving {usable} that do. "
                    "They are chapters of a compilation nothing could identify; pitv_content is the one to name them.")
+    for stranded in (doc.get("bands") or {}).get("no_band_can_air") or []:
+        # Not a shortfall: this material is held and can never be shown, so nothing about it
+        # will change until a band is lengthened or given to it.
+        out.append(f"{stranded['channel']}: {stranded['items']} item(s) no band can air, the longest "
+                   f"{stranded['longest_minutes']} min (\"{stranded['longest_title']}\"); its longest band "
+                   f"runs {stranded['longest_band_minutes']} min")
     # pitv_content is never to be idle while anything is left to fetch.
     waiting = sum(r["n"] for r in doc.get("wanted") or [] if isinstance(r, dict) and r.get("status") == "queued")
     short = sum(1 for b in doc.get("bands") or [] if isinstance(b, dict) and (b.get("have") or 0) < (b.get("want") or 0))
