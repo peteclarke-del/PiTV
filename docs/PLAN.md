@@ -1232,6 +1232,15 @@ seeds its sources on its first install. PiTV itself keeps only the cache setting
   async heartbeat; a hung process is killed and restarted (`Restart=always`, no start-rate
   limit). The hardware watchdog (`dtparam=watchdog=on`, `RuntimeWatchdogSec=15`) reboots the
   board on a kernel or systemd hang.
+- Stopping. The web service closes what it holds on the way down: the live encoders are stopped
+  and their segments cleared by the application's shutdown, which runs only once every connection
+  is closed. The event stream is the one connection nothing else closes, since a browser left on
+  a page holds it open for as long as it is open, so the stream ends itself as soon as the server
+  begins shutting down, and uvicorn is given `timeout_graceful_shutdown` well inside the unit's
+  `TimeoutStopSec` in case anything else lingers. Without both, systemd timed the service out and
+  killed it, the shutdown never ran at all, and every restart left ffmpeg processes and a segment
+  directory behind. A restart with a page open now takes about a second rather than ten and a
+  `SIGKILL`.
 - Memory. Units carry `MemoryHigh` and `MemoryMax` (player 900M/1200M, web 400M/600M). The
   player logs its own and mpv's RSS every five minutes and exits for a clean restart above
   `memory_limit_mb` (700), or when mpv exceeds 1.5 times that; playback resumes at the live
