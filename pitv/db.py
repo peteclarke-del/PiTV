@@ -539,6 +539,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         _seed_channel_genres(conn)
         _seed_fetch_kinds(conn)
         _seed_also_carries(conn)
+        _seed_networks(conn)
         _seed_daypart_profiles(conn)
         assign_ident_channels(conn)
         conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
@@ -900,6 +901,20 @@ def _seed_channel_genres(conn: sqlite3.Connection) -> None:
         if {g.lower() for g in genres} == old:
             conn.execute("UPDATE channels SET allowed_genres = ? WHERE id = ?",
                          (json.dumps([*genres, "Children"]), row["id"]))
+
+
+def _seed_networks(conn: sqlite3.Connection) -> None:
+    """Give the shipped general channels the broadcasters they stand for, once.
+
+    The list arrived with the placement rule and was written into the seed, which only ever runs
+    on an empty database, so every station built before it had the rule and no data to feed it:
+    a programme the index knew the network for was still placed by whichever channel listed the
+    most of its genres. Matched on number and unchanged name, and only where the channel has none
+    of its own, so a renamed or rearranged station is left alone."""
+    conn.executemany("UPDATE channels SET networks = ? WHERE number = ? AND name = ?"
+                     " AND (networks IS NULL OR networks IN ('', 'null', '[]'))",
+                     [(json.dumps(ch["networks"]), ch["number"], ch["name"])
+                      for ch in DEFAULT_CHANNELS if ch.get("networks")])
 
 
 def _seed_daypart_profiles(conn: sqlite3.Connection) -> None:

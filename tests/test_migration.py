@@ -62,6 +62,33 @@ def test_table_definitions_survive_comments_with_brackets():
     sqlite3.connect(":memory:").execute(stmt.replace("IF NOT EXISTS shows", "IF NOT EXISTS t"))
 
 
+def test_a_station_built_before_broadcasters_is_given_them(tmp_path):
+    """The broadcaster a channel stands for arrived with the rule that uses it, and the rule
+    reads the channel row, so a station built before it had the rule and nothing to feed it: a
+    programme whose network was known was still placed by whichever channel listed the most of
+    its genres. The shipped channels are given theirs once, and anything the owner has set is
+    left exactly as it is."""
+    from pitv.db import DEFAULT_CHANNELS, connect, init_db, rows_to_dicts
+
+    conn = connect(tmp_path / "before.db")
+    init_db(conn)
+    with conn:
+        conn.execute("UPDATE channels SET networks = NULL")
+        # One renamed, and one the owner has already answered for themselves.
+        conn.execute("UPDATE channels SET name = 'The Other One' WHERE number = 1")
+        conn.execute("UPDATE channels SET networks = '[\"Somewhere Else\"]' WHERE number = 3")
+    init_db(conn)
+
+    after = {c["number"]: c for c in rows_to_dicts(conn.execute("SELECT * FROM channels"))}
+    shipped = {c["number"]: c for c in DEFAULT_CHANNELS if c.get("networks")}
+    assert after[1]["networks"] is None, "a renamed channel is not assumed to be the shipped one"
+    assert after[3]["networks"] == ["Somewhere Else"], "what the owner set is left alone"
+    for number in shipped:
+        if number not in (1, 3):
+            assert after[number]["networks"] == shipped[number]["networks"]
+    conn.close()
+
+
 def test_an_empty_install_comes_up_as_the_whole_station(tmp_path):
     """Deploying empty and rebuilding to the configured station must need nobody editing rows by
     hand, so what the seed omits is a thing somebody has to know to set. The seed had drifted

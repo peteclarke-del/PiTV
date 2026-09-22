@@ -380,7 +380,7 @@ def add(conn: sqlite3.Connection, channel_id: int | None, *, show_id: int | None
         title: str | None = None, year: int | None = None, kind: str | None = None, genres: list[str] | None = None,
         transient: bool | None = None, episode_minutes: int | None = None, source: str = "manual",
         match: Any = None, programme_type: str | None = None, episode_count: int | None = None,
-        certificate: str | None = None) -> dict[str, Any]:
+        certificate: str | None = None, network: str | None = None) -> dict[str, Any]:
     """Add (or move) an entry. Library items are identified by show_id/media_id; anything else
     is an external entry that pitv_content will be asked to fetch. `programme_type` is the
     owner's word on what an external title is; without it the type is read from the genres.
@@ -388,14 +388,20 @@ def add(conn: sqlite3.Connection, channel_id: int | None, *, show_id: int | None
     `certificate` is the match's; without one a title nobody holds yet would be free to air at
     any hour. What is fetched is kept unless the caller says otherwise: an episode found once is
     expensive to find again and the point of fetching it is that a later airing costs nothing.
-    Without a channel, an external entry goes where the generator would put that type."""
+
+    Without a channel, an external entry goes where the generator would put that type, and
+    `network` is what it was broadcast on: a title added by hand is the case where that is best
+    known, since the lookup has just returned it, and it decides placement ahead of any genre
+    rule (`network_fit`). Leaving it out sent a title the online check had placed on a
+    broadcaster to whichever channel happened to list the most of its genres."""
     if programme_type is not None and programme_type not in genre_rules.PROGRAMME_TYPES:
         raise ValueError(f"programme_type must be one of {', '.join(genre_rules.PROGRAMME_TYPES)}")
     if channel_id is None:
         if show_id is not None or media_id is not None:
             raise ValueError("a channel is required to move a library title")
         ptype = genre_rules.programme_type(kind, genres, None, programme_type)
-        channel_id = best_channel(conn, genres, ptype=ptype, kids=genre_rules.is_childrens(genres or []), year=as_int(year))
+        channel_id = best_channel(conn, genres, ptype=ptype, kids=genre_rules.is_childrens(genres or []),
+                                  year=as_int(year), network=network)
         if channel_id is None:
             raise ValueError(f"no channel takes a {ptype} with these genres; choose one")
     if programme_type is None and show_id is None and media_id is None:

@@ -98,6 +98,7 @@
           episode_minutes: num(f.minutes, { min: 1, max: 240, int: true }) } : {
           kind: f.kind, title: f.title.trim(), year, genres: f.genres, programme_type: f.programme_type || null, transient: f.transient,
           channel_id: f.channel === '' ? null : Number(f.channel), match: chosen?.match ?? null,
+          network: chosen?.network ?? null,
           episode_minutes: f.kind === 'show' ? num(f.minutes, { min: 1, max: 240, int: true }) : null,
           episode_count: f.kind === 'show' ? num(chosen?.episodes, { min: 1, int: true }) : null,
           certificate: chosen?.certificate ?? null }))
