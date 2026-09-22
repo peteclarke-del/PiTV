@@ -479,8 +479,20 @@ it: kinds (music videos, episodes, films), genres, decades, and whether it opens
 feature (a concert, a film, anything at or over the band's item length; see 4.4c). Bands are edited per channel in the
 admin, under Channels, Bands. The genres and decades on offer are the ones the library holds
 for the kinds the band draws on (`lineup.facets`), so a band of music videos is not offered
-Westerns and nobody can name a genre nothing carries and then wonder why the band is empty.
-The same list, counted over series and films, backs a channel's allowed and excluded genres.
+Westerns. The same list, counted over series and films, backs a channel's allowed and excluded
+genres.
+
+One of a band's genres is enough by default, which is what a band of a broad subject wants. A
+band may instead ask for every genre it lists, which is how a subject within a source is named:
+curated material carries the source it came from as one genre and its subject as another, so a
+band listing one of each takes that subject from that source, where either alone would also
+bring in the other's. The kinds are what a file is, a music video, an episode or a film, and
+never where it came from; a source is a genre, which is why the two can be combined at all.
+
+A genre nothing carries yet can be typed into the picker where the material is curated rather
+than broadcast. Somebody's own subscriptions are motorcycling, retro computing and camping, and
+no broadcaster's index would ever have taught the library those names, so the first entry of a
+subject could otherwise never be labelled and the subject could never come to exist.
 
 The scheduler places bands as fixed points in the day, like anchored series, and fills each
 one as it reaches it. An item must fit what is left of the band; the search widens step by

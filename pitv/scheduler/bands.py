@@ -44,6 +44,7 @@ class Band:
     genres: tuple[str, ...]
     decades: tuple[int, ...]
     feature: bool              # open with one long item, then fill the rest
+    all_genres: bool = False   # every genre listed, not merely one of them
     fetch: str = ""            # what to ask pitv_content for; empty follows the channel
     only_matching: bool | None = None  # None follows the channel; True: only labelled matches
     max_minutes: int | None = None     # longest item this band treats as one of its own
@@ -54,10 +55,17 @@ class Band:
 
     def wants(self, item: dict[str, Any], strict: bool = True) -> bool:
         """Whether an item suits this band. Without `strict` the genres are ignored, which is
-        how a band widens its search when nothing matches exactly."""
-        if strict and self.genres and {g.lower() for g in self.genres}.isdisjoint(
-                g.lower() for g in (item.get("genres") or [])):
-            return False
+        how a band widens its search when nothing matches exactly.
+
+        One genre of the list is enough by default, which is what a band of a broad subject
+        wants. `all_genres` asks for every one of them instead, which is how a band names a
+        subject within a source: "YouTube" and "Motorcycles" together mean the motorcycling
+        among the YouTube material, where either alone would also bring in the other's."""
+        if strict and self.genres:
+            wanted = {g.lower() for g in self.genres}
+            held = {g.lower() for g in (item.get("genres") or [])}
+            if not (wanted <= held if self.all_genres else wanted & held):
+                return False
         return self.dated(item) is not False
 
     def dated(self, item: dict[str, Any]) -> bool | None:
@@ -102,6 +110,7 @@ def clean(doc: Any) -> dict[str, Any]:
     decades = sorted({d for d in (as_int(x) for x in (fill.get("decades") or [])) if d and 1900 <= d <= 2100})
     return {"name": name[:80], "start": start, "minutes": minutes, "days": days,
             "fill": {"kinds": kinds or list(KINDS), "genres": genre_list(fill.get("genres")),
+                     "all_genres": bool(as_bool(fill.get("all_genres"))),
                      "decades": decades, "feature": bool(as_bool(fill.get("feature"))),
                      "fetch": (as_text(fill.get("fetch")) or "")[:40],
                      "only_matching": _tri(fill.get("only_matching")),
@@ -133,7 +142,7 @@ def _row_to_band(row: dict[str, Any]) -> Band:
     return Band(id=row["id"], channel_id=row["channel_id"], name=row["name"], start=row["start"],
                 minutes=as_int(row.get("minutes")), days=tuple(int(d) for d in days),
                 kinds=tuple(k for k in (fill.get("kinds") or KINDS) if k in KINDS) or KINDS,
-                genres=tuple(genre_list(fill.get("genres"))),
+                genres=tuple(genre_list(fill.get("genres"))), all_genres=bool(fill.get("all_genres")),
                 decades=tuple(int(d) for d in (fill.get("decades") or [])),
                 feature=bool(fill.get("feature")), fetch=as_text(fill.get("fetch")) or "",
                 only_matching=_tri(fill.get("only_matching")), max_minutes=as_int(fill.get("max_minutes")),
@@ -168,9 +177,9 @@ def export(conn: sqlite3.Connection, channel_id: int) -> list[dict[str, Any]]:
         b = _row_to_band(row)
         out.append({"name": b.name, "start": b.start, "minutes": b.minutes, "days": list(b.days),
                     "enabled": bool(row["enabled"]), "last_fetch_at": b.last_fetch_at,
-                    "fill": {"kinds": list(b.kinds), "genres": list(b.genres), "decades": list(b.decades),
-                             "feature": b.feature, "fetch": b.fetch, "only_matching": b.only_matching,
-                             "max_minutes": b.max_minutes}})
+                    "fill": {"kinds": list(b.kinds), "genres": list(b.genres), "all_genres": b.all_genres,
+                             "decades": list(b.decades), "feature": b.feature, "fetch": b.fetch,
+                             "only_matching": b.only_matching, "max_minutes": b.max_minutes}})
     return out
 
 

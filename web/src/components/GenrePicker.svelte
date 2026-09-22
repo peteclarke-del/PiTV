@@ -1,8 +1,14 @@
 <script>
   // Compact multi-select: a button ("Any genre" / "3 selected") opening a popover with a filter and checkboxes.
   // The choices are the genres the library actually holds, counted over `kinds` (episode, movie, music), so a
-  // band of music videos is not offered Westerns and nobody can name a genre nothing carries.
-  let { value = [], options = {}, kinds = ['episode', 'movie', 'music'], onchange, empty = 'Any genre', label = 'Genres' } = $props();
+  // band of music videos is not offered Westerns.
+  //
+  // `allowNew` also lets a genre nothing carries yet be typed in. Curated material is the reason:
+  // somebody's YouTube subscriptions are motorcycling, retro computing and camping, and none of
+  // those is a genre any broadcaster's index would have taught the library. Without it the first
+  // entry of a subject could never be labelled, so the subject could never exist.
+  let { value = [], options = {}, kinds = ['episode', 'movie', 'music'], onchange, empty = 'Any genre',
+        label = 'Genres', allowNew = false } = $props();
   let open = $state(false);
   let filter = $state('');
   let root = $state(null);
@@ -12,6 +18,17 @@
   let names = $derived([...new Set([...Object.keys(options).filter((n) => count(n) > 0),
                                     ...(value ?? []).map(String)])].sort((a, b) => a.localeCompare(b)));
   let shown = $derived(names.filter((n) => !filter || n.toLowerCase().includes(filter.toLowerCase())));
+  // A typed name that is not already a choice, tidied the way the server would tidy it.
+  let fresh = $derived.by(() => {
+    const text = filter.trim().replace(/\s+/g, ' ');
+    if (!allowNew || !text) return '';
+    return names.some((n) => n.toLowerCase() === text.toLowerCase()) ? '' : text;
+  });
+  function addFresh() {
+    if (!fresh) return;
+    onchange?.([...(value ?? []), fresh]);
+    filter = '';
+  }
   function toggle(name) {
     const key = name.toLowerCase();
     const next = (value ?? []).filter((v) => String(v).toLowerCase() !== key);
@@ -31,7 +48,8 @@
   </button>
   {#if open}
     <div class="pop" role="listbox" aria-label={label}>
-      <input type="search" placeholder="Filter…" bind:value={filter} />
+      <input type="search" placeholder={allowNew ? 'Filter, or type a new one…' : 'Filter…'} bind:value={filter}
+             onkeydown={(e) => { if (e.key === 'Enter' && fresh) { e.preventDefault(); addFresh(); } }} />
       <div class="list">
         {#each shown as n (n)}
           <label class="opt"><input type="checkbox" checked={selected.has(n.toLowerCase())} onchange={() => toggle(n)} /><span class="truncate">{n}</span><span class="cnt">{count(n)}</span></label>
@@ -39,6 +57,9 @@
           <div class="muted small" style="padding:.3rem">{names.length ? 'No genre matches.' : 'No genres in the library yet.'}</div>
         {/each}
       </div>
+      {#if fresh}
+        <button type="button" class="small" onclick={addFresh}>Add “{fresh}”</button>
+      {/if}
       <div class="foot"><button type="button" class="small ghost" onclick={() => onchange?.([])} disabled={!selected.size}>Clear</button><button type="button" class="small" onclick={() => (open = false)}>Done</button></div>
     </div>
   {/if}

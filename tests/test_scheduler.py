@@ -82,6 +82,29 @@ def test_daily_show_limit_holds_until_the_rules_relax(tmp_path):
     c.close()
 
 
+def test_a_band_can_ask_for_every_genre_it_lists_rather_than_any():
+    """A subject within a source needs both names to count. Curated material carries the source
+    as a genre and the subject as another, so a band listing one of each takes that subject from
+    that source; by default a band takes anything carrying one of its genres, which is what a
+    band of a broad subject wants. The rule knows nothing of YouTube or of motorcycles: both are
+    genres somebody typed."""
+    listed = ("Somewhere", "Motorcycles")
+    from_source = {"id": 1, "kind": "episode", "duration": 20 * 60, "genres": ["Somewhere", "Motorcycles"], "year": 2015}
+    other_subject = {"id": 2, "kind": "episode", "duration": 20 * 60, "genres": ["Somewhere", "Camping"], "year": 2015}
+    other_source = {"id": 3, "kind": "episode", "duration": 20 * 60, "genres": ["Motorcycles", "Documentary"], "year": 1985}
+
+    def wants(all_genres):
+        band = bands.Band(1, 8, "Subject Hour", "20:00", None, (), ("episode",), listed, (), False,
+                          all_genres=all_genres)
+        return [item["id"] for item in (from_source, other_subject, other_source) if band.wants(item)]
+
+    assert wants(True) == [1], "every genre listed"
+    assert wants(False) == [1, 2, 3], "any one of them, as before"
+    # Relaxing past the genres is how a band fills when nothing matches, and that is unchanged.
+    strict = bands.Band(1, 8, "Subject Hour", "20:00", None, (), ("episode",), listed, (), False, all_genres=True)
+    assert strict.wants(other_subject, strict=False)
+
+
 def test_a_bands_feature_follows_the_indexes_classification_for_any_kind():
     """Where the index says which items of a kind are features (it flags concerts among music
     videos), a band that opens with one takes only those: length alone would let a compilation

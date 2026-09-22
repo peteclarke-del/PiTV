@@ -93,7 +93,7 @@
     const year = num(f.year, { min: 1900, max: 2100, int: true });
     const r = programme
       ? await tryApi(post('/api/lineup', curated ? {
-          title: f.title.trim(), youtube_url: f.url.trim(),
+          title: f.title.trim(), youtube_url: f.url.trim(), genres: f.genres,
           channel_id: f.channel === '' ? null : Number(f.channel),
           episode_minutes: num(f.minutes, { min: 1, max: 240, int: true }) } : {
           kind: f.kind, title: f.title.trim(), year, genres: f.genres, programme_type: f.programme_type || null, transient: f.transient,
@@ -153,6 +153,12 @@
             <select bind:value={f.channel}><option value="">Where it belongs</option>{#each channels as c (c.id)}<option value={c.id}>{c.number} {c.name}</option>{/each}</select>
             <span class="help">Its material carries the YouTube genre, so a band asking for that claims it.</span>
           </label>
+          <div class="field wide"><span>What it is about</span>
+            <GenrePicker value={f.genres} options={facets?.genres ?? {}} kinds={['episode']}
+                         onchange={(v) => (f.genres = v)} label="Entry genres" empty="Choose or type a subject" allowNew />
+            <span class="help">Type a subject nothing carries yet and it is created, which is how motorcycling or
+              retro computing come to exist. Every entry also carries YouTube, so a band naming both takes this
+              subject from YouTube alone.</span></div>
           <label class="field">Episode length (minutes)<input type="number" class="narrow" min="1" max="240" bind:value={f.minutes} placeholder="default" /></label>
           <div class="warn-box small wide">Videos are numbered by their place in the listing. If the creator deletes one, everything after it shifts by one and an episode already scheduled becomes a different programme. Nothing detects that.</div>
         {:else if programme}

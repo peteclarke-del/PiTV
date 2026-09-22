@@ -15,7 +15,7 @@
   function add() {
     const last = value.at(-1);
     value.push({ name: '', start: last ? last.start : '08:00', minutes: null, days: [], enabled: true,
-                 fill: { kinds: ['music'], genres: [], decades: [], feature: false, fetch: '', only_matching: null, max_minutes: null } });
+                 fill: { kinds: ['music'], genres: [], all_genres: false, decades: [], feature: false, fetch: '', only_matching: null, max_minutes: null } });
   }
   let usesMusic = $derived(value.some((b) => (b.fill?.kinds ?? []).includes('music')));
   // A band's choices are what the library holds for the kinds it draws on, so nothing offered is empty.
@@ -69,7 +69,21 @@
         <label class="pick" class:on={b.enabled}><input type="checkbox" bind:checked={b.enabled} />On</label>
         <label class="tiny">Items under (mins)<input type="number" class="xnarrow" min="1" max="600" placeholder="channel" value={b.fill.max_minutes ?? ''} onchange={(e) => (b.fill.max_minutes = e.currentTarget.value === '' ? null : Number(e.currentTarget.value))} /></label>
       </div>
-      <div class="line"><span class="tiny muted lbl">Genres</span><GenrePicker value={b.fill.genres} options={genreOptions} kinds={b.fill.kinds} onchange={(v) => (b.fill.genres = v)} label="Band genres" /><span class="tiny muted">of what the band draws on</span></div>
+      <div class="line"><span class="tiny muted lbl">Genres</span>
+        <GenrePicker value={b.fill.genres} options={genreOptions} kinds={b.fill.kinds} onchange={(v) => (b.fill.genres = v)} label="Band genres" allowNew />
+        {#if (b.fill.genres ?? []).length > 1}
+          <label class="tiny">Match
+            <select class="small" value={b.fill.all_genres ? 'all' : 'any'}
+                    onchange={(e) => (b.fill.all_genres = e.currentTarget.value === 'all')}>
+              <option value="any">any of these</option>
+              <option value="all">all of these</option>
+            </select>
+          </label>
+          <span class="tiny muted">{b.fill.all_genres ? 'only what carries every one' : 'anything carrying one of them'}</span>
+        {:else}
+          <span class="tiny muted">of what the band draws on</span>
+        {/if}
+      </div>
       <div class="line"><span class="tiny muted lbl">Decades</span><DecadePicker bind:value={b.fill.decades} decades={decadesFor(b.fill.kinds)} label="Band decades" /></div>
       {#if fetchKinds.length}
         <div class="line"><span class="tiny muted lbl">Top up</span>
