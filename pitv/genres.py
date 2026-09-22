@@ -40,6 +40,9 @@ ALIASES: dict[str, str] = {
     "newwave": "New Wave", "postpunk": "Post Punk", "hardrock": "Hard Rock", "heavymetal": "Metal",
     "motown": "Motown", "electronica": "Electronic", "electronic": "Electronic", "dancepop": "Dance",
     "soccer": "Football", "prowrestling": "Wrestling", "professionalwrestling": "Wrestling",
+    # "Sports" and "Sport" were two genres, so a channel allowing one missed everything tagged
+    # the other, which is the split this table exists to prevent.
+    "sports": "Sport", "sporting": "Sport",
     "motorsports": "Motorsport", "motorracing": "Motorsport", "motorsport": "Motorsport",
     "trackandfield": "Athletics", "figureskating": "Ice Skating", "iceskating": "Ice Skating",
     "horseracing": "Horse Racing", "suspense": "Thriller", "warfilm": "War", "warmovie": "War",
@@ -76,11 +79,51 @@ SCRIPTED = ("Drama", "Comedy", "Action", "Adventure", "Fantasy", "Science Fictio
             "Mystery", "Horror", "Romance", "Soap", "Western", "War", "Supernatural", "Animation", "Anime",
             "Game Show", "Reality TV")
 
+# What a thing of each kind can be. A genre belongs to the kinds it makes sense for: a film is
+# never Synth Pop and a music video is never a Sitcom, and offering both to both is how a picker
+# becomes a list nobody reads. The three lists are meant to be comprehensive for their kind
+# without being exhaustive: enough to describe a library of this period, not every word a
+# metadata site has ever used, since anything unusual can still be typed in where the picker
+# allows it.
+_STORY = ("Action", "Adventure", "Animation", "Anime", "Biography", "Comedy", "Crime", "Documentary",
+          "Drama", "Family", "Fantasy", "History", "Horror", "Musical", "Mystery", "Romance",
+          "Science Fiction", "Supernatural", "Thriller", "War", "Western")
+# A film is a story, plus the two labels that describe the film rather than the story.
+# "Sport" describes what a film is about, as in a boxing documentary; what a programme is
+# scheduled as is its programme type, not its genre, so a drama about football stays a drama.
+# "Adult" is a marker the watershed reads, so it has to be sayable here.
+FILM_GENRES = tuple(sorted({*_STORY, "Adult", "Music", "Short", "Sport", "TV Movie"}))
+# Television is stories too, plus everything that is not one: the formats, the subjects a
+# factual programme is about, and the sports a broadcast covers. A curated channel's videos are
+# television as far as the scheduler is concerned, so they draw on this list.
+_FORMATS = ("Children", "Game Show", "Magazine", "Mini-series", "News", "Reality TV", "Sitcom", "Soap", "Talk")
+_SUBJECTS = ("Adult", "Concert", "DIY", "Education", "Entertainment", "Food", "Informational", "Medical",
+             "Music", "Nature", "Science", "Technology", "Travel", "YouTube")
+_SPORTS = ("Athletics", "Boxing", "Cricket", "Darts", "Football", "Golf", "Horse Racing", "Ice Skating",
+           "Motorsport", "Rugby", "Snooker", "Sport", "Tennis", "Wrestling")
+SERIES_GENRES = tuple(sorted({*_STORY, *_FORMATS, *_SUBJECTS, *_SPORTS}))
+# Music videos are described by the music, never by a story.
+MUSIC_GENRES = ("Blues", "Concert", "Country", "Dance", "Disco", "Electronic", "Folk", "Funk", "Hard Rock",
+                "Hip Hop", "Indie", "Jazz", "Metal", "Motown", "New Wave", "Pop", "Post Punk", "Punk", "R&B",
+                "Rap", "Reggae", "Rock", "Ska", "Soul", "Synth Pop")
+# The kinds the admin counts and offers by (`lineup.FACET_KINDS`).
+BY_KIND: dict[str, tuple[str, ...]] = {"episode": SERIES_GENRES, "movie": FILM_GENRES, "music": MUSIC_GENRES}
+
+
+def for_kinds(kinds: object) -> tuple[str, ...]:
+    """Every genre that makes sense for any of these kinds; all of them when none is named."""
+    wanted = [k for k in (kinds if isinstance(kinds, (list, tuple, set)) else []) if k in BY_KIND]
+    if not wanted:
+        return KNOWN
+    return tuple(sorted({g for k in wanted for g in BY_KIND[k]}))
+
+
 # Every genre this table can name, whether or not the library holds any of it. The admin offers
 # these when setting up a channel or a band, because a band asking for something absent is how
 # material gets collected in the first place: offering only what is already here makes a channel
 # of new material impossible to configure.
-KNOWN: tuple[str, ...] = tuple(sorted({*ALIASES.values(), *CHILDRENS, *CARTOONS, *SCRIPTED}))
+KNOWN: tuple[str, ...] = tuple(sorted({*ALIASES.values(), *CHILDRENS, *CARTOONS, *SCRIPTED,
+                                       *FILM_GENRES, *SERIES_GENRES, *MUSIC_GENRES}))
 
 # Words that keep their own case inside a title-cased name.
 _LOWER = {"and", "of", "the", "in", "on", "de", "la"}

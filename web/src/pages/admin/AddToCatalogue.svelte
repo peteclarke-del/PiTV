@@ -171,7 +171,7 @@
             <span class="help">Its material carries the YouTube genre, so a band asking for that claims it.</span>
           </label>
           <div class="field wide"><span>What it is about</span>
-            <GenrePicker value={f.genres} options={facets?.genres ?? {}} kinds={['episode']}
+            <GenrePicker value={f.genres} options={facets?.genres ?? {}} offeredFor={facets?.genre_kinds ?? {}} kinds={['episode']}
                          onchange={(v) => (f.genres = v)} label="Entry genres" empty="Choose or type a subject" allowNew />
             <span class="help">Type a subject nothing carries yet and it is created, which is how motorcycling or
               retro computing come to exist. Every entry also carries YouTube, so a band naming both takes this
@@ -179,7 +179,7 @@
           <label class="field">Episode length (minutes)<input type="number" class="narrow" min="1" max="240" bind:value={f.minutes} placeholder="default" /></label>
           <div class="warn-box small wide">Videos are numbered by their place in the listing. If the creator deletes one, everything after it shifts by one and an episode already scheduled becomes a different programme. Nothing detects that.</div>
         {:else if programme}
-          <div class="field"><span>Genres</span><GenrePicker value={f.genres} options={facets?.genres ?? {}} kinds={f.kind === 'show' ? ['episode'] : ['movie']} onchange={(v) => (f.genres = v)} label="Entry genres" empty="Choose genres" /><span class="help">The same programme genres used by Channel settings.</span></div>
+          <div class="field"><span>Genres</span><GenrePicker value={f.genres} options={facets?.genres ?? {}} offeredFor={facets?.genre_kinds ?? {}} kinds={f.kind === 'show' ? ['episode'] : ['movie']} onchange={(v) => (f.genres = v)} label="Entry genres" empty="Choose genres" /><span class="help">The same programme genres used by Channel settings.</span></div>
           <label class="field">What it is
             <select bind:value={f.programme_type}><option value="">{placement ? `${programmeTypeLabel(placement.programme_type)} (read from its genres)` : 'Read from its genres'}</option>{#each PROGRAMME_TYPES as [v, l] (v)}<option value={v}>{l}</option>{/each}</select>
             <span class="help">This decides which channel theme it belongs to. Genres only describe it.</span>

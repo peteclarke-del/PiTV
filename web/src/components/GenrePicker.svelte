@@ -7,18 +7,24 @@
   // somebody's YouTube subscriptions are motorcycling, retro computing and camping, and none of
   // those is a genre any broadcaster's index would have taught the library. Without it the first
   // entry of a subject could never be labelled, so the subject could never exist.
-  let { value = [], options = {}, kinds = ['episode', 'movie', 'music'], onchange, empty = 'Any genre',
-        label = 'Genres', allowNew = false } = $props();
+  let { value = [], options = {}, offeredFor = {}, kinds = ['episode', 'movie', 'music'], onchange,
+        empty = 'Any genre', label = 'Genres', allowNew = false } = $props();
   let open = $state(false);
   let filter = $state('');
   let root = $state(null);
   const count = (name) => kinds.reduce((n, k) => n + (options[name]?.[k] ?? 0), 0);
   let selected = $derived(new Set((value ?? []).map((v) => String(v).toLowerCase())));
-  // Every genre the server offers, whether or not the library holds any of it yet, plus anything
-  // already chosen so it can always be cleared. Offering only what is already here made a channel
-  // or band of material nobody has collected impossible to set up, which is the case a band asking
-  // for something absent exists to serve (pitv/genres.py KNOWN).
-  let names = $derived([...new Set([...Object.keys(options), ...(value ?? []).map(String)])]
+  // Every genre the server offers for the kinds in play, whether or not the library holds any of
+  // it yet, plus anything already chosen so it can always be cleared. Two rules at once: offering
+  // only what is already here makes a channel of material nobody has collected impossible to set
+  // up, and offering every genre to every kind asks a music band whether it wants Westerns
+  // (pitv/genres.py BY_KIND).
+  const suits = (name) => {
+    const kindsFor = offeredFor[name];
+    if (!kindsFor) return count(name) > 0;       // not in the vocabulary: offered where it is carried
+    return kinds.some((k) => kindsFor.includes(k));
+  };
+  let names = $derived([...new Set([...Object.keys(options).filter(suits), ...(value ?? []).map(String)])]
                        .sort((a, b) => a.localeCompare(b)));
   let shown = $derived(names.filter((n) => !filter || n.toLowerCase().includes(filter.toLowerCase())));
   // A typed name that is not already a choice, tidied the way the server would tidy it.

@@ -61,7 +61,7 @@
       <label class="field">Channel<select bind:value={f.channel_id}>{#each channels as c (c.id)}<option value={c.id}>{c.number} {c.name}</option>{/each}</select></label>
       <div class="field wide genres">
         <span>Genres</span>
-        <GenrePicker value={f.genres} options={facets?.genres ?? {}} kinds={entry.kind === 'show' ? ['episode'] : ['movie']} onchange={(v) => (f.genres = v)} label="Entry genres" empty="Choose genres" />
+        <GenrePicker value={f.genres} options={facets?.genres ?? {}} offeredFor={facets?.genre_kinds ?? {}} kinds={entry.kind === 'show' ? ['episode'] : ['movie']} onchange={(v) => (f.genres = v)} label="Entry genres" empty="Choose genres" />
         <span class="help">The same programme genres offered in Channel settings.</span>
       </div>
       {#if entry.kind === 'show'}

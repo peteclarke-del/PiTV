@@ -79,6 +79,7 @@
   let facets = $state(null);
   let fetchKinds = $state([]);
   let genreOptions = $derived(facets?.genres ?? {});
+  let genreKinds = $derived(facets?.genre_kinds ?? {});
   let decadeOptions = $derived(Object.keys(facets?.decades ?? {}).map(Number));
   onMount(async () => {
     facets = (await tryApi(get('/api/library/facets'))) ?? null;
@@ -139,11 +140,11 @@
     {:else if section === 'programmes'}
       <div class="form-grid">
         <div class="field wide genres">
-          <span>Allowed genres</span><GenrePicker value={f.allowed_genres} options={genreOptions} kinds={PROGRAMME_KINDS} onchange={(v) => (f.allowed_genres = v)} label="Allowed genres" />
+          <span>Allowed genres</span><GenrePicker value={f.allowed_genres} options={genreOptions} offeredFor={genreKinds} kinds={PROGRAMME_KINDS} onchange={(v) => (f.allowed_genres = v)} label="Allowed genres" />
           <span class="help">Which series and films the line-up generator places on this channel; empty means any.</span>
         </div>
         <div class="field wide genres">
-          <span>Excluded genres</span><GenrePicker value={f.excluded_genres} options={genreOptions} kinds={PROGRAMME_KINDS} onchange={(v) => (f.excluded_genres = v)} empty="None" label="Excluded genres" />
+          <span>Excluded genres</span><GenrePicker value={f.excluded_genres} options={genreOptions} offeredFor={genreKinds} kinds={PROGRAMME_KINDS} onchange={(v) => (f.excluded_genres = v)} empty="None" label="Excluded genres" />
         </div>
         <div class="field wide">
           <span>Decades</span><DecadePicker bind:value={f.decades} decades={decadeOptions} label="Channel decades" />

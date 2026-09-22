@@ -654,9 +654,19 @@ def facets(conn: sqlite3.Connection) -> dict[str, Any]:
             genres.setdefault(g, dict.fromkeys(FACET_KINDS, 0))[kind] += 1
         if r["year"]:
             decades.setdefault(str((r["year"] // 10) * 10), dict.fromkeys(FACET_KINDS, 0))[kind] += 1
-    for known in genre_rules.KNOWN:
-        genres.setdefault(known, dict.fromkeys(FACET_KINDS, 0))
+    # Every genre the vocabulary knows for a kind is offered under that kind, at zero where the
+    # library holds none. The kind is what makes the offer sensible: a band of music videos is
+    # not offered Westerns, and a films channel is not offered Synth Pop. Anything already
+    # carried is kept whatever kind it is, so a tag somebody typed never vanishes from its own
+    # editor.
+    for kind, known in genre_rules.BY_KIND.items():
+        for name in known:
+            genres.setdefault(name, dict.fromkeys(FACET_KINDS, 0)).setdefault(kind, 0)
+    offered = {name: {k for k, names in genre_rules.BY_KIND.items() if name in names} for name in genres}
     return {"genres": dict(sorted(genres.items())),
+            # Which kinds each genre is offered for, so the admin can show the right list for a
+            # picker whose library happens to hold none of it yet.
+            "genre_kinds": {name: sorted(kinds) for name, kinds in sorted(offered.items()) if kinds},
             "decades": dict(sorted(decades.items(), key=lambda kv: int(kv[0]))), "concerts": concerts}
 
 

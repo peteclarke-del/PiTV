@@ -20,6 +20,7 @@
   let usesMusic = $derived(value.some((b) => (b.fill?.kinds ?? []).includes('music')));
   // A band's choices are what the library holds for the kinds it draws on, so nothing offered is empty.
   const genreOptions = $derived(facets?.genres ?? {});
+  const genreKinds = $derived(facets?.genre_kinds ?? {});
   const decadesFor = (kinds) => Object.entries(facets?.decades ?? {})
     .filter(([, counts]) => kinds.some((k) => (counts[k] ?? 0) > 0)).map(([d]) => Number(d));
   // Declares every current band shortfall; pitv_content serialises the actual fetch jobs.
@@ -70,7 +71,7 @@
         <label class="tiny">Items under (mins)<input type="number" class="xnarrow" min="1" max="600" placeholder="channel" value={b.fill.max_minutes ?? ''} onchange={(e) => (b.fill.max_minutes = e.currentTarget.value === '' ? null : Number(e.currentTarget.value))} /></label>
       </div>
       <div class="line"><span class="tiny muted lbl">Genres</span>
-        <GenrePicker value={b.fill.genres} options={genreOptions} kinds={b.fill.kinds} onchange={(v) => (b.fill.genres = v)} label="Band genres" allowNew />
+        <GenrePicker value={b.fill.genres} options={genreOptions} offeredFor={genreKinds} kinds={b.fill.kinds} onchange={(v) => (b.fill.genres = v)} label="Band genres" allowNew />
         {#if (b.fill.genres ?? []).length > 1}
           <label class="tiny">Match
             <select class="small" value={b.fill.all_genres ? 'all' : 'any'}

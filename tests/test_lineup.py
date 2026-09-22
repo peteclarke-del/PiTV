@@ -1074,13 +1074,22 @@ def test_a_genre_nothing_carries_yet_is_still_offered(conn):
     """A band asking for material the library does not hold is not a mistake: a band with nothing
     at all is what tells pitv_content to collect it, which is how the music bands were filled.
     Offering only what is already here made a channel of new material impossible to set up, so
-    YouTube could not be chosen for a channel meant to be filled from YouTube."""
-    from pitv.genres import KNOWN
+    YouTube could not be chosen for a channel meant to be filled from YouTube.
 
-    offered = lineup.facets(conn)["genres"]
+    Offered by kind, though: a film is never Synth Pop and a music video is never a Sitcom, and
+    offering every genre to every kind is how a picker becomes a list nobody reads."""
+    from pitv import genres as genre_rules
+
+    got = lineup.facets(conn)
+    offered, kinds = got["genres"], got["genre_kinds"]
     assert "YouTube" in offered, "a genre nothing carries yet can still be asked for"
     assert offered["YouTube"] == {"episode": 0, "movie": 0, "music": 0}, "and is honest about holding none"
-    assert set(KNOWN) <= set(offered), "every genre the vocabulary knows is choosable"
+    for kind, vocabulary in genre_rules.BY_KIND.items():
+        assert set(vocabulary) <= set(offered), f"every genre a {kind} can be is choosable"
+        assert all(kind in kinds[name] for name in vocabulary), f"and is offered for {kind}"
+    assert "Synth Pop" not in kinds.get("Synth Pop", []) or kinds["Synth Pop"] == ["music"], kinds.get("Synth Pop")
+    assert kinds["Sitcom"] == ["episode"] and "movie" not in kinds["Synth Pop"]
+    assert "Advert" not in kinds, "an advert is not a genre a channel or band picks"
     carried = {g for g, counts in offered.items() if any(counts.values())}
     assert carried, "what the library does hold still counts"
 
