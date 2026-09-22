@@ -69,6 +69,11 @@ VOICES = (
     {"chord": (0.5, 1.0, 1.25, 1.5, 1.782), "bright": (0.55, 0.30), "swell": 4.0, "spacing": 0.90},  # seventh
     {"chord": (1.0, 1.25, 1.5, 2.0), "bright": (0.85, 0.50), "swell": 2.4, "spacing": 0.70},   # high and playful
     {"chord": (0.5, 0.75, 1.0, 1.5), "bright": (0.18, 0.06), "swell": 8.0, "spacing": 1.35},   # low, measured
+    # Added ninth, struck rather than swelled: the four notes land almost together and the pad is
+    # up before they finish. Against the unhurried swells of the broadcast channels it reads as
+    # something newer, which suits a channel whose material came off the internet rather than
+    # off air. There are as many voices as roots again, so no two channels share a character.
+    {"chord": (1.0, 1.125, 1.5, 2.0), "bright": (0.80, 0.44), "swell": 1.8, "spacing": 0.55},   # bright, modern
 )
 
 
@@ -299,9 +304,14 @@ GENERIC = {"number": 0, "name": "Generic", "short_name": "PiTV", "colour": "#8d9
 
 def make_all(conn: sqlite3.Connection, out_dir: Path, voices: Path | None = None,
              numbers: set[int] | None = None, *, flat: bool = False) -> list[Path]:
-    """An ident for every enabled channel (or those in `numbers`), at the screen's own frame,
-    and the generic one any channel without its own may show."""
+    """An ident for every enabled channel, at the screen's own frame, and the generic one any
+    channel without its own may show.
+
+    Naming channels explicitly overrides the enabled test. A channel is built, given an ident and
+    then switched on, in that order, and refusing to render one for a channel that is not on air
+    yet made the one case somebody asks for a single ident by number the case that does nothing."""
     profile = display.profile(all_settings(conn))
-    channels = [*rows_to_dicts(conn.execute("SELECT * FROM channels WHERE enabled = 1 ORDER BY number")), GENERIC]
+    where = "" if numbers else " WHERE enabled = 1"
+    channels = [*rows_to_dicts(conn.execute(f"SELECT * FROM channels{where} ORDER BY number")), GENERIC]
     return [make(c, out_dir, profile.width, profile.height, voices, flat=flat) for c in channels
             if numbers is None or int(c["number"]) in numbers]
