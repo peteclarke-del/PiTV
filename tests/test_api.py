@@ -989,5 +989,15 @@ def test_a_youtube_channel_is_added_as_a_series_of_its_videos(client):
                                          "youtube_url": "https://www.youtube.com/playlist?list=PLrAXtmRdnEQy6nuLMfO6uJ"})
     assert r.status_code == 200 and r.json()["match"]["id"] == "PLrAXtmRdnEQy6nuLMfO6uJ"
 
-    assert client.post("/api/lineup", json={"channel_id": target, "title": "Nope",
-                                            "youtube_url": "https://vimeo.com/channels/x"}).status_code == 400
+    # The same playlist presented as a show: the address carries YouTube's browse id, which is
+    # the playlist id with VL in front, and a query string of whatever it was tracking. It must
+    # come out as the playlist itself, or the same thing added twice would be two entries.
+    r = client.post("/api/lineup", json={"channel_id": target, "title": "A Series",
+                                         "youtube_url": "https://www.youtube.com/show/VLPLrAXtmRdnEQy6nuLMfO6uJ?sbp=Zm9vYmFy"})
+    assert r.status_code == 200 and r.json()["match"] == {
+        "source": "youtube_channel", "id": "PLrAXtmRdnEQy6nuLMfO6uJ",
+        "url": "https://www.youtube.com/playlist?list=PLrAXtmRdnEQy6nuLMfO6uJ"}
+
+    for wrong in ("https://vimeo.com/channels/x", "https://www.youtube.com/show/notaplaylist"):
+        assert client.post("/api/lineup", json={"channel_id": target, "title": "Nope",
+                                                "youtube_url": wrong}).status_code == 400

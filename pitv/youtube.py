@@ -23,6 +23,13 @@ _HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"
 _CHANNEL = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
 _PLAYLIST = re.compile(r"^(?:PL|UU|FL|OL|RD)[A-Za-z0-9_-]{10,}$")
 _HANDLE = re.compile(r"^@[A-Za-z0-9._-]{3,30}$")
+# YouTube's own browse id for a playlist: the playlist id with VL in front of it, which is what
+# a "show" address carries. What can actually be listed is the playlist inside it.
+_BROWSE_LIST = re.compile(r"^VL(?P<list>[A-Za-z0-9_-]{10,})$")
+
+
+def _playlist(listed: str) -> dict[str, str]:
+    return {"source": SOURCE, "id": listed, "url": f"https://www.youtube.com/playlist?list={listed}"}
 
 
 def parse(url: str) -> dict[str, str] | None:
@@ -42,8 +49,15 @@ def parse(url: str) -> dict[str, str] | None:
         return None
     listed = parse_qs(parts.query).get("list", [None])[0]
     if listed and _PLAYLIST.match(listed):
-        return {"source": SOURCE, "id": listed, "url": f"https://www.youtube.com/playlist?list={listed}"}
+        return _playlist(listed)
     segments = [s for s in parts.path.split("/") if s]
+    if len(segments) >= 2 and segments[0] in ("show", "playlist"):
+        # A series presented as a show. The address carries a browse id rather than a plain
+        # playlist id, and the query string is whatever YouTube was tracking at the time.
+        browse = _BROWSE_LIST.match(segments[1])
+        inner = browse.group("list") if browse else segments[1]
+        if _PLAYLIST.match(inner):
+            return _playlist(inner)
     if segments and _HANDLE.match(segments[0]):
         return {"source": SOURCE, "id": segments[0], "url": f"https://www.youtube.com/{segments[0]}"}
     if len(segments) >= 2 and segments[0] == "channel" and _CHANNEL.match(segments[1]):
