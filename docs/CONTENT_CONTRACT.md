@@ -219,6 +219,13 @@ service is down. Schema 2.
   episode list for titles and running times, for a film the IMDb id to confirm a hit. Items
   without a confirmed identity have `"match": null`. A `ref` URL, when present, is a specific
   video to fetch and wins over both.
+- A `match` whose `source` is `youtube_channel` names a creator's channel or a playlist
+  (section 8, `kind=channel`). pitv_content lists `match.url` directly to get the videos in
+  order; it does not consult a provider row of that type, and one is not required. The video
+  itself is then fetched by its id like any other, so the run needs an enabled provider that
+  serves YouTube ids for the kind the request classifies as. Disabling the general YouTube
+  provider therefore stops every line-up entry keyed on a channel, whatever its `match` says,
+  which is not obvious from the entry or from the provider being switched off.
 
 ## 3. Delivery report (pitv_content to PiTV)
 
