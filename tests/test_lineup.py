@@ -111,6 +111,49 @@ def test_move_and_remove_entries(conn, data_dir):
     assert dbm.data_path(conn, lineup.MIRROR) == data_dir / "lineups.json" and (data_dir / "lineups.json").exists()
 
 
+def test_an_unscheduled_request_is_ranked_by_the_gap_it_would_fill(tmp_path):
+    """Nothing in the manifest's `wanted` list has an air time of its own, so it is judged by the
+    soonest holding card it could fill. Ranking by what raised a request goes stale, because "a
+    line-up raised it" becomes true of every channel eventually; a card on screen at eight
+    tomorrow does not. A gap in a series that already plays is waited on by nothing and goes
+    last, however long it has been queued."""
+    from pitv import lineup as lineup_mod, wanted as wanted_mod
+    from pitv.content import NOT_WAITED_ON, manifest
+    from conftest import make_library
+
+    ctx = make_library(tmp_path / "urgency", max_episodes=2)
+    conn = ctx["conn"]
+    channel = conn.execute("SELECT id FROM channels WHERE content = 'music'").fetchone()["id"]
+    now = dbm.now_ts()
+    with dbm.tx(conn):
+        conn.execute("DELETE FROM band WHERE channel_id = ?", (channel,))
+        for name, start, minutes in (("Soon", "20:00", 60), ("Later", "22:00", 60)):
+            conn.execute("INSERT INTO band(channel_id, name, start, minutes, days, fill, enabled, created_at)"
+                         " VALUES (?,?,?,?,'[]',?,1,?)",
+                         (channel, name, start, minutes,
+                          json.dumps({"kinds": ["episode"], "genres": [name], "decades": [], "feature": False}),
+                          now))
+    for name, at in (("Soon", now + 3 * 3600), ("Later", now + 40 * 3600)):
+        entry = lineup_mod.add(conn, channel, title=f"{name} Source", kind="show", genres=[name],
+                               source="catalogue", match={"source": "elsewhere", "id": name.lower()})
+        with dbm.tx(conn):
+            conn.execute("INSERT INTO schedule(channel_id, day, start_ts, end_ts, kind, title, block, replay, offset)"
+                         " VALUES (?,?,?,?,'filler',?,?,0,0)",
+                         (channel, "2026-09-23", at, at + 3600, name, name))
+            conn.execute("INSERT INTO wanted(kind, title, season, episode, lineup_id, auto, created_at, provider)"
+                         " VALUES ('episode',?,1,1,?,1,?,'auto')", (f"{name} Source", entry["id"], now))
+    with dbm.tx(conn):    # a gap nothing is waiting for, queued long before either
+        conn.execute("INSERT INTO wanted(kind, title, season, episode, show_id, auto, created_at, provider)"
+                     " SELECT 'episode', title, 1, 99, id, 1, ?, 'auto' FROM shows LIMIT 1", (now - 86400,))
+
+    by_title = {w["show_title"] or w["title"]: w for w in manifest(conn, days=1, now=now)["wanted"]}
+    assert by_title["Soon Source"]["priority"] < by_title["Later Source"]["priority"], \
+        "the card that is sooner is wanted sooner"
+    gap = next(w for k, w in by_title.items() if k not in ("Soon Source", "Later Source"))
+    assert gap["priority"] == NOT_WAITED_ON, "nothing is waiting for it, whenever it was asked for"
+    conn.close()
+
+
 def test_external_entry_scheduled_ahead_and_requested(conn):
     ch = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
     confirmed = {"source": "tvmaze", "id": "2203", "url": "https://www.tvmaze.com/shows/2203/the-tripods", "imdb": "tt0086817"}

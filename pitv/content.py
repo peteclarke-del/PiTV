@@ -48,6 +48,10 @@ APPLIED_REPORT_DAYS = 7      # report files, once applied, are kept this long fo
 UNAPPLIED_REPORT_DAYS = 30   # a report file that never applies is given up after this long
 DEADLINE_LEAD = 15 * 60  # a file is due this long before it first airs
 REMOTE_PRIORITY_HOURS = 24  # fetching is slower/less certain than copying, so begin one day earlier
+# A request nothing is waiting for: a gap in a series that already plays, or an advert added by
+# hand. Worth doing, worth doing after everything a channel is short of tonight. Far enough out
+# that no real air time reaches it (a fortnight of four-hour steps is 84).
+NOT_WAITED_ON = 1000
 SCREEN_VALUES = "video_profile_values"  # the settings key pitv_content takes the screen profile's values under
 # Typical running times per kind, so pitv_content can reject obviously wrong search hits.
 WANTED_MINUTES = {"music": [2, 8], "advert": [0.1, 2], "episode": [20, 60], "movie": [70, 180]}
@@ -199,14 +203,28 @@ def manifest(conn: sqlite3.Connection, days: int = 1, now: int | None = None) ->
     # placeholders above read it; without that the request is filed and searched for as
     # "Episode 1" rather than under the series it belongs to.
     scheduled = {it["wanted_id"] for it in items.values() if it.get("wanted_id")}
-    wanted = [{"request_id": f"w:{w['id']}",
+    # Nothing here has an air time of its own, so it is judged by the gap it would fill: the
+    # soonest holding card the entry could go into (`wanted.card_waiting_for`), on the same
+    # scale as the items above so the two lists can be read together. Ranking by what raised a
+    # request instead goes stale, because "a line-up raised it" becomes true of everything;
+    # a card on screen at eight tomorrow does not.
+    from .wanted import card_waiting_for      # imported here: wanted reads this module's manifest
+    waiting = card_waiting_for(conn, now)
+    def urgency(w: dict[str, Any]) -> int:
+        at = waiting.get(w["lineup_id"]) if w.get("lineup_id") else None
+        if at is None:
+            return NOT_WAITED_ON
+        return int(max(0.0, (at - now) / 3600) // 4) - REMOTE_PRIORITY_HOURS // 4
+    wanted = [{"request_id": f"w:{w['id']}", "priority": urgency(w),
                **_wanted_request(w, w.get("show_title") or (w.get("lineup_title") if w["kind"] == "episode" else None),
                                  acquire)}
               for w in rows_to_dicts(conn.execute(
                   "SELECT w.*, sh.title AS show_title, l.title AS lineup_title, l.match AS lineup_match FROM wanted w"
                   " LEFT JOIN shows sh ON sh.id = w.show_id LEFT JOIN lineup l ON l.id = w.lineup_id"
-                  " WHERE w.status IN ('queued', 'failed') AND w.attempts < ? ORDER BY w.id", (MAX_WANTED_ATTEMPTS,)))
+                  " WHERE w.status IN ('queued', 'failed') AND w.attempts < ? ORDER BY w.id",
+                  (MAX_WANTED_ATTEMPTS,)))
               if w["id"] not in scheduled]
+    wanted.sort(key=lambda w: (w["priority"], w["wanted_id"]))
     return {"schema": MANIFEST_SCHEMA, "generated_ts": now, "horizon_ts": horizon, "days": days,
             "cache_dir": str(cache.dir) if cache.dir else "", "acquire_dir": acquire, "pi": is_raspberry_pi(),
             "free_bytes": cache.usage().get("free"), "cache_max_bytes": cache.max_bytes,

@@ -254,6 +254,49 @@ def unairable(conn: sqlite3.Connection, settings: dict[str, Any]) -> list[dict[s
     return out
 
 
+def card_waiting_for(conn: sqlite3.Connection, now: int | None = None) -> dict[int, int]:
+    """For each line-up entry, when the first holding card it could fill goes on air.
+
+    A request with no slot has no air time of its own, so there is nothing to judge it by and
+    everything sits in the order it was written. Ranking by what raised it does not help for
+    long: as more channels are built from line-ups, "a line-up raised it" becomes true of
+    everything and says nothing. What does not go stale is the gap on screen. A band showing a
+    card at eight tomorrow morning is waiting; one whose card is on Sunday can wait; a series
+    gap behind material that already plays is not waiting at all.
+
+    So an entry is worth as much as the soonest card it could fill, taken band by band rather
+    than channel by channel: a channel of nine bands has nine different answers and giving them
+    all the earliest is the same as giving them nothing."""
+    now = now or now_ts()
+    cards = conn.execute(
+        "SELECT channel_id, block, MIN(start_ts) AS at FROM schedule"
+        " WHERE kind = 'filler' AND block IS NOT NULL AND replay = 0 AND start_ts > ?"
+        " GROUP BY channel_id, block", (now,)).fetchall()
+    if not cards:
+        return {}
+    by_channel: dict[int, dict[str, int]] = {}
+    for r in cards:
+        by_channel.setdefault(int(r["channel_id"]), {})[r["block"]] = int(r["at"])
+    entries = rows_to_dicts(conn.execute(
+        "SELECT id, channel_id, genres, year FROM lineup WHERE enabled = 1 AND source != 'library'"))
+    for e in entries:
+        e["genres"] = genre_list(e["genres"])
+    out: dict[int, int] = {}
+    for channel_id, band_list in bands.load(conn).items():
+        waiting = by_channel.get(channel_id)
+        if not waiting:
+            continue
+        mine = [e for e in entries if e["channel_id"] == channel_id]
+        for band in band_list:
+            at = waiting.get(band.name)
+            if at is None:
+                continue
+            for e in mine:
+                if band.wants(e) and at < out.get(int(e["id"]), at + 1):
+                    out[int(e["id"])] = at
+    return out
+
+
 def request_band_lineup(conn: sqlite3.Connection, settings: dict[str, Any]) -> dict[str, Any]:
     """Ask for the next videos from the line-up entries a starved band draws on.
 

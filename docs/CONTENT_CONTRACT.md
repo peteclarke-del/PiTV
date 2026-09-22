@@ -522,6 +522,16 @@ PiTV never contacts the sources itself, as all online access is pitv_content's.
 - `sources` names what was asked; `errors` maps a source that failed to its message, so
   partial answers are still usable. With no source reachable the answer is 502
   `{"error": ...}`.
+- Each entry in the manifest's `wanted` list carries a `priority` and the list is sorted by it,
+  lowest first, on the same scale as `items` so the two can be read together. Nothing here has an
+  air time of its own, so it is judged by the gap it would fill: the soonest holding card the
+  line-up entry could go into, band by band rather than channel by channel, since a channel of
+  nine bands has nine different answers. A request nothing is waiting for, a gap in a series that
+  already plays or an advert added by hand, is `1000`: worth doing, worth doing after everything
+  a channel is short of tonight. Ranking instead by what raised a request goes stale, because "a
+  line-up raised it" becomes true of every channel eventually; a card on screen at eight tomorrow
+  does not. Left in insertion order, fifteen hundred series gaps sat ahead of every video a newly
+  built channel needed, and that channel would have shown holding cards for days.
 - PiTV keeps the chosen `match` with the line-up entry (`lineups.json` included) and sends it
   on every fetch request for that title (section 2). For an advert or music video the chosen
   video's URL is kept as the wanted request's `ref`.
