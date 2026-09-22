@@ -733,9 +733,17 @@ def test_job_runner_bounds_history_and_notes():
 
 def test_settings_schema_matches_the_defaults(client):
     """Every setting a person edits has exactly one field, each field names a real setting, and
-    every default sits inside its field's range and choices."""
+    every default sits inside its field's range and choices.
+
+    A default written twice is also checked. `bands.ITEM_MINUTES` stands in where no settings are
+    to hand, so it and the setting are one number in two places and would drift silently: the
+    band code would judge an item long while the shortfall counted it short."""
     from pitv import settings_schema
     from pitv.db import DEFAULT_SETTINGS
+    from pitv.scheduler.bands import ITEM_MINUTES
+
+    assert ITEM_MINUTES == DEFAULT_SETTINGS["band_item_max_minutes"], \
+        "the fallback and the setting are the same number and must say the same thing"
     keys = [f["key"] for f in settings_schema.FIELDS]
     assert len(keys) == len(set(keys))
     assert set(keys) - settings_schema.COMPUTED | settings_schema.UNLISTED == set(DEFAULT_SETTINGS)

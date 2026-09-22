@@ -68,6 +68,21 @@ def test_advert_family_safety_precedence(ctx):
     import_index(conn, doc)
 
 
+def test_a_share_mounted_elsewhere_is_read_where_it_actually_is():
+    """pitv_content publishes the path it indexed. PiTV may have the same share somewhere else,
+    on a desktop with no /mnt or with the two on different machines, so the source carries its
+    own mount point and the items under it are read beneath that. Getting this wrong means every
+    file is looked for where it is not, and nothing plays."""
+    from pitv.catalogue import local_path
+
+    assert local_path("/mnt/tv/Minder/S01E01.mkv", "/mnt/tv", "/media/nas/tv") == "/media/nas/tv/Minder/S01E01.mkv"
+    assert local_path("/mnt/tv/x.mkv", "/mnt/tv/", "/media/nas/tv/") == "/media/nas/tv/x.mkv", "trailing slashes"
+    # Nothing to translate, or a path from another share: left exactly as it is.
+    assert local_path("/mnt/tv/x.mkv", "/mnt/tv", None) == "/mnt/tv/x.mkv"
+    assert local_path("/mnt/tv/x.mkv", "", "/media/nas") == "/mnt/tv/x.mkv"
+    assert local_path("/other/x.mkv", "/mnt/tv", "/media/nas/tv") == "/other/x.mkv"
+
+
 def test_advert_keywords_match_whole_words():
     from pitv.catalogue import family_safe
     from pitv.scheduler.rules import keyword_pattern
