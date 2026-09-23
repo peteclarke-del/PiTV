@@ -324,7 +324,14 @@ applies a report once: a dropped copy of one it already took over HTTP is recogn
   path, because a series that ran and ended has a length worth learning once.
 
   Over-asking is cheap by design. "No such episode" is a miss rather than a fault: it is counted
-  rather than listed, so a run of them cannot push a real fault out of the errors list. When the episode list cannot be read the request fails with a message
+  rather than listed, so a run of them cannot push a real fault out of the errors list.
+- `search.duration_minutes` is omitted for a channel request. The window says what a programme
+  of that kind runs to, which assumes a broadcaster gave it a slot; a creator posts a two minute
+  clip on Tuesday and a seventy minute one on Thursday. A television episode's twenty to sixty
+  rejected five of six real videos from one channel and kept only what happened to land inside
+  it, and each rejection spent an attempt, so the window would have exhausted the limit on
+  videos that were never wrong. With no window pitv_content falls back to what its own listing
+  says the video runs to, which is the only authority on it. When the episode list cannot be read the request fails with a message
   containing `rate limit`, which PiTV retries without using up an attempt.
 - For such a series pitv_content takes an upload only when its own title says it is the episode
   wanted (the episode's title, or its number), and refuses one that names another episode or

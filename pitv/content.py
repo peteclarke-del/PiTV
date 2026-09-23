@@ -18,7 +18,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from . import display, tool_client
+from . import display, tool_client, youtube
 from .catalogue import KINDS, family_safe, write_mirror
 from .db import (
     all_settings,
@@ -100,11 +100,26 @@ def _identity(row: dict[str, Any], show_title: str | None) -> dict[str, Any]:
 
 def _fetch_fields(w: dict[str, Any], show_title: str | None, acquire: str,
                   networks: list[str] | None = None) -> dict[str, Any]:
+    """The search pitv_content is asked to run, and where to file what it finds.
+
+    The duration window says what a programme of this kind runs to, so an upload of the wrong
+    length is refused rather than filed under a title it does not belong to. It assumes a
+    broadcaster gave the programme a slot, which is true of everything except a creator's
+    channel: the same creator posts a two minute clip on Tuesday and a seventy minute one on
+    Thursday, and there is no length that is wrong for them. A television episode's twenty to
+    sixty rejected most of a channel and kept only what happened to land inside it.
+
+    Such a request is sent without a window and pitv_content falls back to what its own listing
+    says the video runs to, which is the only authority on it. This is the same lesson as the
+    shorts: a channel is not a series, and a rule that fits a series is wrong for it in whichever
+    direction it is applied."""
     hints = _search_hints(w, show_title, networks)
-    return {"search": {"phrase": hints[0], "hints": hints[1:],
-                       "duration_minutes": WANTED_MINUTES.get(w["kind"], [1, 240]),
-                       # A music video must be the exact release; a film or episode may carry a nearby year.
-                       "year_tolerance": 0 if w["kind"] == "music" else 2},
+    search = {"phrase": hints[0], "hints": hints[1:],
+              # A music video must be the exact release; a film or episode may carry a nearby year.
+              "year_tolerance": 0 if w["kind"] == "music" else 2}
+    if not youtube.is_channel(_match(w.get("lineup_match"))):
+        search["duration_minutes"] = WANTED_MINUTES.get(w["kind"], [1, 240])
+    return {"search": search,
             "dest_dir": _wanted_dest({**w, "title": show_title or w["title"]}, acquire)}
 
 

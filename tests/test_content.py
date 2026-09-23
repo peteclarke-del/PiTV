@@ -142,3 +142,45 @@ def test_a_channels_length_is_refreshed_by_pitv_content_never_learned_and_frozen
     over_ask(540)
     assert count() == 540, "as is a channel that has grown since"
     conn.close()
+
+
+def test_a_creators_channel_is_asked_for_without_a_length_window():
+    """A request carries what a programme of its kind runs to, so an upload of the wrong length
+    is refused rather than filed under a title it does not belong to. That assumes a broadcaster
+    gave the programme a slot.
+
+    A creator did not. The same channel posts a two minute clip on Tuesday and a seventy minute
+    one on Thursday, and a television episode's twenty to sixty rejected most of one: of six
+    failures, five were a real video outside the window (2.6, 11.3, 12.5, 12.9 and 69.8 minutes)
+    and the three that succeeded were the three that happened to land inside it. Worse, each
+    rejection spent an attempt, so the window would have exhausted the limit on videos that were
+    never wrong.
+
+    A channel request is sent with no window and pitv_content falls back to what its own listing
+    says the video runs to. This is the shorts lesson again: a channel is not a series, and a
+    rule that fits a series is wrong for it in whichever direction it is applied."""
+    from pitv import db as dbm2
+    from pitv import lineup as lineup_mod
+    from pitv import youtube
+    from pitv.content import WANTED_MINUTES, manifest
+
+    conn = dbm2.connect(":memory:")
+    dbm2.init_db(conn)
+    ch = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
+    creator = lineup_mod.add(conn, ch, title="A Creator", kind="show", genres=["Comedy"],
+                             match=youtube.parse("https://www.youtube.com/channel/UCaaaaaaaaaaaaaaaaaaaaaa"))
+    series = lineup_mod.add(conn, ch, title="A Series", year=1981, kind="show", genres=["Comedy"],
+                            match={"source": "tvmaze", "id": "1234"})
+    with dbm2.tx(conn):
+        for entry in (creator, series):
+            conn.execute("INSERT INTO wanted(kind, title, episode, lineup_id, created_at)"
+                         " VALUES ('episode', 'Episode 1', 1, ?, 1)", (entry["id"],))
+
+    # Both rows are titled "Episode 1": what tells them apart is the match, not the title.
+    requests = manifest(conn, days=1)["wanted"]
+    assert len(requests) == 2
+    channel_ask = next(w["search"] for w in requests if (w.get("match") or {}).get("source") == youtube.SOURCE)
+    series_ask = next(w["search"] for w in requests if (w.get("match") or {}).get("source") != youtube.SOURCE)
+    assert "duration_minutes" not in channel_ask, "a creator's video may be any length"
+    assert series_ask["duration_minutes"] == WANTED_MINUTES["episode"], "a broadcast episode keeps its window"
+    conn.close()
