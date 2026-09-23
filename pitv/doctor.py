@@ -35,6 +35,8 @@ CACHED_TARGET = 95      # per cent of the next day's files expected in the cache
 CAP_DAYS_TARGET = 1.5   # days of built schedule the cache should hold; below this it thrashes
 LOW_DISK_BYTES = 5 * 1024 ** 3
 LOG_LINES = 12
+STARVED_RUNS = 2        # consecutive runs a band must go unreached before it is worth a sentence
+STARVED_HISTORY = 20    # how far back the streak is counted; past this it is reported as "at least"
 # Mirrors content.MAX_WANTED_ATTEMPTS for the finding text; imported lazily where it is read.
 MAX_ATTEMPTS = 3
 
@@ -289,31 +291,48 @@ def _abandoned(conn: sqlite3.Connection, settings: dict[str, Any]) -> list[dict[
     return out
 
 
-def _starved(conn: sqlite3.Connection) -> list[str]:
-    """Work pitv_content had ready and did not reach, in each of its last two runs.
+def _starved(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Work pitv_content had ready and did not reach, and for how many runs running.
 
-    A single run that ran out of time is ordinary: the next one starts from the top and gets
-    further. The same band unreached twice running is not, because nothing about it will change
-    on its own, and that is the state that left 148 requests untouched for a day while every
-    report read as an ordinary busy night. Only what both runs agree on is returned, so a busy
-    evening says nothing and a starved band says it plainly."""
+    One run that ran out of time is ordinary, because the next starts from the top and gets
+    further; the same band unreached again means nothing about it will change on its own. That
+    is the state that left 148 requests untouched for a day while every report read as a busy
+    night, so two consecutive runs is where this starts speaking.
+
+    The streak is counted rather than just detected, because not every band behind is the same
+    thing. pitv_content defers a second re-encode to the next slice on purpose, so that band is
+    reported unreached whenever there is one waiting: once or twice is the rule working, twenty
+    times is a film that will never be re-encoded at all. Saying how many runs it has been lets
+    the two be told apart on sight, rather than a threshold guessing which is which.
+
+    Matched on the band's name, which the message carries, so a band starved across several runs
+    is recognised even as the number of requests behind it moves."""
     from .content import UNREACHED
-    runs = conn.execute("SELECT details FROM run_log WHERE kind = 'content' ORDER BY id DESC LIMIT 2").fetchall()
-    if len(runs) < 2:
-        return []
-    seen = []
+    runs = conn.execute("SELECT details FROM run_log WHERE kind = 'content' ORDER BY id DESC LIMIT ?",
+                        (STARVED_HISTORY,)).fetchall()
+    per_run: list[dict[str, str]] = []
     for row in runs:
         try:
             messages = json.loads(row["details"] or "[]")
         except ValueError:
-            return []
-        seen.append({m for m in messages if isinstance(m, str) and m.startswith(UNREACHED)})
-    # Matched on the message, which names the band rather than the counts, so a band starved in
-    # both runs is recognised even as the number of requests behind it moves.
-    latest, before = seen
-    band = lambda m: m.split(" in ", 1)[-1].split(",", 1)[0]
-    earlier = {band(m) for m in before}
-    return sorted(m for m in latest if band(m) in earlier)
+            break
+        named = {}
+        for m in messages:
+            if isinstance(m, str) and m.startswith(UNREACHED):
+                named[m.split(" in ", 1)[-1].split(",", 1)[0]] = m
+        per_run.append(named)
+    if len(per_run) < STARVED_RUNS:
+        return []
+    out = []
+    for band, message in per_run[0].items():
+        streak = 0
+        for run in per_run:
+            if band not in run:
+                break
+            streak += 1
+        if streak >= STARVED_RUNS:
+            out.append({"band": band, "runs": streak, "capped": streak == len(per_run), "message": message})
+    return sorted(out, key=lambda s: (-s["runs"], s["band"]))
 
 
 def _content(settings: dict[str, Any]) -> dict[str, Any]:
@@ -438,10 +457,13 @@ def _findings(doc: dict[str, Any]) -> list[str]:
                    f"not deliver is unknown here: {run['detail']}. The next run sees the truth on disk, so nothing "
                    "is lost; a run of these means something is stopping it part way through.")
     for starved in doc.get("starved") or []:
-        # Two runs running, so it will not come right by itself: the work was ready and the run
-        # never looked at it. Nothing failed, which is why nothing else in this report says so.
-        out.append(f"pitv_content has not reached some of its work in either of its last two runs. {starved[len('not reached: '):]}. "
-                   "Nothing failed and nothing will change on its own; this is pitv_content's delivery order to answer for.")
+        # The work was ready and the run never looked at it. Nothing failed, which is why nothing
+        # else in this report says so. How many runs it has been is the whole of the judgement:
+        # a band deferred once or twice is a rule working, the same band twenty times is not.
+        how_many = f"at least {starved['runs']}" if starved.get("capped") else str(starved["runs"])
+        out.append(f"pitv_content has not reached its {starved['band']} work in {how_many} runs running. "
+                   f"{starved['message'][len('not reached: '):]}. Nothing failed and nothing will change on its "
+                   "own; this is pitv_content's delivery order to answer for.")
     requests = doc.get("wanted") if isinstance(doc.get("wanted"), dict) else {}
     for fault in requests.get("faults") or []:
         out.append(f"{fault['n']} request(s) are failing with the same error and will not come right on their own: "

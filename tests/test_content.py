@@ -34,9 +34,19 @@ def test_work_a_run_never_reached_is_recorded_and_only_called_out_when_it_persis
 
     run(1_000_100, band)
     starved = doctor._starved(conn)
-    assert len(starved) == 1 and "wanted" in starved[0], "twice running is the state worth saying"
+    assert len(starved) == 1 and starved[0]["band"] == "wanted" and starved[0]["runs"] == 2, \
+        "twice running is the state worth saying"
     finding = next(f for f in doctor._findings({"starved": starved}) if "not reached" in f)
-    assert "will change on its own" in finding and "1653 request(s) in wanted" in finding
+    assert "will change on its own" in finding and "2 runs running" in finding
+
+    # How many runs it has been is the judgement, not just that it happened. pitv_content defers
+    # a second re-encode to the next slice deliberately, so that band goes unreached whenever one
+    # is waiting: once or twice is the rule working, twenty times is a film that will never be
+    # re-encoded. The count is what lets the two be told apart on sight.
+    for n in range(3, 7):
+        run(1_000_000 + n * 100, band)
+        assert doctor._starved(conn)[0]["runs"] == n
+    assert "6 runs running" in next(f for f in doctor._findings({"starved": doctor._starved(conn)}) if "wanted" in f)
 
     # A band that empties stops being reported, and a band with nothing in it never was.
     run(1_000_200, [{"band": 4, "name": "wanted", "requests": 0, "first_at": 0, "of": 0}])
