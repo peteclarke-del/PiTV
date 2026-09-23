@@ -411,7 +411,7 @@ def test_pitv_content_uses_its_token_not_a_session(client, env):
 
 
 def test_setting_ranges():
-    from pitv.web.api.settings_rules import SettingError, check_setting
+    from pitv.settings_rules import SettingError, check_setting
     assert check_setting("osd_scale", 1.25) == 1.25
     for key, value in (("osd_scale", 9), ("osd_safe_margin", 0.5), ("memory_limit_mb", 10), ("horizon_days", 0)):
         with pytest.raises(SettingError):
@@ -674,7 +674,7 @@ def test_login_attempts_are_counted_before_verification():
 
 
 def test_settings_refuse_secrets_and_malformed_urls(client):
-    from pitv.web.api.settings_rules import SettingError, check_setting
+    from pitv.settings_rules import SettingError, check_setting
     for key in ("admin_password_hash", "session_secret"):
         with pytest.raises(SettingError):
             check_setting(key, "x")

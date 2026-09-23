@@ -1,4 +1,4 @@
-"""Validation for PUT /api/settings.
+"""Validation for a setting on its way into the database, from the admin or from a restore.
 
 Settings are free-form JSON in the database, but several of them end up as mpv arguments,
 file-system paths or an outbound URL. A stolen admin cookie must not be able to turn those
@@ -15,9 +15,9 @@ from typing import Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from ... import settings_schema
-from ...db import DEFAULT_SETTINGS
-from ...player.input import ACTIONS
+from . import settings_schema
+from .db import DEFAULT_SETTINGS
+from .player.input import ACTIONS
 
 HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 # What an ALSA device name, a DRM connector, an mpv hwdec list or an aspect ratio may contain.

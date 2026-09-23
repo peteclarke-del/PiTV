@@ -220,8 +220,22 @@ Overrides (title, year, certificate, genres, plot, kids, season, episode, artist
 in a JSON column on the row and applied on top of indexed values, so a re-import never undoes
 an admin's correction. Show-level scheduling fields (strip or weekly mode, anchor time and
 days, rest weeks, category, excluded) are ordinary columns; the channel comes from the
-line-up (section 4.2). `GET /api/export` returns settings, channels, sources and every
-override as JSON for backup.
+line-up (section 4.2).
+
+`GET /api/export` returns the whole of the owner's configuration as one JSON document, and
+`POST /api/import` puts one back (`pitv/backup.py`, the Backup card on the System tab). It
+covers the settings, the channels with their bands, the sources, the line-ups and every show
+or media override. The library is deliberately outside it: shows, episodes, films and adverts
+come back from pitv_content's index and the cache refills itself, so what a backup holds is
+only what somebody decided and nothing else can regenerate.
+
+Nothing is invented on the way back in. Row ids are not carried, because a rebuilt database
+numbers its rows afresh: a channel is matched on its number, a source on its name and root, an
+override on the identity the index gives its title. A channel the station does not have is
+counted, never created, and an override whose title has not been indexed yet is reported as
+waiting rather than dropped. The restore is one transaction, so a damaged file leaves the
+station exactly as it was; the line-up follows in its own, since it has its own document and
+its own import already.
 
 Era weights are a global setting with per-channel overrides. A series gets the best weight
 of any year in its run (premiere year to premiere year plus number of seasons), so a show

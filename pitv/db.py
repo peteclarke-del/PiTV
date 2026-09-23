@@ -690,7 +690,7 @@ def _table_sql(conn: sqlite3.Connection, table: str) -> str:
     return row["sql"] if row else ""
 
 
-def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
+def columns(conn: sqlite3.Connection, table: str) -> list[str]:
     return [r["name"] for r in conn.execute(f"PRAGMA table_info({_ident(table)})")]
 
 
@@ -728,10 +728,10 @@ def _rebuild_table(conn: sqlite3.Connection, table: str) -> None:
     a transaction). `table` is always one of the literals in `_migrate_steps`."""
     table = _ident(table)
     create_new = _create_statement(table).replace(f"CREATE TABLE IF NOT EXISTS {table} (", f"CREATE TABLE {table}__new (", 1)
-    old_cols = _columns(conn, table)
+    old_cols = columns(conn, table)
     conn.execute(f"DROP TABLE IF EXISTS {table}__new")
     conn.execute(create_new)
-    new_cols = set(_columns(conn, f"{table}__new"))
+    new_cols = set(columns(conn, f"{table}__new"))
     common = ", ".join(c for c in old_cols if c in new_cols)
     conn.execute(f"INSERT INTO {table}__new ({common}) SELECT {common} FROM {table}")
     conn.execute(f"DROP TABLE {table}")
@@ -757,7 +757,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 def _migrate_steps(conn: sqlite3.Connection) -> None:
     # Carry pitv_content's old transcode pointer into cache_path before the media table is
     # rebuilt without it.
-    media_cols = set(_columns(conn, "media"))
+    media_cols = set(columns(conn, "media"))
     if "transcoded_path" in media_cols:
         if "cache_path" not in media_cols:
             conn.execute("ALTER TABLE media ADD COLUMN cache_path TEXT")
@@ -775,7 +775,7 @@ def _migrate_steps(conn: sqlite3.Connection) -> None:
     if wanted_sql and "'music'" not in wanted_sql:
         _rebuild_table(conn, "wanted")
     for table, column, ddl in MIGRATIONS:
-        if column not in _columns(conn, table):
+        if column not in columns(conn, table):
             conn.execute(f"ALTER TABLE {_ident(table)} ADD COLUMN {_ident(column)} {ddl}")
     for stmt in _index_statements():      # rebuilt tables lose their indexes
         conn.execute(stmt)
@@ -808,12 +808,12 @@ def _migrate_break_switches(conn: sqlite3.Connection) -> None:
     # module, so the vocabulary cannot be pulled in while this module is still being defined.
     from .scheduler.rules import PATTERN_TOKENS, PROGRAMME_TOKENS
 
-    columns = set(_columns(conn, "channels"))
-    if not columns & {"ads_enabled", "idents_enabled"}:
+    held = set(columns(conn, "channels"))
+    if not held & {"ads_enabled", "idents_enabled"}:
         return
     rows = conn.execute("SELECT id, pattern, ads_per_break,"
-                        f" {'ads_enabled' if 'ads_enabled' in columns else '1 AS ads_enabled'},"
-                        f" {'idents_enabled' if 'idents_enabled' in columns else '1 AS idents_enabled'}"
+                        f" {'ads_enabled' if 'ads_enabled' in held else '1 AS ads_enabled'},"
+                        f" {'idents_enabled' if 'idents_enabled' in held else '1 AS idents_enabled'}"
                         " FROM channels").fetchall()
     for row in rows:
         tokens: list[str] = []

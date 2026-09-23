@@ -45,8 +45,32 @@
 
   const exportJson = guard(async () => {
     const data = await tryApi(get('/api/export'));
-    if (data) downloadJson(data, `pitv-export-${new Date().toISOString().slice(0, 10)}.json`);
+    if (data) downloadJson(data, `pitv-backup-${new Date().toISOString().slice(0, 10)}.json`);
   });
+
+  // A restore overwrites the settings, channels, bands, sources and line-ups now in place, so it
+  // asks first and then says what it actually did: an override for a title the library has not
+  // been given yet is reported as waiting rather than silently dropped.
+  let restoreFile = $state(null);
+  let restoring = $state(false);
+  async function restoreJson(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    let doc;
+    try { doc = JSON.parse(await file.text()); } catch { toast.error('That file is not JSON'); return; }
+    restoring = true;
+    const r = await confirmApi(
+      `Restore ${file.name}? Settings, channels, bands, sources and line-ups are replaced by what the file holds.`,
+      { title: 'Restore backup', okLabel: 'Restore', danger: true }, () => post('/api/import', doc));
+    restoring = false;
+    if (r) {
+      const waiting = r.waiting ? `, ${r.waiting} override${r.waiting === 1 ? '' : 's'} waiting on the library` : '';
+      toast.success(`Restored ${r.settings} settings, ${r.channels} channels, ${r.bands} bands, `
+        + `${r.sources} sources, ${r.lineup_entries} line-up entries${waiting}`);
+      load();
+    }
+  }
 
   async function changePassword(e) {
     e.preventDefault();
@@ -142,6 +166,27 @@
         </dl>
       {/if}
     </div>
+    <div class="card">
+      <div class="card-title"><h3>Backup</h3><AppBadge app="pitv" /></div>
+      <p class="small muted">Everything you have set: settings, channels and their bands, sources, line-ups and every
+        show or media override. Not the library or the cache, which come back from pitv_content's index.</p>
+      <div class="row">
+        <button onclick={exportJson} disabled={exportJson.busy}>Export</button>
+        <button onclick={() => restoreFile.click()} disabled={restoring}>Restore…</button>
+      </div>
+      <input type="file" accept="application/json,.json" bind:this={restoreFile} onchange={restoreJson} hidden />
+    </div>
+    <div class="card">
+      <div class="card-title"><h3>{auth.password_set ? 'Change admin password' : 'Set admin password'}</h3><AppBadge app="pitv" /></div>
+      <form class="stack" onsubmit={changePassword}>
+        {#if auth.password_set}
+          <label class="field">Current password<input type="password" bind:value={pw.current} autocomplete="current-password" required /></label>
+        {/if}
+        <label class="field">New password<input type="password" bind:value={pw.password} autocomplete="new-password" minlength="6" required /></label>
+        <label class="field">Confirm<input type="password" bind:value={pw.confirm} autocomplete="new-password" minlength="6" required /></label>
+        <div><button class="primary" type="submit" disabled={busy}>Save password</button></div>
+      </form>
+    </div>
   </div>
 
   <div class="card pad-0">
@@ -171,25 +216,6 @@
     <div class="card-title" style="padding:.8rem 1rem 0"><h3>NAS mounts</h3><AppBadge app="content" /></div>
     <p class="scope" style="padding:0 1rem;margin:.2rem 0 .4rem">pitv_content's sources as mounted on the Pi. pitv_content indexes them; PiTV reads them only for NAS fallback playback.</p>
     <DataTable id="system-mounts" columns={mountColumns} rows={info?.mounts ?? null} key={(r) => r.path} card={false} empty="No NAS sources configured." />
-  </div>
-
-  <div class="grid">
-    <div class="card">
-      <div class="card-title"><h3>Backup</h3><AppBadge app="pitv" /></div>
-      <p class="small muted">Download settings, channels, sources and every show/media override as JSON.</p>
-      <button onclick={exportJson} disabled={exportJson.busy}>Export settings &amp; overrides</button>
-    </div>
-    <div class="card">
-      <div class="card-title"><h3>{auth.password_set ? 'Change admin password' : 'Set admin password'}</h3><AppBadge app="pitv" /></div>
-      <form class="stack" onsubmit={changePassword}>
-        {#if auth.password_set}
-          <label class="field">Current password<input type="password" bind:value={pw.current} autocomplete="current-password" required /></label>
-        {/if}
-        <label class="field">New password<input type="password" bind:value={pw.password} autocomplete="new-password" minlength="6" required /></label>
-        <label class="field">Confirm<input type="password" bind:value={pw.confirm} autocomplete="new-password" minlength="6" required /></label>
-        <div><button class="primary" type="submit" disabled={busy}>Save password</button></div>
-      </form>
-    </div>
   </div>
 
   <div class="card"><div class="card-title"><h3>Jobs</h3><AppBadge app="pitv" /></div><JobList /></div>

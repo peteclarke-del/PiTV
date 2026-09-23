@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from ... import __version__, catalogue, display, settings_schema, tool_client, youtube
+from ... import __version__, backup, catalogue, display, settings_schema, tool_client, youtube
 from ... import db as dbm
 from ... import genres as genre_rules
 from ... import lineup as lineup_mod
@@ -40,6 +40,7 @@ from ...scheduler import bands as band_rules
 from ...scheduler.horizon import build_horizon, fresh_rebuild_horizon, rebuild_from
 from ...scheduler.rules import broadcast_day_for, normalise_cert, parse_pattern, tz_of
 from ...scheduler.slots import parse_day, slot_titles
+from ...settings_rules import HHMM, SECRET_SETTINGS, SettingError, check_setting
 from ..keeper import PLAYER_UNIT, start_player
 from .content import tool_catalogue
 from .deps import (
@@ -62,7 +63,6 @@ from .services import (
     services,
     systemd_state,
 )
-from .settings_rules import HHMM, SECRET_SETTINGS, SettingError, check_setting
 
 log = logging.getLogger("pitv.web")
 router = APIRouter(prefix="/api", dependencies=[Depends(admin_conn)])
@@ -1092,16 +1092,21 @@ def list_jobs(request: Request):
 
 
 @router.get("/export")
-def export_overrides(conn: sqlite3.Connection = Depends(admin_conn)):
-    """Everything an admin has changed, for backup: settings, channels, sources, overrides."""
-    shows = [{"uid": r["path"], "title": r["title"], "overrides": json.loads(r["overrides"]), "home_channel_id": r["home_channel_id"],
-              "mode": r["mode"], "anchor_time": r["anchor_time"], "anchor_days": r["anchor_days"], "rest_weeks": r["rest_weeks"], "excluded": r["excluded"]}
-             for r in conn.execute("SELECT * FROM shows WHERE overrides != '{}' OR excluded = 1 OR mode != 'auto'")]
-    media = [{"uid": r["uid"], "title": r["title"], "overrides": json.loads(r["overrides"]), "excluded": r["excluded"]}
-             for r in conn.execute("SELECT * FROM media WHERE overrides != '{}' OR excluded = 1")]
-    return {"exported_at": now_ts(), "settings": _public_settings(conn),
-            "channels": rows_to_dicts(conn.execute("SELECT * FROM channels")), "sources": rows_to_dicts(conn.execute("SELECT * FROM sources")),
-            "shows": shows, "media": media}
+def export_configuration(conn: sqlite3.Connection = Depends(admin_conn)):
+    """Everything the owner has set, for backup."""
+    return backup.export(conn)
+
+
+@router.post("/import")
+def import_configuration(request: Request, body: dict[str, Any] = Depends(admin_json),
+                         conn: sqlite3.Connection = Depends(admin_conn)):
+    """Put a backup document back. The result counts what was applied and what found no home."""
+    try:
+        result = backup.restore(conn, body)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    request.app.state.player.call("settings-changed")
+    return result
 
 
 # --- logs ---------------------------------------------------------------------------------------------
