@@ -328,6 +328,17 @@ def _disks(cfg: Config, settings: dict[str, Any]) -> list[dict[str, Any]]:
 
 # --- findings -------------------------------------------------------------------------------
 
+def _is_miss(message: str) -> bool:
+    """Whether a message from pitv_content is a search that found nothing rather than a fault.
+
+    It says so in the first words, and the same test decides whether the request keeps its
+    attempts, so the rule is one constant both sides read. The message may be prefixed with the
+    request it belongs to ("w:2104: not found yet: ..."), so the prefix is looked for after the
+    last colon-space that precedes it rather than only at the start."""
+    from .content import MISS_PREFIX
+    return MISS_PREFIX in message.lower()
+
+
 def _findings(doc: dict[str, Any]) -> list[str]:
     """What needs attention, most serious first. An empty list means nothing does."""
     out: list[str] = []
@@ -345,8 +356,16 @@ def _findings(doc: dict[str, Any]) -> list[str]:
     content = doc.get("content") or {}
     if content.get("reachable") is False:
         out.append(f"pitv_content is not reachable: {content.get('detail')}")
-    for error in content.get("errors") or []:
+    # A search that came back empty is an answer, not a fault: the title will be asked for again
+    # and nobody need do anything. Listing ten of them one per line pushed the findings that do
+    # need attention off the first screen, which is the same silence by another route.
+    errors = [str(e) for e in content.get("errors") or []]
+    misses = [e for e in errors if _is_miss(e)]
+    for error in (e for e in errors if e not in misses):
         out.append(f"pitv_content reports: {error}")
+    if misses:
+        out.append(f"{len(misses)} title(s) searched for and not found yet; they stay in the queue and are "
+                   "asked for again. Wanted lists them with what each search said.")
     if warning := content.get("queue_warning"):
         out.append(f"pitv_content's queue: {warning}")
     for healed in content.get("healed") or []:
