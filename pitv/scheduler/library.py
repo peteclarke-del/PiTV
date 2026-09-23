@@ -15,7 +15,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from ..db import LIVE, effective, rows_to_dicts
+from ..db import LIVE, effective, genre_list, rows_to_dicts
 from ..genres import programme_type, scheduling_class
 from . import bands
 from .policy import SchedulerPolicy
@@ -154,14 +154,32 @@ class Library:
 
         An episode carries its series' title, because a band places one with no series beside it
         and the guide would otherwise bill it by its own name, which for most series is the word
-        "Episode" and a number."""
+        "Episode" and a number.
+
+        It also carries the genres of the line-up entry that owns it. Those are the owner's own
+        classification, made when the title was added, and for a creator's channel they are the
+        only ones that can be right: what indexes the file sees a YouTube video and says so,
+        while the owner knows the channel is about food, or motorcycles, or comedy. Without them
+        every channel's material read "YouTube" and nothing else, so a band asking for YouTube
+        and Food matched nothing: twenty three videos sat unusable behind nine bands that each
+        showed a holding card all day.
+
+        They are merged here rather than written into the library, because the library is
+        pitv_content's to describe and a re-import would undo anything written over it. Merging
+        only widens what a band may place, never narrows it."""
         if kind not in self._pools:
             items = self.playable(kind)
             if kind == "episode":
                 titles = {sid: show.title for sid, show in self.shows.items()}
+                owner_genres: dict[int, list[str]] = {}
+                for r in self.conn.execute(
+                        "SELECT show_id, genres FROM lineup WHERE enabled = 1 AND show_id IS NOT NULL"):
+                    owner_genres.setdefault(int(r["show_id"]), []).extend(genre_list(r["genres"]))
                 for item in items:
                     if (title := titles.get(item.get("show_id"))) is not None:
                         item["show_title"] = title
+                    if (owned := owner_genres.get(item.get("show_id"))) is not None:
+                        item["genres"] = sorted(dict.fromkeys(list(item.get("genres") or []) + owned))
             self._pools[kind] = items
         return self._pools[kind]
 

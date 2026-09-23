@@ -388,8 +388,19 @@ def _resize_slots(conn: sqlite3.Connection, media_id: int, real: float) -> dict[
 
 def _fetched_show(conn: sqlite3.Connection, w: dict[str, Any], meta: dict[str, Any], year: int | None) -> int:
     """The series a fetched episode belongs to: the one its line-up entry or its wanted row
-    already names, else a series created (once) for material fetched online."""
-    entry = conn.execute("SELECT title, show_id FROM lineup WHERE id = ?", (w["lineup_id"],)).fetchone() \
+    already names, else a series created (once) for material fetched online.
+
+    A new series takes the line-up entry's genres as well as the ones the delivery carries. The
+    entry's are the owner's own classification, made in the admin when the title was added, and
+    they are the only ones that can be right about a creator's channel: pitv_content sees a
+    YouTube video and says so, while the owner knows the channel is about food, or motorcycles,
+    or comedy. Filed under the delivery's word alone, every channel's material read simply
+    "YouTube", and a band asking for YouTube and Food could match nothing at all: twenty three
+    videos sat unusable behind nine bands that each showed a card all day.
+
+    The two are merged rather than one replacing the other. Both are true, the owner's is what
+    the bands are written against, and a union only ever widens what can be placed."""
+    entry = conn.execute("SELECT title, show_id, genres FROM lineup WHERE id = ?", (w["lineup_id"],)).fetchone() \
         if w.get("lineup_id") else None
     known = (entry["show_id"] if entry else None) or w.get("show_id")
     if known:
@@ -399,9 +410,10 @@ def _fetched_show(conn: sqlite3.Connection, w: dict[str, Any], meta: dict[str, A
     row = conn.execute("SELECT id FROM shows WHERE path = ?", (key,)).fetchone()
     if row is not None:
         return int(row["id"])
+    genres = genre_list(meta.get("genres")) + (genre_list(entry["genres"]) if entry else [])
     return insert_row(conn, "shows", {
         "source_id": None, "path": key, "title": title, "year": year, "certificate": normalise_cert(as_text(meta.get("certificate"))),
-        "genres": json.dumps(genre_list(meta.get("genres"))), "plot": as_text(meta.get("plot")),
+        "genres": json.dumps(sorted(dict.fromkeys(genres))), "plot": as_text(meta.get("plot")),
         "category": "general", "updated_at": now_ts()})
 
 

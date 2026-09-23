@@ -1868,3 +1868,53 @@ def test_a_channel_that_cannot_reach_its_configured_mix_says_so(tmp_path):
     builder.programmes_built[channel["id"]] = max(1, series)  # enough to honour it
     assert not [n for n in builder.mix_notes() if channel["name"] in n]
     conn.close()
+
+
+def test_a_bands_material_is_classified_by_the_owner_not_by_what_indexed_it():
+    """A creator's channel is added in the admin with what it is about: food, motorcycles,
+    comedy. What indexes the delivered file sees a YouTube video and says so, and nothing more,
+    so every channel's material carried the single genre "YouTube".
+
+    Channel 8's bands ask for two genres each and require both, "YouTube and Food". Against a
+    library that said only "YouTube", not one of twenty three delivered videos could be placed
+    by any of its nine bands, and the channel showed a holding card all day while holding nine
+    hours of material.
+
+    The entry's genres are merged into the pool rather than written into the library, because
+    the library is pitv_content's to describe and a re-import would undo anything written over
+    it. Merging only ever widens what a band may place."""
+    import time
+
+    from pitv import db as dbm2
+    from pitv import lineup as lineup_mod
+    from pitv import youtube
+    from pitv.scheduler import bands as band_rules
+    from pitv.scheduler.library import Library
+    from pitv.scheduler.policy import SchedulerPolicy
+
+    conn = dbm2.connect(":memory:")
+    dbm2.init_db(conn)
+    ch = conn.execute("SELECT id FROM channels WHERE content = 'music' LIMIT 1").fetchone()["id"]
+    entry = lineup_mod.add(conn, ch, title="A Food Channel", kind="show", genres=["Food", "YouTube"],
+                           match=youtube.parse("https://www.youtube.com/channel/UCaaaaaaaaaaaaaaaaaaaaaa"))
+    now = dbm2.now_ts()
+    with dbm2.tx(conn):
+        # As the index delivers it: a YouTube video, and that is all it can know.
+        show = dbm2.insert_row(conn, "shows", {"path": "show:x", "title": "A Food Channel",
+                                               "genres": '["YouTube"]', "updated_at": now})
+        conn.execute("UPDATE lineup SET show_id = ? WHERE id = ?", (show, entry["id"]))
+        dbm2.insert_row(conn, "media", {"kind": "episode", "show_id": show, "title": "Episode 1",
+                                        "path": "/c/1.mp4", "duration": 1500, "episode": 1, "updated_at": now})
+        band_rules.save(conn, ch, [band_rules.clean(
+            {"name": "Aperitif", "start": "11:00", "minutes": 90, "days": [0, 1, 2, 3, 4], "enabled": True,
+             "fill": {"kinds": ["episode"], "genres": ["YouTube", "Food"], "all_genres": True}})], now)
+
+    lib = Library(conn, SchedulerPolicy(dbm2.all_settings(conn), int(time.time())), now=int(time.time()))
+    item = next(i for i in lib.band_pool("episode") if i["show_id"] == show)
+    assert set(item["genres"]) == {"YouTube", "Food"}, "the owner's classification reaches the band"
+    band = band_rules.load(conn)[ch][0]
+    assert band.genre_hit(item), "a band asking for both can now place it"
+
+    # What the library itself says is untouched, so the next import has nothing to undo.
+    assert dbm2.genre_list(conn.execute("SELECT genres FROM shows WHERE id = ?", (show,)).fetchone()[0]) == ["YouTube"]
+    conn.close()
