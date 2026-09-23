@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from . import genres as genre_rules
-from . import tool_client
+from . import tool_client, youtube
 from .db import (
     all_settings,
     as_bool,
@@ -617,6 +617,12 @@ def enrich_missing_metadata(conn: sqlite3.Connection, *, limit: int = 50, force:
                        + (f" Learned the length or certificate of {counted} remote title{'s' if counted != 1 else ''}." if counted else "")}
 
 
+def _match_of(entry: dict[str, Any]) -> dict[str, Any]:
+    """A line-up entry's confirmed identity, decoded."""
+    raw = entry.get("match")
+    return json.loads(raw) if isinstance(raw, str) else (raw or {})
+
+
 def learn_from_matches(conn: sqlite3.Connection, settings: dict[str, Any], *, limit: int = 50,
                        progress: Any = None) -> int:
     """What the online match knows about each remote title that the line-up entry does not yet
@@ -624,16 +630,25 @@ def learn_from_matches(conn: sqlite3.Connection, settings: dict[str, Any], *, li
     programme, so the lookup is asked by title and only candidates for that programme are
     believed (the same source and id, or the same IMDb id: the source with the episode list
     often has no certificate and another has). Without the length PiTV asks for episodes never
-    made; without the certificate a late-night series nobody holds yet may air at breakfast."""
+    made; without the certificate a late-night series nobody holds yet may air at breakfast.
+
+    A length is learned once and never revisited, which is right for a series that ran and
+    ended and wrong for a creator's channel, whose length changes every week and whose count
+    is whatever pitv_content's listing held on the day it was read. Such an entry is left
+    without one: an unbounded channel asks for the next number and is told "not found yet" past
+    the end, which costs an attempt that uses nothing, where a frozen count is wrong in both
+    directions at once. It halved overnight when shorts stopped being numbered, and it would
+    have stopped a growing channel early had it not."""
     entries = rows_to_dicts(conn.execute(
         "SELECT id, kind, title, year, match, episode_count, certificate FROM lineup WHERE source != 'library'"
         " AND match IS NOT NULL AND ((kind = 'show' AND episode_count IS NULL) OR certificate IS NULL)"
         " ORDER BY certificate IS NOT NULL, id LIMIT ?", (max(0, limit),)))
+    entries = [e for e in entries if not youtube.is_channel(_match_of(e))]
     learned = 0
     for i, entry in enumerate(entries, 1):
         if progress:
             progress(f"checking the online match for {entry['title']}", i - 1, len(entries))
-        match = json.loads(entry["match"]) if isinstance(entry["match"], str) else (entry["match"] or {})
+        match = _match_of(entry)
         payload, _ = _ask_lookup(settings, {"kind": entry["kind"], "title": entry["title"], "year": entry["year"] or "", "limit": 8})
         found: dict[str, Any] = {}
         for candidate in (payload or {}).get("candidates") or []:

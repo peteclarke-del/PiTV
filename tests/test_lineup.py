@@ -1118,3 +1118,34 @@ def test_the_broadcasters_a_channel_stands_for_are_read_as_a_list(tmp_path):
     assert network_fit(one, "ITV1", claimed) is None, "claimed by another channel"
     assert network_fit(one, "ABC", claimed) == 1.0, "claimed by nobody, so unconstrained"
     conn.close()
+
+
+def test_a_channels_length_is_not_learned_once_and_frozen():
+    """`episode_count` stops PiTV asking for episode 11 of a three-part series, and it is learned
+    once and never revisited. That is right for a series that ran and ended, and wrong for a
+    creator's channel: its length is whatever the listing held on the day it was read.
+
+    One such count halved overnight when pitv_content stopped numbering a creator's shorts as
+    episodes, so a stored 1003 became a real 503 and PiTV would have spent attempts asking for
+    five hundred videos that do not exist. The same number would have stopped a growing channel
+    early had it moved the other way, so a frozen count is wrong in both directions at once. A
+    channel entry is left without one: it asks for the next number and is told "not found yet"
+    past the end, which costs an attempt that uses nothing."""
+    from pitv import catalogue, youtube
+
+    c = dbm.connect(":memory:")
+    dbm.init_db(c)
+    ch = c.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
+    series = lineup.add(c, ch, title="A Series That Ended", year=1981, kind="show", genres=["Comedy"],
+                        match={"source": "tvmaze", "id": "1234"})
+    channel = lineup.add(c, ch, title="A Creator", kind="show", genres=["Comedy"],
+                         match=youtube.parse("https://www.youtube.com/channel/UCaaaaaaaaaaaaaaaaaaaaaa"))
+    assert youtube.is_channel(catalogue._match_of(dict(
+        c.execute("SELECT match FROM lineup WHERE id = ?", (channel["id"],)).fetchone())))
+
+    offered = [e["id"] for e in dbm.rows_to_dicts(c.execute(
+        "SELECT id, match FROM lineup WHERE match IS NOT NULL"))
+        if not youtube.is_channel(catalogue._match_of(e))]
+    assert series["id"] in offered and channel["id"] not in offered, \
+        "a series is asked about, a channel is left without a frozen length"
+    c.close()
