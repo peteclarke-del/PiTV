@@ -992,6 +992,52 @@ def test_an_entry_keyed_on_a_renameable_name_is_reported(tmp_path):
     conn.close()
 
 
+def test_the_provider_these_entries_depend_on_is_checked(tmp_path, monkeypatch):
+    """An entry naming a creator's channel carries a working address and reads as self-contained.
+    It is not: pitv_content lists that address, then fetches each video by its id, which routes
+    to whichever enabled provider serves that id space. Turning that provider off stops every
+    such entry, and nothing on the entry or the provider says the two are connected.
+
+    The check reads what a provider says it `serves`, never its type name, which is
+    pitv_content's to rename and happened to match only by coincidence."""
+    from conftest import make_library
+
+    from pitv import doctor, tool_client, youtube
+    from pitv import lineup as lineup_mod
+
+    ctx = make_library(tmp_path / "providers", max_episodes=1)
+    conn = ctx["conn"]
+    settings = dbm.all_settings(conn)
+    assert doctor._providers(conn, settings) == {"channel_entries": 0}, "nothing to depend on, nothing to say"
+
+    channel = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
+    lineup_mod.add(conn, channel, title="A Creator", kind="show", source="catalogue", genres=["Comedy"],
+                   match=youtube.parse("https://www.youtube.com/channel/UCaaaaaaaaaaaaaaaaaaaaaa"))
+
+    answer = []
+    monkeypatch.setattr(tool_client, "request", lambda *a, **k: (200, answer[0]))
+
+    # A type of its own, serving the ids these entries actually fetch: nothing wrong.
+    answer.append([{"id": "some-channel", "type": "a_type_pitv_content_renamed", "serves": youtube.SERVES, "enabled": True}])
+    section = doctor._providers(conn, settings)
+    assert section["serving"] == ["some-channel"] and section["channel_entries"] == 1
+    assert not [f for f in doctor._findings({"providers": section}) if "no enabled provider" in f]
+
+    # The same provider switched off, and another that serves something else entirely.
+    answer[0] = [{"id": "some-channel", "type": "a_type", "serves": youtube.SERVES, "enabled": False},
+                 {"id": "elsewhere", "type": "other", "serves": "somewhere_else", "enabled": True}]
+    section = doctor._providers(conn, settings)
+    assert section["serving"] == []
+    assert any("no enabled provider" in f for f in doctor._findings({"providers": section}))
+
+    # A pitv_content from before it reported `serves` is not guessed at.
+    answer[0] = [{"id": "some-channel", "type": "youtube", "enabled": True}]
+    section = doctor._providers(conn, settings)
+    assert section["reports_serves"] is False and "serving" not in section
+    assert not [f for f in doctor._findings({"providers": section}) if "no enabled provider" in f]
+    conn.close()
+
+
 def test_an_idents_channel_comes_from_its_name_and_cannot_be_overridden(client):
     """Which channel an ident belongs to is the file's name and nothing else. The admin used to
     carry a list for pointing idents at channels by hand, which let the database say one thing

@@ -50,6 +50,7 @@ def report(conn: sqlite3.Connection, cfg: Config, now: int | None = None) -> dic
         "bands": lambda: _bands(conn, settings, now),
         "library": lambda: _library(conn),
         "fragile_matches": lambda: _fragile_matches(conn),
+        "providers": lambda: _providers(conn, settings),
         "wanted": lambda: _wanted(conn),
         "runs": lambda: _runs(conn),
         "content": lambda: _content(settings),
@@ -174,6 +175,32 @@ def _fragile_matches(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return out
 
 
+def _providers(conn: sqlite3.Connection, settings: dict[str, Any]) -> dict[str, Any]:
+    """Whether pitv_content can still fetch the entries that name a creator's channel.
+
+    Such an entry carries the channel's own address and looks self-contained, but pitv_content
+    only lists that address: each video is fetched by its id, and an id is routed to whichever
+    enabled provider says it serves that id space. Switch that provider off and every one of
+    these entries stops, with nothing on the entry or on the provider to connect the two.
+
+    A version of pitv_content that does not report `serves` yet says nothing rather than
+    guessing from the provider's type name, which is its to rename."""
+    from . import youtube
+    entries = conn.execute(
+        "SELECT COUNT(*) FROM lineup WHERE enabled = 1 AND match IS NOT NULL AND match LIKE ?",
+        (f'%"{youtube.SOURCE}"%',)).fetchone()[0]
+    if not entries:
+        return {"channel_entries": 0}
+    status, body = tool_client.request(tool_client.base_url(settings), "GET", "providers", timeout=5)
+    if status != 200 or not isinstance(body, list):
+        return {"channel_entries": entries, "reachable": False}
+    if not any("serves" in p for p in body if isinstance(p, dict)):
+        return {"channel_entries": entries, "reachable": True, "reports_serves": False}
+    serving = [p.get("id") for p in body
+               if isinstance(p, dict) and p.get("enabled") and p.get("serves") == youtube.SERVES]
+    return {"channel_entries": entries, "reachable": True, "reports_serves": True, "serving": serving}
+
+
 def _library(conn: sqlite3.Connection) -> dict[str, Any]:
     rows = conn.execute("SELECT kind, origin, SUM(missing = 0 AND excluded = 0) AS live, SUM(missing) AS missing"
                         " FROM media GROUP BY kind, origin ORDER BY kind, origin").fetchall()
@@ -277,6 +304,11 @@ def _findings(doc: dict[str, Any]) -> list[str]:
         usable = library.get("adverts_usable") or 0
         out.append(f"{held} adverts name no product and are not put in a break, leaving {usable} that do. "
                    "They are chapters of a compilation nothing could identify; pitv_content is the one to name them.")
+    providers = doc.get("providers") or {}
+    if providers.get("reports_serves") and not providers.get("serving"):
+        out.append(f"{providers['channel_entries']} catalogue entries name a creator's channel, and no enabled "
+                   "provider serves the videos they fetch. Each entry carries a working address, so nothing "
+                   "about it says why it has stopped: enable the provider in Content, Providers.")
     if fragile := doc.get("fragile_matches") or []:
         # Not broken, and not urgent: both forms fetch. But the day a creator renames themselves
         # the address stops resolving, and what anybody sees is a series that quietly stopped.

@@ -18,6 +18,13 @@ import re
 from urllib.parse import parse_qs, urlsplit
 
 SOURCE = "youtube_channel"   # pitv_content's provider type; a playlist is the same source
+# The id space the videos themselves come back in. pitv_content lists the channel address
+# directly, so an entry needs no provider of the channel type, but each video is then fetched by
+# a plain video id and routed to whichever enabled provider serves that id space. Turning that
+# provider off stops every entry keyed on a channel, which nothing on the entry would suggest,
+# so the doctor checks for it. The provider's type name is pitv_content's to change; what it
+# says it `serves` is the contract, and this is the value to compare against.
+SERVES = "youtube"
 
 _HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
 _CHANNEL = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
