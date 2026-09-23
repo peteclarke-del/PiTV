@@ -415,6 +415,15 @@ def _is_miss(message: str) -> bool:
     return MISS_PREFIX in message.lower()
 
 
+def _request_message(error: str) -> str:
+    """A live error with its request id stripped, so it can be matched against the stored message.
+
+    pitv_content reports a failure as "w:1917: candidates did not process" while the row itself
+    holds only the part after the id; they are the same fault seen from either side."""
+    found = re.match(r"^w:\d+:\s*(.*)$", error.strip())
+    return found.group(1) if found else error.strip()
+
+
 def _findings(doc: dict[str, Any]) -> list[str]:
     """What needs attention, most serious first. An empty list means nothing does."""
     out: list[str] = []
@@ -437,7 +446,12 @@ def _findings(doc: dict[str, Any]) -> list[str]:
     # need attention off the first screen, which is the same silence by another route.
     errors = [str(e) for e in content.get("errors") or []]
     misses = [e for e in errors if _is_miss(e)]
-    for error in (e for e in errors if e not in misses):
+    # Nor is the same fault said twice. pitv_content's live list names one failing request;
+    # PiTV's own list of faults names the same message with how many requests hold it and the
+    # button that clears them, which is strictly the better sentence, so the bare one is dropped.
+    counted = {str(f.get("message")) for f in (doc.get("wanted") or {}).get("faults") or []} \
+        if isinstance(doc.get("wanted"), dict) else set()
+    for error in (e for e in errors if e not in misses and _request_message(e) not in counted):
         out.append(f"pitv_content reports: {error}")
     if misses:
         out.append(f"{len(misses)} title(s) searched for and not found yet; they stay in the queue and are "

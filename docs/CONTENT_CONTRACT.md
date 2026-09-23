@@ -226,6 +226,16 @@ service is down. Schema 2.
   serves YouTube ids for the kind the request classifies as. Disabling the general YouTube
   provider therefore stops every line-up entry keyed on a channel, whatever its `match` says,
   which is not obvious from the entry or from the provider being switched off.
+- The episode number on such a request is the video's position in the listing, not an identity.
+  It drifts for two reasons: a video the creator deletes shifts everything after it, and a
+  change in what pitv_content counts does the same. Shorts were numbered as episodes until
+  `channel_shortest_minutes` was added, so episode 1 of ten channels was a thirty second clip
+  that no length rule would accept, and excluding them renumbered every one.
+  This is bounded and is not designed around. What arrives becomes a catalogue row carrying the
+  video's own id, so the identity of a delivered programme is the video's and never its
+  position; the position only decides what is asked for next, and the check on episodes already
+  held absorbs an overlap. The exposure is asking for something already there, or stepping over
+  one, neither of which loses anything.
 
 ## 3. Delivery report (pitv_content to PiTV)
 
