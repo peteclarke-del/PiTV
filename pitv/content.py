@@ -49,6 +49,12 @@ MAX_WANTED_ATTEMPTS = 3
 # attempt. Everything else in a message is a fault, and the doctor tells the two apart by this
 # same prefix, so the rule is written once rather than guessed at in two places.
 MISS_PREFIX = "not found yet"
+# How a run records work it never got to. pitv_content delivers in bands, scheduled before
+# unscheduled, and a slice that runs out of time never reaches the last of them: nothing fails,
+# nothing is logged, and the only symptom is a channel that stays empty, which is how 148
+# requests sat untouched for a day. It says which bands it did not reach; PiTV keeps the account
+# in the run log so the doctor can tell a slice that was merely busy from a band being starved.
+UNREACHED = "not reached: "
 APPLIED_REPORT_DAYS = 7      # report files, once applied, are kept this long for reference
 UNAPPLIED_REPORT_DAYS = 30   # a report file that never applies is given up after this long
 DEADLINE_LEAD = 15 * 60  # a file is due this long before it first airs
@@ -476,6 +482,23 @@ def _file_block(e: dict[str, Any]) -> dict[str, Any] | None:
     return file if isinstance(file.get("path"), str) and file["path"] else None
 
 
+def _unreached(run: dict[str, Any]) -> list[str]:
+    """What the run never got to, as run-log details.
+
+    The sentence is written here rather than taken from pitv_content's log so its wording is
+    PiTV's and stays stable for the doctor to read back. A band with no work in it is not
+    reported, so an entry always means requests that were ready and were not looked at."""
+    out = []
+    for band in run.get("unreached_bands") or []:
+        if not isinstance(band, dict) or not as_int(band.get("requests")):
+            continue
+        name = as_text(band.get("name")) or f"band {as_int(band.get('band'))}"
+        at, of = as_int(band.get("first_at")), as_int(band.get("of"))
+        where = f", first at position {at} of {of}" if at and of else ""
+        out.append(f"{UNREACHED}{band['requests']} request(s) in {name}, none reached{where}")
+    return out
+
+
 def _run_of(report: dict[str, Any]) -> tuple[dict[str, Any], str]:
     run = report.get("run") if isinstance(report.get("run"), dict) else {}
     return run, as_text(run.get("tool")) or "pitv_content"
@@ -563,9 +586,10 @@ def apply_report(conn: sqlite3.Connection, report: dict[str, Any]) -> dict[str, 
         # The summary starts "<tool>:" because _already_applied recognises a run by it.
         summary = (f"{tool}: {counts['items_done']} cached, {counts['items_failed']} failed;"
                    f" fetched {counts['wanted_done']}, {counts['wanted_failed']} failed")
+        details = [*_unreached(run), (as_text(run.get("log_tail")) or "")[-4000:]]
         conn.execute("INSERT INTO run_log(kind, started_at, finished_at, status, summary, details) VALUES (?,?,?,?,?,?)",
                      ("content", started, finished, "warning" if counts["items_failed"] or counts["wanted_failed"] else "ok",
-                      summary, json.dumps([(as_text(run.get("log_tail")) or "")[-4000:]])))
+                      summary, json.dumps(details)))
     for channel_id, from_ts in refill.items():
         if from_ts > now_ts():
             rebuild_from(conn, channel_id, from_ts)

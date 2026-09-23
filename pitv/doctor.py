@@ -54,6 +54,7 @@ def report(conn: sqlite3.Connection, cfg: Config, now: int | None = None) -> dic
         "fragile_matches": lambda: _fragile_matches(conn),
         "providers": lambda: _providers(conn, settings),
         "wanted": lambda: _wanted(conn),
+        "starved": lambda: _starved(conn),
         "runs": lambda: _runs(conn),
         "content": lambda: _content(settings),
         "logs": lambda: _logs(cfg),
@@ -255,6 +256,33 @@ def _runs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [dict(r) for r in latest] + [{**dict(r), "recent_error": True} for r in errors]
 
 
+def _starved(conn: sqlite3.Connection) -> list[str]:
+    """Work pitv_content had ready and did not reach, in each of its last two runs.
+
+    A single run that ran out of time is ordinary: the next one starts from the top and gets
+    further. The same band unreached twice running is not, because nothing about it will change
+    on its own, and that is the state that left 148 requests untouched for a day while every
+    report read as an ordinary busy night. Only what both runs agree on is returned, so a busy
+    evening says nothing and a starved band says it plainly."""
+    from .content import UNREACHED
+    runs = conn.execute("SELECT details FROM run_log WHERE kind = 'content' ORDER BY id DESC LIMIT 2").fetchall()
+    if len(runs) < 2:
+        return []
+    seen = []
+    for row in runs:
+        try:
+            messages = json.loads(row["details"] or "[]")
+        except ValueError:
+            return []
+        seen.append({m for m in messages if isinstance(m, str) and m.startswith(UNREACHED)})
+    # Matched on the message, which names the band rather than the counts, so a band starved in
+    # both runs is recognised even as the number of requests behind it moves.
+    latest, before = seen
+    band = lambda m: m.split(" in ", 1)[-1].split(",", 1)[0]
+    earlier = {band(m) for m in before}
+    return sorted(m for m in latest if band(m) in earlier)
+
+
 def _content(settings: dict[str, Any]) -> dict[str, Any]:
     status, body = tool_client.request(tool_client.base_url(settings), "GET", "status", timeout=5)
     if status != 200 or not isinstance(body, dict):
@@ -351,6 +379,11 @@ def _findings(doc: dict[str, Any]) -> list[str]:
     # reads as ordinary work outstanding unless the message is put on screen. Each is named with
     # what it says and what to do about it, because a count nobody can act on is a better-worded
     # silence: these came to nothing for eight hours while the report said 1,653 queued.
+    for starved in doc.get("starved") or []:
+        # Two runs running, so it will not come right by itself: the work was ready and the run
+        # never looked at it. Nothing failed, which is why nothing else in this report says so.
+        out.append(f"pitv_content has not reached some of its work in either of its last two runs. {starved[len('not reached: '):]}. "
+                   "Nothing failed and nothing will change on its own; this is pitv_content's delivery order to answer for.")
     requests = doc.get("wanted") if isinstance(doc.get("wanted"), dict) else {}
     for fault in requests.get("faults") or []:
         out.append(f"{fault['n']} request(s) are failing with the same error and will not come right on their own: "

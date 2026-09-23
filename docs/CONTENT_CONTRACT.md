@@ -312,6 +312,22 @@ applies a report once: a dropped copy of one it already took over HTTP is recogn
   series began. When nothing qualifies the failure begins `not found yet:`; PiTV keeps the
   request queued with no attempt used, and the readiness check covers the slot meanwhile.
 
+### Work a run never reached
+
+`run.unreached_bands` in a delivery report lists the bands a slice ran out of time before
+reaching: `[{"band": 4, "name": "wanted", "requests": 1653, "first_at": 793, "of": 2446}]`, and
+an empty list means every band holding work was reached. A band with nothing in it is not
+listed, so an entry always means requests that were ready and were not looked at.
+
+This exists because nothing else says it. Delivery is ordered in bands, scheduled work before
+unscheduled, and a run that never reaches the last of them fails at nothing, logs nothing and
+finishes reporting an ordinary busy night. The only symptom is a channel that stays empty, which
+is how 148 requests sat untouched for a day with both applications reporting themselves healthy.
+
+PiTV records each entry in its run log and raises it only when the same band is unreached in two
+runs running: one run that ran out of time is ordinary, since the next starts from the top and
+gets further, while the same band twice means nothing about it will change on its own.
+
 ## 4. Sources
 
 pitv_content's API owns the source configuration; PiTV's admin Sources page is a view of it.
