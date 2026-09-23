@@ -762,6 +762,25 @@ def test_settings_schema_matches_the_defaults(client):
     by_key = {f["key"]: f for f in doc["fields"]}
     assert by_key["day_start"]["value"] == "08:00" and by_key["osd_scale"]["max"] == 2.5
     assert "admin_password_hash" not in by_key
+    assert all(f.get("section") for f in doc["fields"]), "every setting is under a heading"
+
+
+def test_a_pane_reads_as_sections_in_order():
+    """The admin draws a pane's sections in the order their fields appear, so a section's fields
+    have to be together. They were not: the band and genre settings sat under the adverts
+    heading in the table while belonging to the programming pane, which is the drift the nesting
+    now prevents."""
+    from pitv import settings_schema
+
+    seen: list[tuple[str, str]] = []
+    for f in settings_schema.FIELDS:
+        where = (f["pane"], f["section"])
+        if not seen or seen[-1] != where:
+            assert where not in seen, f"{f['key']}: {where} is split across the table"
+            seen.append(where)
+    for pane, section, fields in settings_schema.SECTIONS:
+        assert fields, f"{pane}/{section} has no fields"
+        assert section == section.strip() and section[0].isupper(), section
 
 
 def _content_stub(refuse_values: bool):

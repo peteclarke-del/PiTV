@@ -33,6 +33,13 @@
     const order = [...groups, ...new Set(visible.map((f) => f.group || 'Other').filter((g) => !groups.includes(g)))];
     return order.map((g) => [g, visible.filter((f) => (f.group || 'Other') === g)]).filter(([, fs]) => fs.length);
   });
+  // Within a group, fields are drawn under their section heading, in the order the schema lists
+  // them. A schema with no sections (pitv_content's) comes back as one unheaded block, so the
+  // form looks the same as it did before sections existed.
+  const sections = (fields) => {
+    const names = [...new Set(fields.map((f) => f.section || ''))];
+    return names.map((s) => [s, fields.filter((f) => (f.section || '') === s)]);
+  };
   const nextLevel = $derived(LEVELS.find(([id]) => !shown(id))?.[1]);
 
   function submit() {
@@ -51,14 +58,17 @@
       <div class="card">
         <div class="card-title"><h3>{name}</h3>{#if app}<AppBadge {app} />{/if}</div>
         {#if intro && group}<p class="scope">{intro}</p>{/if}
-        <div class="form-grid">
-          {#each fields as f (f.key)}
-            <!-- The editable copy is seeded just after a new schema renders; bind only once it holds the key. -->
-            {#if f.key in values}
-              <SettingField field={f} bind:value={values[f.key]} error={errors[f.key]} changed={isChanged(f)} secretSet={secretSet(f)} />
-            {/if}
-          {/each}
-        </div>
+        {#each sections(fields) as [section, fs] (section)}
+          {#if section}<h4 class="section">{section}</h4>{/if}
+          <div class="form-grid">
+            {#each fs as f (f.key)}
+              <!-- The editable copy is seeded just after a new schema renders; bind only once it holds the key. -->
+              {#if f.key in values}
+                <SettingField field={f} bind:value={values[f.key]} error={errors[f.key]} changed={isChanged(f)} secretSet={secretSet(f)} />
+              {/if}
+            {/each}
+          </div>
+        {/each}
       </div>
     {:else}
       <p class="muted small">Nothing here at this level.</p>
@@ -72,3 +82,13 @@
     </div>
   </div>
 {/if}
+
+<style>
+  /* Headings inside a settings card: quieter than the card's own title, with air above so a
+     block reads as a group rather than as a rule drawn through the fields. */
+  .section {
+    margin: 1.1rem 0 .1rem; font-size: .82rem; font-weight: 650; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--fg-muted);
+  }
+  .section:first-of-type { margin-top: .2rem; }
+</style>

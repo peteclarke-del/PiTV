@@ -147,7 +147,15 @@ textarea { min-height: 4rem; resize: vertical; }
 .check > input { grid-column: 1; }
 .check .help { grid-column: 2; font-weight: 400; color: var(--fg-muted); font-size: .8rem; }
 .help.err, label.field .help.err, .check .help.err { color: var(--danger); font-weight: 550; font-size: .8rem; }
-.form-grid { display: grid; gap: .8rem 1rem; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+/* Fields sit in columns of a readable width, capped in number: on a wide monitor an uncapped
+   auto-fill spread six or seven fields across the screen while each one's help wrapped into a
+   tall thin column, leaving most of the row empty. `align-items: start` keeps a short field
+   from being stretched to the height of a long explanation beside it. */
+.form-grid {
+  display: grid; align-items: start; gap: .8rem 1.4rem;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr));
+  max-width: 1120px;
+}
 .form-grid .wide { grid-column: 1 / -1; }
 .inline-form { display: flex; flex-wrap: wrap; gap: .5rem; align-items: flex-end; }
 
