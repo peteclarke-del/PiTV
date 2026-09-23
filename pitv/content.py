@@ -539,6 +539,11 @@ def _apply_entry(conn: sqlite3.Connection, e: dict[str, Any]) -> tuple[str | Non
     # How long the series ran, which pitv_content reads from the match's episode list and sends
     # with a delivery or a "no such episode" failure. The line-up entry keeps it, and the
     # scheduler asks for nothing past it.
+    #
+    # This path is why a channel may hold one at all. It arrives with every delivery and every
+    # over-ask, so it is replaced as often as PiTV talks to pitv_content and follows a channel
+    # that is still growing. What went stale was the count learned once from an online lookup
+    # and never revisited; this one cannot, because the next answer overwrites it.
     total = as_int(e["meta"].get("episodes_total")) if isinstance(e.get("meta"), dict) else None
     if wid and total and total > 0:
         conn.execute("UPDATE lineup SET episode_count = ?, updated_at = ? WHERE episode_count IS NOT ?"

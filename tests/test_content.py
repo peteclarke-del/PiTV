@@ -96,3 +96,49 @@ def test_a_run_that_died_before_reporting_is_not_a_quiet_night(tmp_path, monkeyp
                         "run": {"tool": "pitv-content 9.9", "started_ts": started, "finished_ts": started + 30}})
     assert [j["job_id"] for j in doctor._abandoned(conn, dbm2.all_settings(conn))] == ["b"]
     conn.close()
+
+
+def test_a_channels_length_is_refreshed_by_pitv_content_never_learned_and_frozen():
+    """`episode_count` stops PiTV asking past the end of a run, and there are two ways an entry
+    can get one. Only one of them goes stale, and the difference is the whole of the fix.
+
+    A count learned once from an online lookup is never revisited, which is right for a series
+    that ran and ended and wrong for a creator's channel: one recorded as 1003 videos became 503
+    overnight when shorts stopped being numbered, and PiTV would have spent attempts asking for
+    five hundred that do not exist. A channel is no longer asked about that way.
+
+    The count that arrives with a delivery or an over-ask is the opposite and must be kept. It
+    comes with every answer pitv_content gives, so it is replaced as often as the two talk and
+    follows a channel that is still growing. Removing it as well, which was the first thing I
+    tried, would have left a channel with no bound at all: it would ask past the end for ever,
+    failing each time until the attempt limit, which is worse than the staleness it cured."""
+    from pitv import db as dbm2
+    from pitv import lineup as lineup_mod
+    from pitv import youtube
+    from pitv.content import apply_report
+
+    conn = dbm2.connect(":memory:")
+    dbm2.init_db(conn)
+    ch = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
+    entry = lineup_mod.add(conn, ch, title="A Creator", kind="show", genres=["Comedy"],
+                           match=youtube.parse("https://www.youtube.com/channel/UCaaaaaaaaaaaaaaaaaaaaaa"))
+
+    def over_ask(total: int) -> None:
+        with dbm2.tx(conn):
+            cur = conn.execute("INSERT INTO wanted(kind, title, episode, lineup_id, created_at)"
+                               " VALUES ('episode', 'Episode 1', 1, ?, 1)", (entry["id"],))
+        apply_report(conn, {"schema": 2, "items": [
+            {"request_id": f"w:{cur.lastrowid}", "wanted_id": cur.lastrowid, "status": "failed",
+             "message": f"no such episode: the series has {total}", "meta": {"episodes_total": total}}]})
+
+    def count() -> int | None:
+        return conn.execute("SELECT episode_count FROM lineup WHERE id = ?", (entry["id"],)).fetchone()[0]
+
+    assert count() is None, "nothing is assumed about a channel before it has answered"
+    over_ask(1003)
+    assert count() == 1003, "an answer bounds the asking, so it does not run on for ever"
+    over_ask(503)
+    assert count() == 503, "and the next answer replaces it, so shorts being dropped is followed"
+    over_ask(540)
+    assert count() == 540, "as is a channel that has grown since"
+    conn.close()

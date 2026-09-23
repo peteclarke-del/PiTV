@@ -310,8 +310,21 @@ applies a report once: a dropped copy of one it already took over HTTP is recogn
   list and files the episode under its real season, number and title; `meta.season`,
   `meta.episode` and `meta.title` are then the real ones, not an echo of the request, and the
   delivery is bound to the request by `request_id`. `meta.episodes_total` (on a delivery, and
-  alone in `meta` on a "no such episode" failure) is the length of the run; PiTV keeps it on
-  the line-up entry. When the episode list cannot be read the request fails with a message
+  alone in `meta` on a "no such episode" failure) is the length of the run.
+
+  PiTV keeps it on the line-up entry, and every later answer replaces it, so an entry's bound
+  follows the run rather than fixing it. That matters for a creator's channel, which gains
+  videos every week and whose length halved the day shorts stopped being numbered: the next
+  delivery or over-ask carries the new total and the bound moves with it.
+
+  What PiTV does not do for a channel is learn the length from an online lookup, which happens
+  once and is never revisited. One such count sat at 1003 for a channel that really holds 503,
+  and PiTV would have spent attempts asking for five hundred videos that do not exist; the same
+  number would have stopped a growing channel early had it moved the other way. Series keep that
+  path, because a series that ran and ended has a length worth learning once.
+
+  Over-asking is cheap by design. "No such episode" is a miss rather than a fault: it is counted
+  rather than listed, so a run of them cannot push a real fault out of the errors list. When the episode list cannot be read the request fails with a message
   containing `rate limit`, which PiTV retries without using up an attempt.
 - For such a series pitv_content takes an upload only when its own title says it is the episode
   wanted (the episode's title, or its number), and refuses one that names another episode or
