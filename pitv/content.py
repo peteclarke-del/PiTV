@@ -55,6 +55,13 @@ MISS_PREFIX = "not found yet"
 # requests sat untouched for a day. It says which bands it did not reach; PiTV keeps the account
 # in the run log so the doctor can tell a slice that was merely busy from a band being starved.
 UNREACHED = "not reached: "
+# And how it records work it looked at and deliberately held for a later slice: a second
+# re-encode in one slice, for instance, because one long one can take an evening. That is a rule
+# working, not starvation, and the two were once reported as one fact, which made either
+# impossible to judge. `most_slices` is the longest a request in that band has been waiting and
+# `limit` the bound after which pitv_content takes it regardless, so a streak that climbs past
+# the limit means the bound itself has stopped working.
+HELD = "held over: "
 APPLIED_REPORT_DAYS = 7      # report files, once applied, are kept this long for reference
 UNAPPLIED_REPORT_DAYS = 30   # a report file that never applies is given up after this long
 DEADLINE_LEAD = 15 * 60  # a file is due this long before it first airs
@@ -483,11 +490,17 @@ def _file_block(e: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _unreached(run: dict[str, Any]) -> list[str]:
-    """What the run never got to, as run-log details.
+    """What the run never got to, and what it deliberately held back, as run-log details.
 
-    The sentence is written here rather than taken from pitv_content's log so its wording is
-    PiTV's and stays stable for the doctor to read back. A band with no work in it is not
-    reported, so an entry always means requests that were ready and were not looked at."""
+    These are two different facts and were once reported as one, which made them impossible to
+    judge: a slice that ends before looking at a band is starved, while a request held over for
+    a later slice is a rule working as intended, and a count of "not reached" that meant either
+    could only be interpreted by guessing. They are now separate at source and stay separate
+    here.
+
+    The sentences are written on this side rather than taken from pitv_content's log, so their
+    wording is PiTV's and stays stable for the doctor to read back across runs. A band with no
+    work in it is not reported, so an entry always means requests that were ready."""
     out = []
     for band in run.get("unreached_bands") or []:
         if not isinstance(band, dict) or not as_int(band.get("requests")):
@@ -496,7 +509,14 @@ def _unreached(run: dict[str, Any]) -> list[str]:
         at, of = as_int(band.get("first_at")), as_int(band.get("of"))
         where = f", first at position {at} of {of}" if at and of else ""
         out.append(f"{UNREACHED}{band['requests']} request(s) in {name}, none reached{where}")
+    for band in run.get("passed_over") or []:
+        if not isinstance(band, dict) or not as_int(band.get("requests")):
+            continue
+        name = as_text(band.get("name")) or f"band {as_int(band.get('band'))}"
+        slices, limit = as_int(band.get("most_slices")) or 0, as_int(band.get("limit")) or 0
+        out.append(f"{HELD}{band['requests']} request(s) in {name}, longest waiting {slices} slice(s) of {limit}")
     return out
+
 
 
 def _run_of(report: dict[str, Any]) -> tuple[dict[str, Any], str]:

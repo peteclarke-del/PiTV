@@ -14,6 +14,7 @@ way to change anything and nothing listens for it: remote support is SSH to the 
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sqlite3
 import time
@@ -23,6 +24,8 @@ from typing import Any
 
 from . import __version__, tool_client
 from .config import Config
+from .content import HELD as HELD_PREFIX
+from .content import UNREACHED as UNREACHED_PREFIX
 from .db import all_settings, as_int, now_ts, rows_to_dicts
 from .hostinfo import host_info
 from .logsetup import log_dir, tail
@@ -35,8 +38,7 @@ CACHED_TARGET = 95      # per cent of the next day's files expected in the cache
 CAP_DAYS_TARGET = 1.5   # days of built schedule the cache should hold; below this it thrashes
 LOW_DISK_BYTES = 5 * 1024 ** 3
 LOG_LINES = 12
-STARVED_RUNS = 2        # consecutive runs a band must go unreached before it is worth a sentence
-STARVED_HISTORY = 20    # how far back the streak is counted; past this it is reported as "at least"
+STARVED_HISTORY = 20    # how far back a streak is counted; past this it is reported as "at least"
 # Mirrors content.MAX_WANTED_ATTEMPTS for the finding text; imported lazily where it is read.
 MAX_ATTEMPTS = 3
 
@@ -57,6 +59,7 @@ def report(conn: sqlite3.Connection, cfg: Config, now: int | None = None) -> dic
         "providers": lambda: _providers(conn, settings),
         "wanted": lambda: _wanted(conn),
         "starved": lambda: _starved(conn),
+        "held_too_long": lambda: _held_too_long(conn),
         "abandoned_runs": lambda: _abandoned(conn, settings),
         "runs": lambda: _runs(conn),
         "content": lambda: _content(settings),
@@ -291,37 +294,33 @@ def _abandoned(conn: sqlite3.Connection, settings: dict[str, Any]) -> list[dict[
     return out
 
 
-def _starved(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Work pitv_content had ready and did not reach, and for how many runs running.
-
-    One run that ran out of time is ordinary, because the next starts from the top and gets
-    further; the same band unreached again means nothing about it will change on its own. That
-    is the state that left 148 requests untouched for a day while every report read as a busy
-    night, so two consecutive runs is where this starts speaking.
-
-    The streak is counted rather than just detected, because not every band behind is the same
-    thing. pitv_content defers a second re-encode to the next slice on purpose, so that band is
-    reported unreached whenever there is one waiting: once or twice is the rule working, twenty
-    times is a film that will never be re-encoded at all. Saying how many runs it has been lets
-    the two be told apart on sight, rather than a threshold guessing which is which.
-
-    Matched on the band's name, which the message carries, so a band starved across several runs
-    is recognised even as the number of requests behind it moves."""
-    from .content import UNREACHED
-    runs = conn.execute("SELECT details FROM run_log WHERE kind = 'content' ORDER BY id DESC LIMIT ?",
-                        (STARVED_HISTORY,)).fetchall()
-    per_run: list[dict[str, str]] = []
-    for row in runs:
+def _run_details(conn: sqlite3.Connection, prefix: str) -> list[dict[str, str]]:
+    """The run-log messages carrying `prefix`, newest run first, keyed by the band they name."""
+    out: list[dict[str, str]] = []
+    for row in conn.execute("SELECT details FROM run_log WHERE kind = 'content' ORDER BY id DESC LIMIT ?",
+                            (STARVED_HISTORY,)):
         try:
             messages = json.loads(row["details"] or "[]")
         except ValueError:
             break
-        named = {}
-        for m in messages:
-            if isinstance(m, str) and m.startswith(UNREACHED):
-                named[m.split(" in ", 1)[-1].split(",", 1)[0]] = m
-        per_run.append(named)
-    if len(per_run) < STARVED_RUNS:
+        out.append({m.split(" in ", 1)[-1].split(",", 1)[0]: m
+                    for m in messages if isinstance(m, str) and m.startswith(prefix)})
+    return out
+
+
+def _starved(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Bands pitv_content ended a slice before looking at, and for how many runs running.
+
+    This is starvation and nothing else. Work it looked at and deliberately held for a later
+    slice is a different fact and is reported apart, because the two were once one and either
+    was then impossible to judge: a deferral is a rule working, and a band never reached means
+    nothing about it will change on its own. That is what left 148 requests untouched for a day
+    while every report read as an ordinary busy night.
+
+    The streak is kept because it is worth knowing how long, not because it decides anything:
+    one is already worth saying now that a deferral is no longer counted here."""
+    per_run = _run_details(conn, UNREACHED_PREFIX)
+    if not per_run:
         return []
     out = []
     for band, message in per_run[0].items():
@@ -330,9 +329,34 @@ def _starved(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             if band not in run:
                 break
             streak += 1
-        if streak >= STARVED_RUNS:
-            out.append({"band": band, "runs": streak, "capped": streak == len(per_run), "message": message})
+        out.append({"band": band, "runs": streak, "capped": streak == len(per_run), "message": message})
     return sorted(out, key=lambda s: (-s["runs"], s["band"]))
+
+
+def _held_too_long(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Work deliberately held over whose wait has outlived the bound meant to end it.
+
+    Holding a second re-encode for the next slice is correct: one long one can take an evening.
+    pitv_content bounds how long that may go on and takes the request regardless after so many
+    slices, which is the part worth checking, because a rule that can hold work back with no
+    bound is the shape of fault both applications keep finding in each other. An ordinary wait
+    says nothing here; only one that has passed the bound it reports does."""
+    runs = _run_details(conn, HELD_PREFIX)
+    if not runs:
+        return []
+    out = []
+    for band, message in runs[0].items():
+        waited, limit = _slices_of(message)
+        # One over is the slice that takes it; further means the bound did not fire.
+        if limit and waited > limit + 1:
+            out.append({"band": band, "slices": waited, "limit": limit, "message": message})
+    return sorted(out, key=lambda h: -h["slices"])
+
+
+def _slices_of(message: str) -> tuple[int, int]:
+    """The "waiting N slice(s) of M" a held-over message ends with, as (N, M); (0, 0) if absent."""
+    found = re.search(r"waiting (\d+) slice\(s\) of (\d+)", message)
+    return (int(found.group(1)), int(found.group(2))) if found else (0, 0)
 
 
 def _content(settings: dict[str, Any]) -> dict[str, Any]:
@@ -457,13 +481,20 @@ def _findings(doc: dict[str, Any]) -> list[str]:
                    f"not deliver is unknown here: {run['detail']}. The next run sees the truth on disk, so nothing "
                    "is lost; a run of these means something is stopping it part way through.")
     for starved in doc.get("starved") or []:
-        # The work was ready and the run never looked at it. Nothing failed, which is why nothing
-        # else in this report says so. How many runs it has been is the whole of the judgement:
-        # a band deferred once or twice is a rule working, the same band twenty times is not.
+        # The work was ready and the slice ended before looking at it. Nothing failed, which is
+        # why nothing else in this report says so. Work deliberately held over is a separate
+        # fact and is not counted here, so this always means the slice stopped short.
         how_many = f"at least {starved['runs']}" if starved.get("capped") else str(starved["runs"])
-        out.append(f"pitv_content has not reached its {starved['band']} work in {how_many} runs running. "
-                   f"{starved['message'][len('not reached: '):]}. Nothing failed and nothing will change on its "
+        runs = "the last run" if starved["runs"] == 1 else f"{how_many} runs running"
+        out.append(f"pitv_content ended its slice before reaching its {starved['band']} work, in {runs}. "
+                   f"{starved['message'][len(UNREACHED_PREFIX):]}. Nothing failed and nothing will change on its "
                    "own; this is pitv_content's delivery order to answer for.")
+    for held in doc.get("held_too_long") or []:
+        # Holding a re-encode over is correct; holding it for ever is the fault that rule could
+        # become, so pitv_content bounds it and this says when the bound has not held.
+        out.append(f"pitv_content has held {held['band']} work for {held['slices']} slices running, past the "
+                   f"{held['limit']} it takes them regardless after. The bound that should have ended the wait "
+                   "has not, so that work may never be done.")
     requests = doc.get("wanted") if isinstance(doc.get("wanted"), dict) else {}
     for fault in requests.get("faults") or []:
         out.append(f"{fault['n']} request(s) are failing with the same error and will not come right on their own: "

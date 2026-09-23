@@ -3,55 +3,60 @@
 import json
 
 
-def test_work_a_run_never_reached_is_recorded_and_only_called_out_when_it_persists(tmp_path):
-    """pitv_content delivers in bands, scheduled before unscheduled, and a slice that runs out
-    of time never reaches the last of them. Nothing fails, nothing is logged, and the only
-    symptom is a channel that stays empty: 148 requests sat untouched for a day while every
-    report read as an ordinary busy night.
+def test_a_slice_that_stopped_short_and_one_that_held_work_back_are_different_facts(tmp_path):
+    """These were one fact and either was then impossible to judge. A slice that ends before
+    looking at a band is starved and nothing about it will change on its own; a request held for
+    a later slice is a rule working, since one long re-encode can take an evening. Reported
+    together, a threshold could only guess which it was looking at, and would have filled the
+    findings with the rule working correctly.
 
-    One run that ran out of time is ordinary, because the next starts from the top and gets
-    further. The same band unreached twice running is not, since nothing about it will change on
-    its own, so only what two runs agree on becomes a finding."""
+    They are separate at source now and stay separate here: a band is in one or the other, never
+    both. An ordinary wait says nothing; a wait that has outlived the bound meant to end it does,
+    because a rule that can hold work back for ever is the fault that rule could become."""
     from conftest import make_library
 
     from pitv import doctor
-    from pitv.content import UNREACHED, apply_report
+    from pitv.content import HELD, UNREACHED, apply_report
 
     ctx = make_library(tmp_path / "starved", max_episodes=1)
     conn = ctx["conn"]
 
-    def run(started: int, unreached):
+    def run(started: int, unreached=(), held=()):
         apply_report(conn, {"schema": 2, "items": [],
                             "run": {"tool": "pitv-content 9.9", "started_ts": started, "finished_ts": started + 60,
-                                    "unreached_bands": unreached}})
+                                    "unreached_bands": list(unreached), "passed_over": list(held)}})
 
-    band = [{"band": 4, "name": "wanted", "requests": 1653, "first_at": 793, "of": 2446}]
-    run(1_000_000, band)
+    wanted = [{"band": 4, "name": "wanted", "requests": 1653, "first_at": 793, "of": 2446}]
+    ordinary = [{"band": 3, "name": "transcodes", "requests": 5, "most_slices": 2, "limit": 8}]
+
+    run(1_000_000, unreached=wanted, held=ordinary)
     details = json.loads(conn.execute(
         "SELECT details FROM run_log WHERE kind = 'content' ORDER BY id DESC LIMIT 1").fetchone()["details"])
     assert any(m.startswith(UNREACHED) and "1653 request(s) in wanted" in m and "793 of 2446" in m for m in details)
-    assert doctor._starved(conn) == [], "one run is a busy night, not a starved band"
+    assert any(m.startswith(HELD) and "transcodes" in m and "2 slice(s) of 8" in m for m in details)
 
-    run(1_000_100, band)
     starved = doctor._starved(conn)
-    assert len(starved) == 1 and starved[0]["band"] == "wanted" and starved[0]["runs"] == 2, \
-        "twice running is the state worth saying"
-    finding = next(f for f in doctor._findings({"starved": starved}) if "not reached" in f)
-    assert "will change on its own" in finding and "2 runs running" in finding
+    assert [s["band"] for s in starved] == ["wanted"], "a band held over is not a band never reached"
+    assert doctor._held_too_long(conn) == [], "waiting two slices of eight is the rule working"
+    finding = next(f for f in doctor._findings({"starved": starved}) if "wanted" in f)
+    assert "ended its slice before reaching" in finding and "the last run" in finding
 
-    # How many runs it has been is the judgement, not just that it happened. pitv_content defers
-    # a second re-encode to the next slice deliberately, so that band goes unreached whenever one
-    # is waiting: once or twice is the rule working, twenty times is a film that will never be
-    # re-encoded. The count is what lets the two be told apart on sight.
-    for n in range(3, 7):
-        run(1_000_000 + n * 100, band)
-        assert doctor._starved(conn)[0]["runs"] == n
-    assert "6 runs running" in next(f for f in doctor._findings({"starved": doctor._starved(conn)}) if "wanted" in f)
+    # It says how long it has been, which is worth knowing even though it decides nothing.
+    run(1_000_100, unreached=wanted, held=ordinary)
+    assert doctor._starved(conn)[0]["runs"] == 2
+    assert "2 runs running" in next(f for f in doctor._findings({"starved": doctor._starved(conn)}) if "wanted" in f)
+
+    # Past the bound pitv_content says it takes the work regardless, the bound has not held.
+    run(1_000_200, held=[{"band": 3, "name": "transcodes", "requests": 5, "most_slices": 14, "limit": 8}])
+    late = doctor._held_too_long(conn)
+    assert [(h["band"], h["slices"], h["limit"]) for h in late] == [("transcodes", 14, 8)]
+    assert "may never be done" in next(f for f in doctor._findings({"held_too_long": late}) if "transcodes" in f)
+    assert doctor._starved(conn) == [], "the slice reached every band that run"
 
     # A band that empties stops being reported, and a band with nothing in it never was.
-    run(1_000_200, [{"band": 4, "name": "wanted", "requests": 0, "first_at": 0, "of": 0}])
-    run(1_000_300, [])
-    assert doctor._starved(conn) == []
+    run(1_000_300, unreached=[{"band": 4, "name": "wanted", "requests": 0}])
+    run(1_000_400)
+    assert doctor._starved(conn) == [] and doctor._held_too_long(conn) == []
     conn.close()
 
 

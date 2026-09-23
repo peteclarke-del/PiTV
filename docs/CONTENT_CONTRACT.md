@@ -312,12 +312,32 @@ applies a report once: a dropped copy of one it already took over HTTP is recogn
   series began. When nothing qualifies the failure begins `not found yet:`; PiTV keeps the
   request queued with no attempt used, and the readiness check covers the slot meanwhile.
 
-### Work a run never reached
+### Work a run never reached, and work it held back
 
-`run.unreached_bands` in a delivery report lists the bands a slice ran out of time before
-reaching: `[{"band": 4, "name": "wanted", "requests": 1653, "first_at": 793, "of": 2446}]`, and
-an empty list means every band holding work was reached. A band with nothing in it is not
-listed, so an entry always means requests that were ready and were not looked at.
+Two fields, because these are two facts and reporting them as one made either impossible to
+judge. A slice that ends before looking at a band is starved and nothing about it will change
+on its own. A request looked at and held for a later slice is a rule working: one long re-encode
+can take an evening, so a slice takes one and defers the rest. A count that meant either could
+only be interpreted by guessing which, and a threshold on it would have reported the rule
+working as a fault several times a day.
+
+`run.unreached_bands` lists only the bands a slice ended before looking at:
+`[{"band": 4, "name": "wanted", "requests": 1653, "first_at": 793, "of": 2446}]`. An empty list
+means every band holding work was reached. A band with nothing in it is not listed, so an entry
+always means requests that were ready and were not looked at.
+
+`run.passed_over` lists work deliberately held for a later slice, per band:
+`[{"band": 3, "name": "transcodes", "requests": 5, "most_slices": 14, "limit": 8}]`.
+`most_slices` is the longest any one request in that band has been waiting, counted as a streak
+across runs and cleared when the request is worked or PiTV stops asking for it. `limit` is the
+number of consecutive slices after which pitv_content takes the request regardless, so a rule
+that holds work back cannot do so without bound. A band appears in one list or the other, never
+both.
+
+PiTV records both in its run log. Starvation is reported as soon as it appears, with how many
+runs running it has been. A wait is reported only once `most_slices` has passed `limit` by more
+than one, since that means the bound meant to end the wait has not held and the work may never
+be done.
 
 This exists because nothing else says it. Delivery is ordered in bands, scheduled work before
 unscheduled, and a run that never reaches the last of them fails at nothing, logs nothing and
