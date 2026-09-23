@@ -573,6 +573,12 @@ class Player:
 
     def _load(self, slot: dict[str, Any], media: dict[str, Any], path: str, where: str, offset: float) -> None:
         opts = decode_options(self._decode_props(media, where), self.on_pi, self.settings)
+        # Freeze on the last frame instead of falling back to an empty window. A file is almost
+        # never exactly as long as the slot it was given, and the seconds left over are a
+        # junction, not a fault: a broadcast holds the picture across one. What happens in that
+        # time is decided in `do`, by how long it is. The option is per-file, so mpv drops it
+        # when the file ends and the card and the test signal are unaffected.
+        opts["keep-open"] = "yes"
         try:
             self.playing_entry = self.mpv.loadfile(path, start=offset, options=opts)
         except MpvError as exc:
@@ -715,9 +721,16 @@ class Player:
             self.paused = False
             slot = self.station.slot_at(self.channel["id"], self.clock()) if self.channel else None
             if slot is not None and slot["id"] == self.playing_slot_id:
-                # The file ended before its slot did (it is shorter than scheduled): hold the
-                # continuity card until the next slot rather than reloading past the end.
-                self._show_testcard("Programmes will continue shortly", "")
+                # The file ended before its slot did. How long is left decides what is on screen:
+                # a card thrown up for the odd second between one music video and the next was on
+                # and gone again before it could be read, which looks like a fault rather than
+                # continuity. Under the threshold the last frame simply holds, which is what a
+                # broadcast does at a junction; past it there is a real gap and the card belongs.
+                left = float(slot["end_ts"] - self.clock())
+                if left >= float(self.settings["card_after_seconds"]):
+                    self._show_testcard("Programmes will continue shortly", "")
+                else:
+                    log.debug("file ended %.1fs before its slot; holding the last frame", left)
                 return
             self.playing_slot_id = None
             self.play_live()

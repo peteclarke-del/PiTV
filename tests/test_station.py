@@ -44,3 +44,56 @@ def test_the_local_station_answers_from_the_database(tmp_path):
     row = conn.execute("SELECT started_at, ended_at, title FROM history WHERE id = ?", (handle,)).fetchone()
     assert (row["started_at"], row["ended_at"], row["title"]) == (at, at + 60, programme["title"])
     station.close()
+
+
+def test_a_short_overrun_holds_the_picture_instead_of_flashing_a_card():
+    """A file is almost never exactly as long as the slot it was given. The player showed the
+    continuity card for whatever was left over, which on a music channel of three minute videos
+    put a card on screen for a fraction of a second between one and the next: on and gone before
+    it could be read, which looks like a fault rather than continuity.
+
+    Under the threshold the last frame holds, as a broadcast does at a junction. Past it there is
+    a real gap and the card belongs. The threshold is `card_after_seconds`, because how long is
+    too long is a judgement about the set, not a constant."""
+    from types import SimpleNamespace
+
+    from pitv.player.controller import Player
+
+    shown: list[str] = []
+
+    def stub(left: float, after: int):
+        now = 1_000_000
+        return SimpleNamespace(
+            _current_entry=lambda _e: True, playing_path="/some/file.mp4", behind_live=True, paused=True,
+            channel={"id": 1, "number": 5}, clock=lambda: now, playing_slot_id=7,
+            settings={"card_after_seconds": after},
+            station=SimpleNamespace(slot_at=lambda _c, _t: {"id": 7, "end_ts": now + left}),
+            _show_testcard=lambda text, sub: shown.append(text),
+            play_live=lambda: shown.append("LOADED NEXT"))
+
+    Player.do(stub(0.4, 15), "eof", None)
+    assert shown == [], "a fraction of a second left is a junction, not a gap"
+
+    Player.do(stub(14.0, 15), "eof", None)
+    assert shown == [], "still under the threshold"
+
+    Player.do(stub(600.0, 15), "eof", None)
+    assert shown == ["Programmes will continue shortly"], "ten minutes is a real gap and says so"
+
+    # The threshold is the setting's, not a constant: raising it holds the picture for longer.
+    shown.clear()
+    Player.do(stub(30.0, 60), "eof", None)
+    assert shown == []
+
+
+def test_a_programme_freezes_on_its_last_frame_rather_than_going_blank():
+    """Holding the picture only works if mpv keeps it. It is launched with keep-open off, so a
+    file that ends leaves an empty window, and "show no card" would have traded a flashing card
+    for a flash of nothing. The option is set per file, so it does not leak onto the card or the
+    test signal, which are stills that must not stop the player advancing."""
+    import inspect
+
+    from pitv.player import controller as controller_mod
+
+    source = inspect.getsource(controller_mod.Player._load)
+    assert '"keep-open"' in source, "a programme must hold its last frame when it ends early"

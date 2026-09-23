@@ -212,6 +212,11 @@ SECTIONS: tuple[tuple[str, str, tuple[dict[str, Any], ...]], ...] = (
            "A short burst of snow covers the seek when changing channel."),
         _f("badge_seconds", "standard", "Channel badge seconds", "int",
            "How long the channel badge stays on screen after a change.", min=1, max=60),
+        _f("card_after_seconds", "standard", "Show the card after a gap of", "int",
+           "A programme is rarely exactly as long as its slot. Anything shorter than this holds the"
+           " last frame, as a broadcast does at a junction; only a real gap gets the continuity"
+           " card, so one never flashes up between two short items too briefly to read.",
+           min=1, max=120),
     )),
     ("player", "Remote", (
         _f("nav_keys_change_channel", "basic", "Up and down change channel", "bool",
