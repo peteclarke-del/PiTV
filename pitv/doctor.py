@@ -23,7 +23,7 @@ from typing import Any
 
 from . import __version__, tool_client
 from .config import Config
-from .db import all_settings, now_ts, rows_to_dicts
+from .db import all_settings, as_int, now_ts, rows_to_dicts
 from .hostinfo import host_info
 from .logsetup import log_dir, tail
 from .player.cache import MediaCache
@@ -55,6 +55,7 @@ def report(conn: sqlite3.Connection, cfg: Config, now: int | None = None) -> dic
         "providers": lambda: _providers(conn, settings),
         "wanted": lambda: _wanted(conn),
         "starved": lambda: _starved(conn),
+        "abandoned_runs": lambda: _abandoned(conn, settings),
         "runs": lambda: _runs(conn),
         "content": lambda: _content(settings),
         "logs": lambda: _logs(cfg),
@@ -256,6 +257,38 @@ def _runs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [dict(r) for r in latest] + [{**dict(r), "recent_error": True} for r in errors]
 
 
+def _abandoned(conn: sqlite3.Connection, settings: dict[str, Any]) -> list[dict[str, Any]]:
+    """pitv_content runs that ended without ever reporting to PiTV.
+
+    PiTV learns what happened in a run from the report it is sent at the end, so a run that dies
+    before it sends one is invisible here: the run log simply has no entry, which looks exactly
+    like a quiet night. One was killed today by a restart landing between slices, and the only
+    trace was a line in pitv_content's own job list that nothing on this side reads.
+
+    So the job list is read, and a job pitv_content says failed is matched against the reports
+    that did arrive. A run whose report came through is not listed however it ended, because
+    then PiTV knows what it did; what is listed is the runs PiTV was never told about."""
+    status, body = tool_client.request(tool_client.base_url(settings), "GET", "jobs", timeout=5)
+    jobs = body if isinstance(body, list) else (body or {}).get("jobs") if isinstance(body, dict) else None
+    if status != 200 or not isinstance(jobs, list):
+        return []
+    reported = {r["started_at"] for r in conn.execute(
+        "SELECT started_at FROM run_log WHERE kind = 'content' AND started_at > ?", (now_ts() - 2 * DAY,))}
+    out = []
+    for job in jobs:
+        if not isinstance(job, dict) or job.get("status") != "failed":
+            continue
+        started = as_int(job.get("started_ts"))
+        if started is None or started < now_ts() - 2 * DAY:
+            continue
+        # A report is matched on the second it started, which is what the report carries.
+        if any(abs(started - seen) <= 1 for seen in reported):
+            continue
+        out.append({"job_id": job.get("job_id"), "mode": job.get("mode"), "started_ts": started,
+                    "detail": str(job.get("summary") or "").strip() or "no reason given"})
+    return out
+
+
 def _starved(conn: sqlite3.Connection) -> list[str]:
     """Work pitv_content had ready and did not reach, in each of its last two runs.
 
@@ -398,6 +431,12 @@ def _findings(doc: dict[str, Any]) -> list[str]:
     # reads as ordinary work outstanding unless the message is put on screen. Each is named with
     # what it says and what to do about it, because a count nobody can act on is a better-worded
     # silence: these came to nothing for eight hours while the report said 1,653 queued.
+    for run in doc.get("abandoned_runs") or []:
+        # PiTV learns what a run did from the report it sends at the end, so one that dies first
+        # leaves no entry at all and reads as a quiet night. Said here because nothing else does.
+        out.append(f"A pitv_content {run.get('mode')} run ended without reporting to PiTV, so what it did or did "
+                   f"not deliver is unknown here: {run['detail']}. The next run sees the truth on disk, so nothing "
+                   "is lost; a run of these means something is stopping it part way through.")
     for starved in doc.get("starved") or []:
         # Two runs running, so it will not come right by itself: the work was ready and the run
         # never looked at it. Nothing failed, which is why nothing else in this report says so.
