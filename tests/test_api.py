@@ -1175,3 +1175,66 @@ def test_a_youtube_channel_is_added_as_a_series_of_its_videos(client):
                   "https://www.youtube.com/shorts/abcdefghijk"):
         assert client.post("/api/lineup", json={"channel_id": target, "title": "Nope",
                                                 "youtube_url": wrong}).status_code == 400
+
+
+def test_a_request_that_cannot_succeed_is_named_with_its_remedy(tmp_path):
+    """The report counted requests by status and stopped there, so "1,653 queued" was true for
+    eight hours while every one of them carried an ImportError from pitv_content and none could
+    ever have succeeded. The only symptom was a channel that stayed empty, and the evidence was
+    in a column nobody reads. A count nobody can act on is a better-worded silence, so each
+    distinct fault is named with what it says, how many it holds and what clears it.
+
+    A search that came back empty is not a fault and must not be listed as one: uploads are
+    retitled and new ones appear, so that request is asked again and needs nobody."""
+    from conftest import make_library
+
+    from pitv import db as dbm2
+    from pitv import doctor
+    from pitv.content import MISS_PREFIX
+
+    ctx = make_library(tmp_path / "faults", max_episodes=1)
+    conn = ctx["conn"]
+    with dbm2.tx(conn):
+        conn.execute("INSERT INTO wanted(kind, title, status, message, created_at)"
+                     " VALUES ('episode', 'A', 'queued', 'could not prepare the fetch: boom', 1)")
+        conn.execute("INSERT INTO wanted(kind, title, status, message, created_at)"
+                     " VALUES ('episode', 'B', 'queued', 'could not prepare the fetch: boom', 1)")
+        conn.execute("INSERT INTO wanted(kind, title, status, message, created_at)"
+                     f" VALUES ('episode', 'C', 'queued', '{MISS_PREFIX}: nobody has uploaded it', 1)")
+        conn.execute("INSERT INTO wanted(kind, title, status, attempts, created_at)"
+                     " VALUES ('episode', 'D', 'failed', 3, 1)")
+
+    section = doctor._wanted(conn)
+    assert [(f["n"], f["message"]) for f in section["faults"]] == [(2, "could not prepare the fetch: boom")], \
+        "the fault is named once with its count, and a search miss is not one"
+    assert section["searched_and_not_found"] == 1
+    assert section["given_up"] == 1
+
+    findings = doctor._findings({"wanted": section})
+    fault = next(f for f in findings if "could not prepare" in f)
+    assert "2 request(s)" in fault and "Retry" in fault, "the finding carries the remedy, not just the count"
+    assert any("given up on" in f for f in findings)
+    assert not any(MISS_PREFIX in f for f in findings), "a search that found nothing is not reported as a fault"
+    conn.close()
+
+
+def test_a_whole_class_of_failed_requests_is_retried_at_once(client, env):
+    """One fault in pitv_content stops every request it touches, so the remedy has to work at
+    that scale: 1,650 rows carried one import error, and clearing them one at a time is not a
+    remedy anybody would use."""
+    conn = dbm.connect(env.db_path)
+    with dbm.tx(conn):
+        for title in ("R1", "R2", "R3"):
+            conn.execute("INSERT INTO wanted(kind, title, status, message, attempts, created_at)"
+                         " VALUES ('episode', ?, 'failed', 'one shared fault', 3, 1)", (title,))
+    try:
+        r = client.post("/api/wanted/retry", json={"message": "one shared fault"})
+        assert r.status_code == 200 and r.json()["retried"] == 3
+        rows = conn.execute("SELECT status, attempts, message FROM wanted"
+                            " WHERE title IN ('R1', 'R2', 'R3')").fetchall()
+        assert all(row["status"] == "queued" and row["attempts"] == 0 and row["message"] is None for row in rows)
+        assert client.post("/api/wanted/retry", json={}).status_code == 400, "it must say which requests"
+    finally:
+        with dbm.tx(conn):
+            conn.execute("DELETE FROM wanted WHERE title IN ('R1', 'R2', 'R3')")
+        conn.close()

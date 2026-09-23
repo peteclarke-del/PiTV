@@ -35,6 +35,8 @@ CACHED_TARGET = 95      # per cent of the next day's files expected in the cache
 CAP_DAYS_TARGET = 1.5   # days of built schedule the cache should hold; below this it thrashes
 LOW_DISK_BYTES = 5 * 1024 ** 3
 LOG_LINES = 12
+# Mirrors content.MAX_WANTED_ATTEMPTS for the finding text; imported lazily where it is read.
+MAX_ATTEMPTS = 3
 
 
 def report(conn: sqlite3.Connection, cfg: Config, now: int | None = None) -> dict[str, Any]:
@@ -215,9 +217,33 @@ def _library(conn: sqlite3.Connection) -> dict[str, Any]:
             "channels_enabled": conn.execute("SELECT COUNT(*) FROM channels WHERE enabled = 1").fetchone()[0]}
 
 
-def _wanted(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    return [dict(r) for r in conn.execute(
+def _wanted(conn: sqlite3.Connection) -> dict[str, Any]:
+    """The request list by status, and what is going wrong in it.
+
+    Counts by status hid the thing worth knowing. "1,653 queued" was true for hours while every
+    one of them carried an ImportError from pitv_content and none could ever have succeeded, and
+    nothing in the admin or this report said so: the only symptom was a channel that stayed
+    empty. A request's own message is the evidence, so it is gathered here rather than left for
+    somebody to find with a query.
+
+    A search that came back empty is not a fault. pitv_content says so in the first words of the
+    message, and those are counted apart: a title nothing has uploaded will be asked for again
+    and needs nobody. Anything else is a fault, whatever the row's status says, because a request
+    that cannot be prepared is not waiting for a better day."""
+    from .content import (  # imported here: content reads this module's settings
+        MAX_WANTED_ATTEMPTS,
+        MISS_PREFIX,
+    )
+    by_status = [dict(r) for r in conn.execute(
         "SELECT kind, status, auto, COUNT(*) AS n FROM wanted GROUP BY kind, status, auto ORDER BY n DESC")]
+    faults = [dict(r) for r in conn.execute(
+        "SELECT message, COUNT(*) AS n, MAX(updated_at) AS last_at, MIN(id) AS example FROM wanted"
+        f" WHERE status IN ('queued', 'failed') AND message IS NOT NULL AND message != ''"
+        f" AND message NOT LIKE '{MISS_PREFIX}%' GROUP BY message ORDER BY n DESC LIMIT 10")]
+    misses = conn.execute(
+        f"SELECT COUNT(*) FROM wanted WHERE status = 'queued' AND message LIKE '{MISS_PREFIX}%'").fetchone()[0]
+    given_up = conn.execute("SELECT COUNT(*) FROM wanted WHERE attempts >= ?", (MAX_WANTED_ATTEMPTS,)).fetchone()[0]
+    return {"by_status": by_status, "faults": faults, "searched_and_not_found": misses, "given_up": given_up}
 
 
 def _runs(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -321,8 +347,20 @@ def _findings(doc: dict[str, Any]) -> list[str]:
         out.append(f"{stranded['channel']}: {stranded['items']} item(s) no band can air, the longest "
                    f"{stranded['longest_minutes']} min (\"{stranded['longest_title']}\"); its longest band "
                    f"runs {stranded['longest_band_minutes']} min")
+    # A request that cannot be prepared is not waiting for a better day, and a queue of them
+    # reads as ordinary work outstanding unless the message is put on screen. Each is named with
+    # what it says and what to do about it, because a count nobody can act on is a better-worded
+    # silence: these came to nothing for eight hours while the report said 1,653 queued.
+    requests = doc.get("wanted") if isinstance(doc.get("wanted"), dict) else {}
+    for fault in requests.get("faults") or []:
+        out.append(f"{fault['n']} request(s) are failing with the same error and will not come right on their own: "
+                   f"\"{fault['message']}\". This is pitv_content's to fix; once it is, clear them with Retry on "
+                   f"the Wanted page, which puts every request carrying this message back in the queue.")
+    if given_up := requests.get("given_up"):
+        out.append(f"{given_up} request(s) have been given up on after {MAX_ATTEMPTS} attempts and will not be asked "
+                   f"for again. Wanted, Retry asks once more; anything genuinely unavailable is better deleted.")
     # pitv_content is never to be idle while anything is left to fetch.
-    waiting = sum(r["n"] for r in doc.get("wanted") or [] if isinstance(r, dict) and r.get("status") == "queued")
+    waiting = sum(r["n"] for r in requests.get("by_status") or [] if r.get("status") == "queued")
     short = sum(1 for b in doc.get("bands") or [] if isinstance(b, dict) and (b.get("have") or 0) < (b.get("want") or 0))
     if content.get("reachable") and not content.get("active_job") and not content.get("queued_by_mode") and (waiting or short):
         why = f" (it says: {content['idle_reason']})" if content.get("idle_reason") else ""

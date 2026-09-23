@@ -50,6 +50,32 @@ def retry_wanted(wid: int, conn: sqlite3.Connection = Depends(admin_conn)):
     return {"ok": True}
 
 
+@router.post("/wanted/retry")
+def retry_many(body: dict[str, Any] = Body(default={}), conn: sqlite3.Connection = Depends(admin_conn)):
+    """Put a whole class of requests back in the queue.
+
+    A fault in pitv_content stops every request it touches at once, so the remedy has to work at
+    that scale too: a single import error left 1,650 rows carrying the same message, and clearing
+    them one at a time is not a remedy anybody would use. `message` retries exactly the rows
+    holding that message, which is the class the doctor names; `given_up` takes the ones that
+    reached the attempt limit. Both count what they changed so the admin can say so."""
+    message, given_up = body.get("message"), bool(body.get("given_up"))
+    if not isinstance(message, str) and not given_up:
+        raise HTTPException(400, "say which requests to retry: a message, or given_up")
+    clauses, args = [], []
+    if isinstance(message, str):
+        clauses.append("message = ?")
+        args.append(message)
+    if given_up:
+        from ...content import MAX_WANTED_ATTEMPTS
+        clauses.append("attempts >= ?")
+        args.append(MAX_WANTED_ATTEMPTS)
+    with tx(conn):
+        cur = conn.execute("UPDATE wanted SET status = 'queued', attempts = 0, message = NULL, progress = 0"
+                           f" WHERE {' OR '.join(clauses)}", args)
+    return {"retried": cur.rowcount}
+
+
 @router.delete("/wanted/{wid}")
 def delete_wanted(wid: int, conn: sqlite3.Connection = Depends(admin_conn)):
     with tx(conn):

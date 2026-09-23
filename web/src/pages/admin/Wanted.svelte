@@ -29,8 +29,37 @@
       else lineupFor = -1;
     }
   }
-  $effect(() => { changes.library; untrack(load); });
+  $effect(() => { changes.library; untrack(load); untrack(loadFaults); });
   poll(load, 20000); // pitv_content updates progress without an SSE event
+  poll(loadFaults, 120000); // the doctor is a heavier read; a fault lasts longer than a progress bar
+
+  // What is going wrong in the list, from the doctor, which already tells a search that found
+  // nothing apart from a request that cannot be prepared. Only the second kind is shown: the
+  // first is an ordinary answer and will be asked again.
+  let faults = $state([]);
+  let givenUp = $state(0);
+  let retrying = $state(false);
+  async function loadFaults() {
+    // Caught rather than passed through tryApi: this runs on a timer, and a doctor that is
+    // briefly unavailable should not raise a toast every two minutes over a working page.
+    try {
+      const d = await get('/api/doctor');
+      faults = d?.wanted?.faults ?? [];
+      givenUp = d?.wanted?.given_up ?? 0;
+    } catch { /* keep what was last shown */ }
+  }
+  async function retryClass(message, n) {
+    retrying = true;
+    const r = await tryApi(post('/api/wanted/retry', { message }), { success: `${n} request(s) back in the queue` });
+    retrying = false;
+    if (r) { load(); loadFaults(); }
+  }
+  async function retryGivenUp() {
+    retrying = true;
+    const r = await tryApi(post('/api/wanted/retry', { given_up: true }), { success: 'Asking again' });
+    retrying = false;
+    if (r) { load(); loadFaults(); }
+  }
 
   const LIBRARY_TAB = { movie: 'movies', advert: 'adverts', music: 'music' };
   const active = (st) => ['downloading', 'transcoding', 'searching', 'running'].includes(st);
@@ -68,6 +97,27 @@
 
 <div class="stack">
   <p class="scope" style="margin:0">PiTV records these requests (by hand, from line-ups, or from gaps in a series); pitv_content fetches them on its next run and delivers them into the cache. Give a URL only when you know exactly where the file is.</p>
+  <!-- A fault in pitv_content stops every request it touches at once, and the list below shows
+       300 rows of "queued" while none of them can succeed. Each distinct error is named here
+       with the count and the button that clears that whole class. -->
+  {#each faults as f (f.message)}
+    <div class="err-box">
+      <div class="row">
+        <div style="flex:1"><b>{f.n} request{f.n === 1 ? '' : 's'} cannot be fetched</b><div class="small mono mt">{f.message}</div>
+          <div class="small muted mt">This is pitv_content's to fix. Once it is fixed, retry them here; they will not come right on their own.</div></div>
+        <button class="small" onclick={() => retryClass(f.message, f.n)} disabled={retrying}>Retry these {f.n}</button>
+      </div>
+    </div>
+  {/each}
+  {#if givenUp}
+    <div class="warn-box">
+      <div class="row">
+        <div style="flex:1"><b>{givenUp} request{givenUp === 1 ? '' : 's'} given up on</b>
+          <div class="small muted mt">Asked for the maximum number of times and never delivered, so PiTV no longer asks. Retry to ask once more, or delete what is genuinely unavailable.</div></div>
+        <button class="small" onclick={retryGivenUp} disabled={retrying}>Ask again</button>
+      </div>
+    </div>
+  {/if}
   <div class="card">
     <div class="card-title"><h3>Wanted</h3><AppBadge app="content" title="Recorded by PiTV, fetched by pitv_content" />
       <button class="small" onclick={scanGaps} disabled={scanGaps.busy}>Queue missing episodes</button>

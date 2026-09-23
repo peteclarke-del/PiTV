@@ -44,6 +44,11 @@ from .scheduler.rules import broadcast_day_for, day_bounds, keyword_pattern, nor
 MANIFEST_SCHEMA = 2
 RESIZE_THRESHOLD = 30   # seconds; smaller differences between scheduled and delivered length are absorbed
 MAX_WANTED_ATTEMPTS = 3
+# How pitv_content opens a message when it searched and found nothing. That is an answer, not a
+# fault: uploads are retitled and new ones appear, so the request is asked again and uses no
+# attempt. Everything else in a message is a fault, and the doctor tells the two apart by this
+# same prefix, so the rule is written once rather than guessed at in two places.
+MISS_PREFIX = "not found yet"
 APPLIED_REPORT_DAYS = 7      # report files, once applied, are kept this long for reference
 UNAPPLIED_REPORT_DAYS = 30   # a report file that never applies is given up after this long
 DEADLINE_LEAD = 15 * 60  # a file is due this long before it first airs
@@ -448,7 +453,7 @@ def _fail_wanted(conn: sqlite3.Connection, wid: int, message: str) -> None:
         if ended.group(1):
             conn.execute("UPDATE lineup SET episode_count = ?, updated_at = ? WHERE id = (SELECT lineup_id FROM wanted WHERE id = ?)",
                          (int(ended.group(1)), now_ts(), wid))
-    elif "bot check" in msg.lower() or "rate limit" in msg.lower() or msg.lower().startswith("not found yet"):
+    elif "bot check" in msg.lower() or "rate limit" in msg.lower() or msg.lower().startswith(MISS_PREFIX):
         # The provider, not the request, was the problem, or nothing on offer today says it is the
         # episode wanted (uploads are retitled and new ones appear): retry without using up an attempt.
         conn.execute("UPDATE wanted SET status = 'queued', message = ?, updated_at = ? WHERE id = ?", (msg, now_ts(), wid))
