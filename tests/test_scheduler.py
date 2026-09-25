@@ -505,15 +505,24 @@ def test_music_channel_day(conn):
 
 
 def test_guide_collapses_music_blocks(conn):
-    from pitv.guide import block_entry, collapse_blocks, next_programmes, slot_at
+    from pitv.guide import ITEM_MINUTES, block_entry, collapse_blocks, next_programmes, slot_at
     music = _channel(conn, 5)
     rows = conn.execute("SELECT * FROM schedule WHERE channel_id = ? AND day = '2026-09-16' AND replay = 0 ORDER BY start_ts", (music["id"],)).fetchall()
     merged = collapse_blocks([dict(r) for r in rows])
-    # Every stretch a band filled is one entry; time a band gave back to the channel is billed
-    # item by item, as it is on any other channel.
-    stretches = sum(1 for i, r in enumerate(rows) if r["block"] and (i == 0 or rows[i - 1]["block"] != r["block"]))
-    assert stretches >= 5
-    assert sum(1 for e in merged if e.get("block")) == stretches
+    # A band's run of short items is one entry, and an item long enough to be a programme in its
+    # own right (a concert) is billed by its own name with what follows it entered apart; time a
+    # band gave back to the channel is billed item by item, as on any other channel.
+    feature = ITEM_MINUTES * 60
+
+    def own(r):
+        return r["block"] and r["kind"] == "programme" and r["end_ts"] - r["start_ts"] >= feature
+    entries = sum(1 for i, r in enumerate(rows) if r["block"] and (
+        i == 0 or rows[i - 1]["block"] != r["block"] or own(r) or own(rows[i - 1])))
+    assert entries >= 5
+    assert sum(1 for e in merged if e.get("block")) == entries
+    for e in merged:
+        if e.get("block") and e["kind"] == "programme" and e["end_ts"] - e["start_ts"] >= feature and e["items"] == 1:
+            assert e["subtitle"] == e["block"] and e["title"] != e["block"], "a feature keeps its own name"
     assert sum(1 for e in merged if not e.get("block")) == sum(1 for r in rows if not r["block"])
     assert merged[0]["title"] == "Seventies Breakfast" and merged[0]["items"] > 1
     # the shared lookups (player OSD and web) agree with the raw merge
@@ -528,6 +537,25 @@ def test_guide_collapses_music_blocks(conn):
     following = next(e for e in merged[1:] if e["kind"] == "programme")
     nxt = next_programmes(conn, music["id"], entry["end_ts"], 2)
     assert len(nxt) == 2 and nxt[0]["start_ts"] == following["start_ts"] and nxt[0]["title"] == following["title"]
+
+
+def test_a_band_of_long_programmes_lists_each_by_its_own_name():
+    """The guide billed a whole band by its longest programme, so "2 Wheels & More" read "The
+    Bearded Mechanic" from 17:30 to 20:50 while Chopper Time and Superbike Surgery played in it.
+    Each item long enough to be a programme is an entry of its own, the band beneath it."""
+    from pitv.guide import collapse_blocks
+
+    def slot(n, start, minutes, title):
+        return {"id": n, "channel_id": 8, "start_ts": start, "end_ts": start + minutes * 60, "kind": "programme",
+                "block": "2 Wheels & More", "replay": 0, "title": title, "subtitle": ""}
+    t = 1_790_353_800
+    slots = [slot(1, t, 103, "The Bearded Mechanic"), slot(2, t + 103 * 60, 24, "Chopper Time"),
+             slot(3, t + 127 * 60, 3, "Superbike Surgery"), slot(4, t + 130 * 60, 80, "Superbike Surgery")]
+    merged = collapse_blocks(slots, feature=15 * 60)
+    assert [(e["title"], e["subtitle"]) for e in merged] == [
+        ("The Bearded Mechanic", "2 Wheels & More"), ("Chopper Time", "2 Wheels & More"),
+        ("Superbike Surgery", "2 Wheels & More"), ("Superbike Surgery", "2 Wheels & More")]
+    assert merged[1]["start_ts"] == t + 103 * 60, "each starts when it starts"
 
 
 def test_slot_titles():

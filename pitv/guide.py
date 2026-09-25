@@ -66,16 +66,23 @@ def feature_seconds(conn: sqlite3.Connection) -> int:
 def collapse_blocks(slots: list[dict[str, Any]], feature: int = ITEM_MINUTES * 60) -> list[dict[str, Any]]:
     """Merge consecutive slots that share a `block` into one guide entry.
 
-    A band is one programme in the guide, so a two hour "Disco Lunch" is a single entry with the
-    number of programmes in it and whatever is playing in `video_title`. Where one programme
-    fills most of the band, though, that programme is what the band is: a concert billed as
-    "Concert" tells the viewer nothing, so the entry takes its title and keeps the band's name
-    underneath. Captions inside a band (a stretch it could not fill) are not programmes."""
+    A band of short items is one programme in the guide, so a two hour "Disco Lunch" is a single
+    entry with the number of programmes in it and whatever is playing in `video_title`. An item
+    at least `feature` long is a programme in its own right and is billed by its own name with
+    the band's underneath: a concert that fills its band reads as the concert, and a band of
+    several long programmes lists each of them. Merging those into one entry named after the
+    longest billed "The Bearded Mechanic" for three hours while two other series played in it.
+    Captions inside a band (a stretch it could not fill) are not programmes."""
     out: list[dict[str, Any]] = []
     for sl in slots:
         prev = out[-1] if out else None
+        own = sl.get("block") and sl["kind"] == "programme" and sl["end_ts"] - sl["start_ts"] >= feature
+        if own:
+            out.append({**sl, "subtitle": sl["block"], "items": 1, "video_title": sl["title"], "_own": True})
+            continue
         if (sl.get("block") and prev and prev.get("block") == sl["block"] and prev["channel_id"] == sl["channel_id"]
-                and prev["end_ts"] == sl["start_ts"] and prev.get("replay") == sl.get("replay")):
+                and prev["end_ts"] == sl["start_ts"] and prev.get("replay") == sl.get("replay")
+                and not prev.get("_own")):
             prev["end_ts"] = sl["end_ts"]
             if sl["kind"] == "programme":
                 prev["items"] += 1
@@ -92,13 +99,11 @@ def collapse_blocks(slots: list[dict[str, Any]], feature: int = ITEM_MINUTES * 6
                 _note_longest(entry, sl)
         out.append(entry)
     for entry in out:
-        if not entry.get("block"):
+        if entry.pop("_own", False) or not entry.get("block"):
             continue
         title, seconds = entry.pop("_longest", ("", 0))
-        # A band led by something long is billed as that: a concert or a film inside a two hour
-        # stretch is what the viewer is being offered, and "Concert" tells them nothing. Either
-        # it fills half the band, or it is long enough to be a programme in its own right.
-        leads = bool(title) and (seconds * 2 >= entry["end_ts"] - entry["start_ts"] or seconds >= feature)
+        # A stretch of short items that one of them fills half of is billed as that item.
+        leads = bool(title) and seconds * 2 >= entry["end_ts"] - entry["start_ts"]
         entry["title"] = title if leads else entry["block"]
         if leads:
             entry["subtitle"] = entry["block"]
