@@ -527,6 +527,12 @@ cgroup. What the restart showed:
   episode, back to back (dd9ab3d, live). ARTE Concert's misnumbered pair is renamed by
   pitv_content once its fix is deployed; the check is the next complete import showing the NYO
   concert as one E01 of two consecutive rows. A cache run no longer queues an index beside it.
+- Found by pitv_content that night (its a8bc3f1): the queue read a helping's result from its
+  last log line, which for any helping that filed something is the index republish, so it took
+  the count as missing and never queued the remainder. Every productive helping on the 25th but
+  one ended its band there, and only PiTV's hourly asking kept bands moving. Band continuations
+  should appear in the queue by themselves from its restart at about 23:55; with b100bc9 and
+  d9147cd that is the first time both sides of the band loop have worked as designed.
 - The player's mpv closed at 02:34:50, two seconds after a click in its window and fifteen after
   a burst of eleven channel loads in one second; the player exited as designed and the web
   service's keeper started another twenty seconds later.
