@@ -6,7 +6,8 @@ and the wire between the two applications in [CONTENT_CONTRACT.md](CONTENT_CONTR
 page only tracks what is not yet true of them. An item leaves this page when its check has been
 run and passed, not when its owner reports it finished.
 
-Last reviewed 2026-09-20.
+Last reviewed 2026-09-25, after an outage; the work of 21 to 23 September (about sixty-five
+PiTV commits and fifteen in pitv_content) is in the git log and not yet summarised here.
 
 ## The test this is working towards
 
@@ -472,6 +473,28 @@ that 5b9a137 frees when it is deployed.
 pitv_content 265cbda is committed and running on this machine but not pushed: the GitHub token
 here has expired and Pete has to sign in again.
 
+The outage of 23 to 25 September. At 17:32 on the 23rd systemd-oomd killed Pete's whole desktop
+session because another project's editor had reached 17.4 GB; PiTV and pitv_content held 180 MB
+between them and went with it, as did the gvfs mounts of every NAS share. Nothing ran for a day
+and a half. Restarted at 02:29 on the 25th as `systemd-run --user` units outside the editor's
+cgroup. What the restart showed:
+
+- pitv_content recovered as C16 says: the killed slice was marked failed and continued with
+  `tries=1`, and its first slice swept the part-encode and both download folders.
+- With the shares gone, two index jobs published incomplete (887 items against about 17,400)
+  and PiTV imported one as additions only, retiring nothing, as the contract requires. Nothing
+  on PiTV's side said the NAS was away: `pitv doctor` now names every enabled source
+  pitv_content cannot read, with the remedy, from `GET /api/sources`, whose readability is a live
+  check. Pete reconnected the shares at about 02:33.
+- Readiness at 02:41 replaced eight remote episodes due that morning that had not been fetched
+  during the outage, which is the designed behaviour.
+- A catalogue run from 02:32 stayed "running" for good: `import_and_place` guarded the import
+  but not the mirror and refill after it, so an exception there, most likely a locked database,
+  left no trace. Every step is now inside the guard.
+- The player's mpv closed at 02:34:50, two seconds after a click in its window and fifteen after
+  a burst of eleven channel loads in one second; the player exited as designed and the web
+  service's keeper started another twenty seconds later.
+
 ## Open in PiTV
 
 | # | Item | Done when |
@@ -482,6 +505,7 @@ here has expired and Pete has to sign in again.
 | P9 | PARKED by Pete on 20 September until the application as it stands is working to his satisfaction. A split system (Pete, 20 September): stations, content workers and thin receivers that only play a channel's stream. Planned in [SPLIT_PLAN.md](SPLIT_PLAN.md) before any code; the first step changes none: mpv on a Pi Zero 2 W against the existing `/channel/<n>.m3u8`, measuring playback over the house Wi-Fi and the time a channel change takes | Pete's decisions at the end of the plan are made on the measurements from its steps 0 and 1 |
 | P7 | Films crossing channels. Series are now borrowed by type (below); films are not, and need not be until a film channel exists to claim them from the general channels | With a film channel, a general channel that lists films under "also carries" shows them in its film dayparts |
 | P1 | Time a band run and a cache run as each of C1 to C8 lands, import, rebuild, and record the result here | Figures recorded against each item above |
+| P10 | SQLite write contention. A catalogue import holds the write lock long enough (imports ran 90 to 250 seconds on 23 September) that others exceed the 30 second busy timeout: a schedule run failed at 14:43 on the 23rd "after 8 channel-days: database is locked", the player could not close history entries, and a `pitv catalogue` started from the command line at 02:32 on the 25th failed while opening the database | No run of any kind ends "database is locked" over a day with imports, schedule runs and the player all active |
 | P3 | Hardware verification on a Raspberry Pi 4: hardware decode of copied files, the cache drive, encode times with the Pi's presets, the player keeper under systemd | REQUIREMENTS.md rows marked "by hand" checked on the device |
 
 ## How a change is accepted
