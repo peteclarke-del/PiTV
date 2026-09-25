@@ -118,7 +118,9 @@ for the nightly index run.
   parts as one episode: the episode cursor advances once, the parts air back to back in part
   order as consecutive slots with no break between them, and the episode airs only when every
   part from 1 to `parts` is present, the cursor passing over it until then. A delivery report
-  for a split upload names part 1; PiTV finds the other parts in the index.
+  for a split upload names part 1; PiTV finds the other parts in the index. A part that
+  duplicates something already filed is skipped, which leaves its set short; PiTV's doctor names
+  any set missing a part, rather than the survivors being renumbered.
 - `certificate` is the NFO's own text (`<certification>`, else `<mpaa>`), whitespace collapsed
   and at most 120 characters: `PG`, `UK:12 / UK:12+`, `US:R / US:Rated R`, `UK:All`. PiTV reads
   it (a British entry first when the text lists several) and owns that reading, so
@@ -734,7 +736,10 @@ helping for the job boundary.
 A helping that runs out of search queries having filed fewer than a quarter of its count ends
 its band: no remainder is queued, and its record in `GET /api/jobs` carries
 `exhausted: {searched, made, count, genres, years, max_minutes}`, where `searched` is the number
-of queries it ran. The record stays in the job list for at least a day, so PiTV can read it.
+of queries it ran and `count` the helping's own count, not what the band still wants; `genres`
+may be empty and `years` and `max_minutes` null for a band that names none. Only a helping that
+finished can end its band: one interrupted still comes back, as before. The record stays in the
+job list for at least a day, so PiTV can read it.
 PiTV reads it for the helping it asked for, rests the band for `band_exhausted_rest_hours`
 (24 by default) instead of asking every hour to search the same way, and its doctor names the
 band with the genres and years searched for. "Ask again now" on the Doctor page clears the
