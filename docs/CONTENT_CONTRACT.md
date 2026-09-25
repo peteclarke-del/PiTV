@@ -467,11 +467,14 @@ pitv_content's may hold a job indefinitely: three of them could, and all three w
 PiTV's doctor raises both as findings, because a queue that puts itself right without saying so
 leaves the rule that held the job still there to hold the next one.
 
-`GET {content_tool_url}/api/status` also carries `leftovers`: what a run stopped part way (a
-signal, a crash, a killed session) left in the work folder. It is null while a job runs, since
-that job's own files look the same, and null when there are none; otherwise it is `{work_dir,
-count, mb, items: [{name, kind, mb, hours_old, next_run_removes}], remedy}` with `kind` one of
-`part-encode` or `download`, reported as soon as the file exists rather than once it has aged.
+`GET {content_tool_url}/api/status` also carries `leftovers`: what a run killed part way (a
+crash, SIGKILL, a killed session) left in the work folder; a run stopped by SIGTERM tidies up
+after itself. It is null while a job runs, since that job's own files look the same, and null
+when there are none; otherwise it is `{work_dir, count, mb, items: [{name, kind, mb, hours_old,
+next_run_removes}], remedy}` with `kind` one of `part-encode` or `download`, reported as soon as
+the file exists rather than once it has aged.
+Both mean what lies directly in the work folder: an `encode-*.mp4` file, or a folder that holds
+only files, which is what every download folder is; a folder with subfolders is never touched.
 `POST {content_tool_url}/api/cleanup` removes every part-encode and download folder at once and
 answers `{ok, removed, failed, mb}`; it answers 409 while a job runs or when the work folder is
 not pitv_content's own, and holds the queue's lock throughout so no job starts part way through.
