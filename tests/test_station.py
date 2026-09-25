@@ -97,3 +97,30 @@ def test_a_programme_freezes_on_its_last_frame_rather_than_going_blank():
 
     source = inspect.getsource(controller_mod.Player._load)
     assert '"keep-open"' in source, "a programme must hold its last frame when it ends early"
+
+
+def test_the_next_programme_after_a_held_frame_plays(monkeypatch):
+    """mpv pauses itself at the end of a file kept open to hold its last frame, and the pause
+    outlived the file: the next programme loaded paused, and the drift check re-seeked it every
+    ten seconds, a jerky still with no sound until a channel change unpaused it. A load now
+    plays unless the viewer has paused."""
+    from types import SimpleNamespace
+
+    from pitv.player import controller as controller_mod
+    from pitv.player.controller import Player
+
+    calls: list[tuple] = []
+    mpv = SimpleNamespace(loadfile=lambda path, start, options: 2,
+                          set=lambda name, value: calls.append((name, value)),
+                          overlay_remove=lambda _id: None)
+    monkeypatch.setattr(controller_mod, "decode_options", lambda *_a, **_k: {"hwdec": "no", "deinterlace": "no"})
+
+    def player(paused: bool):
+        return SimpleNamespace(mpv=mpv, paused=paused, on_pi=False, settings={}, channel={"number": 8},
+                               _decode_props=lambda *_a: {}, _start_history=lambda _s: None)
+    slot = {"id": 5, "kind": "programme", "title": "Next"}
+    Player._load(player(False), slot, {"id": 1}, "/n/next.mp4", "nas", 0.0)
+    assert ("pause", False) in calls, "the file after a held frame must play"
+    calls.clear()
+    Player._load(player(True), slot, {"id": 1}, "/n/next.mp4", "nas", 0.0)
+    assert ("pause", True) in calls, "a viewer's own pause is kept"

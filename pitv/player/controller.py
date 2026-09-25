@@ -585,6 +585,13 @@ class Player:
             log.error("mpv refused %s: %s", path, exc)
             self._technical_difficulties(slot, f"mpv refused the file: {exc}")
             return
+        # keep-open pauses mpv when a file ends, to hold its last frame, and pause is global: the
+        # next file loaded into it stayed paused, a still redrawn by every drift re-seek with no
+        # sound, until a channel change unpaused it. A load plays unless the viewer paused.
+        try:
+            self.mpv.set("pause", bool(self.paused))
+        except MpvError as exc:
+            log.warning("could not set pause after loading %s: %s", path, exc)
         self.playing_slot_id = slot["id"]
         self.playing_path = path
         self.playing_where = where
