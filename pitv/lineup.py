@@ -770,7 +770,7 @@ def restore_if_empty(conn: sqlite3.Connection) -> bool:
 
 # --- material arriving from pitv_content -------------------------------------------------------
 
-def attach_delivery(conn: sqlite3.Connection, wanted_id: int, media_id: int) -> dict[int, int]:
+def attach_delivery(conn: sqlite3.Connection, wanted_id: int, media_id: int) -> dict[tuple[int, str], int]:
     """Hand a delivered file (already a catalogue entry) to its line-up entry and to the
     placeholder slots that requested it. Runs inside the caller's transaction.
 
@@ -779,7 +779,7 @@ def attach_delivery(conn: sqlite3.Connection, wanted_id: int, media_id: int) -> 
     the entry's channel and never generated onto another one. Every bound slot, a repeat
     included, takes the file's real length: a film is never cut off, and a slot sized from the
     entry's nominal episode length does not run on as a holding card after a shorter file has
-    ended. Returns {channel_id: earliest change} for the caller to rebuild from."""
+    ended. Returns the earliest change on each (channel_id, day) for the caller to rebuild from."""
     w = conn.execute("SELECT lineup_id FROM wanted WHERE id = ?", (wanted_id,)).fetchone()
     media = dict(conn.execute("SELECT m.*, s.title AS show_title FROM media m LEFT JOIN shows s ON s.id = m.show_id"
                               " WHERE m.id = ?", (media_id,)).fetchone())
@@ -795,14 +795,15 @@ def attach_delivery(conn: sqlite3.Connection, wanted_id: int, media_id: int) -> 
         sync_home_channels(conn)
     title, subtitle = slot_titles(media, media.get("show_title"))
     real = round(float(media.get("duration") or 0))
-    changed: dict[int, int] = {}
-    for sl in conn.execute("SELECT id, channel_id, start_ts, end_ts, replay FROM schedule WHERE wanted_id = ? AND media_id IS NULL",
+    changed: dict[tuple[int, str], int] = {}
+    for sl in conn.execute("SELECT id, channel_id, day, start_ts, end_ts, replay FROM schedule WHERE wanted_id = ? AND media_id IS NULL",
                            (wanted_id,)).fetchall():
         end = sl["end_ts"]
         if real and sl["start_ts"] + real != end:
             at = min(end, sl["start_ts"] + real)
             end = sl["start_ts"] + real
-            changed[sl["channel_id"]] = min(changed.get(sl["channel_id"], at), at)
+            key = (sl["channel_id"], sl["day"])
+            changed[key] = min(changed.get(key, at), at)
         conn.execute("UPDATE schedule SET media_id = ?, end_ts = ?, title = ?, subtitle = ? WHERE id = ?",
                      (media_id, end, title, subtitle, sl["id"]))
     return changed

@@ -338,10 +338,11 @@ def test_delivery_report_fills_placeholder(conn, tmp_path):
     media = conn.execute("SELECT * FROM media WHERE uid = 'yt:pending'").fetchone()
     assert media["origin"] == "online" and media["cache_path"] == str(film) and media["transient"] == 1
     slots = conn.execute("SELECT media_id, end_ts, start_ts FROM schedule WHERE wanted_id = ? ORDER BY start_ts", (wid,)).fetchall()
-    assert len(slots) == 2, "the first airing and its repeat"
-    for slot in slots:
-        # The repeat too: left at its nominal length, a shorter file ends and a card runs on.
-        assert slot["media_id"] == media["id"] and slot["end_ts"] - slot["start_ts"] == 6420
+    assert slots and slots[0]["media_id"] == media["id"] and slots[0]["end_ts"] - slots[0]["start_ts"] == 6420
+    # The repeat too is never left at its nominal length, where a shorter file would end and a
+    # card run on: its day is rebuilt from the change, which binds it at the file's length or,
+    # a repeat not being promised, places something else there.
+    assert all(s["media_id"] == media["id"] and s["end_ts"] - s["start_ts"] == 6420 for s in slots)
     e = lineup.entry(conn, entry["id"])
     assert e["media_id"] == media["id"] and e["external"] is False
     with dbm.tx(conn):
@@ -1149,3 +1150,45 @@ def test_a_channels_length_is_not_learned_once_and_frozen():
     assert series["id"] in offered and channel["id"] not in offered, \
         "a series is asked about, a channel is left without a frozen length"
     c.close()
+
+
+def test_a_delivery_booked_on_several_days_leaves_no_hole_on_any(tmp_path):
+    """A delivered file shorter than its slots shortens every slot it is bound to, and each day
+    must then be rebuilt. Only a channel's earliest change was rebuilt, to the end of that one
+    day, so PiTV Toons carried six-minute holes on four days after one Battle of the Planets
+    delivery: nothing scheduled at all, and nothing reporting it."""
+    from datetime import date
+
+    from pitv.content import apply_report
+
+    ctx = make_library(tmp_path, max_episodes=2)
+    conn = ctx["conn"]
+    today = date.today()
+    build_horizon(conn, start_day=today, days=4)
+    ch = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
+    days = [(today + timedelta(days=n)).isoformat() for n in (2, 3)]
+    picked = [conn.execute("SELECT * FROM schedule WHERE channel_id = ? AND day = ? AND kind = 'programme' AND replay = 0"
+                           " AND end_ts - start_ts >= 1800 ORDER BY start_ts LIMIT 1 OFFSET 3", (ch, d)).fetchone()
+              for d in days]
+    assert all(picked), "a half-hour programme on each of two days"
+    with dbm.tx(conn):
+        wid = conn.execute("INSERT INTO wanted(kind, title, season, episode, auto, created_at, provider)"
+                           " VALUES ('episode', 'Pending Series', 1, 1, 1, ?, 'auto')", (dbm.now_ts(),)).lastrowid
+        for sl in picked:     # the same request booked on both days, sized from a nominal length
+            conn.execute("UPDATE schedule SET media_id = NULL, wanted_id = ?, title = 'Pending Series' WHERE id = ?",
+                         (wid, sl["id"]))
+    short = min(sl["end_ts"] - sl["start_ts"] for sl in picked) - 360
+    episode = tmp_path / "Pending Series - S01E01.mp4"
+    episode.write_bytes(b"x" * 10)
+    apply_report(conn, {"schema": 2, "items": [{
+        "wanted_id": wid, "status": "done", "uid": "yt:pending-series-1",
+        "file": {"path": str(episode), "duration": short, "vcodec": "h264", "acodec": "aac", "width": 720, "height": 576},
+        "meta": {"title": "Pending Series", "show_title": "Pending Series", "season": 1, "episode": 1}}],
+        "run": {"tool": "pitv_content test", "started_ts": 1, "finished_ts": 2}})
+
+    for d in days:
+        rows = conn.execute("SELECT start_ts, end_ts FROM schedule WHERE channel_id = ? AND day = ? AND replay = 0"
+                            " ORDER BY start_ts", (ch, d)).fetchall()
+        holes = [(a["end_ts"], b["start_ts"]) for a, b in pairwise(rows) if b["start_ts"] - a["end_ts"] > 1]
+        assert not holes, f"{d} was left with {len(holes)} hole(s) after the delivery"
+    conn.close()

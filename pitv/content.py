@@ -43,6 +43,8 @@ from .scheduler.rules import broadcast_day_for, day_bounds, keyword_pattern, nor
 
 MANIFEST_SCHEMA = 2
 RESIZE_THRESHOLD = 30   # seconds; smaller differences between scheduled and delivered length are absorbed
+# The earliest slot change on each (channel_id, broadcast day), which is what a rebuild needs.
+SlotChanges = dict[tuple[int, str], int]
 MAX_WANTED_ATTEMPTS = 3
 # How pitv_content opens a message when it searched and found nothing. That is an answer, not a
 # fault: uploads are retitled and new ones appear, so the request is asked again and uses no
@@ -368,21 +370,21 @@ def _wanted_dest(w: dict[str, Any], acquire: str) -> str:
 
 # --- delivery reports ------------------------------------------------------------------------
 
-def _earliest(changes: dict[int, int], channel_id: int, at: int) -> None:
-    changes[channel_id] = min(changes.get(channel_id, at), at)
+def _earliest(changes: SlotChanges, key: tuple[int, str], at: int) -> None:
+    changes[key] = min(changes.get(key, at), at)
 
 
-def _resize_slots(conn: sqlite3.Connection, media_id: int, real: float) -> dict[int, int]:
-    """Give future slots of `media_id` its delivered length. Returns {channel_id: earliest change}
-    for the caller to rebuild; differences under RESIZE_THRESHOLD are absorbed."""
-    changed: dict[int, int] = {}
-    for sl in conn.execute("SELECT id, channel_id, start_ts, end_ts FROM schedule WHERE media_id = ? AND replay = 0"
+def _resize_slots(conn: sqlite3.Connection, media_id: int, real: float) -> SlotChanges:
+    """Give future slots of `media_id` its delivered length. Returns the earliest change on each
+    channel-day for the caller to rebuild; differences under RESIZE_THRESHOLD are absorbed."""
+    changed: SlotChanges = {}
+    for sl in conn.execute("SELECT id, channel_id, day, start_ts, end_ts FROM schedule WHERE media_id = ? AND replay = 0"
                            " AND start_ts > ?", (media_id, now_ts())).fetchall():
         end = sl["start_ts"] + round(real)
         if abs(end - sl["end_ts"]) < RESIZE_THRESHOLD:
             continue
         conn.execute("UPDATE schedule SET end_ts = ? WHERE id = ?", (end, sl["id"]))
-        _earliest(changed, sl["channel_id"], min(end, sl["end_ts"]))
+        _earliest(changed, (sl["channel_id"], sl["day"]), min(end, sl["end_ts"]))
     return changed
 
 
@@ -417,7 +419,7 @@ def _fetched_show(conn: sqlite3.Connection, w: dict[str, Any], meta: dict[str, A
         "category": "general", "updated_at": now_ts()})
 
 
-def _deliver_fetched(conn: sqlite3.Connection, wid: int, file: dict[str, Any], meta: dict[str, Any]) -> dict[int, int]:
+def _deliver_fetched(conn: sqlite3.Connection, wid: int, file: dict[str, Any], meta: dict[str, Any]) -> SlotChanges:
     """Material fetched online: create its catalogue entry from the report, then hand it to the
     line-up and the placeholder slots that asked for it. For an episode the request's season and
     episode win over the report's, so it is filed against what was asked for, except for a series
@@ -556,9 +558,9 @@ _TALLY = {"fetched": ("wanted_done", "created"), "linked": ("wanted_done",), "ca
           "wanted_failed": ("wanted_failed",), "items_failed": ("items_failed",)}
 
 
-def _apply_entry(conn: sqlite3.Connection, e: dict[str, Any]) -> tuple[str | None, dict[int, int]]:
+def _apply_entry(conn: sqlite3.Connection, e: dict[str, Any]) -> tuple[str | None, SlotChanges]:
     """Apply one report entry. Returns its outcome (a key of _TALLY, or None for an entry that
-    changes nothing yet) and {channel_id: earliest slot change} for the caller to rebuild from."""
+    changes nothing yet) and the earliest slot change on each channel-day, to rebuild from."""
     status = e.get("status")
     wid, mid = as_int(e.get("wanted_id")) or 0, as_int(e.get("media_id")) or 0
     file = _file_block(e)
@@ -625,15 +627,15 @@ def apply_report(conn: sqlite3.Connection, report: dict[str, Any]) -> dict[str, 
     if not isinstance(report, dict):
         raise TypeError("a delivery report is a JSON object")
     counts = {"items_done": 0, "items_failed": 0, "wanted_done": 0, "wanted_failed": 0, "created": 0}
-    refill: dict[int, int] = {}
+    refill: SlotChanges = {}
     run, tool = _run_of(report)
     with tx(conn):
         for e in _entries(report):
             outcome, changes = _apply_entry(conn, e)
             for key in _TALLY.get(outcome or "", ()):
                 counts[key] += 1
-            for ch, at in changes.items():
-                _earliest(refill, ch, at)
+            for key, at in changes.items():
+                _earliest(refill, key, at)
         started, finished = (as_int(run.get(k)) or now_ts() for k in ("started_ts", "finished_ts"))
         # The summary starts "<tool>:" because _already_applied recognises a run by it.
         summary = (f"{tool}: {counts['items_done']} cached, {counts['items_failed']} failed;"
@@ -642,7 +644,11 @@ def apply_report(conn: sqlite3.Connection, report: dict[str, Any]) -> dict[str, 
         conn.execute("INSERT INTO run_log(kind, started_at, finished_at, status, summary, details) VALUES (?,?,?,?,?,?)",
                      ("content", started, finished, "warning" if counts["items_failed"] or counts["wanted_failed"] else "ok",
                       summary, json.dumps(details)))
-    for channel_id, from_ts in refill.items():
+    # Each channel-day is rebuilt from its own earliest change. `rebuild_from` goes to the end of
+    # one broadcast day, and keeping only a channel's earliest change rebuilt the first day a
+    # delivered episode was booked on and left every later airing of it shorter than its slot:
+    # PiTV Toons carried six-minute holes on four days after one Battle of the Planets delivery.
+    for (channel_id, _day), from_ts in sorted(refill.items(), key=lambda kv: kv[1]):
         if from_ts > now_ts():
             rebuild_from(conn, channel_id, from_ts)
     if counts["created"]:
