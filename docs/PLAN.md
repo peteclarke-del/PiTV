@@ -840,16 +840,21 @@ controller (main thread, half-second loop)
   Pi 4 decodes in hardware above 1080p. PAL profiles conform to 25 fps and NTSC to 29.97; HD
   keeps the source rate. The manifest's `profile` carries all of it (contract section 2). `--sub=no`, `--no-config`, a 64 MiB
   demuxer cache with 20 s read-ahead.
-- Channel change: `loadfile` with named arguments (`url`, `flags=replace`, and per-file
-  `options` carrying `start` and the decode settings) and a 0.35 s burst of static
-  (`channel_switch_static`) to cover the seek. Named, because mpv 0.38 added an `index`
-  argument that breaks the positional form; per-file, so one programme's decode settings do
-  not carry onto the test card. End-of-file events are matched on `playlist_entry_id`.
+- Channel change: the channel badge is drawn first, then `loadfile` with named arguments
+  (`url`, `flags=replace`, and per-file `options` carrying `start` and the decode settings)
+  under a 0.45 s burst of static (`channel_switch_static`) to cover the seek. A channel key
+  waits 0.4 s for another before loading, so stepping through channels loads only the one it
+  lands on and each badge appears as its key is pressed. Named arguments, because mpv 0.38
+  added an `index` argument that breaks the positional form; per-file options, so one
+  programme's decode settings do not carry onto the test card. End-of-file events are matched
+  on `playlist_entry_id`, and every load sets `pause` to the viewer's own, since `keep-open`
+  pauses mpv at a file's end and the pause would otherwise carry into the next programme.
 - Slot boundaries: on each tick, if the current slot has ended, load what is now due. If mpv
-  reaches end-of-file before the slot ends (the file is shorter than scheduled), the
-  continuity card ("Programmes will continue shortly") holds until the next slot rather than
-  reloading past the end. Every five seconds the position is compared with the schedule and
-  re-seeked when more than six seconds out.
+  reaches end-of-file before the slot ends (the file is shorter than scheduled), the last
+  frame holds when less than `card_after_seconds` remains and the continuity card
+  ("Programmes will continue shortly") shows when more does, rather than reloading past the
+  end. Every five seconds the position is compared with the schedule and re-seeked when more
+  than six seconds out.
 - Every programme logs one line with where it played from (`cache` or `nas`), hwdec and
   deinterlace choice, and two seconds later one line with what mpv actually did (codec,
   hwdec in use, size, fps, vo, ao, dropped frames).

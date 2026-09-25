@@ -57,6 +57,7 @@ SETTINGS_RELOAD_SECONDS = 60
 HEALTH_SECONDS = 300
 GUIDE_REFRESH_SECONDS = 30
 STATIC_SECONDS = 0.45           # how long the snow covers a channel change
+CHANNEL_SETTLE_SECONDS = 0.4   # after a channel key, how long to wait for another before loading
 STATIC_FRAME_SECONDS = 1 / 25   # a new frame of it every television frame
 STATE_POLL_TIMEOUT = 1.0   # mpv property reads for the published state; a hung mpv must not stall it
 MAX_PENDING_INPUT = 32     # queued key and web commands beyond this are dropped, not buffered
@@ -134,6 +135,7 @@ class Player:
         self.exit_code = 0
         self._closed = False
         self._last_drift_check = 0.0
+        self._settle_until = 0.0                # a stepped-to channel loads when this passes
         self._stream_info_at = 0.0
         self._started_at = time.monotonic()
         # (channel id, slot, read at, valid until) in schedule time; see `_slot_on_air`.
@@ -382,7 +384,8 @@ class Player:
         last_wall, last_mono = time.time(), start
         while not self.stopping:
             try:
-                action, arg = self.actions.get(timeout=0.5)
+                # While a channel change settles, turn quickly enough to load it on time.
+                action, arg = self.actions.get(timeout=0.05 if self._settle_until else 0.5)
             except queue.Empty:
                 action = None
             if action:
@@ -455,6 +458,14 @@ class Player:
                 del self.osd_expiry[oid]
         if self.channel is None or self.standby:
             return
+        if self._settle_until:
+            if mono < self._settle_until:
+                return                     # more channel keys may follow; load what they land on
+            self._settle_until = 0.0
+            self.play_live()
+            self._save_state()
+            self._publish(force=True)
+            return
         if not (self.paused or self.behind_live):
             now = self.clock()
             slot = self._slot_on_air(self.channel["id"], now)
@@ -504,7 +515,11 @@ class Player:
         if self.channel:
             self.play_live()
 
-    def tune(self, number: int, show_badge: bool = True) -> None:
+    def tune(self, number: int, show_badge: bool = True, settle: bool = False) -> None:
+        """Change channel. The banner is drawn first, since it is what says the key was taken, and
+        loading a file is the slow part. With `settle`, for channel keys, the load waits until
+        the keys stop: stepping through five channels loaded all five, each banner drawn only
+        after the previous channel's file had opened, so the banner trailed the keys by seconds."""
         channel = next((c for c in self.channels if c["number"] == number), None)
         if channel is None:
             log.info("no enabled channel %s", number)
@@ -515,13 +530,18 @@ class Player:
         self.failed_slot_id = None
         self._forget_slot()
         self._unpause()
+        if show_badge:
+            self.show_badge()
         if switching and self.settings["channel_switch_static"]:
             self._sync_osd_size()
             self._play_static()
+        if settle:
+            self._settle_until = time.monotonic() + CHANNEL_SETTLE_SECONDS
+            self._publish(force=True)
+            return
+        self._settle_until = 0.0
         self.play_live()
         self._save_state()
-        if show_badge:
-            self.show_badge()
         self._publish(force=True)
 
     def play_live(self) -> None:
@@ -793,7 +813,7 @@ class Player:
             return
         if act.startswith("channel_"):
             self.close_guide()
-            self.tune(int(act.split("_")[1]))
+            self.tune(int(act.split("_")[1]), settle=True)
             return
         if self.guide_open:
             self._guide_key(act)
@@ -855,7 +875,7 @@ class Player:
         if not self.channels or self.channel is None:
             return
         idx = next((i for i, c in enumerate(self.channels) if c["id"] == self.channel["id"]), 0)
-        self.tune(self.channels[(idx + step) % len(self.channels)]["number"])
+        self.tune(self.channels[(idx + step) % len(self.channels)]["number"], settle=True)
 
     def _set_volume(self, value: int) -> None:
         self.volume = max(0, min(100, value))

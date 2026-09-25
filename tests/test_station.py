@@ -124,3 +124,40 @@ def test_the_next_programme_after_a_held_frame_plays(monkeypatch):
     calls.clear()
     Player._load(player(True), slot, {"id": 1}, "/n/next.mp4", "nas", 0.0)
     assert ("pause", True) in calls, "a viewer's own pause is kept"
+
+
+def test_channel_keys_show_the_banner_at_once_and_load_where_they_stop(monkeypatch):
+    """Each channel key loaded its channel before drawing the banner, so stepping through five
+    channels loaded five files and the banner trailed the keys. The banner comes first, and a
+    run of channel keys loads only the channel it lands on, once the keys stop."""
+    from types import SimpleNamespace
+
+    from pitv.player import controller as controller_mod
+    from pitv.player.controller import Player
+
+    calls: list[str] = []
+    clock = [100.0]
+    monkeypatch.setattr(controller_mod.time, "monotonic", lambda: clock[0])
+    p = SimpleNamespace(
+        channels=[{"id": n, "number": n} for n in (1, 2, 3)], channel={"id": 1, "number": 1},
+        failed_slot_id=None, settings={"channel_switch_static": False}, _settle_until=0.0,
+        _end_history=lambda: None, _forget_slot=lambda: None, _unpause=lambda: None,
+        show_badge=lambda: calls.append(f"badge {p.channel['number']}"),
+        play_live=lambda: calls.append(f"load {p.channel['number']}"),
+        _save_state=lambda: None, _publish=lambda force=False: None)
+
+    Player.tune(p, 2, settle=True)
+    Player.tune(p, 3, settle=True)
+    assert calls == ["badge 2", "badge 3"], "each key's banner at once, nothing loaded yet"
+
+    tick = SimpleNamespace(**vars(p), mpv=SimpleNamespace(running=lambda: True), osd_expiry={}, standby=False)
+    Player.tick(tick)
+    assert calls[-1] == "badge 3", "still settling"
+    clock[0] += controller_mod.CHANNEL_SETTLE_SECONDS + 0.01
+    Player.tick(tick)
+    assert calls[-1] == "load 3" and calls.count("load 3") == 1 and "load 2" not in calls
+    assert tick._settle_until == 0.0
+
+    calls.clear()
+    Player.tune(p, 1)
+    assert calls == ["badge 1", "load 1"], "a tune that is not a channel key loads at once, banner first"
