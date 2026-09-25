@@ -1364,7 +1364,8 @@ The first thing to run once connected is `pitv doctor` (`pitv/doctor.py`): one r
 that opens with its findings in plain sentences (a failed service, a player that is not
 answering or is playing from the NAS, holding cards outside any band, how much of the next day
 is in the cache, which bands are short and by how many minutes, runs that ended in error,
-pitv_content unreachable or reporting errors, a drive nearly full) and then gives each section
+pitv_content unreachable or reporting errors, a library source it cannot read, a drive nearly
+full) and then gives each section
 in full, with the last day's warnings from every log. `--json` gives the whole document and
 `--out` writes it to a file to bring back; it exits 1 when anything needs attention, so a
 script can tell. The admin serves the same document at `GET /api/doctor`, behind the admin

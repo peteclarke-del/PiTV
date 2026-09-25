@@ -98,6 +98,31 @@ def test_a_run_that_died_before_reporting_is_not_a_quiet_night(tmp_path, monkeyp
     conn.close()
 
 
+def test_a_source_that_cannot_be_read_is_a_finding(monkeypatch):
+    """With the NAS away nothing fails loudly: copies wait, an index publishes incomplete and is
+    imported as additions only, and the report showed a cache that seemed slow to fill for a day
+    and a half. Every unreadable source is named, with why and what to do; a disabled one is not
+    asked to be read, and an unreachable pitv_content is its own finding, not this one."""
+    from pitv import doctor, tool_client
+
+    sources = [{"id": "movies", "name": "Movies", "enabled": True, "health": {"readable": True}},
+               {"id": "tvshows", "name": "TV Shows", "enabled": True,
+                "health": {"readable": False, "error": "not reachable", "mount_error": "permission denied"}},
+               {"id": "ads", "name": "Adverts", "enabled": True, "health": {"readable": False, "error": ""}},
+               {"id": "old", "name": "Old share", "enabled": False, "health": {"readable": False}}]
+    monkeypatch.setattr(tool_client, "request", lambda *a, **k: (200, sources))
+
+    found = doctor._unreadable_sources({})
+    assert [s["id"] for s in found] == ["tvshows", "ads"]
+    assert found[0]["error"] == "permission denied", "the mount's own reason is the more useful one"
+    assert found[1]["error"] == "not reachable", "a source with no reason still gets one"
+    finding = next(f for f in doctor._findings({"unreadable_sources": found}) if "cannot be read" in f)
+    assert "TV Shows (permission denied)" in finding and "Re-index sources and import" in finding
+
+    monkeypatch.setattr(tool_client, "request", lambda *a, **k: (0, {"error": "connection refused"}))
+    assert doctor._unreadable_sources({}) == []
+
+
 def test_a_channels_length_is_refreshed_by_pitv_content_never_learned_and_frozen():
     """`episode_count` stops PiTV asking past the end of a run, and there are two ways an entry
     can get one. Only one of them goes stale, and the difference is the whole of the fix.

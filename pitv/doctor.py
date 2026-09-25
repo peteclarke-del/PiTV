@@ -3,8 +3,9 @@
 `pitv doctor` on the machine, or `GET /api/doctor` from the admin, gathers what would otherwise
 take a dozen commands over SSH: the services, what the player is doing, holes in the schedule,
 how much of the next day is in the cache, which bands are short, what pitv_content is working
-on, the last warnings from every log, and the disks. It opens with the findings, in plain
-sentences, so the first screen says whether anything needs attention.
+on and which of its sources it cannot read, the last warnings from every log, and the disks. It
+opens with the findings, in plain sentences, so the first screen says whether anything needs
+attention.
 
 It only reads. Every section stands alone: one that cannot be gathered says why and the rest
 still are, because the report matters most when something is broken. It deliberately offers no
@@ -63,6 +64,7 @@ def report(conn: sqlite3.Connection, cfg: Config, now: int | None = None) -> dic
         "abandoned_runs": lambda: _abandoned(conn, settings),
         "runs": lambda: _runs(conn),
         "content": lambda: _content(settings),
+        "unreadable_sources": lambda: _unreadable_sources(settings),
         "logs": lambda: _logs(cfg),
         "disks": lambda: _disks(cfg, settings),
     }
@@ -378,6 +380,28 @@ def _content(settings: dict[str, Any]) -> dict[str, Any]:
             "healed": (body.get("healed") or [])[:10], "queue_warning": body.get("queue_warning")}
 
 
+def _unreadable_sources(settings: dict[str, Any]) -> list[dict[str, Any]]:
+    """Enabled library sources pitv_content cannot read from here, by its live check.
+
+    With the NAS away nothing fails loudly: copies wait, the player falls back to a share that is
+    not there, and an index publishes incomplete, which PiTV rightly imports as additions only.
+    On 23 September the desktop session that held the NAS mounts was killed and every share was
+    gone for a day and a half, while this report showed only a cache that seemed slow to fill. An
+    unreachable pitv_content is its own finding, so it gives an empty list here."""
+    status, body = tool_client.request(tool_client.base_url(settings), "GET", "sources", timeout=5)
+    sources = body if isinstance(body, list) else (body or {}).get("sources") if isinstance(body, dict) else None
+    if status != 200 or not isinstance(sources, list):
+        return []
+    out = []
+    for source in (s for s in sources if isinstance(s, dict)):
+        health = source.get("health") or {}
+        if source.get("enabled") is False or health.get("readable") is not False:
+            continue
+        out.append({"id": source.get("id"), "name": source.get("name") or source.get("id"),
+                    "error": health.get("mount_error") or health.get("error") or "not reachable"})
+    return out
+
+
 def _logs(cfg: Config) -> dict[str, list[dict[str, Any]]]:
     """Warnings and errors from the last day, per log. Older ones are history, not a symptom."""
     since = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - DAY))
@@ -441,6 +465,12 @@ def _findings(doc: dict[str, Any]) -> list[str]:
     content = doc.get("content") or {}
     if content.get("reachable") is False:
         out.append(f"pitv_content is not reachable: {content.get('detail')}")
+    if unreadable := doc.get("unreadable_sources") if isinstance(doc.get("unreadable_sources"), list) else []:
+        named = "; ".join(f"{s['name']} ({s['error']})" for s in unreadable)
+        out.append(f"{len(unreadable)} library source(s) cannot be read: {named}. Until they can, their programmes "
+                   "play only from the cache, copies from them wait, and an index leaves them out. Reconnect the "
+                   "share (Sources, Edit, Test connection says whether pitv_content can reach it), then Re-index "
+                   "sources and import.")
     # A search that came back empty is an answer, not a fault: the title will be asked for again
     # and nobody need do anything. Listing ten of them one per line pushed the findings that do
     # need attention off the first screen, which is the same silence by another route.
