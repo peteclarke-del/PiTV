@@ -20,6 +20,7 @@ import shutil
 import sqlite3
 import time
 from collections.abc import Callable
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -123,7 +124,7 @@ def _holes(conn: sqlite3.Connection, now: int) -> list[dict[str, Any]]:
     rows = conn.execute("SELECT s.channel_id, c.name, s.day, s.start_ts, s.end_ts FROM schedule s"
                         " JOIN channels c ON c.id = s.channel_id WHERE c.enabled = 1 AND s.end_ts > ?"
                         " ORDER BY s.channel_id, s.start_ts", (now,)).fetchall()
-    for a, b in zip(rows, rows[1:]):
+    for a, b in pairwise(rows):
         if a["channel_id"] == b["channel_id"] and b["start_ts"] - a["end_ts"] > HOLE_SECONDS:
             out.append({"channel": a["name"], "day": a["day"], "start_ts": a["end_ts"], "end_ts": b["start_ts"]})
     return sorted(out, key=lambda h: h["start_ts"])
@@ -181,9 +182,19 @@ def _bands(conn: sqlite3.Connection, settings: dict[str, Any], now: int) -> dict
         " AND s.replay = 0 AND s.end_ts > ? AND s.start_ts < ? ORDER BY s.start_ts", (now, now + 2 * DAY)).fetchall()
     needs = [{"channel": n["channel"]["name"], "band": n["band"].name, "kind": n["kind"], "have": n["have"], "want": n["want"]}
              for n in band_needs(conn, settings)]
+    rested = []
+    for r in conn.execute("SELECT b.id, b.name, c.name AS channel, b.rest_until, b.rest_note FROM band b"
+                          " JOIN channels c ON c.id = b.channel_id WHERE b.enabled = 1 AND b.rest_until > ?"
+                          " ORDER BY b.rest_until", (now,)):
+        try:
+            note = json.loads(r["rest_note"] or "{}")
+        except ValueError:
+            note = {}
+        rested.append({"id": r["id"], "band": r["name"], "channel": r["channel"], "until": r["rest_until"],
+                       **{k: note.get(k) for k in ("searched", "made", "count", "genres", "years")}})
     return {"holding_cards_next_two_days": [dict(r) for r in cards], "due_a_top_up": needs,
             "short": len(band_needs(conn, settings, due_only=False)),
-            "no_band_can_air": unairable(conn, settings)}
+            "no_band_can_air": unairable(conn, settings), "rested": rested}
 
 
 def _fragile_matches(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -616,6 +627,16 @@ def _findings(doc: dict[str, Any]) -> list[str]:
         if kept and spare < kept:
             out.append(f"After a day of schedule the cache has {max(spare, 0) // gib} GiB left for fetched episodes,"
                        f" which already hold {kept // gib} GiB, so what is kept will start being evicted{drive}")
+    for r in (doc.get("bands") or {}).get("rested") or []:
+        # Searched and not found is an answer from pitv_content, and asking again in an hour would
+        # search the same way. What would change it is wider genres or years, or a later try.
+        what = ", ".join(str(g) for g in r.get("genres") or []) or "any genre"
+        years = r.get("years") or []
+        span = f" from {years[0]} to {years[1]}" if len(years) == 2 else ""
+        until = time.strftime("%a %H:%M", time.localtime(r["until"]))
+        out.append(f"{r['channel']} / {r['band']}: pitv_content searched {r.get('searched')} time(s) for {what}{span} "
+                   f"and found {r.get('made')} of {r.get('count')}, so PiTV will not ask for it again until {until}. "
+                   "Widen its genres or years in the channel's bands, or Ask again now on the Doctor page.")
     cards = (doc.get("bands") or {}).get("holding_cards_next_two_days") or []
     if cards:
         minutes = sum(c["card_minutes"] for c in cards)

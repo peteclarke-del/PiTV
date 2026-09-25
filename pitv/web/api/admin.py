@@ -1195,6 +1195,12 @@ def bands_material(conn: sqlite3.Connection = Depends(admin_conn)):
     return wanted_mod.request_all_band_material(conn, all_settings(conn))
 
 
+@router.post("/bands/{band_id}/ask")
+def band_ask_again(band_id: int, conn: sqlite3.Connection = Depends(admin_conn)):
+    """Ask again now for a band that was rested because its searches found nothing."""
+    return wanted_mod.ask_band_again(conn, band_id)
+
+
 @router.get("/bands/needs")
 def bands_needs(conn: sqlite3.Connection = Depends(admin_conn)):
     """What each band is short of, for the channel editor."""

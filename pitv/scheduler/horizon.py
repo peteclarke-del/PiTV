@@ -11,6 +11,7 @@ import hashlib
 import logging
 import sqlite3
 from datetime import date, timedelta
+from itertools import pairwise
 from typing import Any
 
 from ..db import all_settings, enabled_channels, now_ts, run_log_finish, run_log_start, tx
@@ -280,7 +281,7 @@ def _first_gap(conn: sqlite3.Connection, channel_id: int, now: int, from_ts: int
     day = broadcast_day_for(from_ts, all_settings(conn), tz_of(conn)).isoformat()
     rows = conn.execute("SELECT start_ts, end_ts FROM schedule WHERE channel_id = ? AND day = ? AND end_ts > ?"
                         " AND start_ts < ? ORDER BY start_ts", (channel_id, day, now, from_ts)).fetchall()
-    for a, b in zip(rows, rows[1:]):
+    for a, b in pairwise(rows):
         if b["start_ts"] - a["end_ts"] > 1 and a["end_ts"] >= now:
             return int(a["end_ts"])
     return from_ts

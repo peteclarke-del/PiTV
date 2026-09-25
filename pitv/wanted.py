@@ -16,6 +16,7 @@ anything there."""
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from datetime import timedelta
@@ -23,7 +24,16 @@ from typing import Any
 
 from . import genres as genre_rules
 from . import tool_client
-from .db import DEFAULT_SETTINGS, LIVE, genre_list, get_setting, now_ts, rows_to_dicts, tx
+from .db import (
+    DEFAULT_SETTINGS,
+    LIVE,
+    all_settings,
+    genre_list,
+    get_setting,
+    now_ts,
+    rows_to_dicts,
+    tx,
+)
 from .lineup import carries_programmes
 from .scheduler import bands
 from .scheduler.library import USABLE
@@ -142,7 +152,8 @@ def band_needs(conn: sqlite3.Connection, settings: dict[str, Any], due_only: boo
                 # can live on, not the point at which collecting for it should stop.
                 stock_hours = int(settings.get("band_stock_days", 7)) * 24
                 want = items_per_airing * _airings_within(max(int(repeat_hours), stock_hours), band)
-            due = now - (band.last_fetch_at or 0) >= int(settings.get("band_fetch_gap_hours", 1)) * 3600
+            due = (now - (band.last_fetch_at or 0) >= int(settings.get("band_fetch_gap_hours", 1)) * 3600
+                   and (band.rest_until or 0) <= now)
             if have < want and (due or not due_only):
                 out.append({"band": band, "channel": channel, "kind": kind, "have": have, "want": want,
                             "minutes": minutes, "next_ts": min(start for start, _ in mine),
@@ -477,13 +488,26 @@ def settle_band_requests(conn: sqlite3.Connection, settings: dict[str, Any]) -> 
         return {"outstanding": {int(r["id"]): r["fetch_job_id"] for r in rows}, "cancelled": [], "forgotten": []}
     alive = {j.get("job_id") for j in payload
              if isinstance(j, dict) and j.get("status") in ("queued", "running")}
+    exhausted = {j.get("job_id"): j["exhausted"] for j in payload
+                 if isinstance(j, dict) and isinstance(j.get("exhausted"), dict)}
     wanted_now = {n["band"].id for n in band_needs(conn, settings, due_only=False)}
     outstanding: dict[int, str] = {}
     cancelled: list[str] = []
     forgotten: list[str] = []
     for row in rows:
         band_id, job = int(row["id"]), row["fetch_job_id"]
-        if job not in alive:
+        if job in exhausted:
+            # Its searches ran out having found next to nothing. Asked again in an hour it would
+            # search the same way; the band rests, and the doctor says why and offers to ask now.
+            rest = int(settings.get("band_exhausted_rest_hours", 24)) * 3600
+            with tx(conn):
+                conn.execute("UPDATE band SET rest_until = ?, rest_note = ? WHERE id = ?",
+                             (now_ts() + rest, json.dumps(exhausted[job]), band_id))
+            note = exhausted[job]
+            log.warning("band %s: pitv_content searched %s time(s) and made %s of %s; resting it for %d h",
+                        row["name"], note.get("searched"), note.get("made"), note.get("count"), rest // 3600)
+            forgotten.append(job)
+        elif job not in alive:
             forgotten.append(job)                    # run, given up or cancelled: nothing to hold
         elif band_id in wanted_now:
             outstanding[band_id] = job               # still coming, and still wanted
@@ -553,3 +577,12 @@ def request_all_band_material(conn: sqlite3.Connection, settings: dict[str, Any]
         summary += f"; {len(settled['outstanding'])} already queued"
     log.info("band material: %s", summary)
     return {"status": status, "asked": asked, "summary": summary, "jobs": jobs, "details": summaries}
+
+
+def ask_band_again(conn: sqlite3.Connection, band_id: int) -> dict[str, Any]:
+    """The owner's "Ask again now" for a band that was rested because its searches found nothing:
+    clear the rest and the gap since the last ask, then ask for every band that needs it."""
+    with tx(conn):
+        conn.execute("UPDATE band SET rest_until = NULL, rest_note = NULL, last_fetch_at = NULL WHERE id = ?",
+                     (band_id,))
+    return request_all_band_material(conn, all_settings(conn))

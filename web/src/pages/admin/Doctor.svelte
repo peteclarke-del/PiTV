@@ -35,6 +35,16 @@
     await load();
   }
 
+  // A band rested because pitv_content's searches for it found nothing: asking again clears the
+  // rest and asks at once, which is worth doing after widening its genres or years.
+  let asking = $state(null);
+  async function askAgain(id) {
+    asking = id;
+    await tryApi(post(`/api/bands/${id}/ask`), { success: 'Asked again' });
+    asking = null;
+    await load();
+  }
+
   function gib(n) { return typeof n === 'number' ? fmtBytes(n) : '-'; }
 </script>
 
@@ -99,6 +109,22 @@
           {/if}
         {/if}
       </article>
+
+      {#if doc.bands?.rested?.length}
+        <article>
+          <h3>Bands resting</h3>
+          <ul class="healed">
+            {#each doc.bands.rested as r (r.id)}
+              <li>
+                {r.channel} / {r.band}: searched {r.searched}, found {r.made} of {r.count}; until {fmtDateTime(r.until)}
+                <button class="small" onclick={() => askAgain(r.id)} disabled={asking === r.id}>
+                  {asking === r.id ? 'Asking…' : 'Ask again now'}
+                </button>
+              </li>
+            {/each}
+          </ul>
+        </article>
+      {/if}
 
       <article>
         <h3>Schedule</h3>

@@ -451,6 +451,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "band_feature_overrun_minutes": 20,  # how far past its band a feature may run when nothing closer fits
     "band_card_message": "More is on its way.",  # first line of a band's holding card when it is short of material
     "band_fetch_gap_hours": 1,         # leave this long before asking for the same band again
+    "band_exhausted_rest_hours": 24,   # a band whose searches came up empty is not asked for again for this long
     "band_fetch_min": 20,              # the fewest items a top-up asks for: a run costs a search either way
     "band_fetch_max": 60,              # and the most, so one band cannot take the whole night
     "content_fetch_kinds": [],         # what pitv_content said it can fetch, kept for when it is down
@@ -667,6 +668,8 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("channels", "short_episode_minutes", "INTEGER"),
     ("channels", "short_episode_run_minutes", "INTEGER"),
     ("band", "last_fetch_at", "INTEGER"),
+    ("band", "rest_until", "INTEGER"),
+    ("band", "rest_note", "TEXT"),
     ("channels", "fetch_kind", "TEXT"),
     ("channels", "band_item_max_minutes", "INTEGER"),
     ("channels", "strict_matching", "INTEGER NOT NULL DEFAULT 0"),

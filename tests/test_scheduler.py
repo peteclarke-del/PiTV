@@ -2069,3 +2069,50 @@ def test_a_rebuild_starts_at_a_gap_it_would_otherwise_wall_in(tmp_path):
     cards = [r for r in rows if r["kind"] == "filler" and r["end_ts"] - r["start_ts"] >= 120]
     assert not cards, "the gap is closed, not carded"
     c.close()
+
+
+def test_a_band_whose_searches_found_nothing_rests_and_says_so(tmp_path, monkeypatch):
+    """A helping that ran out of searches having filed one song of ten came back each hour to
+    search the same way. pitv_content marks such a job `exhausted`; PiTV rests the band for
+    `band_exhausted_rest_hours`, the doctor names it with what was searched for and the remedy,
+    and Ask again now clears the rest."""
+    from pitv import doctor, tool_client, wanted
+
+    ctx = make_library(tmp_path, max_episodes=4)
+    conn = ctx["conn"]
+    toons = conn.execute("SELECT id FROM channels WHERE content = 'cartoons'").fetchone()["id"]
+    with dbm.tx(conn):
+        conn.execute("UPDATE channels SET fetch_kind = 'cartoons' WHERE id = ?", (toons,))
+        conn.execute("UPDATE channels SET fetch_kind = '' WHERE content = 'music'")
+        _band_row(conn, toons, "Saturday Morning", "10:00", 120, ["episode"], genres=["stop motion"], decades=[1980])
+        conn.execute("UPDATE band SET fetch_job_id = 'job-dry', last_fetch_at = ? WHERE name = 'Saturday Morning'",
+                     (dbm.now_ts() - 4000,))
+    note = {"searched": 25, "made": 1, "count": 10, "genres": ["stop motion"], "years": [1980, 1989], "max_minutes": 30}
+    runs: list[dict] = []
+
+    def fake_request(base, method, path, query="", body=None, timeout=15):
+        if path == "jobs":
+            return 200, [{"job_id": "job-dry", "status": "ok", "exhausted": note}]
+        if path == "run":
+            runs.append(body)
+            return 200, {"ok": True, "job_id": "job-again"}
+        return 404, {"error": "not in this test"}
+
+    monkeypatch.setattr(tool_client, "request", fake_request)
+    settings = dbm.all_settings(conn)
+    wanted.request_all_band_material(conn, settings)
+    assert not runs, "a band whose searches came up empty is not asked for again straight away"
+    band = conn.execute("SELECT * FROM band WHERE name = 'Saturday Morning'").fetchone()
+    assert band["rest_until"] > dbm.now_ts() + 23 * 3600 and band["fetch_job_id"] is None
+    assert [n["band"].name for n in wanted.band_needs(conn, settings, due_only=False)] == ["Saturday Morning"], \
+        "still short, which the doctor keeps saying"
+
+    section = doctor._bands(conn, settings, dbm.now_ts())
+    finding = next(f for f in doctor._findings({"bands": section}) if "Saturday Morning" in f)
+    assert "searched 25 time(s) for stop motion from 1980 to 1989 and found 1 of 10" in finding
+    assert "Ask again now" in finding
+
+    wanted.ask_band_again(conn, band["id"])
+    assert len(runs) == 1 and runs[0]["mode"] == "catalogue", "asked again at once"
+    assert conn.execute("SELECT rest_until FROM band WHERE id = ?", (band["id"],)).fetchone()[0] is None
+    conn.close()

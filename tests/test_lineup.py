@@ -1157,13 +1157,12 @@ def test_a_delivery_booked_on_several_days_leaves_no_hole_on_any(tmp_path):
     must then be rebuilt. Only a channel's earliest change was rebuilt, to the end of that one
     day, so PiTV Toons carried six-minute holes on four days after one Battle of the Planets
     delivery: nothing scheduled at all, and nothing reporting it."""
-    from datetime import date
-
     from pitv.content import apply_report
+    from pitv.scheduler.rules import broadcast_day_for
 
     ctx = make_library(tmp_path, max_episodes=2)
     conn = ctx["conn"]
-    today = date.today()
+    today = broadcast_day_for(dbm.now_ts(), dbm.all_settings(conn), tz_of(conn))
     build_horizon(conn, start_day=today, days=4)
     ch = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
     days = [(today + timedelta(days=n)).isoformat() for n in (2, 3)]

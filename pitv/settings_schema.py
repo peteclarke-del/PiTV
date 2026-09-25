@@ -296,6 +296,9 @@ SECTIONS: tuple[tuple[str, str, tuple[dict[str, Any], ...]], ...] = (
            "and collects for bands in the turns between, so it is never idle while a band could use more."),
         _f("band_fetch_gap_hours", "advanced", "Ask again for a band after (hours)", "int",
            "How long PiTV leaves a band before asking pitv_content for more of the same.", min=1, max=168),
+        _f("band_exhausted_rest_hours", "advanced", "Rest a band whose searches found nothing (hours)", "int",
+           "When pitv_content runs out of searches for a band having found almost nothing, PiTV stops asking for "
+           "that band for this long. The Doctor page names it, with Ask again now.", min=1, max=720),
         _f("band_fetch_min", "advanced", "Fewest items to ask for", "int",
            "A top-up never asks for fewer than this: a run costs a search either way.", min=1, max=200),
         _f("band_fetch_max", "advanced", "Most items to ask for", "int",

@@ -51,6 +51,7 @@ class Band:
     only_matching: bool | None = None  # None follows the channel; True: only labelled matches
     max_minutes: int | None = None     # longest item this band treats as one of its own
     last_fetch_at: int | None = None   # when material was last asked for (wanted.request_band_material)
+    rest_until: int | None = None      # not asked for until then: its searches came up empty
 
     def on(self, weekday: int) -> bool:
         return not self.days or weekday in self.days
@@ -161,7 +162,7 @@ def _row_to_band(row: dict[str, Any], families: dict[str, list[str]] | None = No
                 decades=tuple(int(d) for d in (fill.get("decades") or [])),
                 feature=bool(fill.get("feature")), fetch=as_text(fill.get("fetch")) or "",
                 only_matching=_tri(fill.get("only_matching")), max_minutes=as_int(fill.get("max_minutes")),
-                last_fetch_at=as_int(row.get("last_fetch_at")))
+                last_fetch_at=as_int(row.get("last_fetch_at")), rest_until=as_int(row.get("rest_until")))
 
 
 def load(conn: sqlite3.Connection) -> dict[int, list[Band]]:
