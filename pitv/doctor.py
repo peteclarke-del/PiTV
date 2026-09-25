@@ -38,6 +38,7 @@ DAY = 86400
 CACHED_TARGET = 95      # per cent of the next day's files expected in the cache
 CAP_DAYS_TARGET = 1.5   # days of built schedule the cache should hold; below this it thrashes
 LOW_DISK_BYTES = 5 * 1024 ** 3
+HOLE_SECONDS = 60       # a stretch with no slot longer than this is off air, not a junction
 LOG_LINES = 12
 STARVED_HISTORY = 20    # how far back a streak is counted; past this it is reported as "at least"
 # Mirrors content.MAX_WANTED_ATTEMPTS for the finding text; imported lazily where it is read.
@@ -109,7 +110,23 @@ def _schedule(conn: sqlite3.Connection, now: int) -> dict[str, Any]:
         " FROM schedule s JOIN channels c ON c.id = s.channel_id WHERE s.end_ts > ? AND c.enabled = 1"
         " GROUP BY c.id, s.day ORDER BY s.day, c.number", (now,)).fetchall()
     return {"horizon_end_ts": horizon, "days_ahead": round((horizon - now) / DAY, 1) if horizon else 0,
-            "channel_days": [dict(r) for r in rows]}
+            "channel_days": [dict(r) for r in rows], "holes": _holes(conn, now)}
+
+
+def _holes(conn: sqlite3.Connection, now: int) -> list[dict[str, Any]]:
+    """Stretches with no slot at all between two slots of a channel, from now on.
+
+    A holding card is a row and is counted as one; a hole is not, so the finding on holding
+    cards could never see it. Seventeen of them sat in the week of 25 September after deliveries
+    shortened slots on days nobody rebuilt, each one minutes of nothing on air."""
+    out: list[dict[str, Any]] = []
+    rows = conn.execute("SELECT s.channel_id, c.name, s.day, s.start_ts, s.end_ts FROM schedule s"
+                        " JOIN channels c ON c.id = s.channel_id WHERE c.enabled = 1 AND s.end_ts > ?"
+                        " ORDER BY s.channel_id, s.start_ts", (now,)).fetchall()
+    for a, b in zip(rows, rows[1:]):
+        if a["channel_id"] == b["channel_id"] and b["start_ts"] - a["end_ts"] > HOLE_SECONDS:
+            out.append({"channel": a["name"], "day": a["day"], "start_ts": a["end_ts"], "end_ts": b["start_ts"]})
+    return sorted(out, key=lambda h: h["start_ts"])
 
 
 def _cache(conn: sqlite3.Connection, settings: dict[str, Any], now: int) -> dict[str, Any]:
@@ -567,6 +584,13 @@ def _findings(doc: dict[str, Any]) -> list[str]:
     schedule = doc.get("schedule") or {}
     if schedule.get("days_ahead", 0) < 2:
         out.append(f"The schedule runs only {schedule.get('days_ahead', 0)} days ahead")
+    if gaps := schedule.get("holes") or []:
+        first = gaps[0]
+        at = time.strftime("%a %H:%M", time.localtime(first["start_ts"]))
+        minutes = sum(g["end_ts"] - g["start_ts"] for g in gaps) // 60
+        out.append(f"{len(gaps)} stretch(es) of the schedule have nothing in them at all, {minutes} minutes in all; "
+                   f"the first is {first['channel']} at {at} for {(first['end_ts'] - first['start_ts']) // 60} min. "
+                   "Nothing is on air there. Schedule, click the slot before it, Rebuild from here.")
     holes = [d for d in schedule.get("channel_days") or [] if (d.get("hole_minutes") or 0) > 0]
     if holes:
         worst = max(holes, key=lambda d: d["hole_minutes"])

@@ -244,3 +244,27 @@ def test_idle_with_bands_short_is_a_finding():
     assert "3 band(s) under stock" in finding
     doc["bands"]["short"] = 0
     assert not any("idle with work outstanding" in f for f in doctor._findings(doc))
+
+
+def test_a_stretch_with_no_slot_is_a_finding(tmp_path):
+    """A holding card is a row and the doctor counted those; a stretch with no row at all was
+    invisible to it, and seventeen sat in one week's schedule after deliveries shortened slots
+    on days that were never rebuilt."""
+    from conftest import make_library
+
+    from pitv import db as dbm2
+    from pitv import doctor
+
+    ctx = make_library(tmp_path / "holes", max_episodes=1)
+    conn = ctx["conn"]
+    ch = conn.execute("SELECT id FROM channels WHERE enabled = 1 ORDER BY number LIMIT 1").fetchone()["id"]
+    t = dbm2.now_ts() + 3600
+    with dbm2.tx(conn):
+        for start, end in ((t, t + 1500), (t + 1500 + 372, t + 3600), (t + 3600, t + 3630)):
+            conn.execute("INSERT INTO schedule(channel_id, day, start_ts, end_ts, kind, title, replay, offset)"
+                         " VALUES (?, '2999-01-01', ?, ?, 'filler', 'x', 0, 0)", (ch, start, end))
+    holes = [h for h in doctor._holes(conn, t - 1) if h["day"] == "2999-01-01"]
+    assert [(h["start_ts"], h["end_ts"]) for h in holes] == [(t + 1500, t + 1872)], "only the six minutes of nothing"
+    finding = next(f for f in doctor._findings({"schedule": {"days_ahead": 7, "holes": holes}}) if "nothing in them" in f)
+    assert "1 stretch(es)" in finding and "6 minutes" in finding and "Rebuild from here" in finding
+    conn.close()
