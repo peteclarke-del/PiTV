@@ -517,6 +517,11 @@ cgroup. What the restart showed:
   against the default data folder; one outlived a suite run. Fixed in a30a1ca.
 - pitv-dev-content now runs with `KillMode=process`, as on the Pi, so restarting it adopts a
   running job. The first restart onto it could not, and ended slice 41db six minutes in.
+- P11 closed the same evening: a rebuild kept a gap walled in by kept slots and carded it
+  (Toons, 21:33); a rebuild now starts at the first gap in its day. Its test fails on the old
+  code. Also that evening: the programme after a held last frame loaded paused (PiTV Tube,
+  jerky, no sound until a channel change), because keep-open's pause outlived the file; every
+  load now sets the pause. And remote repeats had ignored the lead window (1e9bc55).
 - The player's mpv closed at 02:34:50, two seconds after a click in its window and fifteen after
   a burst of eleven channel loads in one second; the player exited as designed and the web
   service's keeper started another twenty seconds later.
@@ -532,7 +537,6 @@ cgroup. What the restart showed:
 | P7 | Films crossing channels. Series are now borrowed by type (below); films are not, and need not be until a film channel exists to claim them from the general channels | With a film channel, a general channel that lists films under "also carries" shows them in its film dayparts |
 | P1 | Time a band run and a cache run as each of C1 to C8 lands, import, rebuild, and record the result here | Figures recorded against each item above |
 | P10 | SQLite write contention. A catalogue import holds the write lock long enough (imports ran 90 to 250 seconds on 23 September) that others exceed the 30 second busy timeout: a schedule run failed at 14:43 on the 23rd "after 8 channel-days: database is locked", the player could not close history entries, and a `pitv catalogue` started from the command line at 02:32 on the 25th failed while opening the database | No run of any kind ends "database is locked" over a day with imports, schedule runs and the player all active |
-| P11 | A rebuild that keeps the slots after a short gap fills the gap with a holding card instead of closing it. On 25 September an eight-minute hole on PiTV Toons, left by a delivery (f98c644 stops those), was rebuilt around a kept break at 21:39 and aired as "Programmes will continue shortly" from 21:33 to 21:37, against the rule that a gap of minutes is closed by pulling what follows forward and a card is for a real shortfall. Rebuilding from the present cut it short; what made it is still there | A rebuild across a gap of a few minutes before kept slots moves them up or fills it with programmes, and no card under ten minutes is placed where material exists |
 | P3 | Hardware verification on a Raspberry Pi 4: hardware decode of copied files, the cache drive, encode times with the Pi's presets, the player keeper under systemd | REQUIREMENTS.md rows marked "by hand" checked on the device |
 
 ## How a change is accepted
