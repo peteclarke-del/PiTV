@@ -268,3 +268,25 @@ def test_a_stretch_with_no_slot_is_a_finding(tmp_path):
     finding = next(f for f in doctor._findings({"schedule": {"days_ahead": 7, "holes": holes}}) if "nothing in them" in f)
     assert "1 stretch(es)" in finding and "6 minutes" in finding and "Rebuild from here" in finding
     conn.close()
+
+
+def test_a_split_episode_missing_a_part_is_a_finding(tmp_path):
+    """A split upload airs whole or not at all, so one missing a part drops out of the schedule
+    and nothing else says so."""
+    from conftest import make_library
+
+    from pitv import db as dbm2
+    from pitv import doctor
+
+    conn = make_library(tmp_path / "parts", max_episodes=2)["conn"]
+    eps = conn.execute("SELECT id, show_id, season, episode FROM media WHERE kind = 'episode' ORDER BY show_id, season, episode LIMIT 1").fetchall()
+    with dbm2.tx(conn):
+        conn.execute("UPDATE media SET part = 1, parts = 2 WHERE id = ?", (eps[0]["id"],))
+    library = doctor._library(conn)
+    assert [(s["have"], s["parts"]) for s in library["split_incomplete"]] == [(1, 2)]
+    finding = next(f for f in doctor._findings({"library": library}) if "split into 2 parts" in f)
+    assert "only 1 are in the library" in finding and "Excluded from scheduling" in finding
+    with dbm2.tx(conn):
+        conn.execute("UPDATE media SET excluded = 1 WHERE id = ?", (eps[0]["id"],))
+    assert doctor._library(conn)["split_incomplete"] == [], "excluding it answers the finding"
+    conn.close()

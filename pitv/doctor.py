@@ -249,7 +249,14 @@ def _library(conn: sqlite3.Connection) -> dict[str, Any]:
     unnamed = keyword_pattern(all_settings(conn).get("unnamed_advert_keywords"))
     adverts = [r["title"] for r in conn.execute(
         "SELECT title FROM media WHERE kind = 'advert' AND missing = 0 AND excluded = 0")]
-    return {"media": [dict(r) for r in rows],
+    # A split upload airs only whole, so one missing a part is left out of the schedule, and
+    # nothing else would say so: a part pitv_content skipped as a duplicate leaves exactly that.
+    incomplete = [dict(r) for r in conn.execute(
+        "SELECT s.title AS show, m.season, m.episode, MAX(m.parts) AS parts, COUNT(DISTINCT m.part) AS have"
+        " FROM media m JOIN shows s ON s.id = m.show_id WHERE m.parts > 1 AND m.missing = 0 AND m.excluded = 0"
+        " GROUP BY m.show_id, m.season, m.episode HAVING COUNT(DISTINCT m.part) < MAX(m.parts)"
+        " ORDER BY s.title, m.season, m.episode")]
+    return {"media": [dict(r) for r in rows], "split_incomplete": incomplete,
             "adverts_usable": sum(1 for t in adverts if names_a_product(t, unnamed)),
             "adverts_unnamed": sum(1 for t in adverts if not names_a_product(t, unnamed)),
             "channels_enabled": conn.execute("SELECT COUNT(*) FROM channels WHERE enabled = 1").fetchone()[0]}
@@ -534,6 +541,11 @@ def _findings(doc: dict[str, Any]) -> list[str]:
         usable = library.get("adverts_usable") or 0
         out.append(f"{held} adverts name no product and are not put in a break, leaving {usable} that do. "
                    "They are chapters of a compilation nothing could identify; pitv_content is the one to name them.")
+    for s in (library.get("split_incomplete") or []) if isinstance(library, dict) else []:
+        out.append(f"{s['show']} S{s['season'] or 0:02d}E{s['episode'] or 0:02d} is split into {s['parts']} parts and "
+                   f"only {s['have']} are in the library, so it is not scheduled; it airs whole or not at all. "
+                   "pitv_content is the one to fetch the missing part; if it never will, tick Excluded from "
+                   "scheduling on the parts there are, in the admin's media editor.")
     providers = doc.get("providers") or {}
     if providers.get("reports_serves") and not providers.get("serving"):
         out.append(f"{providers['channel_entries']} catalogue entries name a creator's channel, and no enabled "
