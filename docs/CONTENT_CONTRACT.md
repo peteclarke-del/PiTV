@@ -110,6 +110,15 @@ for the nightly index run.
 - `uid` is stable for as long as the file keeps its path: `nas:<source id>:<relpath>` for
   items and `show:<source id>:<folder>` for series. `path` is the absolute path on the Pi's
   read-only mount, used only for fallback playback.
+- `part` and `parts`, integers, are null for a file that is not split. An upload cut into
+  transmissions is filed as the parts of one episode, every part under the upload's own
+  `season` and `episode` ("Show - S01E01 - Title (part 1 of 2)", "... (part 2 of 2)"), so
+  several items may share them and are told apart by `part`; `parts` is the same on each.
+  pitv_content reads both from the NFO's `<pitvcontent><part>` and `<parts>`. PiTV treats the
+  parts as one episode: the episode cursor advances once, the parts air back to back in part
+  order as consecutive slots with no break between them, and the episode airs only when every
+  part from 1 to `parts` is present, the cursor passing over it until then. A delivery report
+  for a split upload names part 1; PiTV finds the other parts in the index.
 - `certificate` is the NFO's own text (`<certification>`, else `<mpaa>`), whitespace collapsed
   and at most 120 characters: `PG`, `UK:12 / UK:12+`, `US:R / US:Rated R`, `UK:All`. PiTV reads
   it (a British entry first when the text lists several) and owns that reading, so
@@ -523,8 +532,13 @@ has used the slice up. A run's summary says how many requested fetches it left w
 fetch`), and while that is not none delivery takes two turns to a band helping's one. The
 order is deliberate: a copy that is late leaves the player on the NAS for that programme,
 which is what the fallback is for, while a fetch that is late leaves a gap. With fetches
-last, behind transcodes that end a slice, no episode was reached for a week. A cache run does not index the sources itself; when it has fetched something
-it republishes the fetched folders into the last index, as a catalogue run does. 04:00 PiTV
+last, behind transcodes that end a slice, no episode was reached for a week. Further episodes
+of a series taken in the same visit as the one found count as that visit and are not held to
+the share, so one series can keep a slice past its time; the owner chose on 25 September not to
+bound a visit. A cache run does not index the sources itself, and `POST /api/run
+{"mode": "cache"}` queues no index beside it (its reply has no `index_job_id`); when it has
+fetched something it republishes the fetched folders into the last index, as a catalogue run
+does, and the nightly index covers the NAS. 04:00 PiTV
 imports the index and extends the schedule. 05:00 pitv_content catch-up run. 06:00 and 07:00 PiTV readiness checks: anything
 not playable from the cache (or the NAS, with fallback on) is replaced and logged as an error.
 
@@ -704,7 +718,8 @@ it has fetched reaches PiTV's next import rather than waiting for the run to fin
 `400 {"errors"}` for a bad body (PiTV records the refusal and moves on); `503` or no answer
 when pitv_content is down, in which case the band keeps its turn. `GET /api/status` lists
 `active_job` and `queued_jobs`. PiTV submits every band that is short in one pass, identical
-bands as one request, and does not ask for a band again within six hours. Asking again is
+bands as one request, and does not ask for a band again within `band_fetch_gap_hours` (one by
+default), nor while a helping it asked for is still queued or running. Asking again is
 harmless: a request whose kind, genres, years and `max_minutes` equal those of a catalogue run
 already queued or running returns that job's id with `deduplicated: true` (the counts may
 differ). `POST /api/cancel {"job_id"}` withdraws a queued request without touching the
@@ -715,6 +730,15 @@ behind the other catalogue runs with the rest of its count, until the count is m
 search is exhausted. With several bands waiting, each has something to show within hours
 instead of the first taking everything, and cache and index work never waits longer than one
 helping for the job boundary.
+
+A helping that runs out of search queries having filed fewer than a quarter of its count ends
+its band: no remainder is queued, and its record in `GET /api/jobs` carries
+`exhausted: {searched, made, count, genres, years, max_minutes}`, where `searched` is the number
+of queries it ran. The record stays in the job list for at least a day, so PiTV can read it.
+PiTV reads it for the helping it asked for, rests the band for `band_exhausted_rest_hours`
+(24 by default) instead of asking every hour to search the same way, and its doctor names the
+band with the genres and years searched for. "Ask again now" on the Doctor page clears the
+rest and asks with an ordinary `POST /api/run`.
 
 ### Genre vocabulary
 
