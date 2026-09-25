@@ -165,6 +165,7 @@ def _bands(conn: sqlite3.Connection, settings: dict[str, Any], now: int) -> dict
     needs = [{"channel": n["channel"]["name"], "band": n["band"].name, "kind": n["kind"], "have": n["have"], "want": n["want"]}
              for n in band_needs(conn, settings)]
     return {"holding_cards_next_two_days": [dict(r) for r in cards], "due_a_top_up": needs,
+            "short": len(band_needs(conn, settings, due_only=False)),
             "no_band_can_air": unairable(conn, settings)}
 
 
@@ -557,7 +558,7 @@ def _findings(doc: dict[str, Any]) -> list[str]:
                    f"for again. Wanted, Retry asks once more; anything genuinely unavailable is better deleted.")
     # pitv_content is never to be idle while anything is left to fetch.
     waiting = sum(r["n"] for r in requests.get("by_status") or [] if r.get("status") == "queued")
-    short = sum(1 for b in doc.get("bands") or [] if isinstance(b, dict) and (b.get("have") or 0) < (b.get("want") or 0))
+    short = (doc.get("bands") or {}).get("short") or 0
     if content.get("reachable") and not content.get("active_job") and not content.get("queued_by_mode") and (waiting or short):
         why = f" (it says: {content['idle_reason']})" if content.get("idle_reason") else ""
         out.append(f"pitv_content is idle with work outstanding: {waiting} request(s) queued and {short} band(s) under stock{why}")

@@ -231,3 +231,16 @@ def test_a_creators_channel_is_asked_for_without_a_length_window():
     assert "duration_minutes" not in channel_ask, "a creator's video may be any length"
     assert series_ask["duration_minutes"] == WANTED_MINUTES["episode"], "a broadcast episode keeps its window"
     conn.close()
+
+
+def test_idle_with_bands_short_is_a_finding():
+    """The count of short bands was taken by iterating the bands section as a list, which it is
+    not, so it was always nought and a band starving while pitv_content sat idle said nothing."""
+    from pitv import doctor
+
+    doc = {"content": {"reachable": True, "active_job": None, "queued_by_mode": {}},
+           "bands": {"short": 3}, "wanted": {"by_status": []}}
+    finding = next(f for f in doctor._findings(doc) if "idle with work outstanding" in f)
+    assert "3 band(s) under stock" in finding
+    doc["bands"]["short"] = 0
+    assert not any("idle with work outstanding" in f for f in doctor._findings(doc))
