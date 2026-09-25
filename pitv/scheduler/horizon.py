@@ -267,6 +267,25 @@ def refill_empty_days(conn: sqlite3.Connection, now: int | None = None) -> dict[
             "failed": failed, "summary": summary}
 
 
+def _first_gap(conn: sqlite3.Connection, channel_id: int, now: int, from_ts: int) -> int:
+    """Where a rebuild asked to start at `from_ts` must start: the first stretch with no slot
+    between now and then, if there is one.
+
+    Everything before the start is kept as it stands, so a gap inside it is walled in by kept
+    slots, and a walk that cannot move them fills it with a holding card. That aired on PiTV Toons
+    from 21:33 on 25 September, where a gap of minutes should have been closed by bringing what
+    followed forward. Starting at the gap rebuilds it with everything after it."""
+    # Every row counts, the overnight replay included, and only the day being rebuilt is looked
+    # at: without both the night before read as one long gap and the wrong day was rebuilt.
+    day = broadcast_day_for(from_ts, all_settings(conn), tz_of(conn)).isoformat()
+    rows = conn.execute("SELECT start_ts, end_ts FROM schedule WHERE channel_id = ? AND day = ? AND end_ts > ?"
+                        " AND start_ts < ? ORDER BY start_ts", (channel_id, day, now, from_ts)).fetchall()
+    for a, b in zip(rows, rows[1:]):
+        if b["start_ts"] - a["end_ts"] > 1 and a["end_ts"] >= now:
+            return int(a["end_ts"])
+    return from_ts
+
+
 def rebuild_from(conn: sqlite3.Connection, channel_id: int, from_ts: int, *,
                  now: int | None = None, seed: int | None = None,
                  exclude_media_ids: set[int] | None = None, allow_external: bool = True,
@@ -278,7 +297,7 @@ def rebuild_from(conn: sqlite3.Connection, channel_id: int, from_ts: int, *,
     settings = all_settings(conn)
     tz = tz_of(conn)
     now = now or now_ts()
-    from_ts = max(from_ts, now)
+    from_ts = _first_gap(conn, channel_id, now, max(from_ts, now))
     day = broadcast_day_for(from_ts, settings, tz)
     if seed is None:
         seed = seed_for(f"{day.isoformat()}:{from_ts}")

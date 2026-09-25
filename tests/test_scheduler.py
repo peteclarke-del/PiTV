@@ -2042,3 +2042,30 @@ def test_a_rebuild_near_air_places_nothing_remote_that_has_not_arrived(tmp_path)
                       " AND start_ts >= ? AND start_ts < ?", (at, now + lead)).fetchone()[0]
     assert early == 0, f"{early} remote repeat(s) booked inside the lead window"
     c.close()
+
+
+def test_a_rebuild_starts_at_a_gap_it_would_otherwise_wall_in(tmp_path):
+    """What lies before a rebuild's start is kept, so a gap inside it sat between kept slots and
+    the walk, unable to move them, filled it with a holding card: six minutes of "Programmes will
+    continue shortly" on PiTV Toons, where a gap of minutes should close. The rebuild now starts
+    at the gap."""
+    from itertools import pairwise
+
+    from pitv.scheduler.horizon import rebuild_from
+
+    c = make_library(tmp_path, 4)["conn"]
+    now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(c))
+    build_horizon(c, start_day=parse_day("2026-09-14"), days=1, now=now, seed=11, force=True)
+    ch = c.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()[0]
+    victim = c.execute("SELECT * FROM schedule WHERE channel_id = ? AND kind = 'programme' AND replay = 0"
+                       " AND start_ts > ? ORDER BY start_ts LIMIT 1 OFFSET 4", (ch, now + 3600)).fetchone()
+    with dbm.tx(c):    # the slot shrinks by six minutes and nothing moves up: a gap, as a delivery left one
+        c.execute("UPDATE schedule SET end_ts = end_ts - 360 WHERE id = ?", (victim["id"],))
+    gap_at = victim["end_ts"] - 360
+    rebuild_from(c, ch, gap_at + 2 * 3600, now=now)
+    rows = c.execute("SELECT start_ts, end_ts, kind FROM schedule WHERE channel_id = ? AND replay = 0"
+                     " AND start_ts >= ? AND start_ts < ? ORDER BY start_ts", (ch, gap_at - 3600, gap_at + 3 * 3600)).fetchall()
+    assert not [(a["end_ts"], b["start_ts"]) for a, b in pairwise(rows) if b["start_ts"] - a["end_ts"] > 1], "no gap left"
+    cards = [r for r in rows if r["kind"] == "filler" and r["end_ts"] - r["start_ts"] >= 120]
+    assert not cards, "the gap is closed, not carded"
+    c.close()
