@@ -377,7 +377,10 @@ def _content(settings: dict[str, Any]) -> dict[str, Any]:
             # A job pitv_content ran ahead of its turn because a rule had held it too long, and
             # anything still waiting far longer than it should. Both are its own account of
             # itself; a queue that heals silently is only half of what was asked for.
-            "healed": (body.get("healed") or [])[:10], "queue_warning": body.get("queue_warning")}
+            "healed": (body.get("healed") or [])[:10], "queue_warning": body.get("queue_warning"),
+            # Files a killed run left in the work folder, reported while nothing runs, since a
+            # running job's own files look the same. Clean up on the Doctor page removes them.
+            "leftovers": body.get("leftovers") if isinstance(body.get("leftovers"), dict) else None}
 
 
 def _unreadable_sources(settings: dict[str, Any]) -> list[dict[str, Any]]:
@@ -488,6 +491,11 @@ def _findings(doc: dict[str, Any]) -> list[str]:
                    "asked for again. Wanted lists them with what each search said.")
     if warning := content.get("queue_warning"):
         out.append(f"pitv_content's queue: {warning}")
+    if leftovers := content.get("leftovers"):
+        names = ", ".join(f"{i.get('name')} ({i.get('kind')}, {i.get('mb')} MB)" for i in (leftovers.get("items") or [])[:5])
+        out.append(f"pitv_content's work folder holds {leftovers.get('count')} thing(s) left by a run that was stopped "
+                   f"part way, {leftovers.get('mb')} MB in all: {names}. Nothing is using them; Clean up on the "
+                   "Doctor page removes them now, and the next run would otherwise.")
     for healed in content.get("healed") or []:
         # Worth a finding rather than a log line: the queue put itself right, and the rule that
         # held the job is still there to hold the next one.

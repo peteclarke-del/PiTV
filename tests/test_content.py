@@ -123,6 +123,28 @@ def test_a_source_that_cannot_be_read_is_a_finding(monkeypatch):
     assert doctor._unreadable_sources({}) == []
 
 
+def test_leftovers_of_a_stopped_run_are_a_finding_with_their_remedy(monkeypatch):
+    """A run killed outright leaves a part-encode and a download folder that the old sweep kept
+    for a day with nothing saying so. pitv_content now lists them while no job runs; PiTV names
+    them and points at the button that removes them, which reaches pitv_content through the
+    proxy."""
+    from pitv import doctor, tool_client
+    from pitv.web.api.content import _proxy_path
+
+    status = {"state": "idle", "leftovers": {"work_dir": "/w", "count": 2, "mb": 1086, "remedy": "clean up",
+                                             "items": [{"name": "encode-2b0a.mp4", "kind": "part-encode", "mb": 447},
+                                                       {"name": "3N4p8VY8Mi8", "kind": "download", "mb": 639}]}}
+    monkeypatch.setattr(tool_client, "request", lambda *a, **k: (200, status))
+    content = doctor._content({})
+    finding = next(f for f in doctor._findings({"content": content}) if "work folder" in f)
+    assert "2 thing(s)" in finding and "1086 MB" in finding and "encode-2b0a.mp4 (part-encode, 447 MB)" in finding
+    assert "Clean up on the Doctor page" in finding
+    assert _proxy_path("cleanup") == "cleanup", "the button's request must get through the proxy"
+
+    status["leftovers"] = None
+    assert not any("work folder" in f for f in doctor._findings({"content": doctor._content({})}))
+
+
 def test_a_channels_length_is_refreshed_by_pitv_content_never_learned_and_frozen():
     """`episode_count` stops PiTV asking past the end of a run, and there are two ways an entry
     can get one. Only one of them goes stale, and the difference is the whole of the fix.

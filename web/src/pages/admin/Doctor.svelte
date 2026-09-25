@@ -5,7 +5,7 @@
   // itself, a channel that cannot reach its configured mix. A finding nobody sees is no better
   // than silence, which is the thing the report exists to prevent.
   import { onMount } from 'svelte';
-  import { get, tryApi } from '../../lib/api.js';
+  import { get, post, tryApi } from '../../lib/api.js';
   import { fmtBytes, fmtDateTime } from '../../lib/format.js';
   import { poll } from '../../lib/poll.svelte.js';
 
@@ -25,6 +25,15 @@
   const findings = $derived(doc?.findings ?? []);
   // A finding that names something already put right reads differently from one still wrong.
   const healed = (f) => f.startsWith('pitv_content healed');
+
+  // pitv_content refuses (409) while a job runs, since that job's files look the same.
+  let cleaning = $state(false);
+  async function cleanup() {
+    cleaning = true;
+    await tryApi(post('/api/content/tool/api/cleanup'), { success: 'Cleaned up' });
+    cleaning = false;
+    await load();
+  }
 
   function gib(n) { return typeof n === 'number' ? fmtBytes(n) : '-'; }
 </script>
@@ -77,6 +86,13 @@
             <dt>Queued</dt>
             <dd>{Object.entries(doc.content?.queued_by_mode ?? {}).map(([m, n]) => `${n} ${m}`).join(', ') || 'nothing'}</dd>
           </dl>
+          {#if doc.content?.leftovers}
+            <h4>Left by a stopped run</h4>
+            <ul class="healed">
+              {#each doc.content.leftovers.items ?? [] as l (l.name)}<li>{l.name}: {l.kind}, {l.mb} MB, {l.hours_old} h old</li>{/each}
+            </ul>
+            <button class="small" onclick={cleanup} disabled={cleaning}>{cleaning ? 'Cleaning up…' : 'Clean up'}</button>
+          {/if}
           {#if doc.content?.healed?.length}
             <h4>Put right by itself</h4>
             <ul class="healed">{#each doc.content.healed as h (h)}<li>{h}</li>{/each}</ul>

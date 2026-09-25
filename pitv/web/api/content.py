@@ -145,7 +145,8 @@ def tool_log(conn: sqlite3.Connection = Depends(admin_conn), lines: int = 300, q
 
 # --- proxy to pitv_content's own local API (settings, run/cancel, providers, catalogue, jobs, log) ---
 
-_PROXY_ALLOWED = {"status", "system", "settings", "run", "cancel", "reset", "log", "providers", "catalogue", "jobs", "lookup", "genres"}
+_PROXY_ALLOWED = {"status", "system", "settings", "run", "cancel", "reset", "log", "providers", "catalogue", "jobs", "lookup", "genres",
+                  "cleanup"}
 
 
 def _proxy_path(path: str) -> str | None:
