@@ -506,7 +506,10 @@ cgroup. What the restart showed:
   within `band_fetch_gap_hours`, and "is this helping still wanted" was put to that list. 125
   withdrawals are in the logs from 22 September 23:00, six to eight an hour. No helping PiTV
   asked for in those four days can have run, which bears directly on P4 and on every reading of
-  C15 since.
+  C15 since. With it fixed, the first real reading of C15 (pitv_content, 06:30 on the 25th) has
+  band helpings and delivery slices alternating, each helping waiting one slice. A second fault
+  showed at once: when the neediest band already had a helping queued the pass asked for nothing
+  and stopped, so the others went unasked (06:16, "0 bands; 5 will retry"). Fixed in d9147cd.
 - The doctor's "idle with work outstanding" finding never counted short bands (it iterated a
   dict as a list); fixed in 00ca9b6.
 - The test suite's web app ran its keeper, which started a real `pitv play` on the desktop
