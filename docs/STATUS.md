@@ -491,6 +491,28 @@ cgroup. What the restart showed:
 - A catalogue run from 02:32 stayed "running" for good: `import_and_place` guarded the import
   but not the mirror and refill after it, so an exception there, most likely a locked database,
   left no trace. Every step is now inside the guard.
+- The full index waited from 02:29 to 04:52 behind one delivery slice that overran its 22 minute
+  share by more than an hour: a series' further episodes ride the visit that found the first,
+  and a visit is exempt from the share's clock, so one ARTE Concert visit ran from 03:52 until it
+  was cancelled at 04:52, by then fetching an 11 h 55 min restream as an episode. Cancelled
+  through `POST /api/cancel`, which SIGTERMs the job alone; it tidied up and reported (C9 seen
+  working). The index then published complete, 17,424 items, and PiTV's import at 05:02 found
+  none new and none missing. Three faults are with pitv_content and Pete: a visit has no bound,
+  an episode has no length ceiling relative to its series, and splitting a long recording
+  numbers its parts without regard to the series, so ARTE Concert has two S01E02 in PiTV
+  (media 17624 and 17625) and their order is arbitrary until it is fixed.
+- PiTV withdrew every band helping it asked for, about ten minutes after asking, from 21
+  September 02:24 (bfffc0e) until b100bc9 on the 25th: `band_needs` leaves out a band asked for
+  within `band_fetch_gap_hours`, and "is this helping still wanted" was put to that list. 125
+  withdrawals are in the logs from 22 September 23:00, six to eight an hour. No helping PiTV
+  asked for in those four days can have run, which bears directly on P4 and on every reading of
+  C15 since.
+- The doctor's "idle with work outstanding" finding never counted short bands (it iterated a
+  dict as a list); fixed in 00ca9b6.
+- The test suite's web app ran its keeper, which started a real `pitv play` on the desktop
+  against the default data folder; one outlived a suite run. Fixed in a30a1ca.
+- pitv-dev-content now runs with `KillMode=process`, as on the Pi, so restarting it adopts a
+  running job. The first restart onto it could not, and ended slice 41db six minutes in.
 - The player's mpv closed at 02:34:50, two seconds after a click in its window and fifteen after
   a burst of eleven channel loads in one second; the player exited as designed and the web
   service's keeper started another twenty seconds later.
