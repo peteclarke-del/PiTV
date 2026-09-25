@@ -243,6 +243,26 @@ def test_refresh_reports_a_malformed_index_instead_of_raising(ctx, monkeypatch):
     assert catalogue.last_import(ctx["conn"])["status"] == "error"
 
 
+def test_an_import_that_fails_after_placing_is_logged_as_an_error(tmp_path, monkeypatch):
+    """The refill after an import met a locked database and raised, and its run stayed
+    "running" for good: a failure recorded as work in progress, which nothing reports."""
+    import sqlite3
+
+    from pitv import catalogue
+
+    lib = make_library(tmp_path / "locked", max_episodes=1)
+
+    def locked(conn):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(catalogue, "refill_empty_days", locked)
+    with pytest.raises(sqlite3.OperationalError):
+        catalogue.import_and_place(lib["conn"], lib["lib"]["index"], "test")
+    last = catalogue.last_import(lib["conn"])
+    assert last["status"] == "error" and "database is locked" in last["summary"]
+    lib["conn"].close()
+
+
 def test_missing_rating_enrichment_is_separate_and_below_admin_overrides(monkeypatch):
     from pitv import catalogue
 

@@ -383,18 +383,20 @@ def import_and_place(conn: sqlite3.Connection, doc: dict[str, Any], origin: str 
     """Import, then place new series and films into line-ups and refresh the JSON mirror.
     Logged as a `catalogue` run; a failed import is logged as an error and re-raised."""
     run_id = run_log_start(conn, "catalogue")
+    # Every step is inside the try: a mirror or refill that raised once left its run "running"
+    # for good, a failure nobody was told about.
     try:
         counts = import_index(conn, doc)
         restore_if_empty(conn)
         placed = generate(conn)
+        write_mirror(conn)
+        # A day built before this material arrived may contain whole-day filler or holding cards
+        # inside strict bands. Revisit those gaps now so fetched material is on the schedule
+        # before airtime rather than merely present in the catalogue.
+        refill = refill_empty_days(conn)
     except Exception as exc:
         run_log_finish(conn, run_id, "error", str(exc), [str(exc)])
         raise
-    write_mirror(conn)
-    # A day built before this material arrived may contain whole-day filler or holding cards
-    # inside strict bands. Revisit those gaps now so fetched material is on the schedule before
-    # airtime rather than merely present in the catalogue.
-    refill = refill_empty_days(conn)
     summary = (f"{counts['items']} items ({counts['new']} new, {counts['missing']} now missing,"
                f" {counts['rejected']} rejected) from {counts['sources']} sources; line-ups: {placed['assigned']} placed,"
                f" {placed['unmatched']} matched no channel; {refill['summary']}")
