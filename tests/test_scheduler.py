@@ -2116,3 +2116,49 @@ def test_a_band_whose_searches_found_nothing_rests_and_says_so(tmp_path, monkeyp
     assert len(runs) == 1 and runs[0]["mode"] == "catalogue", "asked again at once"
     assert conn.execute("SELECT rest_until FROM band WHERE id = ?", (band["id"],)).fetchone()[0] is None
     conn.close()
+
+
+def test_split_parts_are_one_episode():
+    """pitv_content files the parts of an upload cut into transmissions under one episode number.
+    They join into one episode of their combined length; one missing a part is left out, so the
+    cursor passes over it rather than air half a concert; anything else is untouched."""
+    from pitv.scheduler.slots import join_parts
+
+    def ep(i, episode, part=None, parts=None, minutes=30, title="T"):
+        return {"id": i, "season": 1, "episode": episode, "part": part, "parts": parts,
+                "duration": minutes * 60.0, "title": title}
+    joined = join_parts([ep(1, 1, 1, 2, 77, "Concert (part 1 of 2)"), ep(2, 1, 2, 2, 72, "Concert (part 2 of 2)"),
+                         ep(3, 2), ep(4, 3, 1, 2), ep(5, 4)])
+    assert [e["id"] for e in joined] == [1, 3, 5], "episode 3 has no part 2 and is passed over"
+    assert joined[0]["duration"] == 149 * 60 and joined[0]["part_items"] == [(1, 77 * 60), (2, 72 * 60)]
+    assert joined[0]["title"] == "Concert"
+    assert "part_items" not in joined[1]
+
+
+def test_a_split_episode_airs_its_parts_back_to_back(tmp_path):
+    """Every airing of part 1 is followed at once by part 2, with nothing between them, and part
+    2 never airs on its own. Before, the parts were two episodes in arbitrary order: the second
+    half of a concert could air before the first, or a week after it."""
+    from itertools import pairwise
+
+    c = make_library(tmp_path, 4)["conn"]
+    show = c.execute("SELECT show_id FROM media WHERE kind = 'episode' AND show_id IS NOT NULL"
+                     " GROUP BY show_id HAVING COUNT(*) >= 3 ORDER BY show_id LIMIT 1").fetchone()[0]
+    eps = c.execute("SELECT id FROM media WHERE show_id = ? ORDER BY season, episode LIMIT 2", (show,)).fetchall()
+    first, second = eps[0]["id"], eps[1]["id"]
+    with dbm.tx(c):
+        season, episode = c.execute("SELECT season, episode FROM media WHERE id = ?", (first,)).fetchone()
+        c.execute("UPDATE media SET part = 1, parts = 2 WHERE id = ?", (first,))
+        c.execute("UPDATE media SET season = ?, episode = ?, part = 2, parts = 2 WHERE id = ?", (season, episode, second))
+    now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(c))
+    build_horizon(c, start_day=parse_day("2026-09-14"), days=7, now=now, seed=3, force=True)
+    rows = c.execute("SELECT id, channel_id, start_ts, end_ts, media_id, part, replay FROM schedule"
+                     " ORDER BY channel_id, replay, start_ts").fetchall()
+    firsts = [r for r in rows if r["media_id"] == first]
+    assert firsts, "the split episode is scheduled"
+    for a, b in pairwise(rows):
+        if a["media_id"] == first and a["channel_id"] == b["channel_id"] and a["replay"] == b["replay"]:
+            assert b["media_id"] == second and b["part"] == 2 and b["start_ts"] == a["end_ts"], "part 2 follows at once"
+        if b["media_id"] == second:
+            assert a["media_id"] == first, "part 2 never airs on its own"
+    c.close()

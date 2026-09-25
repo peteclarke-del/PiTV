@@ -669,6 +669,8 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("channels", "short_episode_run_minutes", "INTEGER"),
     ("band", "last_fetch_at", "INTEGER"),
     ("band", "rest_until", "INTEGER"),
+    ("media", "part", "INTEGER"),
+    ("media", "parts", "INTEGER"),
     ("band", "rest_note", "TEXT"),
     ("channels", "fetch_kind", "TEXT"),
     ("channels", "band_item_max_minutes", "INTEGER"),

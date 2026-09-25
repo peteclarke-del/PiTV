@@ -7,6 +7,7 @@ without depending on each other."""
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -32,6 +33,7 @@ class Slot:
     block: str | None = None
     wanted_id: int | None = None
     wanted_spec: dict[str, Any] | None = None   # external entry placed; a wanted row is created on save
+    parts: tuple[tuple[int, int], ...] = ()     # (media id, seconds) per part of a split episode; saved as one row each
     # not persisted
     show_id: int | None = None
     genres: list[str] = field(default_factory=list)
@@ -180,7 +182,48 @@ def programme_slot(channel_id: int, day_str: str, start: int, item: dict[str, An
     return Slot(channel_id=channel_id, day=day_str, start_ts=start, end_ts=start + seconds(item),
                 media_id=item["id"], offset=0, kind="programme", title=title, subtitle=subtitle,
                 show_id=show.id if show else None, genres=item.get("genres") or [],
-                year=item.get("year"), block=block)
+                year=item.get("year"), block=block, parts=tuple(item.get("part_items") or ()))
+
+
+PART_SUFFIX = re.compile(r"\s*\(part \d+ of \d+\)\s*$", re.IGNORECASE)
+
+
+def join_parts(episodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A series' episodes with each split upload made one episode (contract section 1).
+
+    pitv_content files the parts of an upload cut into transmissions under one episode number,
+    told apart by `part`. They are one episode to the schedule: the cursor advances once and
+    the parts air back to back, which `Builder.save` does from `part_items`. The joined episode
+    is part 1 with the parts' combined length. One missing a part is left out altogether, so the
+    cursor passes over it rather than airing half a concert. Expects `episodes` in season,
+    episode and part order."""
+    out: list[dict[str, Any]] = []
+    i = 0
+    while i < len(episodes):
+        e = episodes[i]
+        total = int(e.get("parts") or 0)
+        if total < 2:
+            out.append(e)
+            i += 1
+            continue
+        group = [e]
+        i += 1
+        while i < len(episodes) and (episodes[i].get("season"), episodes[i].get("episode")) == (e.get("season"), e.get("episode")) \
+                and int(episodes[i].get("parts") or 0) == total:
+            group.append(episodes[i])
+            i += 1
+        by_part: dict[int, dict[str, Any]] = {}
+        for g in group:
+            by_part.setdefault(int(g.get("part") or 0), g)
+        if set(by_part) != set(range(1, total + 1)):
+            continue
+        ordered = [by_part[n] for n in range(1, total + 1)]
+        joined = dict(ordered[0])
+        joined["title"] = PART_SUFFIX.sub("", str(joined.get("title") or "")) or joined.get("title")
+        joined["duration"] = sum(float(p["duration"] or 0) for p in ordered)
+        joined["part_items"] = [(int(p["id"]), seconds(p)) for p in ordered]
+        out.append(joined)
+    return out
 
 
 def media_slot(channel_id: int, day_str: str, start: int, item: dict[str, Any], kind: str) -> Slot:

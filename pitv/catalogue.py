@@ -329,6 +329,7 @@ def import_index(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, Any
                 "certificate": normalise_cert(as_text(it.get("certificate"))), "genres": json.dumps(genre_list(it.get("genres"))),
                 "plot": as_text(it.get("plot")), "channel_hint": as_int(it.get("channel_hint")),
                 "artist": as_text(it.get("artist")),
+                "part": as_int(it.get("part")), "parts": as_int(it.get("parts")),
                 "concert": int(as_bool(concert) if concert is not None
                                else kind == "music" and (duration or 0) >= CONCERT_MINUTES * 60),
                 "family_safe": family_safe(it, unsafe) if kind == "advert" else 1,

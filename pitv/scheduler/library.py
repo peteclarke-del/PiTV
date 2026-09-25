@@ -20,7 +20,7 @@ from ..genres import programme_type, scheduling_class
 from . import bands
 from .policy import SchedulerPolicy
 from .rules import era_spans, era_weight_spans, is_kids, keyword_pattern, names_a_product
-from .slots import Show, episode_request, json_field
+from .slots import Show, episode_request, join_parts, json_field
 
 # Per channel, the window of unlocked slots a build is about to replace: (from_ts, to_ts) with
 # to_ts None for "everything from from_ts on" (a forced horizon build).
@@ -82,8 +82,9 @@ class Library:
             f"SELECT * FROM shows WHERE {LIVE}"))
         by_show: dict[int, list[dict[str, Any]]] = {}
         for e in self.playable("episode", " AND show_id IS NOT NULL"
-                               " ORDER BY show_id, COALESCE(season, 999), COALESCE(episode, 999), path"):
+                               " ORDER BY show_id, COALESCE(season, 999), COALESCE(episode, 999), COALESCE(part, 0), path"):
             by_show.setdefault(e["show_id"], []).append(e)
+        by_show = {show_id: join_parts(eps) for show_id, eps in by_show.items()}
         # Series owned by a transient external entry air only through the placeholders that
         # requested each episode; scheduling their cached files again would defeat "transient".
         transient_owned = {r[0] for r in conn.execute(
@@ -170,6 +171,9 @@ class Library:
         if kind not in self._pools:
             items = self.playable(kind)
             if kind == "episode":
+                # A band takes a split upload whole, as a series does, never one part on its own.
+                items = join_parts(sorted(items, key=lambda m: (m.get("show_id") or 0, m.get("season") or 999,
+                                                                m.get("episode") or 999, m.get("part") or 0)))
                 titles = {sid: show.title for sid, show in self.shows.items()}
                 owner_genres: dict[int, list[str]] = {}
                 for r in self.conn.execute(

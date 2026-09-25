@@ -681,3 +681,21 @@ def test_a_reindex_that_is_running_is_given_its_time(monkeypatch):
     monkeypatch.setattr(tool_client, "request", fake_request)
     catalogue._reindex("http://127.0.0.1:8091", timeout=30)
     assert not answers, "it followed the job from queued through running to done"
+
+
+def test_the_parts_of_a_split_upload_are_imported(tmp_path):
+    """Contract section 1: a split upload's parts share its episode number and carry `part` and
+    `parts`; an unsplit file carries neither."""
+    lib = make_library(tmp_path / "parts", max_episodes=2)
+    conn, doc = lib["conn"], copy.deepcopy(lib["lib"]["index"])
+    episodes = [i for i in doc["items"] if i["kind"] == "episode"][:2]
+    episodes[0].update(part=1, parts=2)
+    episodes[1].update(season=episodes[0]["season"], episode=episodes[0]["episode"], part=2, parts=2)
+    import_index(conn, doc)
+    rows = [conn.execute("SELECT season, episode, part, parts FROM media WHERE uid = ?", (e["uid"],)).fetchone()
+            for e in episodes]
+    assert [(r["part"], r["parts"]) for r in rows] == [(1, 2), (2, 2)]
+    assert (rows[0]["season"], rows[0]["episode"]) == (rows[1]["season"], rows[1]["episode"])
+    other = next(i for i in doc["items"] if i["kind"] == "episode" and i not in episodes)
+    assert tuple(conn.execute("SELECT part, parts FROM media WHERE uid = ?", (other["uid"],)).fetchone()) == (None, None)
+    conn.close()

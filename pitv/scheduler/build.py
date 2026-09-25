@@ -135,6 +135,20 @@ class Walk:
         return max(0, self.ads_per_break - self.break_state()[1])
 
 
+def _rows_of(s: Slot) -> list[tuple[int, int | None, int, int]]:
+    """The schedule rows a slot is saved as: (part, media id, start, end). A split episode is one
+    slot to the walk and one row per part here, back to back, the last ending where the slot does;
+    the player plays rows, so each part is its own file at its own time."""
+    if not s.parts:
+        return [(1, s.media_id, s.start_ts, s.end_ts)]
+    rows, t = [], s.start_ts
+    for n, (media_id, length) in enumerate(s.parts, start=1):
+        end = s.end_ts if n == len(s.parts) else min(t + length, s.end_ts)
+        rows.append((n, media_id, t, end))
+        t = end
+    return rows
+
+
 class Builder:
     def __init__(self, conn: sqlite3.Connection, *, now: int | None = None,
                  seed: int | None = None, exclude_media_ids: set[int] | None = None,
@@ -784,10 +798,11 @@ class Builder:
                              (channel_id, day_str, cut, keep_until))
             self._raise_wanted(slots)
             conn.executemany(
-                "INSERT INTO schedule(channel_id, day, start_ts, end_ts, media_id, offset, kind,"
-                " replay, locked, title, subtitle, block, wanted_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                [(s.channel_id, s.day, s.start_ts, s.end_ts, s.media_id, s.offset, s.kind,
-                  s.replay, s.locked, s.title, s.subtitle, s.block, s.wanted_id) for s in slots])
+                "INSERT INTO schedule(channel_id, day, start_ts, end_ts, media_id, offset, kind, part,"
+                " replay, locked, title, subtitle, block, wanted_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                [(s.channel_id, s.day, start, end, media_id, s.offset, s.kind, part,
+                  s.replay, s.locked, s.title, s.subtitle, s.block, s.wanted_id)
+                 for s in slots for part, media_id, start, end in _rows_of(s)])
 
     def _raise_wanted(self, slots: list[Slot]) -> None:
         """Turn placeholder slots into wanted rows for pitv_content, one per episode or film;
