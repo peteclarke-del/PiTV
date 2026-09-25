@@ -74,7 +74,7 @@ def withdraw_gaps(conn: sqlite3.Connection) -> int:
     return cur.rowcount
 
 
-def band_needs(conn: sqlite3.Connection, settings: dict[str, Any]) -> list[dict[str, Any]]:
+def band_needs(conn: sqlite3.Connection, settings: dict[str, Any], due_only: bool = True) -> list[dict[str, Any]]:
     """Bands the library cannot fill, the next to air first.
 
     A band wants short items of its own genres and decades: a two hour "Disco Lunch" needs
@@ -91,7 +91,12 @@ def band_needs(conn: sqlite3.Connection, settings: dict[str, Any]) -> list[dict[
     music), and a band may name its own instead. A channel that names no kind is still reported
     where its line-up holds entries the band would take, because those are what it fills from
     (`request_band_lineup`). One with neither is left alone, however thin its bands: nothing
-    could act on the shortfall, and a finding nobody can answer is noise."""
+    could act on the shortfall, and a finding nobody can answer is noise.
+
+    By default a band asked for within `band_fetch_gap_hours` is left out, since the list is
+    what to ask for next. `due_only=False` answers only whether a band is short: asked whether a
+    helping was still wanted, the default list said "stocked" of every band asked for ten
+    minutes earlier, and each hour's helpings were withdrawn before any could run."""
     default_minutes = int(settings.get("band_item_max_minutes", bands.ITEM_MINUTES))
     channels = {c["id"]: c for c in rows_to_dicts(conn.execute("SELECT * FROM channels WHERE enabled = 1"))}
     now = now_ts()
@@ -137,7 +142,8 @@ def band_needs(conn: sqlite3.Connection, settings: dict[str, Any]) -> list[dict[
                 # can live on, not the point at which collecting for it should stop.
                 stock_hours = int(settings.get("band_stock_days", 7)) * 24
                 want = items_per_airing * _airings_within(max(int(repeat_hours), stock_hours), band)
-            if have < want and now - (band.last_fetch_at or 0) >= int(settings.get("band_fetch_gap_hours", 1)) * 3600:
+            due = now - (band.last_fetch_at or 0) >= int(settings.get("band_fetch_gap_hours", 1)) * 3600
+            if have < want and (due or not due_only):
                 out.append({"band": band, "channel": channel, "kind": kind, "have": have, "want": want,
                             "minutes": minutes, "next_ts": min(start for start, _ in mine),
                             "entries": mine_entries})
@@ -472,7 +478,7 @@ def settle_band_requests(conn: sqlite3.Connection, settings: dict[str, Any]) -> 
         return {"outstanding": {int(r["id"]): r["fetch_job_id"] for r in rows}, "cancelled": [], "forgotten": []}
     alive = {j.get("job_id") for j in payload
              if isinstance(j, dict) and j.get("status") in ("queued", "running")}
-    wanted_now = {n["band"].id for n in band_needs(conn, settings)}
+    wanted_now = {n["band"].id for n in band_needs(conn, settings, due_only=False)}
     outstanding: dict[int, str] = {}
     cancelled: list[str] = []
     forgotten: list[str] = []

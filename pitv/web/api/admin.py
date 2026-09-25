@@ -1201,7 +1201,7 @@ def bands_needs(conn: sqlite3.Connection = Depends(admin_conn)):
     settings = all_settings(conn)
     return [{"channel_id": n["band"].channel_id, "name": n["band"].name, "have": n["have"], "want": n["want"],
              "kind": n["kind"], "minutes": n["minutes"], "last_fetch_at": n["band"].last_fetch_at}
-            for n in wanted_mod.band_needs(conn, settings)]
+            for n in wanted_mod.band_needs(conn, settings, due_only=False)]
 
 
 @router.get("/library/facets")

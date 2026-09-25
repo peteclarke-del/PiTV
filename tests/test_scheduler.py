@@ -1785,7 +1785,7 @@ def test_a_helping_for_a_band_that_has_since_filled_is_withdrawn(tmp_path, monke
         return 503, {"error": "offline"}
 
     monkeypatch.setattr(tool_client, "request", fake_request)
-    monkeypatch.setattr(wanted, "band_needs", lambda c, s: [])          # every band is stocked
+    monkeypatch.setattr(wanted, "band_needs", lambda c, s, due_only=True: [])          # every band is stocked
     result = wanted.settle_band_requests(conn, {})
     assert cancelled == ["job-stale"] and result["cancelled"] == ["job-stale"]
     assert conn.execute("SELECT fetch_job_id FROM band WHERE id = ?", (band_id,)).fetchone()[0] is None
@@ -1813,11 +1813,42 @@ def test_a_band_still_short_keeps_its_helping_and_is_not_asked_twice(tmp_path, m
         raise AssertionError(f"nothing else should be called, got {path}")
 
     monkeypatch.setattr(tool_client, "request", fake_request)
-    monkeypatch.setattr(wanted, "band_needs", lambda c, s: [{"band": FakeBand(), "kind": "music",
+    monkeypatch.setattr(wanted, "band_needs", lambda c, s, due_only=True: [{"band": FakeBand(), "kind": "music",
                                                              "have": 0, "want": 20, "minutes": 60}])
     result = wanted.settle_band_requests(conn, {})
     assert result["outstanding"] == {band_id: "job-live"} and not result["cancelled"]
     assert conn.execute("SELECT fetch_job_id FROM band WHERE id = ?", (band_id,)).fetchone()[0] == "job-live"
+    conn.close()
+
+
+def test_a_band_asked_for_a_moment_ago_is_short_not_stocked(tmp_path, monkeypatch):
+    """The list of bands to ask for leaves out one asked for within the hour, and the question
+    "is this helping still wanted" was put to that list. Every hour on 25 September six bands
+    were asked for and all six withdrawn as "stocked" eleven minutes later, before any ran."""
+    from pitv import tool_client, wanted
+
+    ctx = make_library(tmp_path, max_episodes=4)
+    conn = ctx["conn"]
+    toons = conn.execute("SELECT id FROM channels WHERE content = 'cartoons'").fetchone()["id"]
+    with dbm.tx(conn):
+        conn.execute("UPDATE channels SET fetch_kind = 'cartoons' WHERE id = ?", (toons,))
+        conn.execute("UPDATE channels SET fetch_kind = '' WHERE content = 'music'")
+        _band_row(conn, toons, "Saturday Morning", "09:00", 120, ["episode"],
+                  genres=["stop motion"], decades=[1980])
+        conn.execute("UPDATE band SET last_fetch_at = ?, fetch_job_id = 'job-new' WHERE name = 'Saturday Morning'",
+                     (dbm.now_ts() - 600,))
+    settings = dbm.all_settings(conn)
+    assert not wanted.band_needs(conn, settings), "not due to be asked again within the hour"
+    assert [n["band"].name for n in wanted.band_needs(conn, settings, due_only=False)] == ["Saturday Morning"]
+
+    def fake_request(base, method, path, query="", body=None, timeout=15):
+        if path == "jobs":
+            return 200, [{"job_id": "job-new", "status": "queued"}]
+        raise AssertionError(f"a helping still wanted must not be cancelled, got {path}")
+
+    monkeypatch.setattr(tool_client, "request", fake_request)
+    result = wanted.settle_band_requests(conn, settings)
+    assert not result["cancelled"] and list(result["outstanding"].values()) == ["job-new"]
     conn.close()
 
 
@@ -1834,7 +1865,7 @@ def test_a_helping_that_has_already_run_is_simply_forgotten(tmp_path, monkeypatc
 
     monkeypatch.setattr(tool_client, "request",
                         lambda *a, **k: (200, [{"job_id": "other", "status": "running"}]))
-    monkeypatch.setattr(wanted, "band_needs", lambda c, s: [])
+    monkeypatch.setattr(wanted, "band_needs", lambda c, s, due_only=True: [])
     result = wanted.settle_band_requests(conn, {})
     assert result["forgotten"] == ["job-done"] and not result["cancelled"]
     assert not conn.execute("SELECT 1 FROM band WHERE fetch_job_id IS NOT NULL").fetchall()
