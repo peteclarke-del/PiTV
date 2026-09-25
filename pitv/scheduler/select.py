@@ -412,6 +412,11 @@ class Selector:
                     # eight times in a day while series on disk waited for their week to pass.
                     if not level.remote_repeat or not e.get("last_spec") or times_today >= (daily_limit if episode else 1):
                         continue
+                    # A repeat is of a request still open, so it is no nearer arriving than a first
+                    # airing and keeps to the same lead window. Without this a rebuild at 21:37
+                    # booked an unfetched episode for 21:38, half an hour of holding card.
+                    if not prepared:
+                        continue
                     candidate = {**e, "_external_repeat": True}
                     prior_run = self.library.external_short_runs.get(e["lineup_id"])
                     if prior_run:

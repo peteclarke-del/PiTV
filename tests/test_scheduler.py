@@ -2009,3 +2009,36 @@ def test_a_band_waiting_its_turn_does_not_stop_the_others_being_asked(tmp_path, 
     assert [b["genres"] for b in asked] == [["Claymation"]], "the band behind the waiting one is asked"
     assert "1 already queued" in result["summary"] and "will retry" not in result["summary"]
     conn.close()
+
+
+def test_a_rebuild_near_air_places_nothing_remote_that_has_not_arrived(tmp_path):
+    """A remote title is placed only beyond `external_lead_hours`, since nothing fetched arrives
+    sooner, but the last resort's repeat of a remote episode ignored it. A rebuild at 21:37 on 25
+    September booked an unfetched episode for 21:38. Every remote slot a rebuild near air makes
+    must start past the lead window, whatever rung of the ladder placed it."""
+    from pitv import lineup as lineup_mod
+    from pitv.scheduler.horizon import rebuild_from
+
+    c = make_library(tmp_path, 1)["conn"]
+    now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(c))
+    lead = int(dbm.get_setting(c, "external_lead_hours", 24)) * 3600
+    with dbm.tx(c):
+        dbm.set_setting(c, "nas_only", False)
+        dbm.set_setting(c, "external_weight", 50.0)
+        dbm.set_setting(c, "external_new_per_day", 40)
+    channels = [r[0] for r in c.execute("SELECT id FROM channels WHERE enabled = 1")]
+    for ch in channels:     # remote series everywhere, each with a request already open
+        entry = lineup_mod.add(c, ch, title=f"Remote {ch}", kind="show", genres=["Drama"], episode_minutes=30,
+                               match={"source": "elsewhere", "id": f"r{ch}", "url": f"https://example.invalid/r{ch}"})
+        with dbm.tx(c):
+            c.execute("INSERT INTO wanted(kind, title, season, episode, lineup_id, auto, created_at, provider)"
+                      " VALUES ('episode', ?, 1, 1, ?, 1, ?, 'auto')", (f"Remote {ch}", entry["id"], now - 86400))
+    build_horizon(c, start_day=parse_day("2026-09-14"), days=3, now=now, seed=5, force=True)
+    assert c.execute("SELECT COUNT(*) FROM schedule WHERE wanted_id IS NOT NULL").fetchone()[0], "remote titles are placed"
+    at = now + 12 * 3600
+    for ch in channels:
+        rebuild_from(c, ch, at, now=now)
+    early = c.execute("SELECT COUNT(*) FROM schedule WHERE wanted_id IS NOT NULL AND media_id IS NULL AND replay = 1"
+                      " AND start_ts >= ? AND start_ts < ?", (at, now + lead)).fetchone()[0]
+    assert early == 0, f"{early} remote repeat(s) booked inside the lead window"
+    c.close()
