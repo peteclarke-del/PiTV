@@ -409,10 +409,12 @@ def request_band_material(conn: sqlite3.Connection, settings: dict[str, Any],
     pitv_content queues the request and runs one job at a time (contract section 9), so
     `request_all_band_material` calls this once per starved band and the whole night's work is
     declared up front. A band is stamped once its request is accepted, so one whose genre
-    nothing can satisfy does not block the rest night after night."""
-    needs = [n for n in band_needs(conn, settings) if n["kind"]]
+    nothing can satisfy does not block the rest night after night. A band whose helping is
+    still queued is passed over rather than answered for: picking it and asking nothing ended
+    the whole pass, so one band waiting its turn kept every other band from being asked."""
+    needs = _askable(conn, settings, outstanding)
     if not needs:
-        return {"status": "ok", "asked": 0, "summary": "every band has material"}
+        return {"status": "ok", "asked": 0, "summary": "every band has material or a helping queued"}
     need = needs[0]
     band = need["band"]
     decades = sorted(band.decades)
@@ -434,9 +436,6 @@ def request_band_material(conn: sqlite3.Connection, settings: dict[str, Any],
                                   for g in band.genres}
     if decades:
         body["years"] = [decades[0], decades[-1] + 9]
-    if band.id in (outstanding or {}):
-        return {"status": "ok", "asked": 0,
-                "summary": f"{band.name}: its last helping has not had its turn yet"}
     url = get_setting(conn, "content_tool_url") or DEFAULT_SETTINGS["content_tool_url"]
     status, payload = tool_client.request(url, "POST", "run", body=body, timeout=15)
     if status in (409, 503):
@@ -498,6 +497,12 @@ def settle_band_requests(conn: sqlite3.Connection, settings: dict[str, Any]) -> 
     return {"outstanding": outstanding, "cancelled": cancelled, "forgotten": forgotten}
 
 
+def _askable(conn: sqlite3.Connection, settings: dict[str, Any],
+             outstanding: dict[int, str] | None) -> list[dict[str, Any]]:
+    """Bands due a request that pitv_content can search for and that have none still queued."""
+    return [n for n in band_needs(conn, settings) if n["kind"] and n["band"].id not in (outstanding or {})]
+
+
 def request_all_band_material(conn: sqlite3.Connection, settings: dict[str, Any]) -> dict[str, Any]:
     """Queue every currently starved band with pitv_content's single coordinator.
 
@@ -510,17 +515,17 @@ def request_all_band_material(conn: sqlite3.Connection, settings: dict[str, Any]
     # The line-up first: it names exactly what is wanted, costs pitv_content no search, and a
     # band it satisfies is one the searcher does not have to guess at.
     from_lineup = request_band_lineup(conn, settings)
-    remaining = len([n for n in band_needs(conn, settings) if n["kind"]])
+    remaining = len(_askable(conn, settings, settled["outstanding"]))
     if not remaining:
         return {"status": "ok", "asked": from_lineup["asked"],
-                "summary": from_lineup["summary"] if from_lineup["asked"] else "every band has material",
+                "summary": from_lineup["summary"] if from_lineup["asked"] else "every band has material or a helping queued",
                 "jobs": [], "withdrawn": settled["cancelled"]}
     jobs: list[Any] = []
     summaries: list[str] = []
     status = "ok"
     covered = 0
     for _ in range(remaining):
-        needs = [n for n in band_needs(conn, settings) if n["kind"]]
+        needs = _askable(conn, settings, settled["outstanding"])
         if not needs:
             break
         first_key = _need_key(needs[0])
@@ -544,5 +549,7 @@ def request_all_band_material(conn: sqlite3.Connection, settings: dict[str, Any]
     summary = f"queued material for {asked} band{'s' if asked != 1 else ''}"
     if covered < remaining:
         summary += f"; {remaining - covered} will retry"
+    if settled["outstanding"]:
+        summary += f"; {len(settled['outstanding'])} already queued"
     log.info("band material: %s", summary)
     return {"status": status, "asked": asked, "summary": summary, "jobs": jobs, "details": summaries}

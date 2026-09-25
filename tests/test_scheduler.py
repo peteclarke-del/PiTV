@@ -1949,3 +1949,35 @@ def test_a_bands_material_is_classified_by_the_owner_not_by_what_indexed_it():
     # What the library itself says is untouched, so the next import has nothing to undo.
     assert dbm2.genre_list(conn.execute("SELECT genres FROM shows WHERE id = ?", (show,)).fetchone()[0]) == ["YouTube"]
     conn.close()
+
+
+def test_a_band_waiting_its_turn_does_not_stop_the_others_being_asked(tmp_path, monkeypatch):
+    """The neediest band was always picked, and when its helping was still queued the pass asked
+    for nothing and stopped: at 06:16 on 25 September five bands went unasked because one was
+    waiting. A band with a helping queued is passed over, and the pass goes on to the next."""
+    from pitv import tool_client, wanted
+
+    ctx = make_library(tmp_path, max_episodes=4)
+    conn = ctx["conn"]
+    toons = conn.execute("SELECT id FROM channels WHERE content = 'cartoons'").fetchone()["id"]
+    with dbm.tx(conn):
+        conn.execute("UPDATE channels SET fetch_kind = 'cartoons' WHERE id = ?", (toons,))
+        conn.execute("UPDATE channels SET fetch_kind = '' WHERE content = 'music'")
+        _band_row(conn, toons, "Early", "10:00", 60, ["episode"], genres=["stop motion"], decades=[1980])
+        _band_row(conn, toons, "Late", "12:00", 60, ["episode"], genres=["claymation"], decades=[1970])
+        conn.execute("UPDATE band SET fetch_job_id = 'job-early' WHERE name = 'Early'")
+    asked: list[dict] = []
+
+    def fake_request(base, method, path, query="", body=None, timeout=15):
+        if path == "jobs":
+            return 200, [{"job_id": "job-early", "status": "queued"}]
+        if path == "run":
+            asked.append(body)
+            return 200, {"ok": True, "job_id": "job-late"}
+        return 404, {"error": "not in this test"}
+
+    monkeypatch.setattr(tool_client, "request", fake_request)
+    result = wanted.request_all_band_material(conn, dbm.all_settings(conn))
+    assert [b["genres"] for b in asked] == [["Claymation"]], "the band behind the waiting one is asked"
+    assert "1 already queued" in result["summary"] and "will retry" not in result["summary"]
+    conn.close()
