@@ -8,6 +8,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from pitv import db as dbm
 from pitv.catalogue import import_and_place
 from pitv.config import Config
@@ -18,6 +20,16 @@ from pitv.devtools import build_fake_library
 # bumped whenever the clip itself changes (see devtools.test_signal), so a stale set is never
 # reused. Set PITV_TEST_TEMPLATES to put the folder somewhere else.
 TEMPLATES = Path(os.environ.get("PITV_TEST_TEMPLATES") or tempfile.gettempdir()) / "pitv-test-clips-v1"
+
+
+@pytest.fixture(autouse=True)
+def _no_real_player(monkeypatch):
+    """A web app under test runs its keeper, and a keeper that finds no player starts a real
+    one: during a suite run a `pitv play` window opened on the desktop against the default data
+    folder and outlived the run. Keeper passes are tested directly (test_keeper.py); the thread
+    that makes them never starts here."""
+    from pitv.web import keeper
+    monkeypatch.setattr(keeper.Keeper, "start", lambda self: None)
 
 
 def make_library(root: Path, max_episodes: int) -> dict[str, Any]:
