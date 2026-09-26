@@ -287,6 +287,16 @@ def _first_gap(conn: sqlite3.Connection, channel_id: int, now: int, from_ts: int
     return from_ts
 
 
+REBUILD_ATTEMPTS = 3   # a day changed by another writer while it was worked out is worked out again
+
+
+def _day_stamp(conn: sqlite3.Connection, channel_id: int, day: str) -> tuple[Any, ...]:
+    """What a channel-day holds, cheaply: enough to tell whether anyone wrote to it meanwhile."""
+    return tuple(conn.execute("SELECT COUNT(*), COALESCE(MAX(id), 0), COALESCE(SUM(end_ts), 0),"
+                              " COALESCE(SUM(COALESCE(media_id, 0)), 0) FROM schedule WHERE channel_id = ? AND day = ?",
+                              (channel_id, day)).fetchone())
+
+
 def rebuild_from(conn: sqlite3.Connection, channel_id: int, from_ts: int, *,
                  now: int | None = None, seed: int | None = None,
                  exclude_media_ids: set[int] | None = None, allow_external: bool = True,
@@ -302,21 +312,35 @@ def rebuild_from(conn: sqlite3.Connection, channel_id: int, from_ts: int, *,
     day = broadcast_day_for(from_ts, settings, tz)
     if seed is None:
         seed = seed_for(f"{day.isoformat()}:{from_ts}")
-    builder = Builder(conn, now=now, seed=seed, exclude_media_ids=exclude_media_ids, allow_external=allow_external,
-                      only_media_ids=only_media_ids, rebuild={channel_id: (from_ts, day_bounds(day, settings, tz)[2])})
-    channel = next((c for c in builder.channels if c["id"] == channel_id), None)
-    if channel is None:
-        return {"status": "error", "summary": "channel not found or disabled", "programmes": 0, "notes": []}
-    # One transaction: losing power between dropping the unavailable slots and saving their
-    # replacements would leave a hole that a later build takes for a complete day.
-    with tx(conn):
-        if exclude_media_ids:
-            # Unavailable files must not survive as kept future slots either.
-            ids = sorted(exclude_media_ids)
-            conn.execute("DELETE FROM schedule WHERE channel_id = ? AND start_ts >= ? AND replay = 0"
-                         f" AND media_id IN ({','.join('?' * len(ids))})", (channel_id, from_ts, *ids))
+    # The day is worked out with no lock held and only saved under one. A day of PiTV Tube takes
+    # thirty seconds to work out, and building it inside the write transaction held the database
+    # for all of it: every other writer (a schedule run, the catalogue import, the player's
+    # history) waited out its thirty second timeout and failed "database is locked". What the
+    # build read is checked again under the lock, and a day changed meanwhile is worked out
+    # again rather than saved over.
+    for _ in range(REBUILD_ATTEMPTS):
+        builder = Builder(conn, now=now, seed=seed, exclude_media_ids=exclude_media_ids, allow_external=allow_external,
+                          only_media_ids=only_media_ids, rebuild={channel_id: (from_ts, day_bounds(day, settings, tz)[2])})
+        channel = next((c for c in builder.channels if c["id"] == channel_id), None)
+        if channel is None:
+            return {"status": "error", "summary": "channel not found or disabled", "programmes": 0, "notes": []}
+        read = _day_stamp(conn, channel_id, day.isoformat())
         slots = builder.build_channel_day(channel, day, force=True, from_ts=from_ts)
-        builder.save(channel_id, day, slots)
+        # One transaction for the rest: losing power between dropping the unavailable slots and
+        # saving their replacements would leave a hole that a later build takes for a complete day.
+        with tx(conn):
+            if _day_stamp(conn, channel_id, day.isoformat()) != read:
+                continue
+            if exclude_media_ids:
+                # Unavailable files must not survive as kept future slots either.
+                ids = sorted(exclude_media_ids)
+                conn.execute("DELETE FROM schedule WHERE channel_id = ? AND start_ts >= ? AND replay = 0"
+                             f" AND media_id IN ({','.join('?' * len(ids))})", (channel_id, from_ts, *ids))
+            builder.save(channel_id, day, slots)
+            break
+    else:
+        return {"status": "error", "programmes": 0, "notes": [],
+                "summary": f"the day kept changing while it was rebuilt ({REBUILD_ATTEMPTS} tries)"}
     withdraw_orphaned_requests(conn)
     programmes = sum(1 for s in slots if s.kind == "programme" and not s.replay)
     notes = builder.notes()

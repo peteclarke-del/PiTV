@@ -250,8 +250,12 @@ class Builder:
             # and save() truncates the persisted slot at the cut so the past stays truthful. The
             # part before the cut is kept here at that length, or the walk would take the hole
             # it leaves for time to fill and place programmes in the past, over the card.
+            # A file the caller has ruled out (readiness: not playable) is not kept from the cut on,
+            # locked or promised: `rebuild_from` deletes those rows when it saves.
+            gone = self.library.exclude_media_ids
             return [replace(s, end_ts=cut) if s.kind == "filler" and not s.locked and s.end_ts > cut else s
-                    for s in existing if s.locked or s.start_ts < cut or self._promised(s)]
+                    for s in existing if (s.locked or s.start_ts < cut or self._promised(s))
+                    and not (s.media_id in gone and s.start_ts >= cut)]
         if existing and max(s.end_ts for s in existing) >= day_end - 60:
             return None
         self._cuts[(channel_id, day_str)] = None

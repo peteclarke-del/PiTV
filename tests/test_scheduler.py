@@ -2243,3 +2243,42 @@ def test_a_band_asks_a_creator_for_videos_within_its_length_as_season_0(tmp_path
     assert show in after.shows and clip not in {e["id"] for e in after.shows[show].episodes}, "not in the series' run"
     assert clip in {m["id"] for m in after.band_pool("episode")}, "but its bands take it"
     conn.close()
+
+
+def test_a_rebuild_does_not_hold_the_database_while_it_works_out_a_day(tmp_path, monkeypatch):
+    """A day of PiTV Tube took thirty seconds to work out inside the write transaction, and every
+    other writer timed out on "database is locked". The day is worked out with no lock held; a
+    writer that changes the day meanwhile makes the rebuild work it out again, not save over it."""
+    import sqlite3 as sq
+    from itertools import pairwise
+
+    from pitv.scheduler import build as build_mod
+    from pitv.scheduler.horizon import rebuild_from
+
+    ctx = make_library(tmp_path, 3)
+    c = ctx["conn"]
+    now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(c))
+    build_horizon(c, start_day=parse_day("2026-09-14"), days=1, now=now, seed=3, force=True)
+    ch = c.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()[0]
+    other = sq.connect(str(ctx["cfg"].db_path), timeout=0.2)
+    real = build_mod.Builder.build_channel_day
+    calls = {"n": 0}
+
+    def meanwhile(self, *a, **k):
+        calls["n"] += 1
+        # Another writer, while the day is being worked out: it must not be locked out, and the
+        # first time it changes this very day.
+        other.execute("UPDATE settings SET value = value WHERE key = 'day_start'")
+        if calls["n"] == 1:
+            other.execute("DELETE FROM schedule WHERE id = (SELECT MAX(id) FROM schedule WHERE channel_id = ?"
+                          " AND day = '2026-09-14')", (ch,))
+        other.commit()
+        return real(self, *a, **k)
+    monkeypatch.setattr(build_mod.Builder, "build_channel_day", meanwhile)
+    result = rebuild_from(c, ch, local_ts(parse_day("2026-09-14"), "12:00", tz_of(c)), now=now)
+    assert result["status"] != "error" and calls["n"] == 2, "worked out again after the day changed under it"
+    rows = c.execute("SELECT start_ts, end_ts FROM schedule WHERE channel_id = ? AND day = '2026-09-14' AND replay = 0"
+                     " ORDER BY start_ts", (ch,)).fetchall()
+    assert all(b["start_ts"] >= a["end_ts"] for a, b in pairwise(rows)), "no overlap"
+    other.close()
+    c.close()
