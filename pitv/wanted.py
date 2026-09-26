@@ -36,7 +36,7 @@ from .db import (
 )
 from .lineup import carries_programmes
 from .scheduler import bands
-from .scheduler.library import USABLE
+from .scheduler.library import USABLE, lineup_genres
 from .scheduler.rules import tz_of
 from .scheduler.slots import episode_name
 
@@ -400,12 +400,19 @@ def _matching_items(conn: sqlite3.Connection, band: bands.Band, kinds: list[str]
     both by one assumed length asked for thirty items where two would do, and the same request
     came back every hour because the shortfall it was answering was imaginary."""
     rows = conn.execute(
-        f"SELECT id, genres, year, duration, concert FROM media WHERE kind IN ({','.join('?' * len(kinds))})"
+        f"SELECT id, show_id, genres, year, duration, concert FROM media WHERE kind IN ({','.join('?' * len(kinds))})"
         f" AND {USABLE} AND duration > 0", tuple(kinds)).fetchall()
     minutes = max(1, limit_seconds // 60)
+    # The owner's genres for a series count here as they do where the band places it: without
+    # them "Musical Interlude" counted none of the three videos it was airing, since the files
+    # say only "YouTube" and the line-up says "Music".
+    owner = lineup_genres(conn)
+
+    def genres_of(r: sqlite3.Row) -> list[str]:
+        return list(dict.fromkeys(genre_list(r["genres"]) + owner.get(r["show_id"] or 0, [])))
     usable = [float(r["duration"]) for r in rows
               if bands.is_feature({"duration": r["duration"], "concert": r["concert"]}, minutes) == feature
-              and band.wants({"genres": genre_list(r["genres"]), "year": r["year"]})
+              and band.wants({"genres": genres_of(r), "year": r["year"]})
               and (not band.decades or band.dated({"year": r["year"]}) is True)]
     if not usable:
         return 0, 0.0

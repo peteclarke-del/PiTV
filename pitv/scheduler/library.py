@@ -33,6 +33,16 @@ Rebuild = dict[int, tuple[int, int | None]]
 USABLE = f"{LIVE} AND duration IS NOT NULL AND COALESCE(season, 1) != 0"
 
 
+def lineup_genres(conn: sqlite3.Connection) -> dict[int, list[str]]:
+    """The genres the owner gave each series in the line-up, by show id. Merged into an episode's
+    own wherever a band judges it (`Library.band_pool`, `wanted._matching_items`), so the band
+    that places a video and the count of what the band holds apply the same test."""
+    out: dict[int, list[str]] = {}
+    for r in conn.execute("SELECT show_id, genres FROM lineup WHERE enabled = 1 AND show_id IS NOT NULL"):
+        out.setdefault(int(r["show_id"]), []).extend(genre_list(r["genres"]))
+    return out
+
+
 class Library:
     def __init__(self, conn: sqlite3.Connection, policy: SchedulerPolicy, *, now: int,
                  rebuild: Rebuild | None = None, exclude_media_ids: set[int] | None = None,
@@ -175,10 +185,7 @@ class Library:
                 items = join_parts(sorted(items, key=lambda m: (m.get("show_id") or 0, m.get("season") or 999,
                                                                 m.get("episode") or 999, m.get("part") or 0)))
                 titles = {sid: show.title for sid, show in self.shows.items()}
-                owner_genres: dict[int, list[str]] = {}
-                for r in self.conn.execute(
-                        "SELECT show_id, genres FROM lineup WHERE enabled = 1 AND show_id IS NOT NULL"):
-                    owner_genres.setdefault(int(r["show_id"]), []).extend(genre_list(r["genres"]))
+                owner_genres = lineup_genres(self.conn)
                 for item in items:
                     if (title := titles.get(item.get("show_id"))) is not None:
                         item["show_title"] = title

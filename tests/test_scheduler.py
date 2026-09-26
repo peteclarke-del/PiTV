@@ -2162,3 +2162,24 @@ def test_a_split_episode_airs_its_parts_back_to_back(tmp_path):
         if b["media_id"] == second:
             assert a["media_id"] == first, "part 2 never airs on its own"
     c.close()
+
+
+def test_a_band_counts_what_it_would_place_by_the_owners_genres(tmp_path):
+    """A creator's videos say only "YouTube"; the owner filed the creator under Music in the
+    line-up, and the band placing them merged that in. The count of what a band holds did not,
+    so "Musical Interlude" aired three videos while counting none of them."""
+    from pitv import wanted
+    from pitv.scheduler import bands as bands_mod
+
+    c = make_library(tmp_path, 2)["conn"]
+    entry = c.execute("SELECT id, show_id FROM lineup WHERE show_id IS NOT NULL AND enabled = 1 LIMIT 1").fetchone()
+    with dbm.tx(c):
+        c.execute("UPDATE media SET genres = '[\"YouTube\"]' WHERE show_id = ?", (entry["show_id"],))
+        c.execute("UPDATE lineup SET genres = '[\"Music\", \"YouTube\"]' WHERE id = ?", (entry["id"],))
+    band = bands_mod.Band(id=1, channel_id=1, name="Musical Interlude", start="09:30", minutes=90, days=(),
+                          kinds=("episode",), genres=("YouTube", "Music"), decades=(), feature=False, all_genres=True)
+    episodes = c.execute("SELECT COUNT(*) FROM media WHERE show_id = ? AND missing = 0 AND excluded = 0",
+                         (entry["show_id"],)).fetchone()[0]
+    have, _ = wanted._matching_items(c, band, ["episode"], 6 * 3600)
+    assert episodes and have == episodes, "every episode of the Music creator counts"
+    c.close()
