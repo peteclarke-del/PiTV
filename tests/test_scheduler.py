@@ -1326,6 +1326,13 @@ def test_a_band_fills_from_the_line_up_its_channel_names(tmp_path):
     assert all(w["show_title"] in spread for w in mine)
     assert all(w["show_title"] in w["search"]["phrase"] and w["show_title"] in w["dest_dir"] for w in mine)
     assert all(w["match"]["id"].startswith("src") for w in mine), "the source it comes from travels with it"
+
+    # A delivery links the entry to the series it has become. It is still fetched one episode
+    # at a time, so it stays a source: leaving it out silenced each creator after one video.
+    show = conn.execute("SELECT id FROM shows LIMIT 1").fetchone()[0]
+    with dbm.tx(conn):
+        conn.execute("UPDATE lineup SET show_id = ? WHERE channel_id = ? AND title = 'Source 1'", (show, channel))
+    assert "Source 1" in {e["title"] for e in wanted._lineup_entries(conn, channel)}
     conn.close()
 
 

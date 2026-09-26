@@ -202,11 +202,16 @@ def _lineup_entries(conn: sqlite3.Connection, channel_id: int) -> list[dict[str,
     """A channel's line-up entries that name material rather than hold it: a series somebody
     added whose episodes are fetched one at a time. Shaped like an item so a band's own test
     can be used on it unchanged, which is what stops this module having a second opinion about
-    what a band wants."""
+    what a band wants.
+
+    An entry stays a source after its first delivery links it to a series: it is still fetched
+    one episode at a time. Leaving linked entries out stopped a band asking a creator for more
+    the moment one video had arrived, so "Musical Interlude" had three of its twelve creators
+    fall silent after a video each."""
     rows = rows_to_dicts(conn.execute(
         "SELECT id, title, year, genres, next_episode, episode_count, episode_minutes, transient"
         " FROM lineup WHERE channel_id = ? AND enabled = 1 AND source != 'library'"
-        " AND kind = 'show' AND show_id IS NULL ORDER BY id", (channel_id,)))
+        " AND kind = 'show' ORDER BY id", (channel_id,)))
     for e in rows:
         e["genres"] = genre_list(e.get("genres"))
     return rows
