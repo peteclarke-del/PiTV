@@ -737,10 +737,13 @@ A band whose channel names nothing to search for fills from its line-up instead:
 entry the band would take for its next episode, round robin, as ordinary wanted rows. For an
 entry whose `match` is a creator's channel (`youtube_channel`) the request carries the band's
 item limit as `max_minutes`, a number beside `dest_dir`, and season 0: pitv_content numbers only
-that creator's videos between `channel_shortest_minutes` and `max_minutes`, oldest first,
-leaves out a video whose length the listing does not give, judges the delivery by that range
-instead of any episode window, and files it as `S00Enn` in the creator's own
-"<acquire>/tvshows/<Creator>/Season 00". So a band's numbering and the series' never share a
+that creator's videos between one minute (or `min_minutes`, when a request carries it) and
+`max_minutes`, oldest first. The floor is not `channel_shortest_minutes`, which keeps Shorts out
+of a series' numbering and at four minutes would shut out most songs; Shorts are left out by
+their address in any case. It leaves out a video whose length the listing does not give,
+judges the delivery by that range instead of any episode window, and files it as `S00Enn` in
+the creator's own "<acquire>/tvshows/<Creator>/Season 00". So a band's numbering and the
+series' never share a
 number or a folder, and the band's clips stay in the creator's series, which the owner's line-up
 entry holds and gives its genres. PiTV schedules no season 0 as part of any series' run; for a
 series held by a channel entry, bands alone draw on it. A video in both numberings is fetched
