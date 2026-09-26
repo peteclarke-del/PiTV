@@ -78,7 +78,7 @@
 
 <div class="stack">
   <div class="row" style="gap:.5rem"><h2 style="margin:0">Channels and line-ups</h2><AppBadge app="pitv" /></div>
-  <p class="scope" style="margin:-.4rem 0 0">What each channel carries and how PiTV schedules it. Changes apply on the next schedule build.</p>
+  <p class="scope" style="margin:-.4rem 0 0">What each channel carries and how PiTV schedules it. After a change the schedule is rebuilt from now a few seconds after you stop editing; what is on air, locked slots and promised remote programmes stay.</p>
   <div class="row">
     <button class="primary" onclick={() => (editing = {})}>Add channel</button>
     <span class="spacer"></span>
@@ -91,7 +91,7 @@
   <p class="tiny muted" style="margin:-.5rem 0 0">Line-ups decide which series and films each channel carries. Pinned entries survive rebalance; a series or film can be on one channel only.</p>
   <DataTable id="channels-list" {columns} rows={channels} sort={{ key: 'number', dir: 'asc' }} empty="No channels."
     onrow={(c) => (editing = c)} rowClass={(c) => (c.enabled ? '' : 'off')} />
-  <p class="tiny muted">Toggle a channel on or off with the switch; reorder by editing numbers. Enabling, disabling and other channel changes apply on the next schedule build (Dashboard: Build schedule or Rebuild week).</p>
+  <p class="tiny muted">Toggle a channel on or off with the switch; reorder by editing numbers. After enabling, disabling or any other channel change, the schedule is rebuilt from now a few seconds after you stop editing.</p>
 </div>
 
 <style>

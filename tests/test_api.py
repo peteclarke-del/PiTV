@@ -1238,3 +1238,47 @@ def test_a_whole_class_of_failed_requests_is_retried_at_once(client, env):
         with dbm.tx(conn):
             conn.execute("DELETE FROM wanted WHERE title IN ('R1', 'R2', 'R3')")
         conn.close()
+
+
+def test_a_configuration_change_asks_for_the_schedule_it_governs(client, config_rebuilds):
+    """What is set in the admin is what the schedule follows, and it used to reach only days
+    built later: Musical Interlude's new band waited for somebody to press Rebuild. A channel or
+    band change rebuilds that channel, a schedule setting every channel, and a setting that does
+    not shape the schedule (the player's) nothing."""
+    channel = client.get("/api/channels").json()[0]
+    config_rebuilds.clear()
+    assert client.put(f"/api/channels/{channel['id']}", json={"name": channel["name"]}).status_code == 200
+    assert config_rebuilds == [([channel["number"]], "a channel or its bands changed")]
+
+    config_rebuilds.clear()
+    assert client.put("/api/settings", json={"day_start": "08:00"}).status_code == 200
+    assert config_rebuilds == [(None, "schedule settings changed")], "a schedule setting rebuilds every channel"
+
+    config_rebuilds.clear()
+    assert client.put("/api/settings", json={"badge_seconds": 5}).status_code == 200
+    assert config_rebuilds == [], "a player setting does not touch the schedule"
+
+
+def test_edits_in_a_run_are_rebuilt_together_once_they_stop():
+    """A band is edited a field at a time. Each change waits for the next, and the channels named
+    meanwhile are rebuilt in one job; any change to every channel makes it every channel."""
+    import time as time_mod
+
+    from conftest import REAL_REBUILD_REQUEST as real
+
+    from pitv.web.config_rebuild import ConfigRebuild
+
+    submitted: list[str] = []
+    jobs = type("Jobs", (), {"submit": lambda self, kind, label, fn: submitted.append(label),
+                             "progress": lambda *a: None})()
+    rebuild = ConfigRebuild(jobs, ":memory:", lambda: None, settle=0.1)
+    real(rebuild, [3], "band start")
+    real(rebuild, [5], "band length")
+    real(rebuild, [3], "band genres")
+    time_mod.sleep(0.4)
+    assert submitted == ["Rebuild channel 3, 5 after a settings change"]
+
+    real(rebuild, [3], "band start")
+    real(rebuild, None, "day start")
+    time_mod.sleep(0.4)
+    assert submitted[1] == "Rebuild every channel after a settings change"

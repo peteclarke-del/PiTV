@@ -672,8 +672,22 @@ def _clean_channel_fields(body: dict[str, Any]) -> dict[str, Any]:
     return fields
 
 
+def _config_changed(request: Request, conn: sqlite3.Connection, reason: str, *,
+                    channel_ids: list[int | None] | None = None) -> None:
+    """The configuration is what the schedule follows: rebuild what this change governs, from now
+    (web/config_rebuild.py). `channel_ids` None means every channel."""
+    numbers: list[int] | None = None
+    if channel_ids is not None:
+        ids = [c for c in channel_ids if c is not None]
+        numbers = [r[0] for r in conn.execute(
+            f"SELECT number FROM channels WHERE id IN ({','.join('?' * len(ids))})", ids)] if ids else []
+        if not numbers:
+            return
+    request.app.state.config_rebuild.request(numbers, reason)
+
+
 @router.post("/channels")
-def create_channel(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
+def create_channel(request: Request, body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
     fields = _clean_channel_fields(body)
     if "number" not in fields:
         nxt = conn.execute("SELECT COALESCE(MAX(number), 0) + 1 FROM channels").fetchone()[0]
@@ -688,11 +702,13 @@ def create_channel(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = 
                 band_rules.save(conn, cid, new_bands, now_ts())
     except sqlite3.IntegrityError as exc:
         raise HTTPException(409, f"channel number {fields['number']} is already used") from exc
+    _config_changed(request, conn, "a channel was added", channel_ids=[cid])
     return _channel(conn, cid)
 
 
 @router.put("/channels/{cid}")
-def update_channel(cid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
+def update_channel(cid: int, request: Request, body: dict[str, Any] = Body(...),
+                   conn: sqlite3.Connection = Depends(admin_conn)):
     _channel(conn, cid)
     fields = _clean_channel_fields(body)
     new_bands = _clean_bands(body)
@@ -703,6 +719,7 @@ def update_channel(cid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Con
                 band_rules.save(conn, cid, new_bands, now_ts())
     except sqlite3.IntegrityError as exc:
         raise HTTPException(409, f"channel number {fields.get('number')} is already used") from exc
+    _config_changed(request, conn, "a channel or its bands changed", channel_ids=[cid])
     return _channel(conn, cid)
 
 
@@ -747,6 +764,8 @@ def put_settings(request: Request, body: dict[str, Any] = Body(...), conn: sqlit
         for k, v in clean.items():
             set_setting(conn, k, v)
     request.app.state.player.call("settings-changed")
+    if settings_schema.shapes_schedule(clean):
+        _config_changed(request, conn, "schedule settings changed")
     # Best effort and at once, so the admin has one screen to choose. The player's maintenance
     # pass repeats it until pitv_content has taken it.
     if "display_profile" in clean and (failed := push_screen(all_settings(conn))):
@@ -765,6 +784,8 @@ def reset_settings(request: Request, body: dict[str, Any] = Body(default={}), co
             if isinstance(k, str) and k in DEFAULT_SETTINGS and k not in SECRET_SETTINGS:
                 set_setting(conn, k, DEFAULT_SETTINGS[k])
     request.app.state.player.call("settings-changed")
+    if settings_schema.shapes_schedule(keys):
+        _config_changed(request, conn, "schedule settings reset")
     return _public_settings(conn)
 
 
@@ -1283,7 +1304,7 @@ def lineup_known(kind: str = "show", conn: sqlite3.Connection = Depends(admin_co
 
 
 @router.post("/lineup")
-def lineup_add(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
+def lineup_add(request: Request, body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
     # A YouTube channel or playlist is a series whose episodes are its videos, so it is an
     # ordinary entry whose confirmed identity names the channel instead of a television
     # database. The address is parsed here rather than in the browser so one reading of it is
@@ -1295,7 +1316,7 @@ def lineup_add(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depe
         body = {**body, "kind": "show", "match": found, "catalogue": True,
                 "genres": genre_rules.canonical_all([*(body.get("genres") or []), "YouTube"])}
     try:
-        return lineup_mod.add(conn, optional_int(body.get("channel_id"), "channel_id"), show_id=body.get("show_id"), media_id=body.get("media_id"),
+        entry = lineup_mod.add(conn, optional_int(body.get("channel_id"), "channel_id"), show_id=body.get("show_id"), media_id=body.get("media_id"),
                               title=body.get("title"), year=body.get("year"), kind=body.get("kind"), genres=body.get("genres"),
                               transient=body.get("transient"), episode_minutes=body.get("episode_minutes"),
                               source="catalogue" if body.get("catalogue") else "manual", match=body.get("match"),
@@ -1305,27 +1326,41 @@ def lineup_add(body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depe
                               network=optional_text(body.get("network"), "network"))
     except (KeyError, ValueError, TypeError) as exc:
         raise HTTPException(400, str(exc)) from exc
+    _config_changed(request, conn, "a line-up entry was added", channel_ids=[entry.get("channel_id")])
+    return entry
 
 
 @router.put("/lineup/{lid}")
-def lineup_update(lid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
-    if dbm.find_id(conn, "lineup", "id", lid) is None:
+def lineup_update(lid: int, request: Request, body: dict[str, Any] = Body(...),
+                  conn: sqlite3.Connection = Depends(admin_conn)):
+    before = conn.execute("SELECT channel_id FROM lineup WHERE id = ?", (lid,)).fetchone()
+    if before is None:
         raise HTTPException(404, "line-up entry not found")
     try:
-        return lineup_mod.update(conn, lid, body)
+        entry = lineup_mod.update(conn, lid, body)
     except (TypeError, ValueError) as exc:
         raise HTTPException(400, str(exc)) from exc
+    # Moved to another channel, it leaves one and joins the other.
+    _config_changed(request, conn, "a line-up entry changed",
+                    channel_ids=[before["channel_id"], entry.get("channel_id")])
+    return entry
 
 
 @router.delete("/lineup/{lid}")
-def lineup_delete(lid: int, conn: sqlite3.Connection = Depends(admin_conn)):
+def lineup_delete(lid: int, request: Request, conn: sqlite3.Connection = Depends(admin_conn)):
+    before = conn.execute("SELECT channel_id FROM lineup WHERE id = ?", (lid,)).fetchone()
     lineup_mod.remove(conn, lid)
+    if before is not None:
+        _config_changed(request, conn, "a line-up entry was removed", channel_ids=[before["channel_id"]])
     return {"ok": True}
 
 
 @router.post("/lineup/generate")
-def lineup_generate(body: dict[str, Any] = Body(default={}), conn: sqlite3.Connection = Depends(admin_conn)):
-    return lineup_mod.generate(conn, rebalance=bool(body.get("rebalance")))
+def lineup_generate(request: Request, body: dict[str, Any] = Body(default={}),
+                    conn: sqlite3.Connection = Depends(admin_conn)):
+    result = lineup_mod.generate(conn, rebalance=bool(body.get("rebalance")))
+    _config_changed(request, conn, "the line-ups were regenerated")
+    return result
 
 
 @router.get("/lineup/export")
@@ -1334,8 +1369,11 @@ def lineup_export(conn: sqlite3.Connection = Depends(admin_conn)):
 
 
 @router.post("/lineup/import")
-def lineup_import(body: dict[str, Any] = Depends(admin_json), conn: sqlite3.Connection = Depends(admin_conn)):
+def lineup_import(request: Request, body: dict[str, Any] = Depends(admin_json),
+                  conn: sqlite3.Connection = Depends(admin_conn)):
     try:
-        return lineup_mod.import_doc(conn, body)
+        result = lineup_mod.import_doc(conn, body)
     except (TypeError, ValueError) as exc:
         raise HTTPException(400, str(exc)) from exc
+    _config_changed(request, conn, "the line-ups were imported")
+    return result

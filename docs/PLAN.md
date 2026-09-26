@@ -797,6 +797,18 @@ lead window, withdraw requests that were being fetched and leave the near days t
 alone. Such a slot (`Builder._promised`) survives a rebuild where it stands. The readiness check
 is not bound by it: it rebuilds without remote titles precisely to replace what has not arrived.
 
+### 4.9a Configuration changes
+
+The configuration is what the schedule follows, so a change to it rebuilds what it governs from
+now, with nobody pressing Rebuild (`web/config_rebuild.py`). Saving a channel or its bands
+rebuilds that channel; adding, changing or removing a line-up entry rebuilds its channel (both,
+when an entry moves); regenerating or importing the line-ups, or saving a setting on the
+Broadcast day, Programming, Certificates or Adverts panes, rebuilds every channel. Screen,
+player, cache and maintenance settings rebuild nothing. Edits come in runs, so a change waits
+ten seconds for the next and the channels named meanwhile are rebuilt in one background job.
+What any rebuild keeps is kept: what is on air, locked slots, and remote programmes already
+promised inside the lead window.
+
 ### 4.10 Manual editing
 
 In the admin Schedule tab a slot can be locked or unlocked, removed, replaced with a chosen

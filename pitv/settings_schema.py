@@ -360,3 +360,14 @@ def schema(values: dict[str, Any], defaults: dict[str, Any]) -> dict[str, Any]:
         "fields": [{**f, "group": pane_label[f["pane"]], "default": defaults.get(f["key"]), "value": values.get(f["key"])}
                    for f in FIELDS],
     }
+
+
+# The panes whose settings decide what a schedule holds; a change to one rebuilds every channel
+# from now (web/config_rebuild.py). Screen, player, cache and maintenance settings do not.
+SCHEDULE_PANES = frozenset({"day", "programming", "certificates", "adverts"})
+
+
+def shapes_schedule(keys: Any) -> bool:
+    """Whether any of these settings is one the schedule is built by."""
+    pane_of = {f["key"]: f["pane"] for f in FIELDS}
+    return any(pane_of.get(k) in SCHEDULE_PANES for k in keys)

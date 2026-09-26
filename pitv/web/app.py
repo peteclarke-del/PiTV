@@ -26,6 +26,7 @@ from ..logsetup import setup_logging
 from ..stream import Streams
 from .api import admin, content, public, stream, wanted
 from .auth import content_token
+from .config_rebuild import ConfigRebuild
 from .events import EventBus
 from .keeper import Keeper
 from .player_client import PlayerClient
@@ -212,6 +213,11 @@ def create_app(cfg: Config) -> FastAPI:
     app.state.bus = bus
     app.state.jobs = JobRunner(bus)
     app.state.player = PlayerClient(cfg.player_socket)
+
+    def schedule_rebuilt() -> None:
+        bus.publish_threadsafe("schedule", {"changed": True})
+        app.state.player.call("schedule-changed")
+    app.state.config_rebuild = ConfigRebuild(app.state.jobs, cfg.db_path, schedule_rebuilt)
     app.state.player_state = {"online": False}
     app.state.started = time.time()
     app.state.content_token = content_token(cfg.data_dir)

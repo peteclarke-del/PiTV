@@ -121,7 +121,7 @@
 
 <Drawer open={true} title={isNew ? 'New channel' : `Channel ${c.number}: ${c.name}`} {onclose} wide>
   <div class="stack">
-    <p class="scope" style="margin:0"><AppBadge app="pitv" /> A PiTV channel: it changes what this channel carries and how its day is built, from the next schedule build.</p>
+    <p class="scope" style="margin:0"><AppBadge app="pitv" /> A PiTV channel: it changes what this channel carries and how its day is built, and the schedule is rebuilt from now a few seconds after you stop editing.</p>
     <Tabs tabs={SECTIONS} bind:active={section} label="Channel settings" />
 
     {#if section === 'channel'}

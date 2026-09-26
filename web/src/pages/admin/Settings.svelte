@@ -24,7 +24,7 @@
   const save = guard(async (body) => {
     if (await tryApi(put('/api/settings', body), { success: 'Settings saved' })) { await load(); savedOnce = true; }
   });
-  const build = guard(() => buildSchedule().then((r) => { if (r) toast.info('Changes apply to newly built days; use Rebuild week on the dashboard to redo existing days.'); }));
+  const build = guard(() => buildSchedule().then((r) => { if (r) toast.info('Schedule built.'); }));
 </script>
 
 {#if doc}
@@ -33,7 +33,7 @@
       <p class="scope" style="margin:0;flex:1">Every setting here is <AppBadge app="pitv" />'s: it shapes the schedule, playback and what PiTV asks pitv_content for. pitv_content's own settings are under Content, Settings.</p>
       <button onclick={build} disabled={build.busy}>Build schedule</button>
     </div>
-    {#if savedOnce}<div class="note">Saved. Schedule settings apply to days built from now on: use Build schedule for new days, or Rebuild week on the dashboard to redo the existing ones.</div>{/if}
+    {#if savedOnce}<div class="note">Saved. For a setting that shapes the schedule, every channel's schedule is rebuilt from now a few seconds after you stop editing.</div>{/if}
     <!-- `panes` is already narrowed to the level, by the fields each pane holds. -->
     <Tabs tabs={panes.map((p) => ({ id: p.id, label: p.label, title: p.help, level: 'basic' }))} active={pane?.id} onselect={(id) => navigate(`/admin/settings/${id}`)} label="Settings panes" />
     {#if pane}

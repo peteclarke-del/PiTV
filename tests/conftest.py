@@ -14,6 +14,9 @@ from pitv import db as dbm
 from pitv.catalogue import import_and_place
 from pitv.config import Config
 from pitv.devtools import build_fake_library
+from pitv.web.config_rebuild import ConfigRebuild
+
+REAL_REBUILD_REQUEST = ConfigRebuild.request   # the tests of the rebuild itself use this
 
 # Encoded clips are kept between tests and between runs: the suite makes the same few dozen
 # lengths every time, and rendering them is nearly all of its running time. The suffix is
@@ -30,6 +33,17 @@ def _no_real_player(monkeypatch):
     that makes them never starts here."""
     from pitv.web import keeper
     monkeypatch.setattr(keeper.Keeper, "start", lambda self: None)
+
+
+@pytest.fixture(autouse=True)
+def config_rebuilds(monkeypatch):
+    """A settings change asks for a rebuild ten seconds later, which in a test would build a
+    week in the middle of whatever runs next. Requests are recorded here instead; the rebuild
+    itself is tested directly (test_api.py)."""
+    asked: list[tuple[Any, str]] = []
+    monkeypatch.setattr(ConfigRebuild, "request",
+                        lambda self, channels, reason: asked.append((None if channels is None else sorted(channels), reason)))
+    return asked
 
 
 def make_library(root: Path, max_episodes: int) -> dict[str, Any]:
