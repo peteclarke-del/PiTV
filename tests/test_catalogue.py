@@ -699,3 +699,22 @@ def test_the_parts_of_a_split_upload_are_imported(tmp_path):
     other = next(i for i in doc["items"] if i["kind"] == "episode" and i not in episodes)
     assert tuple(conn.execute("SELECT part, parts FROM media WHERE uid = ?", (other["uid"],)).fetchone()) == (None, None)
     conn.close()
+
+
+def test_a_genre_a_source_has_withdrawn_does_not_stay(tmp_path, monkeypatch):
+    """Online genres were added to whatever the last lookup had said, so a genre once returned in
+    error stayed for good: TMDb briefly called Colossal and Cinderella documentaries, and both
+    films sat on the documentary channel. A lookup now adds to the index's own genres only."""
+    from pitv import catalogue
+
+    conn = make_library(tmp_path / "withdrawn", max_episodes=1)["conn"]
+    film = conn.execute("SELECT id FROM media WHERE kind = 'movie' LIMIT 1").fetchone()["id"]
+    with dbm.tx(conn):
+        conn.execute("UPDATE media SET genres = ?, certificate = NULL, metadata_checked_at = NULL, enriched = ?"
+                     " WHERE id = ?", (json.dumps(["Comedy"]), json.dumps({"genres": ["Comedy", "Documentary"]}), film))
+    monkeypatch.setattr(catalogue, "_lookup_metadata",
+                        lambda *a, **k: ({"genres": ["Comedy", "Fantasy"], "certificate": "15"}, ""))
+    catalogue.enrich_missing_metadata(conn, limit=500, force=True)
+    enriched = json.loads(conn.execute("SELECT enriched FROM media WHERE id = ?", (film,)).fetchone()["enriched"])
+    assert enriched["genres"] == ["Comedy", "Fantasy"], "the withdrawn genre is gone"
+    conn.close()

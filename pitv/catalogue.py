@@ -573,7 +573,10 @@ def enrich_missing_metadata(conn: sqlite3.Connection, *, limit: int = 50, force:
         if candidate:
             enriched = row.get("enriched") if isinstance(row.get("enriched"), dict) else {}
             had_genres = bool(genre_list(effective(row).get("genres")))
-            genres = genre_list([*(effective(row).get("genres") or []), *(candidate.get("genres") or [])])
+            # The index's own genres and what the source says now, never what it said before: a
+            # genre a source has since withdrawn stayed for good, and TMDb's short-lived
+            # "Documentary" on Colossal and Cinderella put both films on the documentary channel.
+            genres = genre_list([*genre_list(row.get("genres")), *(candidate.get("genres") or [])])
             if candidate.get("certificate") and not normalise_cert(as_text(effective(row).get("certificate"))):
                 enriched = {**enriched, "certificate": candidate["certificate"]}
             if candidate.get("year") and not effective(row).get("year"):
