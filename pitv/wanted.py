@@ -23,7 +23,7 @@ from datetime import timedelta
 from typing import Any
 
 from . import genres as genre_rules
-from . import tool_client
+from . import tool_client, youtube
 from .db import (
     DEFAULT_SETTINGS,
     LIVE,
@@ -36,9 +36,9 @@ from .db import (
 )
 from .lineup import carries_programmes
 from .scheduler import bands
-from .scheduler.library import USABLE, lineup_genres
+from .scheduler.library import BAND_USABLE, USABLE, lineup_genres
 from .scheduler.rules import tz_of
-from .scheduler.slots import episode_name
+from .scheduler.slots import episode_name, json_field
 
 log = logging.getLogger("pitv.wanted")
 
@@ -209,26 +209,38 @@ def _lineup_entries(conn: sqlite3.Connection, channel_id: int) -> list[dict[str,
     the moment one video had arrived, so "Musical Interlude" had three of its twelve creators
     fall silent after a video each."""
     rows = rows_to_dicts(conn.execute(
-        "SELECT id, title, year, genres, next_episode, episode_count, episode_minutes, transient"
+        "SELECT id, title, year, genres, next_episode, episode_count, episode_minutes, transient, match"
         " FROM lineup WHERE channel_id = ? AND enabled = 1 AND source != 'library'"
         " AND kind = 'show' ORDER BY id", (channel_id,)))
     for e in rows:
         e["genres"] = genre_list(e.get("genres"))
+        # A creator's channel is numbered for a band within the band's length and filed apart
+        # (contract section 9); a series keeps its own numbering, which is what it has.
+        e["band_season"] = BAND_SEASON if youtube.is_channel(json_field(e.pop("match", None))) else 1
     return rows
 
 
-def _asked_episodes(conn: sqlite3.Connection, lineup_ids: list[int]) -> tuple[dict[int, set[int]], dict[int, int]]:
+BAND_SEASON = 0   # a band's requests number a creator's videos within its length, apart from the series'
+
+
+def _asked_episodes(conn: sqlite3.Connection, seasons: dict[int, int]) -> tuple[dict[int, set[int]], dict[int, int]]:
     """Per entry: the episode numbers ever requested, so none is asked for twice, and how many
     of those are still outstanding. The second is what says whether a band has enough on order:
     a band is not short merely because its material has not arrived yet, and asking again for
     what is already queued is how a queue becomes a list nobody can work through."""
-    if not lineup_ids:
+    if not seasons:
         return {}, {}
+    lineup_ids = sorted(seasons)
     marks = ",".join("?" * len(lineup_ids))
     asked: dict[int, set[int]] = {i: set() for i in lineup_ids}
     open_now: dict[int, int] = dict.fromkeys(lineup_ids, 0)
-    for w in conn.execute(f"SELECT lineup_id, episode, status FROM wanted WHERE lineup_id IN ({marks})", lineup_ids):
+    for w in conn.execute(f"SELECT lineup_id, episode, status, season FROM wanted WHERE lineup_id IN ({marks})",
+                          lineup_ids):
         lineup_id = int(w["lineup_id"])
+        # Each entry's numbering is counted in the season it is asked in, so a band's (0) and a
+        # series' (1) never take each other's numbers.
+        if (0 if w["season"] == 0 else 1) != seasons[lineup_id]:
+            continue
         asked[lineup_id].add(int(w["episode"] or 0))
         if w["status"] not in ("done", "failed"):
             open_now[lineup_id] += 1
@@ -339,8 +351,8 @@ def request_band_lineup(conn: sqlite3.Connection, settings: dict[str, Any]) -> d
     # waiting for; the passes come round every few minutes and the bands fill over days.
     budget = max(1, int(settings.get("band_fetch_max", 60)))
     now = now_ts()
-    every_id = sorted({int(e["id"]) for n in needs for e in n["entries"]})
-    asked, on_order = _asked_episodes(conn, every_id)   # shared: a creator in two bands is asked once
+    seasons = {int(e["id"]): int(e["band_season"]) for n in needs for e in n["entries"]}
+    asked, on_order = _asked_episodes(conn, seasons)   # shared: a creator in two bands is asked once
     rows: list[tuple[Any, ...]] = []
     by_band: dict[int, int] = {}
     # Round robin over the bands as well as within them, so the neediest band by the timetable
@@ -373,8 +385,10 @@ def request_band_lineup(conn: sqlite3.Connection, settings: dict[str, Any]) -> d
                 continue     # the run is known to end before this
             asked[lineup_id].add(number)
             by_band[need["band"].id] = by_band.get(need["band"].id, 0) + 1
-            rows.append(("episode", episode_name(number), entry.get("year"), 1, number,
-                         lineup_id, int(entry.get("transient") or 0), now))
+            channel_entry = entry["band_season"] == BAND_SEASON
+            rows.append(("episode", episode_name(number), entry.get("year"), entry["band_season"], number,
+                         lineup_id, int(entry.get("transient") or 0), now,
+                         need["minutes"] if channel_entry else None))
         if len(rows) == before:
             break            # every entry has been asked for everything it has
     if not rows:
@@ -382,7 +396,7 @@ def request_band_lineup(conn: sqlite3.Connection, settings: dict[str, Any]) -> d
     with tx(conn):
         conn.executemany(
             "INSERT INTO wanted(kind, title, year, season, episode, lineup_id, transient,"
-            " created_at, provider, auto) VALUES (?,?,?,?,?,?,?,?,'auto',1)", rows)
+            " created_at, max_minutes, provider, auto) VALUES (?,?,?,?,?,?,?,?,?,'auto',1)", rows)
     # `last_fetch_at` is deliberately not stamped: it records a helping asked of pitv_content and
     # is what stops a band asking for another while one is queued there. These are wanted rows,
     # which the shortfall above already accounts for, and stamping it silenced the doctor and
@@ -406,7 +420,7 @@ def _matching_items(conn: sqlite3.Connection, band: bands.Band, kinds: list[str]
     came back every hour because the shortfall it was answering was imaginary."""
     rows = conn.execute(
         f"SELECT id, show_id, genres, year, duration, concert FROM media WHERE kind IN ({','.join('?' * len(kinds))})"
-        f" AND {USABLE} AND duration > 0", tuple(kinds)).fetchall()
+        f" AND {BAND_USABLE} AND duration > 0", tuple(kinds)).fetchall()
     minutes = max(1, limit_seconds // 60)
     # The owner's genres for a series count here as they do where the band places it: without
     # them "Musical Interlude" counted none of the three videos it was airing, since the files

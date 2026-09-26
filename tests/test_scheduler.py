@@ -2190,3 +2190,56 @@ def test_a_band_counts_what_it_would_place_by_the_owners_genres(tmp_path):
     have, _ = wanted._matching_items(c, band, ["episode"], 6 * 3600)
     assert episodes and have == episodes, "every episode of the Music creator counts"
     c.close()
+
+
+def test_a_band_asks_a_creator_for_videos_within_its_length_as_season_0(tmp_path):
+    """A band asked each creator for its Nth upload, whatever its length, and got hour-long live
+    chats for a band of five-minute videos. A request for a creator's channel now carries the
+    band's length and season 0, which pitv_content numbers within that length and files in the
+    creator's own Season 00 (contract section 9); a series keeps season 1 and no limit. The
+    creator's season 0 feeds its bands and stays out of the series' own run."""
+    from pitv import lineup as lineup_mod
+    from pitv import wanted
+    from pitv.content import manifest
+    from pitv.scheduler.library import Library
+    from pitv.scheduler.policy import SchedulerPolicy
+
+    ctx = make_library(tmp_path, max_episodes=2)
+    conn = ctx["conn"]
+    channel = conn.execute("SELECT id FROM channels WHERE content = 'general' ORDER BY number LIMIT 1").fetchone()["id"]
+    with dbm.tx(conn):
+        conn.execute("UPDATE channels SET fetch_kind = '', pattern = '' WHERE id = ?", (channel,))
+        conn.execute("UPDATE channels SET enabled = 0 WHERE id != ?", (channel,))
+        _band_row(conn, channel, "Interlude", "20:00", 90, ["episode"], genres=["Curated"])
+        conn.execute("UPDATE band SET fill = json_set(fill, '$.max_minutes', 7) WHERE channel_id = ?", (channel,))
+    creator = lineup_mod.add(conn, channel, title="A Creator", kind="show", genres=["Curated"],
+                             match={"source": "youtube_channel", "id": "UCabcdefghijklmnopqrstuv",
+                                    "url": "https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv"})
+    series = lineup_mod.add(conn, channel, title="A Series", kind="show", genres=["Curated"],
+                            match={"source": "elsewhere", "id": "s1", "url": "https://example.invalid/s1"})
+    wanted.request_band_lineup(conn, dbm.all_settings(conn))
+    rows = {r["lineup_id"]: r for r in conn.execute("SELECT * FROM wanted WHERE lineup_id IN (?, ?)",
+                                                    (creator["id"], series["id"]))}
+    assert rows[creator["id"]]["season"] == 0 and rows[creator["id"]]["max_minutes"] == 7
+    assert rows[series["id"]]["season"] == 1 and rows[series["id"]]["max_minutes"] is None
+
+    doc = {w["request_id"]: w for w in manifest(conn, days=1, now=dbm.now_ts())["wanted"]}
+    mine = doc[f"w:{rows[creator['id']]['id']}"]
+    assert mine["max_minutes"] == 7.0 and mine["dest_dir"].endswith("A Creator/Season 00")
+    assert "max_minutes" not in doc[f"w:{rows[series['id']]['id']}"]
+
+    # Delivered clips are season 0 of the creator's series: its bands take them, its run does not.
+    settings = dbm.all_settings(conn)
+
+    def library():
+        return Library(conn, SchedulerPolicy(settings, dbm.now_ts()), now=dbm.now_ts())
+    before = library()
+    clip, show = next((m["id"], m["show_id"]) for m in before.band_pool("episode")
+                      if m["show_id"] in before.shows and len(before.shows[m["show_id"]].episodes) > 1)
+    with dbm.tx(conn):
+        conn.execute("UPDATE lineup SET show_id = ? WHERE id = ?", (show, creator["id"]))
+        conn.execute("UPDATE media SET season = 0, duration = 200 WHERE id = ?", (clip,))
+    after = library()
+    assert show in after.shows and clip not in {e["id"] for e in after.shows[show].episodes}, "not in the series' run"
+    assert clip in {m["id"] for m in after.band_pool("episode")}, "but its bands take it"
+    conn.close()

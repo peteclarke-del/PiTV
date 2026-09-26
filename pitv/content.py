@@ -121,8 +121,12 @@ def _fetch_fields(w: dict[str, Any], show_title: str | None, acquire: str,
               "year_tolerance": 0 if w["kind"] == "music" else 2}
     if not youtube.is_channel(_match(w.get("lineup_match"))):
         search["duration_minutes"] = WANTED_MINUTES.get(w["kind"], [1, 240])
-    return {"search": search,
-            "dest_dir": _wanted_dest({**w, "title": show_title or w["title"]}, acquire)}
+    out = {"search": search, "dest_dir": _wanted_dest({**w, "title": show_title or w["title"]}, acquire)}
+    if w.get("max_minutes"):
+        # Raised for a band: the creator's Nth video of at most this length, filed as season 0
+        # of its own series so the band's numbering never meets the series' (contract section 9).
+        out["max_minutes"] = float(w["max_minutes"])
+    return out
 
 
 def _media_request(m: dict[str, Any], cache: MediaCache, acquire: str) -> dict[str, Any] | None:
@@ -360,7 +364,8 @@ def _wanted_dest(w: dict[str, Any], acquire: str) -> str:
     year = f" ({w['year']})" if w.get("year") else ""
     title = _folder(f"{w['title']}{year}")
     if w["kind"] == "episode":
-        return str(base / "tvshows" / title / f"Season {int(w.get('season') or 1):02d}")
+        season = 1 if w.get("season") is None else int(w["season"])   # 0 is a band's own numbering
+        return str(base / "tvshows" / title / f"Season {season:02d}")
     if w["kind"] == "movie":
         return str(base / "movies" / title)
     if w["kind"] == "music":

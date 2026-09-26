@@ -733,6 +733,20 @@ search is exhausted. With several bands waiting, each has something to show with
 instead of the first taking everything, and cache and index work never waits longer than one
 helping for the job boundary.
 
+A band whose channel names nothing to search for fills from its line-up instead: PiTV asks each
+entry the band would take for its next episode, round robin, as ordinary wanted rows. For an
+entry whose `match` is a creator's channel (`youtube_channel`) the request carries the band's
+item limit as `max_minutes`, a number beside `dest_dir`, and season 0: pitv_content numbers only
+that creator's videos between `channel_shortest_minutes` and `max_minutes`, oldest first,
+leaves out a video whose length the listing does not give, judges the delivery by that range
+instead of any episode window, and files it as `S00Enn` in the creator's own
+"<acquire>/tvshows/<Creator>/Season 00". So a band's numbering and the series' never share a
+number or a folder, and the band's clips stay in the creator's series, which the owner's line-up
+entry holds and gives its genres. PiTV schedules no season 0 as part of any series' run; for a
+series held by a channel entry, bands alone draw on it. A video in both numberings is fetched
+once: the second request is answered `done` with the file already filed, and PiTV binds it to
+that file. `max_minutes` on anything but a channel match is ignored.
+
 A helping that runs out of search queries having filed fewer than a quarter of its count ends
 its band: no remainder is queued, and its record in `GET /api/jobs` carries
 `exhausted: {searched, made, count, genres, years, max_minutes}`, where `searched` is the number

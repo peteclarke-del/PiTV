@@ -15,6 +15,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
+from .. import youtube
 from ..db import LIVE, effective, genre_list, rows_to_dicts
 from ..genres import programme_type, scheduling_class
 from . import bands
@@ -31,6 +32,12 @@ Rebuild = dict[int, tuple[int, int | None]]
 # Christmas film; sorted first, they were how every series opened its run. They stay in the
 # catalogue and can still be placed by hand or asked for through a line-up entry.
 USABLE = f"{LIVE} AND duration IS NOT NULL AND COALESCE(season, 1) != 0"
+# Season 0 is a library's specials, which nothing schedules, except for a creator's channel: there
+# it is what bands asked for, numbered within a band's length (contract section 9), and bands
+# alone draw on it. A series' own run never does, because USABLE still leaves it out.
+BAND_USABLE = (f"{LIVE} AND duration IS NOT NULL AND (COALESCE(season, 1) != 0 OR show_id IN"
+               " (SELECT show_id FROM lineup WHERE show_id IS NOT NULL"
+               f" AND json_extract(match, '$.source') = '{youtube.SOURCE}'))")
 
 
 def lineup_genres(conn: sqlite3.Connection) -> dict[int, list[str]]:
@@ -75,10 +82,10 @@ class Library:
     def allowed(self, media_id: int) -> bool:
         return media_id not in self.exclude_media_ids and (self.only_media_ids is None or media_id in self.only_media_ids)
 
-    def playable(self, kind: str, tail: str = "") -> list[dict[str, Any]]:
+    def playable(self, kind: str, tail: str = "", usable: str = USABLE) -> list[dict[str, Any]]:
         """Every file of `kind` this build may place, with admin overrides applied."""
         rows = rows_to_dicts(self.conn.execute(
-            f"SELECT * FROM media WHERE kind = ? AND {USABLE}" + tail, (kind,)))
+            f"SELECT * FROM media WHERE kind = ? AND {usable}" + tail, (kind,)))
         return [effective(m) for m in rows if self.allowed(m["id"])]
 
     def _load_library(self) -> None:
@@ -179,7 +186,7 @@ class Library:
         pitv_content's to describe and a re-import would undo anything written over it. Merging
         only widens what a band may place, never narrows it."""
         if kind not in self._pools:
-            items = self.playable(kind)
+            items = self.playable(kind, usable=BAND_USABLE)
             if kind == "episode":
                 # A band takes a split upload whole, as a series does, never one part on its own.
                 items = join_parts(sorted(items, key=lambda m: (m.get("show_id") or 0, m.get("season") or 999,
@@ -238,8 +245,11 @@ class Library:
             return
         taken: dict[int, set[int]] = {}                   # lineup_id -> episode numbers already asked for
         standing: dict[int, list[sqlite3.Row]] = {}       # lineup_id -> requests still open
+        # A band's requests (season 0) number a creator's videos within the band's length, apart
+        # from the series' own numbering: they neither take its numbers nor stand in for its slots.
         for w in self.conn.execute("SELECT id, lineup_id, episode, status FROM wanted"
-                                   " WHERE lineup_id IS NOT NULL ORDER BY lineup_id, episode, id"):
+                                   " WHERE lineup_id IS NOT NULL AND COALESCE(season, 1) != 0"
+                                   " ORDER BY lineup_id, episode, id"):
             taken.setdefault(w["lineup_id"], set()).add(int(w["episode"] or 0))
             if w["status"] not in ("failed", "done"):
                 standing.setdefault(w["lineup_id"], []).append(w)
