@@ -533,6 +533,14 @@ cgroup. What the restart showed:
   one ended its band there, and only PiTV's hourly asking kept bands moving. Band continuations
   should appear in the queue by themselves from its restart at about 23:55; with b100bc9 and
   d9147cd that is the first time both sides of the band loop have worked as designed.
+- Musical Interlude on PiTV Tube (26 September): a band of short music videos drawing on the
+  owner's music creators had 3 usable videos and ran 80 minutes of card. Fixed across both
+  applications: the band's count now reads the owner's genres (d8c9628); a creator stays a
+  source after its first video (683366a); a band's request to a creator carries the band's
+  length, numbered from one minute and filed as Season 00 of the creator's own series (66083a3,
+  abf4f64; pitv_content cf966be, 70eff34, 3f8c2b8). Verified at 20:37 on the first four
+  deliveries: season 0 of the owning series, in the band's pool, not in the series' run. The
+  band holds 17 videos, and the next day's band plays 67 of its 90 minutes.
 - The player's mpv closed at 02:34:50, two seconds after a click in its window and fifteen after
   a burst of eleven channel loads in one second; the player exited as designed and the web
   service's keeper started another twenty seconds later.
