@@ -541,6 +541,10 @@ cgroup. What the restart showed:
   abf4f64; pitv_content cf966be, 70eff34, 3f8c2b8). Verified at 20:37 on the first four
   deliveries: season 0 of the owning series, in the band's pool, not in the series' run. The
   band holds 17 videos, and the next day's band plays 67 of its 90 minutes.
+- Deploying means restarting the player as well as the web service: band asking, the keeper's
+  maintenance and readiness run in the player process. On the 26th only the web was restarted
+  after 66083a3, so the player raised fifteen band requests the old way (season 1, no length)
+  until it was restarted at 21:20.
 - The player's mpv closed at 02:34:50, two seconds after a click in its window and fifteen after
   a burst of eleven channel loads in one second; the player exited as designed and the web
   service's keeper started another twenty seconds later.
