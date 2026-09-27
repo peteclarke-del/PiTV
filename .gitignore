@@ -18,3 +18,7 @@ web/dist/
 dist/
 installer/cli/pitv-installer*
 pitv-install.json
+
+# Docker development stack: machine-specific settings and the build staging folder
+docker/.env
+docker/stage/

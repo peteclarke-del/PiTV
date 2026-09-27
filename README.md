@@ -64,6 +64,18 @@ two folders up. A first end-to-end run is `setup/dev.sh setup && setup/dev.sh st
 setup/dev.sh index && setup/dev.sh cache`. The frontend is built separately (see web/README.md) and the built
 files under `pitv/web/static/` are committed, so the Pi never runs Node.
 
+`setup/docker.sh` runs the same three services under Docker instead, which is how the
+development machine runs day to day: each container restarts when it stops, the stack comes up
+with Docker at boot, and the library shares are guest CIFS volumes that Docker mounts itself, so
+the stack no longer depends on a desktop session. Copy `docker/.env.example` to `docker/.env`
+for the machine (the repositories, the cache drive, the shares, the display), then
+`setup/docker.sh build`, `setup/docker.sh up`, and `setup/docker.sh timer` to install a user
+timer that starts anything not running every five minutes, since a restart policy never retries
+a container that could not start (the shares not answering yet at boot, or the player's display
+before anybody logs in). The source is mounted, not copied, so `setup/docker.sh restart` runs
+the code on disk; `status` and `logs` show the rest. Restarting pitv_content's container ends any
+job it is running, which goes back in its queue as interrupted.
+
 Player keys in the window or terminal: `1` to `9` channel, `[` and `]` channel down and up,
 `g` guide, arrows navigate, `Enter` select, `Esc` back, `i` info, `Space` pause, `m` mute,
 `+` and `-` volume, `r` restart programme, `q` quit.

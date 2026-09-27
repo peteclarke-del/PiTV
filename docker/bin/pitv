@@ -1,0 +1,3 @@
+#!/bin/sh
+# PiTV's command, run from the mounted source (PYTHONPATH) rather than an installed copy.
+exec python -m pitv.cli "$@"

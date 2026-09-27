@@ -1,0 +1,101 @@
+# The development stack under Docker: each service restarts when it stops and comes up with
+# Docker at boot, and the library shares are mounted by Docker itself rather than by a desktop
+# session, which is what a session ending took down on 23 September. Run it with
+# setup/docker.sh, which reads docker/.env (see .env.example) for everything particular to the
+# machine: where the two repositories and the cache are, and the library shares.
+#
+# Paths inside the containers are the host's own. PiTV's database and pitv_content's sources name
+# files by absolute path, so the same paths on both sides mean nothing has to be migrated.
+version: "3.8"
+
+x-service: &service
+  image: pitv-dev:latest
+  user: "${HOST_UID}:${HOST_GID}"
+  network_mode: host          # the web on :8080 and pitv_content on loopback :8091, as on the Pi
+  restart: unless-stopped
+  environment: &environment
+    PYTHONPATH: "${PITV_SRC}:${CONTENT_SRC}"
+    PITV_DATA: "${PITV_SRC}/.dev"
+    PITV_RUN: "${PITV_SRC}/.dev/run"
+    PITV_CONTENT_STATE: "${PITV_SRC}/.dev/content-state"
+    PITV_CONTENT_WORK: "${PITV_SRC}/.dev/content-work"
+    PITV_CONTENT_UNMOUNTED_SOURCES: "1"   # the shares are Docker volumes, not mounts pitv_content made
+    PITV_WINDOWED: "1"
+    PITV_PLAYER_KEEPER: "0"               # the player's own restart policy supervises it
+    TZ: "${TZ}"                           # the host's zone: without it the containers' clock reads UTC
+  volumes: &volumes
+    - {type: bind, source: "${PITV_SRC}", target: "${PITV_SRC}"}
+    - {type: bind, source: "${CONTENT_SRC}", target: "${CONTENT_SRC}"}
+    - {type: bind, source: "${CACHE_DIR}", target: "${CACHE_DIR}"}
+    - {type: volume, source: nas_tvshows, target: "${NAS_TVSHOWS_TARGET}", read_only: true}
+    - {type: volume, source: nas_tvsports, target: "${NAS_TVSPORTS_TARGET}", read_only: true}
+    - {type: volume, source: nas_movies, target: "${NAS_MOVIES_TARGET}", read_only: true}
+    - {type: volume, source: nas_ads, target: "${NAS_ADS_TARGET}", read_only: true}
+    - {type: volume, source: nas_musicvideos, target: "${NAS_MUSICVIDEOS_TARGET}", read_only: true}
+
+services:
+  web:
+    <<: *service
+    command: ["pitv", "web", "--port", "8080"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-o", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  player:
+    <<: *service
+    command: ["pitv", "play"]
+    depends_on: [web]
+    devices: ["/dev/dri:/dev/dri"]          # VA-API decoding on the host's GPU
+    group_add: ["${VIDEO_GID}", "${RENDER_GID}"]
+    environment:
+      <<: *environment
+      XDG_RUNTIME_DIR: /run/user/${HOST_UID}
+      WAYLAND_DISPLAY: "${WAYLAND_DISPLAY}"
+      PULSE_SERVER: "unix:/run/user/${HOST_UID}/pulse/native"
+    volumes:
+      - {type: bind, source: "${PITV_SRC}", target: "${PITV_SRC}"}
+      - {type: bind, source: "${CONTENT_SRC}", target: "${CONTENT_SRC}"}
+      - {type: bind, source: "${CACHE_DIR}", target: "${CACHE_DIR}"}
+      - {type: volume, source: nas_tvshows, target: "${NAS_TVSHOWS_TARGET}", read_only: true}
+      - {type: volume, source: nas_tvsports, target: "${NAS_TVSPORTS_TARGET}", read_only: true}
+      - {type: volume, source: nas_movies, target: "${NAS_MOVIES_TARGET}", read_only: true}
+      - {type: volume, source: nas_ads, target: "${NAS_ADS_TARGET}", read_only: true}
+      - {type: volume, source: nas_musicvideos, target: "${NAS_MUSICVIDEOS_TARGET}", read_only: true}
+      # The desktop's display and sound, so the windowed player appears and is heard.
+      - {type: bind, source: "/run/user/${HOST_UID}/${WAYLAND_DISPLAY}", target: "/run/user/${HOST_UID}/${WAYLAND_DISPLAY}"}
+      - {type: bind, source: "/run/user/${HOST_UID}/pulse", target: "/run/user/${HOST_UID}/pulse"}
+      - {type: bind, source: "/run/user/${HOST_UID}/pipewire-0", target: "/run/user/${HOST_UID}/pipewire-0"}
+
+  content:
+    <<: *service
+    command: ["pitv-content", "serve", "--host", "127.0.0.1", "--port", "8091",
+              "--cache-dir", "${CACHE_DIR}/pitv",
+              "--manifest", "http://127.0.0.1:8080/api/content/manifest?days=1",
+              "--report-url", "http://127.0.0.1:8080/api/content/report",
+              "--pitv-token-file", "${PITV_SRC}/.dev/content-token"]
+    depends_on: [web]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-o", "/dev/null", "http://127.0.0.1:8091/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+# Guest, read-only CIFS, mounted by Docker when a container starts and again after a reboot.
+volumes:
+  nas_tvshows:
+    driver: local
+    driver_opts: {type: cifs, device: "${NAS_TVSHOWS_DEVICE}", o: "${NAS_OPTIONS}"}
+  nas_tvsports:
+    driver: local
+    driver_opts: {type: cifs, device: "${NAS_TVSPORTS_DEVICE}", o: "${NAS_OPTIONS}"}
+  nas_movies:
+    driver: local
+    driver_opts: {type: cifs, device: "${NAS_MOVIES_DEVICE}", o: "${NAS_OPTIONS}"}
+  nas_ads:
+    driver: local
+    driver_opts: {type: cifs, device: "${NAS_ADS_DEVICE}", o: "${NAS_OPTIONS}"}
+  nas_musicvideos:
+    driver: local
+    driver_opts: {type: cifs, device: "${NAS_MUSICVIDEOS_DEVICE}", o: "${NAS_OPTIONS}"}

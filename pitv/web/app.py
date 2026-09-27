@@ -188,7 +188,10 @@ def create_app(cfg: Config) -> FastAPI:
         bus.attach(asyncio.get_running_loop())
         t = threading.Thread(target=_player_subscriber, args=(app, stop), name="pitv-player-sub", daemon=True)
         t.start()
-        Keeper(cfg, lambda: app.state.player_state, lambda: _keepalive_wanted(cfg), stop).start()
+        # Where something else supervises the player (a container's restart policy), a keeper in
+        # the web service would start a second player beside the one being restarted.
+        if os.environ.get("PITV_PLAYER_KEEPER", "1") != "0":
+            Keeper(cfg, lambda: app.state.player_state, lambda: _keepalive_wanted(cfg), stop).start()
         sdnotify.ready()
 
         async def heartbeat() -> None:

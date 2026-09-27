@@ -64,3 +64,27 @@ def test_start_player_falls_back_to_the_command(tmp_path, monkeypatch):
     assert (cfg.run_dir / "player.pid").read_text() == "4242"
     second = keeper.start_player(cfg)
     assert second["via"] == "already starting" and len(launched) == 1
+
+
+def test_the_keeper_stays_off_where_something_else_supervises_the_player(tmp_path, monkeypatch):
+    """In a container the player is restarted by the container's policy, and a keeper in the web
+    service would start a second one beside it. PITV_PLAYER_KEEPER=0 leaves it off."""
+    from fastapi.testclient import TestClient
+
+    from pitv.config import Config
+    from pitv.web import app as app_mod
+    from pitv.web import keeper
+
+    started: list[bool] = []
+    monkeypatch.setattr(keeper.Keeper, "start", lambda self: started.append(True))
+    monkeypatch.setattr(app_mod.Keeper, "start", lambda self: started.append(True))
+    cfg = Config(data_dir=tmp_path / "data", run_dir=tmp_path / "run")
+    cfg.ensure_dirs()
+    monkeypatch.setenv("PITV_PLAYER_KEEPER", "0")
+    with TestClient(app_mod.create_app(cfg)):
+        pass
+    assert not started
+    monkeypatch.delenv("PITV_PLAYER_KEEPER")
+    with TestClient(app_mod.create_app(cfg)):
+        pass
+    assert started == [True]
