@@ -290,3 +290,46 @@ def test_a_split_episode_missing_a_part_is_a_finding(tmp_path):
         conn.execute("UPDATE media SET excluded = 1 WHERE id = ?", (eps[0]["id"],))
     assert doctor._library(conn)["split_incomplete"] == [], "excluding it answers the finding"
     conn.close()
+
+
+def test_a_slot_booked_inside_another_is_an_overlap_not_a_hole(tmp_path):
+    """A delivery that lengthened a programme left the ident after it booked inside it. Sorted by
+    start, the ident's end and the next programme's start looked like six minutes of nothing;
+    it is an overlap, and the report says so."""
+    from conftest import make_library
+
+    from pitv import db as dbm2
+    from pitv import doctor
+
+    conn = make_library(tmp_path / "overlap", max_episodes=1)["conn"]
+    ch = conn.execute("SELECT id FROM channels WHERE enabled = 1 ORDER BY number LIMIT 1").fetchone()["id"]
+    t = dbm2.now_ts() + 3600
+    with dbm2.tx(conn):
+        for start, end in ((t, t + 3409), (t + 3000, t + 3015), (t + 3409, t + 5000)):   # programme, ident inside, next
+            conn.execute("INSERT INTO schedule(channel_id, day, start_ts, end_ts, kind, title, replay, offset)"
+                         " VALUES (?, '2999-01-02', ?, ?, 'filler', 'x', 0, 0)", (ch, start, end))
+    found = [h for h in doctor._holes(conn, t - 1) if h["day"] == "2999-01-02"]
+    assert [(h["kind"], h["start_ts"], h["end_ts"]) for h in found] == [("overlap", t + 3000, t + 3409)]
+    findings = doctor._findings({"schedule": {"days_ahead": 7, "holes": found}})
+    assert any("booked inside another" in f for f in findings)
+    assert not any("nothing in them" in f for f in findings), "no hole is reported"
+    conn.close()
+
+
+def test_a_request_the_owner_withdrew_is_not_a_fault(tmp_path):
+    """A withdrawn request is kept failed and fully tried, so its number stays taken, and it was
+    listed among the failures with Retry as the remedy: the opposite of what the owner asked."""
+    from conftest import make_library
+
+    from pitv import db as dbm2
+    from pitv import doctor
+    from pitv.content import MAX_WANTED_ATTEMPTS, WITHDRAWN_PREFIX
+
+    conn = make_library(tmp_path / "withdrawn", max_episodes=1)["conn"]
+    with dbm2.tx(conn):
+        conn.execute("INSERT INTO wanted(kind, title, status, attempts, message, created_at, provider)"
+                     " VALUES ('episode', 'X', 'failed', ?, ?, 1, 'auto')",
+                     (MAX_WANTED_ATTEMPTS, f"{WITHDRAWN_PREFIX}: not an episode"))
+    wanted = doctor._wanted(conn)
+    assert not wanted["faults"] and wanted["given_up"] == 0
+    conn.close()

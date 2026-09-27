@@ -51,6 +51,9 @@ MAX_WANTED_ATTEMPTS = 3
 # attempt. Everything else in a message is a fault, and the doctor tells the two apart by this
 # same prefix, so the rule is written once rather than guessed at in two places.
 MISS_PREFIX = "not found yet"
+# The start of the message on a request the owner has withdrawn: kept, failed and fully tried, so
+# its number stays taken and it is never asked for again, and not a fault anybody need act on.
+WITHDRAWN_PREFIX = "withdrawn by the owner"
 # How a run records work it never got to. pitv_content delivers in bands, scheduled before
 # unscheduled, and a slice that runs out of time never reaches the last of them: nothing fails,
 # nothing is logged, and the only symptom is a channel that stays empty, which is how 148

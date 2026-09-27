@@ -84,6 +84,10 @@ def report(conn: sqlite3.Connection, cfg: Config, now: int | None = None) -> dic
 
 def _services() -> list[dict[str, Any]]:
     from .web.api.services import DEV_UNITS, UNITS, systemd_state
+    if Path("/.dockerenv").exists():
+        # In the Docker development stack the containers' restart policy supervises the services,
+        # and nothing in here can see it: `setup/docker.sh status` on the host can.
+        return [{"unit": "docker", "loaded": "docker", "active": "supervised by Docker", "sub": "setup/docker.sh status"}]
     on_pi = is_raspberry_pi()
     names = [u.unit for u in UNITS] if on_pi else list(DEV_UNITS.values())
     states = systemd_state(names, user=not on_pi)
@@ -115,18 +119,28 @@ def _schedule(conn: sqlite3.Connection, now: int) -> dict[str, Any]:
 
 
 def _holes(conn: sqlite3.Connection, now: int) -> list[dict[str, Any]]:
-    """Stretches with no slot at all between two slots of a channel, from now on.
+    """Stretches with no slot at all (`hole`), and slots booked inside another (`overlap`), per
+    channel from now on.
 
     A holding card is a row and is counted as one; a hole is not, so the finding on holding
     cards could never see it. Seventeen of them sat in the week of 25 September after deliveries
-    shortened slots on days nobody rebuilt, each one minutes of nothing on air."""
+    shortened slots on days nobody rebuilt. A delivery that lengthened a slot left the reverse:
+    the ident after it still booked inside the programme, which the player cuts short to play.
+    A hole is measured from the latest end so far, so an overlap is never mistaken for one."""
     out: list[dict[str, Any]] = []
     rows = conn.execute("SELECT s.channel_id, c.name, s.day, s.start_ts, s.end_ts FROM schedule s"
                         " JOIN channels c ON c.id = s.channel_id WHERE c.enabled = 1 AND s.end_ts > ?"
                         " ORDER BY s.channel_id, s.start_ts", (now,)).fetchall()
+    reach: dict[int, int] = {}
     for a, b in pairwise(rows):
-        if a["channel_id"] == b["channel_id"] and b["start_ts"] - a["end_ts"] > HOLE_SECONDS:
-            out.append({"channel": a["name"], "day": a["day"], "start_ts": a["end_ts"], "end_ts": b["start_ts"]})
+        if a["channel_id"] != b["channel_id"]:
+            reach.pop(a["channel_id"], None)
+            continue
+        end = reach[a["channel_id"]] = max(reach.get(a["channel_id"], a["end_ts"]), a["end_ts"])
+        if b["start_ts"] - end > HOLE_SECONDS:
+            out.append({"kind": "hole", "channel": a["name"], "day": a["day"], "start_ts": end, "end_ts": b["start_ts"]})
+        elif end - b["start_ts"] > 1:
+            out.append({"kind": "overlap", "channel": a["name"], "day": a["day"], "start_ts": b["start_ts"], "end_ts": end})
     return sorted(out, key=lambda h: h["start_ts"])
 
 
@@ -278,16 +292,19 @@ def _wanted(conn: sqlite3.Connection) -> dict[str, Any]:
     from .content import (  # imported here: content reads this module's settings
         MAX_WANTED_ATTEMPTS,
         MISS_PREFIX,
+        WITHDRAWN_PREFIX,
     )
     by_status = [dict(r) for r in conn.execute(
         "SELECT kind, status, auto, COUNT(*) AS n FROM wanted GROUP BY kind, status, auto ORDER BY n DESC")]
     faults = [dict(r) for r in conn.execute(
         "SELECT message, COUNT(*) AS n, MAX(updated_at) AS last_at, MIN(id) AS example FROM wanted"
         f" WHERE status IN ('queued', 'failed') AND message IS NOT NULL AND message != ''"
-        f" AND message NOT LIKE '{MISS_PREFIX}%' GROUP BY message ORDER BY n DESC LIMIT 10")]
+        f" AND message NOT LIKE '{MISS_PREFIX}%' AND message NOT LIKE '{WITHDRAWN_PREFIX}%'"
+        " GROUP BY message ORDER BY n DESC LIMIT 10")]
     misses = conn.execute(
         f"SELECT COUNT(*) FROM wanted WHERE status = 'queued' AND message LIKE '{MISS_PREFIX}%'").fetchone()[0]
-    given_up = conn.execute("SELECT COUNT(*) FROM wanted WHERE attempts >= ?", (MAX_WANTED_ATTEMPTS,)).fetchone()[0]
+    given_up = conn.execute("SELECT COUNT(*) FROM wanted WHERE attempts >= ? AND COALESCE(message, '') NOT LIKE ?",
+                            (MAX_WANTED_ATTEMPTS, f"{WITHDRAWN_PREFIX}%")).fetchone()[0]
     return {"by_status": by_status, "faults": faults, "searched_and_not_found": misses, "given_up": given_up}
 
 
@@ -607,7 +624,13 @@ def _findings(doc: dict[str, Any]) -> list[str]:
     schedule = doc.get("schedule") or {}
     if schedule.get("days_ahead", 0) < 2:
         out.append(f"The schedule runs only {schedule.get('days_ahead', 0)} days ahead")
-    if gaps := schedule.get("holes") or []:
+    if overlaps := [g for g in schedule.get("holes") or [] if g.get("kind") == "overlap"]:
+        first = overlaps[0]
+        at = time.strftime("%a %H:%M", time.localtime(first["start_ts"]))
+        out.append(f"{len(overlaps)} slot(s) are booked inside another, the first on {first['channel']} at {at} for "
+                   f"{(first['end_ts'] - first['start_ts']) // 60} min; the player cuts the earlier one short. "
+                   "Schedule, click the slot booked inside, Rebuild from here.")
+    if gaps := [g for g in schedule.get("holes") or [] if g.get("kind", "hole") == "hole"]:
         first = gaps[0]
         at = time.strftime("%a %H:%M", time.localtime(first["start_ts"]))
         minutes = sum(g["end_ts"] - g["start_ts"] for g in gaps) // 60
