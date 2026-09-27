@@ -3,7 +3,7 @@
 # and pitv_content's API, restarted when they stop and started with Docker at boot.
 #
 #   setup/docker.sh build      build the image from both projects' dependencies
-#   setup/docker.sh up         start the stack (stops the old systemd-run units first)
+#   setup/docker.sh up         start the stack afresh, onto the current image and settings
 #   setup/docker.sh down       stop it
 #   setup/docker.sh restart    restart the services onto the code on disk
 #   setup/docker.sh status     what is running, and its health
@@ -74,6 +74,10 @@ case "${1:-}" in
   build) build ;;
   up) docker image inspect pitv-dev:latest >/dev/null 2>&1 || build
       stop_units
+      # Removed and created afresh, never recreated in place: docker-compose 1.29 cannot read a
+      # current Docker engine's image config when it recreates (KeyError 'ContainerConfig'), and
+      # on 27 September that left the web service renamed and stopped.
+      compose down --remove-orphans
       compose up -d ;;
   ensure) compose up -d --no-recreate ;;
   timer) install_timer ;;

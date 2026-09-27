@@ -545,6 +545,18 @@ cgroup. What the restart showed:
   maintenance and readiness run in the player process. On the 26th only the web was restarted
   after 66083a3, so the player raised fifteen band requests the old way (season 1, no length)
   until it was restarted at 21:20.
+- Self-sufficiency, 27 September, at Pete's request. (1) A configuration change rebuilds what it
+  governs from now, in one background job ten seconds after the edits stop (f39b63a): channels,
+  bands, line-up entries and the schedule panes of the settings. (2) P10's cause found and fixed
+  (73ad40a), below. (3) The development stack runs under Docker (92fe442): web, player and
+  pitv_content's API as containers that restart themselves and start with Docker at boot, the
+  library shares as guest CIFS volumes Docker mounts, and a user timer (`setup/docker.sh timer`)
+  starting anything a restart policy would never retry. Verified: a killed web process came back
+  by itself, a stopped pitv_content was started by the timer's command, the player plays with
+  VA-API and sound from its container, every source reads. The docker-compose here is 1.29, which
+  cannot recreate a container on this Docker engine (it left the web service stopped for a
+  minute); `up` now removes and creates instead, and installing Docker's own Compose v2 would
+  remove the limitation. Not yet shown: a reboot, and the Pi itself (P3).
 - The player's mpv closed at 02:34:50, two seconds after a click in its window and fifteen after
   a burst of eleven channel loads in one second; the player exited as designed and the web
   service's keeper started another twenty seconds later.
