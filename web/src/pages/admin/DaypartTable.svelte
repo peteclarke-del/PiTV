@@ -47,8 +47,14 @@
 <div class="mt"><button class="small" onclick={add}>Add daypart</button></div>
 
 <style>
-  .dp input { width: 100%; min-width: 4.5rem; }
-  .dp td { padding: .25rem .3rem; }
-  .dp td:nth-child(2) input { min-width: 8rem; }
-  .dp input.genres { min-width: 14rem; }
+  /* Tight enough that two tables sit side by side on a desktop monitor. */
+  .dp input { width: 100%; min-width: 3.2rem; padding: .3rem .4rem; }
+  .dp td, .dp th { padding: .25rem .3rem; }
+  .dp td:first-child input { min-width: 5.5rem; }
+  .dp td:nth-child(2) input { min-width: 7rem; }
+  .dp input.genres { min-width: 8rem; }
+  /* The weights are short numbers: fixed columns leave the spare width to the name and genres. */
+  .dp th:nth-child(n+3):nth-child(-n+7) { width: 4rem; }
+  .dp th:first-child { width: 6.2rem; }
+  .dp th:last-child { width: 4.2rem; }
 </style>
