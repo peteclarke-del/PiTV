@@ -143,6 +143,15 @@ for the nightly index run.
   inherits the completeness of the document it merges into and is unaffected. The index that a
   delivery run takes before it starts stays complete, because it precedes the files it omits
   rather than postdating them.
+- From an incomplete index PiTV still retires what a NAS source no longer lists, when
+  pitv_content says that source was read whole: `GET /api/sources` gives its `health` as
+  `readable` with no `error` and a `last_indexed_ts`, and `health.items` equals the number of
+  items the index lists for it. The rule above protects the folders pitv_content files into,
+  and those are never retired this way (`location` other than `nas`). Without this, fetching
+  that is never idle meant an index that was never complete, and nothing was retired between
+  26 and 29 September: a share reorganised in that time stood in the catalogue twice. This is
+  PiTV's reading of fields already published. The better form, asked of pitv_content, is a
+  `complete` of its own on each entry of `sources` in the index, so that one document says it.
 - PiTV never retires material whose origin is `online`, whatever an index says: that is what a
   delivery report filed, and reports are the only authority over it. So the exemption and the
   rule above are two independent protections for the same material, and the NAS sources and the

@@ -104,7 +104,7 @@
     <div class="err-box">
       <div class="row">
         <div style="flex:1"><b>{f.n} request{f.n === 1 ? '' : 's'} cannot be fetched</b><div class="small mono mt">{f.message}</div>
-          <div class="small muted mt">This is pitv_content's to fix. Once it is fixed, retry them here; they will not come right on their own.</div></div>
+          <div class="small muted mt">One cause is stopping all of these. Mend it in pitv_content or its settings (Content, Settings); requests not yet given up on are then fetched on the next run, and Retry puts every one of them back in the queue.</div></div>
         <button class="small" onclick={() => retryClass(f.message, f.n)} disabled={retrying}>Retry these {f.n}</button>
       </div>
     </div>

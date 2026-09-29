@@ -1234,6 +1234,12 @@ def test_a_whole_class_of_failed_requests_is_retried_at_once(client, env):
                             " WHERE title IN ('R1', 'R2', 'R3')").fetchall()
         assert all(row["status"] == "queued" and row["attempts"] == 0 and row["message"] is None for row in rows)
         assert client.post("/api/wanted/retry", json={}).status_code == 400, "it must say which requests"
+        # A cause is retried across the candidates each request's message names.
+        with dbm.tx(conn):
+            for n, title in enumerate(("R1", "R2", "R3")):
+                conn.execute("UPDATE wanted SET status = 'failed', attempts = 3, message = ? WHERE title = ?",
+                             (f"candidates did not process: v{n}: download failed: ERROR: no cookie store", title))
+        assert client.post("/api/wanted/retry", json={"message": "no cookie store"}).json()["retried"] == 3
     finally:
         with dbm.tx(conn):
             conn.execute("DELETE FROM wanted WHERE title IN ('R1', 'R2', 'R3')")
