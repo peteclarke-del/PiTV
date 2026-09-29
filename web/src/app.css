@@ -73,6 +73,15 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 1rem 0; }
    the empty tracks lets the cards widen instead, which shortens them. `align-items: start` stops
    a short card being stretched to the height of a long one next to it. */
 .grid { display: grid; gap: 1rem; align-items: start; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+/* Cards of unequal height, packed into as many columns as the width allows. A grid gives every
+   card in a row the row's height, so one tall card left a hole beside each short one; columns
+   stack each card under the last. `.span` is a card that needs the whole width (a table). */
+.masonry { columns: 22rem; column-gap: 1rem; }
+.masonry > * { break-inside: avoid; margin: 0 0 1rem; }
+.masonry > .span { column-span: all; }
+/* A card in a .grid with twice the content of its neighbours takes two of the columns, where
+   there are columns to take. */
+@media (min-width: 900px) { .grid > .double { grid-column: span 2; } }
 .spacer { flex: 1; }
 .muted { color: var(--fg-muted); }
 .small { font-size: .85rem; }
@@ -93,7 +102,8 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 1rem 0; }
   padding: 1rem;
 }
 .card.pad-0 { padding: 0; }
-.card-title { display: flex; align-items: center; gap: .5rem; margin-bottom: .75rem; }
+/* Wraps, so a card's buttons drop under its title on a phone and do not push the page wide. */
+.card-title { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .75rem; }
 .card-title h2, .card-title h3 { margin: 0; flex: 1; }
 
 /* buttons */

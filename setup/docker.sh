@@ -9,11 +9,19 @@
 #   setup/docker.sh status     what is running, and its health
 #   setup/docker.sh logs [svc] follow the logs
 #   setup/docker.sh ensure     start whatever is not running; what the timer below runs
-#   setup/docker.sh timer      install a user timer that runs `ensure` every five minutes
+#   setup/docker.sh timer      install a user timer that runs `ensure` every five minutes,
+#                              and one that runs `cookies` daily where cookies are configured
+#   setup/docker.sh cookies    copy one site's cookies from the desktop's browser to pitv_content
 #
 # Docker restarts a container that stops, but a restart policy only covers a container that has
 # started: one that could not start at boot (the library shares not answering yet, or the
 # player's display not there until somebody logs in) is never tried again. The timer tries.
+#
+# pitv_content's container has no browser, and a browser's cookies are encrypted with a key in
+# the desktop's keyring, which a container cannot reach. `cookies` runs on the host, where the
+# keyring is, and writes the cookies of the one site named in docker/.env to a file in
+# pitv_content's state folder; its "Cookies file" setting names that file. A site replaces its
+# cookies as the browser is used, so the file is written again daily.
 #
 # Everything particular to the machine is in docker/.env (from docker/.env.example).
 set -euo pipefail
@@ -44,6 +52,35 @@ stop_units() {
   done
 }
 
+cookies() {
+  local browser domain python out tmp kept
+  browser="$(setting COOKIE_BROWSER)"; domain="$(setting COOKIE_DOMAIN)"; python="$(setting COOKIE_PYTHON)"
+  [ -n "$browser" ] && [ -n "$domain" ] || { echo "COOKIE_BROWSER and COOKIE_DOMAIN are not set in $ENV_FILE" >&2; exit 1; }
+  out="$ROOT/.dev/content-state/cookies.txt"
+  umask 077
+  tmp="$(mktemp -d)"
+  # The export holds every site's cookies, so it is destroyed whatever happens next.
+  # shellcheck disable=SC2064  # expanded now: $tmp is local and gone by the time the trap runs
+  trap "find '$tmp' -type f -exec shred -u {} + 2>/dev/null; rm -rf '$tmp'" EXIT
+  # yt-dlp writes the browser's cookies out when it is given a page to fetch, whether or not
+  # the page exists; this one does not, so nothing is fetched.
+  "${python:-python3}" -m yt_dlp --cookies-from-browser "$browser" --cookies "$tmp/all.txt" \
+      --skip-download --quiet --no-warnings "https://example.invalid/" >/dev/null 2>&1 || true
+  [ -s "$tmp/all.txt" ] || { echo "no cookies read from $browser: is it installed, and has ${python:-python3} the yt_dlp module?" >&2; exit 1; }
+  { echo "# Netscape HTTP Cookie File"
+    awk -F'\t' -v d="$domain" '!/^#/ && NF >= 7 && $7 != "" && ($1 == d || $1 == "." d || substr($1, length($1) - length(d)) == "." d)' "$tmp/all.txt"
+  } > "$tmp/site.txt"
+  kept="$(grep -vc '^#' "$tmp/site.txt" || true)"
+  if [ "$kept" -eq 0 ]; then
+    echo "no readable cookies for $domain in $browser. Either the browser is not signed in there, or the" >&2
+    echo "keyring could not be read: ${python:-python3} needs the secretstorage module and a desktop session." >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "$out")"
+  mv "$tmp/site.txt" "$out"
+  echo "$kept cookies for $domain written to $out"
+}
+
 install_timer() {
   local dir="$HOME/.config/systemd/user"
   mkdir -p "$dir"
@@ -66,8 +103,30 @@ OnUnitActiveSec=5min
 [Install]
 WantedBy=timers.target
 UNIT
+  if [ -n "$(setting COOKIE_DOMAIN)" ]; then
+    cat > "$dir/pitv-docker-cookies.service" <<UNIT
+[Unit]
+Description=Copy the browser's cookies for one site to pitv_content
+
+[Service]
+Type=oneshot
+ExecStart="$ROOT/setup/docker.sh" cookies
+UNIT
+    cat > "$dir/pitv-docker-cookies.timer" <<UNIT
+[Unit]
+Description=Keep pitv_content's cookies current
+
+[Timer]
+OnStartupSec=3min
+OnUnitActiveSec=1d
+
+[Install]
+WantedBy=timers.target
+UNIT
+  fi
   systemctl --user daemon-reload
   systemctl --user enable --now pitv-docker-ensure.timer
+  [ -z "$(setting COOKIE_DOMAIN)" ] || systemctl --user enable --now pitv-docker-cookies.timer
 }
 
 case "${1:-}" in
@@ -81,9 +140,10 @@ case "${1:-}" in
       compose up -d ;;
   ensure) compose up -d --no-recreate ;;
   timer) install_timer ;;
+  cookies) cookies ;;
   down) compose down ;;
   restart) compose restart ;;
   status) compose ps ;;
   logs) shift; compose logs -f --tail 50 "$@" ;;
-  *) sed -n '2,19p' "$0"; exit 1 ;;
+  *) sed -n '2,21p' "$0"; exit 1 ;;
 esac

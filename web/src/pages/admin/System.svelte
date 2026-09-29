@@ -145,7 +145,7 @@
 
 <div class="stack">
   {#if error}<div class="badge danger">{error}</div>{/if}
-  <div class="grid">
+  <div class="masonry">
     <HostCard title="PiTV" app="pitv" host={info?.host}>
       <button class="small ghost" onclick={load}>Refresh</button>
     </HostCard>

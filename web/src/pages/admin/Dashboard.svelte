@@ -76,7 +76,7 @@
   {/if}
 
   <div class="grid">
-    <div class="card">
+    <div class="card double">
       <div class="card-title"><h3>Catalogue</h3><AppBadge app="pitv" /><a class="small" href="#/admin/library">Open</a></div>
       {#if summary}
         <div class="stats">
