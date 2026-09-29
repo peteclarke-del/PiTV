@@ -602,9 +602,30 @@ def _run_of(report: dict[str, Any]) -> tuple[dict[str, Any], str]:
     return run, as_text(run.get("tool")) or "pitv_content"
 
 
+REPORT_FAULT = 5   # requests one cause must stop in a run before the run is an error (contract section 3)
+
+
+def _faults(run: dict[str, Any], report: dict[str, Any]) -> list[dict[str, Any]]:
+    """The causes that each stopped several of a run's requests: pitv_content's own list
+    (`run.faults`), which carries the remedy, or the same count made here for a pitv_content
+    that sends none. Every download failed for two days on a missing cookie store, and each of
+    199 reports was recorded as a warning, as an ordinary night is."""
+    sent = run.get("faults")
+    if isinstance(sent, list):
+        return [{"cause": as_text(f.get("cause")) or "", "requests": as_int(f.get("requests")) or 0,
+                 "remedy": as_text(f.get("remedy")) or ""} for f in sent if isinstance(f, dict) and as_text(f.get("cause"))]
+    held: dict[str, int] = {}
+    for e in _entries(report):
+        message = as_text(e.get("message")) or ""
+        if e.get("status") == "failed" and message and not e.get("miss") and not message.lower().startswith(MISS_PREFIX):
+            held[fault_cause(message)] = held.get(fault_cause(message), 0) + 1
+    return [{"cause": cause, "requests": n, "remedy": ""}
+            for cause, n in sorted(held.items(), key=lambda kv: -kv[1]) if n >= REPORT_FAULT]
+
+
 # What each outcome of _apply_entry adds to the report's counts.
 _TALLY = {"fetched": ("wanted_done", "created"), "linked": ("wanted_done",), "cached": ("items_done",),
-          "wanted_failed": ("wanted_failed",), "items_failed": ("items_failed",)}
+          "wanted_failed": ("wanted_failed",), "wanted_missed": ("wanted_missed",), "items_failed": ("items_failed",)}
 
 
 def _apply_entry(conn: sqlite3.Connection, e: dict[str, Any]) -> tuple[str | None, SlotChanges]:
@@ -665,7 +686,7 @@ def _apply_entry(conn: sqlite3.Connection, e: dict[str, Any]) -> tuple[str | Non
         return None, {}   # a skip without a file is still being written: it arrives measured in a later report
     if wid:
         _fail_wanted(conn, wid, message)
-        return "wanted_failed", {}
+        return ("wanted_missed" if e.get("miss") or message.lower().startswith(MISS_PREFIX) else "wanted_failed"), {}
     log.error("pitv_content could not deliver media %s: %s", mid or "?", message)
     return "items_failed", {}
 
@@ -675,7 +696,7 @@ def apply_report(conn: sqlite3.Connection, report: dict[str, Any]) -> dict[str, 
     transaction, then rebuild the channel-days whose slots changed length."""
     if not isinstance(report, dict):
         raise TypeError("a delivery report is a JSON object")
-    counts = {"items_done": 0, "items_failed": 0, "wanted_done": 0, "wanted_failed": 0, "created": 0}
+    counts = {"items_done": 0, "items_failed": 0, "wanted_done": 0, "wanted_failed": 0, "wanted_missed": 0, "created": 0}
     refill: SlotChanges = {}
     run, tool = _run_of(report)
     with tx(conn):
@@ -687,12 +708,18 @@ def apply_report(conn: sqlite3.Connection, report: dict[str, Any]) -> dict[str, 
                 _earliest(refill, key, at)
         started, finished = (as_int(run.get(k)) or now_ts() for k in ("started_ts", "finished_ts"))
         # The summary starts "<tool>:" because _already_applied recognises a run by it.
+        # A search that found nothing is counted apart: it is asked for again and needs nobody,
+        # and added to the failures it made an ordinary night read "52 failed".
         summary = (f"{tool}: {counts['items_done']} cached, {counts['items_failed']} failed;"
-                   f" fetched {counts['wanted_done']}, {counts['wanted_failed']} failed")
-        details = [*_unreached(run), (as_text(run.get("log_tail")) or "")[-4000:]]
+                   f" fetched {counts['wanted_done']}, {counts['wanted_failed']} failed,"
+                   f" {counts['wanted_missed']} not found yet")
+        faults = _faults(run, report)
+        summary += "".join(f"; {f['requests']} request(s) stopped by one cause: {f['cause']}" for f in faults)
+        details = [*(f"FAULT {f['requests']} request(s): {f['cause']}" + (f". To mend it: {f['remedy']}" if f["remedy"] else "")
+                     for f in faults), *_unreached(run), (as_text(run.get("log_tail")) or "")[-4000:]]
+        status = "error" if faults else "warning" if counts["items_failed"] or counts["wanted_failed"] else "ok"
         conn.execute("INSERT INTO run_log(kind, started_at, finished_at, status, summary, details) VALUES (?,?,?,?,?,?)",
-                     ("content", started, finished, "warning" if counts["items_failed"] or counts["wanted_failed"] else "ok",
-                      summary, json.dumps(details)))
+                     ("content", started, finished, status, summary, json.dumps(details)))
     # Each channel-day is rebuilt from its own earliest change. `rebuild_from` goes to the end of
     # one broadcast day, and keeping only a channel's earliest change rebuilt the first day a
     # delivered episode was booked on and left every later airing of it shorter than its slot:

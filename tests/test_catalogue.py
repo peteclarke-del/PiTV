@@ -764,6 +764,16 @@ def test_a_share_read_in_full_retires_what_it_no_longer_lists(ctx, monkeypatch):
     monkeypatch.setattr(tool_client, "request", lambda *a, **k: (503, {"offline": True}))
     assert not catalogue.sources_read_in_full({"content_tool_url": "http://x"}, partial)
 
+    # An index that says per source whether it is complete is believed, and nothing is asked.
+    def never(*_a, **_k):
+        raise AssertionError("the index said; health is not asked for")
+
+    monkeypatch.setattr(tool_client, "request", never)
+    partial["sources"] = [{"id": share, "location": "nas", "complete": True},
+                          {"id": other, "location": "nas", "complete": False},
+                          {"id": "acquired", "location": "cache", "complete": True}]
+    assert catalogue.sources_read_in_full({"content_tool_url": "http://x"}, partial) == {share}
+
 
 def test_an_import_says_when_the_reindex_asked_for_did_not_happen(ctx, monkeypatch):
     """A re-index queued behind other work is not waited for and the index in hand is imported.

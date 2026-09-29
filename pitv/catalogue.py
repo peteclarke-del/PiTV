@@ -118,10 +118,14 @@ def sources_read_in_full(settings: dict[str, Any], doc: dict[str, Any]) -> froze
     pitv_content writes to. A share it only reads is listed whole whenever it was read, and
     pitv_content says per source whether it was (contract section 4, `health`).
 
-    A source counts only when its health is readable with no error and names as many items as
-    the document lists for it, which ties the health to the scan this document came from. An
-    unreachable share, a scan that left files out and any disagreement all leave it out, and
-    nothing of it is retired."""
+    An index that says so itself is believed: each of its `sources` carries `complete`. One
+    from a pitv_content that does not yet say is judged by that source's health, which counts
+    only when it is readable with no error and names as many items as the document lists for
+    it, tying the health to the scan this document came from. An unreachable share, a scan
+    that left files out and any disagreement all leave it out, and nothing of it is retired."""
+    said = [s for s in doc.get("sources") or [] if isinstance(s, dict) and isinstance(s.get("complete"), bool)]
+    if said:
+        return frozenset(s["id"] for s in said if s["complete"] and s.get("location") == "nas" and as_text(s.get("id")))
     status, payload = tool_client.request(tool_client.base_url(settings), "GET", "sources", timeout=15)
     if status != 200 or not isinstance(payload, list):
         return frozenset()
@@ -738,8 +742,7 @@ def refresh(conn: sqlite3.Connection, reindex: bool = False) -> dict[str, Any]:
         run_log_finish(conn, run_id, "error", origin, [origin])
         log.error("catalogue refresh failed: %s", origin)
         return {"status": "error", "summary": origin}
-    whole = frozenset() if doc.get("complete", True) or not origin.startswith("pitv_content API") \
-        else sources_read_in_full(all_settings(conn), doc)
+    whole = frozenset() if doc.get("complete", True) else sources_read_in_full(all_settings(conn), doc)
     try:
         result = import_and_place(conn, doc, origin, whole)
     except IndexFormatError as exc:

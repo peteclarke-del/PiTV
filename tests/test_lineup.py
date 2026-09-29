@@ -359,7 +359,8 @@ def test_skip_in_progress_is_neither_done_nor_failed(conn):
     counts = apply_report(conn, {"schema": 2, "items": [
         {"request_id": f"w:{wid}", "wanted_id": wid, "status": "skipped", "message": "being written by another process", "file": None},
         {"request_id": "m:1", "media_id": 1, "status": "skipped", "message": "being written by another process", "file": None}]})
-    assert counts == {"items_done": 0, "items_failed": 0, "wanted_done": 0, "wanted_failed": 0, "created": 0}
+    assert counts == {"items_done": 0, "items_failed": 0, "wanted_done": 0, "wanted_failed": 0, "wanted_missed": 0,
+                      "created": 0}
     row = conn.execute("SELECT status, attempts FROM wanted WHERE id = ?", (wid,)).fetchone()
     assert (row["status"], row["attempts"]) == ("queued", 0)
     with dbm.tx(conn):

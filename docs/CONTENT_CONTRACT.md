@@ -143,15 +143,17 @@ for the nightly index run.
   inherits the completeness of the document it merges into and is unaffected. The index that a
   delivery run takes before it starts stays complete, because it precedes the files it omits
   rather than postdating them.
-- From an incomplete index PiTV still retires what a NAS source no longer lists, when
-  pitv_content says that source was read whole: `GET /api/sources` gives its `health` as
-  `readable` with no `error` and a `last_indexed_ts`, and `health.items` equals the number of
-  items the index lists for it. The rule above protects the folders pitv_content files into,
-  and those are never retired this way (`location` other than `nas`). Without this, fetching
-  that is never idle meant an index that was never complete, and nothing was retired between
-  26 and 29 September: a share reorganised in that time stood in the catalogue twice. This is
-  PiTV's reading of fields already published. The better form, asked of pitv_content, is a
-  `complete` of its own on each entry of `sources` in the index, so that one document says it.
+- Each entry of `sources` carries `complete`: whether the items listed for that source are the
+  whole of it. A share pitv_content only reads is complete whenever it was read in full with
+  nothing left out, whatever the document's own `complete` says. The folders a delivery files
+  into (`location` other than `nas`) follow the document, so they are false while a delivery is
+  outstanding. From an incomplete index PiTV retires what a complete NAS source no longer
+  lists, and never anything of a source that is not `nas`. Without this, fetching that is never
+  idle meant an index that was never complete, and nothing was retired between 26 and 29
+  September: a share reorganised in that time stood in the catalogue twice.
+- An index from a pitv_content that sends no `complete` on its sources is judged by
+  `GET /api/sources`: a source counts when its `health` is `readable` with no `error` and a
+  `last_indexed_ts`, and `health.items` equals the number of items the index lists for it.
 - PiTV never retires material whose origin is `online`, whatever an index says: that is what a
   delivery report filed, and reports are the only authority over it. So the exemption and the
   rule above are two independent protections for the same material, and the NAS sources and the
@@ -362,6 +364,23 @@ applies a report once: a dropped copy of one it already took over HTTP is recogn
   series began. When nothing qualifies the failure begins `not found yet:`; PiTV keeps the
   request queued with no attempt used, and the readiness check covers the slot meanwhile.
 
+### Faults and misses
+
+A request that failed because nothing was found carries `"miss": true` beside its message,
+which still begins "not found yet". PiTV counts misses apart from failures in the run's
+summary: a search that found nothing is asked for again and needs nobody.
+
+`run.faults` lists the causes that each stopped five or more of the run's requests, commonest
+first: `{"cause": "...", "requests": 12, "remedy": "..."}`. The cause is the request's message
+after its last `ERROR: ` mark, less a leading `[site] id: `, so that one fault is one cause
+however many videos it failed on; both applications derive it by this rule. `remedy` is what to
+do about it where pitv_content knows, and empty otherwise. A run with any fault is recorded by
+PiTV as an error, its summary names the cause and its details the remedy. For a pitv_content
+that sends no `faults`, PiTV makes the same count from the report's entries.
+
+A request stopped by a cause that twenty or more requests hold uses none of its attempts
+(section 2), so it is asked for again once the cause is mended.
+
 ### Work a run never reached, and work it held back
 
 Two fields, because these are two facts and reporting them as one made either impossible to
@@ -468,6 +487,12 @@ pitv_content's API owns the source configuration; PiTV's admin Sources page is a
   and outside its transaction, so PiTV's half stands whether or not pitv_content is running.
 
 ## 5. Shared cache rules
+
+A file pitv_content makes keeps its subtitles. An encode or a remux keeps the source's text
+subtitle tracks, and the captions an upload's author wrote become a track labelled with the
+programme language, timed from the first frame of what was kept. A site's automatic captions
+are not used, and neither are picture subtitles from a disc, which an MP4 cannot hold. Adverts
+keep none. PiTV's player shows a track when the viewer has subtitles on (requirement 83).
 
 In normal operation pitv_content writes `.part` files and renames atomically, never
 deletes, touches `running_marker` while working, and calls `POST /api/content/make-room`
