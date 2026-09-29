@@ -412,6 +412,13 @@ class Selector:
                     # eight times in a day while series on disk waited for their week to pass.
                     if not level.remote_repeat or not e.get("last_spec") or times_today >= (daily_limit if episode else 1):
                         continue
+                    # An episode still being looked for is booked once, and its overnight replay
+                    # is its repeat. Brought round again as a last resort, one episode nobody had
+                    # found was booked nine times in a week, fourteen hours of it in a day, each
+                    # airing a slot the readiness check then had to fill on the morning. A film
+                    # is one request however often it airs, and may still come round.
+                    if episode:
+                        continue
                     # A repeat is of a request still open, so it is no nearer arriving than a first
                     # airing and keeps to the same lead window. Without this a rebuild at 21:37
                     # booked an unfetched episode for 21:38, half an hour of holding card.

@@ -2349,3 +2349,30 @@ def test_a_rebuild_that_mends_a_day_keeps_what_is_billed_after_the_hole(tmp_path
 
     rebuild_from(c, ch, lost["start_ts"], now=now, seed=99)
     assert [p["media_id"] for p in programmes()] != [p["media_id"] for p in after], "asked for by name, the day is rebuilt"
+
+
+def test_an_episode_still_being_looked_for_is_booked_once(tmp_path):
+    """The last resort before a holding card brought a remote series round again with the
+    episode it had already asked for, and did so every day: one episode nobody had found was
+    booked nine times in a week, each a slot the readiness check had to fill on the morning. An
+    episode is booked once while its request is open, and its overnight replay is its repeat."""
+    from pitv import lineup as lineup_mod
+
+    c = make_library(tmp_path, 1)["conn"]    # one episode a series: a library thin enough to reach the last resort
+    now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(c))
+    with dbm.tx(c):
+        dbm.set_setting(c, "nas_only", False)
+        dbm.set_setting(c, "external_weight", 50.0)
+        dbm.set_setting(c, "external_new_per_day", 40)
+    for ch in [r[0] for r in c.execute("SELECT id FROM channels WHERE enabled = 1")]:
+        lineup_mod.add(c, ch, title=f"Remote {ch}", kind="show", genres=["Drama"], episode_minutes=30,
+                       match={"source": "elsewhere", "id": f"r{ch}", "url": f"https://example.invalid/r{ch}"})
+    build_horizon(c, start_day=parse_day("2026-09-14"), days=7, now=now, seed=5, force=True)
+    booked = c.execute("SELECT wanted_id, SUM(replay = 0) AS first, SUM(replay = 1) AS again, COUNT(DISTINCT day) AS days"
+                       " FROM schedule WHERE wanted_id IS NOT NULL AND media_id IS NULL AND kind = 'programme'"
+                       " GROUP BY wanted_id").fetchall()
+    assert booked, "remote episodes are placed"
+    assert all(r["first"] == 1 and r["days"] == 1 for r in booked), \
+        [(r["wanted_id"], r["first"], r["again"], r["days"]) for r in booked if r["first"] != 1 or r["days"] != 1]
+    assert all(r["again"] <= 1 for r in booked), "and repeated overnight at most"
+    c.close()
