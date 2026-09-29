@@ -1116,6 +1116,11 @@ in sight, moving on when the now-line reaches the last fifth of what is visible,
 within ninety seconds of somebody touching it. Choosing another day, or stepping two hours
 either way, ends the following, and Now resumes it.
 
+An open page hears of every change to the schedule. Changes made through the web service are
+announced on its event stream as they are made. Those the player's maintenance makes (builds,
+imports, replacing what has not been fetched) happen in another process: the player counts them
+in its state as `schedule_rev`, and the web service announces a change when the count moves.
+
 ### 6.3 Admin area (`#/admin`)
 
 The admin is organised into two labelled sections, PiTV and pitv_content, so it is obvious

@@ -1288,3 +1288,15 @@ def test_edits_in_a_run_are_rebuilt_together_once_they_stop():
     real(rebuild, None, "day start")
     time_mod.sleep(0.4)
     assert submitted[1] == "Rebuild every channel after a settings change"
+
+
+def test_a_schedule_change_made_by_the_player_reaches_open_pages():
+    """The player's maintenance builds, imports and replaces what has not been fetched in its own
+    process, and an open guide showed the old schedule until it was reloaded. The player counts
+    its changes in its state, and the web service announces one when the count moves."""
+    from pitv.web.app import schedule_changed_by_player as changed
+
+    assert changed({"online": True, "schedule_rev": 3}, {"online": True, "schedule_rev": 4})
+    assert not changed({"online": True, "schedule_rev": 4}, {"online": True, "schedule_rev": 4})
+    assert not changed({"online": False}, {"online": True, "schedule_rev": 0}), "a player just back is a starting point"
+    assert not changed({"online": True, "schedule_rev": 4}, {"online": False})

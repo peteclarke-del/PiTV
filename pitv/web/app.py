@@ -12,6 +12,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
@@ -163,14 +164,29 @@ def _player_subscriber(app: FastAPI, stop: threading.Event) -> None:
                             state = json.loads(line)
                         except ValueError:
                             continue
+                        changed = schedule_changed_by_player(app.state.player_state, state)
                         app.state.player_state = state
                         app.state.bus.publish_threadsafe("player", state)
+                        if changed:
+                            app.state.bus.publish_threadsafe("schedule", {"changed": True})
         except OSError as exc:
             log.debug("player socket: %s", exc)  # normal while the player is down; retried below
         if app.state.player_state.get("online", False):
             app.state.player_state = {"online": False}
             app.state.bus.publish_threadsafe("player", app.state.player_state)
         stop.wait(3)
+
+
+def schedule_changed_by_player(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    """Whether the player's maintenance has changed the schedule since the last state seen.
+
+    The player builds, imports and replaces what has not been fetched, in its own process, and
+    told only itself. A guide open in a browser went on showing the schedule as it had been
+    until the page was reloaded. The player counts its changes in its state; a count that has
+    moved is a change. The first state after the player was away is only a starting point."""
+    if not before.get("online") or not after.get("online"):
+        return False
+    return after.get("schedule_rev") != before.get("schedule_rev")
 
 
 def create_app(cfg: Config) -> FastAPI:
