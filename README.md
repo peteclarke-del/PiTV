@@ -73,7 +73,9 @@ for the machine (the repositories, the cache drive, the shares, the display), th
 timer that starts anything not running every five minutes, since a restart policy never retries
 a container that could not start (the shares not answering yet at boot, or the player's display
 before anybody logs in). The source is mounted, not copied, so `setup/docker.sh restart` runs
-the code on disk; `status` and `logs` show the rest. Restarting pitv_content's container ends any
+the code on disk; `status` and `logs` show the rest. `setup/docker.sh cookies` copies one site's
+cookies from the desktop's browser to pitv_content, which has no browser of its own (the site and
+the browser are named in `docker/.env`), and `timer` repeats it daily. Restarting pitv_content's container ends any
 job it is running, which goes back in its queue as interrupted.
 
 Player keys in the window or terminal: `1` to `9` channel, `[` and `]` channel down and up,
