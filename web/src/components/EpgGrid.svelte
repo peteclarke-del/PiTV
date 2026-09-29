@@ -153,6 +153,10 @@
     -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain;
   }
   .epg.loading { opacity: .6; }
+  /* The head and each row are as wide as the day, not as wide as the window. A sticky cell
+     stays put only inside its own row's box: with rows the width of the window, the channel
+     column stayed for the first screenful of scrolling and then left with the row. */
+  .head, .chrow { width: max-content; min-width: 100%; }
   .head { display: flex; flex-wrap: nowrap; position: sticky; top: 0; z-index: 3; background: var(--bg-elev); border-bottom: 1px solid var(--border); height: 30px; }
   .corner { position: sticky; left: 0; z-index: 4; width: var(--chw); flex: none; background: var(--bg-elev); border-right: 1px solid var(--border); }
   .axis { position: relative; flex: none; height: 100%; }
