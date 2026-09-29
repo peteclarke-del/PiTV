@@ -72,29 +72,20 @@
   {#if !player.state.online}<div class="note">The player is offline, so Learn cannot see key presses. You can still type key names (e.g. <code>KEY_RED</code>).</div>{/if}
   {#if player.state.last_key}<div class="tiny muted">Last key seen: <code>{player.state.last_key.key}</code>, mapped to {player.state.last_key.action ?? 'unmapped'}</div>{/if}
   {#if map}
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Action</th><th>Keys</th><th></th></tr></thead>
-        <tbody>
-          {#each ACTIONS as a (a)}
-            <tr class:learning={learning === a}>
-              <td class="nowrap"><b>{ACTION_LABELS[a]}</b>{#if !isDefault(a)}<span class="badge info" title="Differs from default">custom</span>{/if}</td>
-              <td>
-                <div class="row" style="gap:.3rem">
-                  {#each map[a] as k (k)}<span class="chip mono">{k}<button onclick={() => remove(a, k)} aria-label="Remove {k}">✕</button></span>{/each}
-                  <span class="inline-form">
-                    <input class="narrow mono" placeholder="KEY_…" bind:value={manual[a]} onkeydown={onEnter(() => addTyped(a))} aria-label="Add key name" />
-                    <button class="small ghost" onclick={() => addTyped(a)} disabled={!manual[a]}>Add</button>
-                  </span>
-                </div>
-              </td>
-              <td class="right nowrap">
-                <button class="small" class:primary={learning === a} onclick={() => learn(a)} disabled={!player.state.online && learning !== a}>{learning === a ? 'Listening… cancel' : 'Learn'}</button>
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
+    <div class="actions">
+      {#each ACTIONS as a (a)}
+        <div class="action" class:learning={learning === a}>
+          <div class="name"><b>{ACTION_LABELS[a]}</b>{#if !isDefault(a)}<span class="badge info" title="Differs from default">custom</span>{/if}</div>
+          <div class="row keys">
+            {#each map[a] as k (k)}<span class="chip mono">{k}<button onclick={() => remove(a, k)} aria-label="Remove {k}">✕</button></span>{/each}
+            <span class="inline-form">
+              <input class="narrow mono" placeholder="KEY_…" bind:value={manual[a]} onkeydown={onEnter(() => addTyped(a))} aria-label="Add key name for {ACTION_LABELS[a]}" />
+              <button class="small ghost" onclick={() => addTyped(a)} disabled={!manual[a]}>Add</button>
+            </span>
+          </div>
+          <button class="small" class:primary={learning === a} onclick={() => learn(a)} disabled={!player.state.online && learning !== a}>{learning === a ? 'Listening… cancel' : 'Learn'}</button>
+        </div>
+      {/each}
     </div>
     <div class="row">
       <button class="primary" onclick={save} disabled={saving || !dirty}>Save keymap</button>
@@ -107,5 +98,11 @@
 </div>
 
 <style>
-  tr.learning td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  /* An action is a name, a few keys and a button: as many columns of them as the width holds. */
+  .actions { display: grid; gap: 0 1.5rem; grid-template-columns: repeat(auto-fill, minmax(min(100%, 34rem), 1fr)); }
+  .action { display: grid; grid-template-columns: 9rem minmax(0, 1fr) auto; gap: .5rem; align-items: center; padding: .4rem .3rem; border-bottom: 1px solid var(--border); }
+  .keys { gap: .3rem; }
+  .name :global(.badge) { margin-left: .4rem; }
+  .action.learning { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  @media (max-width: 480px) { .action { grid-template-columns: minmax(0, 1fr) auto; } .keys { grid-column: 1 / -1; grid-row: 2; } }
 </style>

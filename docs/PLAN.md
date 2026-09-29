@@ -1149,6 +1149,27 @@ pitv_content:
 | Sources | pitv_content's sources through its API: add, edit, enable, disable and remove (id, name, type, category, root, SMB URL, and for an SMB share its login: username, password, workgroup at Advanced; the password is write-only and kept by pitv_content, which mounts the share read-only with it; Test connection tries a share before saving), with health (mounted, readable, item count, last indexed) and a folder picker confined to `browse_roots`. Read-only, from the last imported index, when pitv_content is down. A change takes effect at pitv_content's next index; the catalogue import can ask for one straight away |
 | Content | Overview (status file, service and timer, last reports, manifest summary, the token pitv_content presents: show, copy, issue a new one), run now, and through its own API its settings (schema-driven form), providers (enable, order, kinds, options, add), catalogue of fetchable titles, jobs and log |
 
+#### Layout
+
+The admin uses the whole width of the window and is laid out by the space each part has, not
+by the size of the screen, so it holds from a phone to a large monitor with no horizontal
+scrolling of the page.
+
+- A settings pane is a set of panels, one per section, packed into as many columns as fit
+  (`.masonry` in `app.css`). A section with a table or more than six fields takes the whole
+  width and lays its fields out in columns; so does a narrow section caught between two wide
+  ones, which would otherwise sit beside an empty column.
+- A field is a row: label and control on the left, its help on the right. The help is the long
+  part, and under the control it wrapped into a column as narrow as the input. In a panel
+  narrower than 27rem the help goes back underneath (a container query on the panel).
+- Editors with rows of their own (dayparts, weights) follow a section's plain fields and share
+  the width: two daypart tables sit side by side from about 1600 pixels.
+- Lists of a name and a value (era weights, genres that satisfy one another, the remote keymap)
+  run in as many columns as fit.
+- Cards of unequal height (System) are packed in columns, so a tall card leaves no hole beside
+  a short one. Save stays at the foot of the window while a settings pane scrolls.
+- A structured value the form has no editor for is shown and not editable.
+
 ### 6.4 API
 
 Everything the UI does goes through the JSON API so a script or Home Assistant can do the
