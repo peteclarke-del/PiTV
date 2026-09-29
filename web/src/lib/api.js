@@ -87,7 +87,7 @@ export async function refreshAuth() {
 
 /** Normalise the player daemon's state (SSE `player` event, GET /api/player, /api/now) for the UI.
  *  Online: {online:true, ts, channel{id,number,name,colour}|null, slot{id,kind,title,subtitle,start_ts,end_ts,media_id}|null,
- *  position, paused, behind_live, volume, muted, guide_open, playing, testcard, hwdec, on_pi, last_key, error,
+ *  position, paused, behind_live, volume, muted, subtitles, subtitle_track{id,lang,codec,external}|null, guide_open, playing, testcard, hwdec, on_pi, last_key, error,
  *  cache, maintenance, stream, file, input_devices}. Offline: {online:false, error}. */
 export function normalisePlayer(raw) {
   if (!raw || typeof raw !== 'object' || raw.online !== true) return { online: false, error: raw?.error ?? null };

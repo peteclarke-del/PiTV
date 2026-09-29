@@ -42,6 +42,7 @@ from .osd import (
     make_testcard,
 )
 from .station import UNAVAILABLE, LocalStation, Station
+from .subtitles import choose_track, describe
 
 log = logging.getLogger("pitv.player")
 
@@ -61,6 +62,9 @@ CHANNEL_SETTLE_SECONDS = 0.4   # after a channel key, how long to wait for anoth
 STATIC_FRAME_SECONDS = 1 / 25   # a new frame of it every television frame
 STATE_POLL_TIMEOUT = 1.0   # mpv property reads for the published state; a hung mpv must not stall it
 MAX_PENDING_INPUT = 32     # queued key and web commands beyond this are dropped, not buffered
+# mpv measures subtitle margins on a screen 720 units high, whatever the real one is.
+SUB_MARGIN_UNITS = 720
+SUB_MARGIN_MIN = 22        # mpv's own default, kept on a screen with no overscan to allow for
 
 
 def validate_control(req: dict[str, Any]) -> tuple[str, Any] | str:
@@ -120,6 +124,10 @@ class Player:
         self.standby = False
         self.volume = 80
         self.muted = False
+        # The viewer's switch. It starts as `subtitles_default` says and the remote changes it
+        # until the player next starts, so the configuration decides what an unattended set does.
+        self.subtitles = bool(self.settings["subtitles_default"])
+        self.subtitle_track: dict[str, Any] | None = None   # the track on screen, None when there is none
         self.guide_open = False
         self.guide_highlight = 0
         self.guide_cursor = 0
@@ -187,6 +195,20 @@ class Player:
             self.mpv.set("mute", self.muted)
         except MpvError as exc:
             log.warning("mpv setup: %s", exc)
+        self._style_subtitles()
+
+    def _style_subtitles(self) -> None:
+        """Subtitles obey the OSD's overscan margin: a CRT hides the edge of the picture, which
+        is where mpv would otherwise put the bottom line. Their size is a setting of its own,
+        in mpv's units of a screen 720 high: the OSD's text scale suits a badge read at a glance
+        and not three lines of speech, and mpv's default of 55 is sized for a widescreen picture."""
+        margin = max(SUB_MARGIN_MIN, round(float(self.settings["osd_safe_margin"]) * SUB_MARGIN_UNITS))
+        try:
+            self.mpv.set("sub-margin-y", margin)
+            self.mpv.set("sub-margin-x", margin)
+            self.mpv.set("sub-font-size", int(self.settings["subtitle_font_size"]))
+        except MpvError as exc:
+            log.warning("subtitle layout not applied: %s", exc)
 
     def _restart_mpv(self, args: list[str]) -> None:
         """Relaunch mpv with new arguments (a new screen, output or audio device) and rejoin
@@ -435,6 +457,7 @@ class Player:
         """Pick up admin changes to settings and channels: at once when the web service says
         so, and once a minute regardless. A change to mpv's arguments (the screen, output or
         audio device) relaunches mpv; the cache directory is read at start only."""
+        was_default = bool(self.settings["subtitles_default"])
         try:
             self.settings = self.station.settings()
             self.tz = self.station.timezone()
@@ -443,9 +466,14 @@ class Player:
         except UNAVAILABLE as exc:
             log.warning("settings reload failed: %s", exc)
             return
+        if bool(self.settings["subtitles_default"]) != was_default:
+            self.subtitles = bool(self.settings["subtitles_default"])   # a change in the admin takes effect at once
         args = self._mpv_args()
         if args != self.mpv.args:
             self._restart_mpv(args)
+            return
+        self._style_subtitles()
+        self._apply_subtitles()   # the switch or the language may be what changed
 
     def tick(self) -> None:
         if not self.mpv.running():
@@ -599,6 +627,10 @@ class Player:
         # time is decided in `do`, by how long it is. The option is per-file, so mpv drops it
         # when the file ends and the card and the test signal are unaffected.
         opts["keep-open"] = "yes"
+        # A track chosen for one file is a number that means something else in the next. Every
+        # file starts with none, and `_apply_subtitles` chooses once mpv has read its tracks.
+        opts["sid"] = "no"
+        self.subtitle_track = None
         try:
             self.playing_entry = self.mpv.loadfile(path, start=offset, options=opts)
         except MpvError as exc:
@@ -661,6 +693,7 @@ class Player:
             self.playing_entry = self.mpv.loadfile(str(path), options=options)
             self.playing_path = TESTCARD
             self.stream_info = {}
+            self.subtitle_track = None
 
     def _placeholder_ident(self, slot: dict[str, Any]) -> None:
         """An ident slot with no file: the channel has no idents, so the test signal runs under
@@ -693,6 +726,8 @@ class Player:
                 self.actions.put(("eof", ev.get("playlist_entry_id")))
             elif reason == "error":
                 self.actions.put(("file-error", (ev.get("playlist_entry_id"), ev.get("file_error"))))
+        elif name == "file-loaded":
+            self.actions.put(("loaded", None))
         elif name == "log-message" and ev.get("level") in ("error", "warn", "fatal"):
             log.warning("mpv %s: %s", ev.get("prefix"), (ev.get("text") or "").strip())
         elif name == "client-message":
@@ -770,6 +805,9 @@ class Player:
             else:
                 log.error("mpv failed to play %s: %s", self.playing_path, error)
                 self._file_error(error)
+        elif action == "loaded":
+            self._apply_subtitles()
+            self._publish(force=True)
         elif action == "tune":
             self.tune(int(arg))
         elif action == "volume":
@@ -838,6 +876,8 @@ class Player:
             if self.paused:
                 self.behind_live = True
             self.show_badge()
+        elif act == "subtitles":
+            self._toggle_subtitles()
         elif act == "restart":
             if self.slot and self.playing_path not in (None, TESTCARD):
                 self.behind_live = True
@@ -850,6 +890,36 @@ class Player:
             self._rejoin_live()
             self.show_badge()
         self._publish(force=True)
+
+    def _apply_subtitles(self) -> None:
+        """Show the file's subtitle track when the viewer has subtitles on and it has one, and
+        none otherwise. `subtitle_track` records what mpv accepted, so the state never claims
+        subtitles that are not on screen."""
+        track = None
+        if self.subtitles and self.playing_path not in (None, TESTCARD):
+            track = choose_track(self.mpv.get("track-list") or [], str(self.settings["subtitle_language"]))
+        chosen = describe(track) if track else None
+        if chosen == self.subtitle_track:
+            return   # already on screen, or the file was loaded with none and has none to show
+        try:
+            self.mpv.set("sid", track["id"] if track else "no")
+        except MpvError as exc:
+            log.warning("subtitle track %s not selected: %s", track["id"] if track else "off", exc)
+            chosen = None
+        self.subtitle_track = chosen
+        if chosen:
+            log.info("subtitles: track %s lang=%s codec=%s%s", track.get("id"), track.get("lang") or "unlabelled",
+                     track.get("codec"), " (sidecar file)" if track.get("external") else "")
+
+    def _toggle_subtitles(self) -> None:
+        self.subtitles = not self.subtitles
+        log.info("subtitles switched %s", "on" if self.subtitles else "off")
+        self._apply_subtitles()
+        detail = ""
+        if self.subtitles and self.subtitle_track is None and self.playing_path not in (None, TESTCARD):
+            detail = "None with this programme"
+        self._sync_osd_size()
+        self._overlay(OVERLAY_VOLUME, self.renderer.notice(f"SUBTITLES {'ON' if self.subtitles else 'OFF'}", detail), ttl=3)
 
     def _set_standby(self, on: bool) -> None:
         """Picture off and sound muted; the schedule keeps running so waking rejoins live."""
@@ -1007,7 +1077,7 @@ class Player:
             number = self._highlighted()["number"]
             self.close_guide()
             self.tune(number)
-        elif act in ("vol_up", "vol_down", "mute", "pause"):
+        elif act in ("vol_up", "vol_down", "mute", "pause", "subtitles"):
             self.close_guide()
             self.action(act)
 
@@ -1050,6 +1120,7 @@ class Player:
             "slot": {k: slot.get(k) for k in ("id", "kind", "title", "subtitle", "start_ts", "end_ts", "media_id")} if slot else None,
             "position": pos, "paused": self.paused, "behind_live": self.behind_live, "standby": self.standby,
             "volume": self.volume, "muted": self.muted, "guide_open": self.guide_open,
+            "subtitles": self.subtitles, "subtitle_track": self.subtitle_track,
             "playing": playing, "testcard": path == TESTCARD,
             "hwdec": hwdec, "on_pi": self.on_pi, "last_key": self.last_key, "error": self.last_error,
             "cache": self.cache.usage(), "maintenance": dict(self.maintenance.status),

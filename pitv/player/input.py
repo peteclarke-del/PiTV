@@ -23,7 +23,7 @@ from typing import Any
 log = logging.getLogger("pitv.input")
 
 ACTIONS = ["up", "down", "left", "right", "ok", "back", "guide", "info", "pause", "mute",
-           "vol_up", "vol_down", "ch_up", "ch_down", "restart", "power"] + [f"channel_{n}" for n in range(1, 10)]
+           "vol_up", "vol_down", "ch_up", "ch_down", "restart", "subtitles", "power"] + [f"channel_{n}" for n in range(1, 10)]
 REPEATABLE = frozenset({"vol_up", "vol_down", "up", "down", "left", "right"})  # act on a held key
 
 # Defaults cover the OSMC RF remote (Home, Info, arrows, OK, Back, Menu, Play/Pause, Stop,
@@ -42,6 +42,7 @@ DEFAULT_KEYMAP: dict[str, list[str]] = {
     "ch_up": ["KEY_CHANNELUP", "KEY_PAGEUP", "KEY_NEXTSONG"],
     "ch_down": ["KEY_CHANNELDOWN", "KEY_PAGEDOWN", "KEY_PREVIOUSSONG"],
     "restart": ["KEY_REWIND", "KEY_R"],
+    "subtitles": ["KEY_SUBTITLE", "KEY_S"],
     "power": ["KEY_POWER", "KEY_SLEEP"],
     **{f"channel_{n}": [f"KEY_{n}", f"KEY_KP{n}", f"KEY_NUMERIC_{n}"] for n in range(1, 10)},
 }
@@ -50,7 +51,7 @@ DEFAULT_KEYMAP: dict[str, list[str]] = {
 # spelling of the arrows, OK, Back and space. "quit" is local only and never a remote action.
 _DESKTOP_KEYS = {
     "g": "guide", "i": "info", "m": "mute", "+": "vol_up", "=": "vol_up", "-": "vol_down",
-    "]": "ch_up", "[": "ch_down", "r": "restart", "p": "power", "q": "quit",
+    "]": "ch_up", "[": "ch_down", "r": "restart", "s": "subtitles", "p": "power", "q": "quit",
     **{str(n): f"channel_{n}" for n in range(1, 10)},
 }
 TERMINAL_KEYS = {**_DESKTOP_KEYS, "\x1b[A": "up", "\x1b[B": "down", "\x1b[C": "right", "\x1b[D": "left",

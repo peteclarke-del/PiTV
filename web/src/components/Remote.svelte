@@ -3,6 +3,7 @@
   import { post, tryApi } from '../lib/api.js';
   import { tuneChannel } from '../lib/actions.js';
   import { safeColour } from '../lib/format.js';
+  import { subtitleNote } from '../lib/playback.js';
 
   let { channels = [] } = $props();
   let online = $derived(player.state.online);
@@ -57,7 +58,12 @@
     <button disabled={!online} onclick={() => key('guide')}>Guide</button>
     <button disabled={!online} onclick={() => key('info')}>Info</button>
     <button disabled={!online} onclick={() => key('restart')} title="Restart the current programme from the beginning">↺ Restart</button>
+    <button class="wide" disabled={!online} onclick={() => key('subtitles')} class:active={player.state.subtitles}
+            aria-pressed={!!player.state.subtitles} title={subtitleNote(player.state)}>Subtitles {player.state.subtitles ? 'on' : 'off'}</button>
   </div>
+  {#if online && player.state.subtitles && player.state.playing && !player.state.subtitle_track}
+    <p class="note small">{subtitleNote(player.state)}</p>
+  {/if}
 </div>
 
 <style>
@@ -80,5 +86,6 @@
   .right { grid-column: 3; grid-row: 2; }
   .down { grid-column: 2; grid-row: 3; }
   .extras { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+  .wide { grid-column: 1 / -1; }
   .busy { opacity: .7; }
 </style>

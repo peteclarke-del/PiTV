@@ -78,4 +78,4 @@ job it is running, which goes back in its queue as interrupted.
 
 Player keys in the window or terminal: `1` to `9` channel, `[` and `]` channel down and up,
 `g` guide, arrows navigate, `Enter` select, `Esc` back, `i` info, `Space` pause, `m` mute,
-`+` and `-` volume, `r` restart programme, `q` quit.
+`+` and `-` volume, `r` restart programme, `s` subtitles on and off, `q` quit.

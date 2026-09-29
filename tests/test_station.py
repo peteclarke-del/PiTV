@@ -161,3 +161,113 @@ def test_channel_keys_show_the_banner_at_once_and_load_where_they_stop(monkeypat
     calls.clear()
     Player.tune(p, 1)
     assert calls == ["badge 1", "load 1"], "a tune that is not a channel key loads at once, banner first"
+
+
+def test_the_subtitle_track_shown_is_chosen_by_language_not_by_the_files_flags():
+    """mpv's own choice follows the default flag an author happened to set, so two files with
+    the same subtitles behaved differently. The player picks: the configured language first,
+    then a track with no label, a forced track (foreign dialogue only) last, and never a track
+    labelled in another language."""
+    from pitv.player.subtitles import choose_track
+
+    def sub(tid, lang=None, **flags):
+        return {"id": tid, "type": "sub", "lang": lang, **flags}
+
+    video, audio = {"id": 1, "type": "video"}, {"id": 1, "type": "audio", "lang": "eng"}
+    assert choose_track([video, audio], "en") is None
+    assert choose_track([video, sub(1, "fre", default=True), sub(2, "eng")], "en")["id"] == 2
+    assert choose_track([sub(1, "eng", forced=True), sub(2, "en-GB")], "en")["id"] == 2
+    assert choose_track([sub(1, "eng", forced=True)], "en")["id"] == 1, "a forced track is better than none"
+    assert choose_track([sub(1), sub(2, "eng")], "en")["id"] == 2
+    assert choose_track([sub(1, "und"), sub(2)], "en")["id"] == 1, "equals keep the file's order"
+    assert choose_track([sub(1, "ger"), sub(2, "spa")], "en") is None
+    assert choose_track([sub(1, "ger")], "de")["id"] == 1
+
+
+def test_subtitles_are_the_viewers_switch_and_show_only_what_the_file_has(monkeypatch):
+    """The subtitles key turns them on for every programme that has a track and says so when
+    the one on air has none; each file is loaded with no track, because a track number chosen
+    for one file means something else in the next."""
+    from types import SimpleNamespace
+
+    from pitv.player import controller as controller_mod
+    from pitv.player.controller import Player
+
+    sets: list[tuple] = []
+    notices: list[tuple] = []
+    tracks = [{"id": 1, "type": "video"}, {"id": 3, "type": "sub", "lang": "eng", "codec": "subrip"}]
+    loaded: dict = {}
+    mpv = SimpleNamespace(get=lambda prop, default=None: tracks if prop == "track-list" else default,
+                          set=lambda name, value: sets.append((name, value)),
+                          loadfile=lambda path, start, options: loaded.update(options) or 2,
+                          overlay_remove=lambda _id: None)
+    p = SimpleNamespace(mpv=mpv, subtitles=False, subtitle_track=None, playing_path="/c/film.mkv", paused=False,
+                        on_pi=False, channel={"number": 1}, settings={"subtitle_language": "en"},
+                        renderer=SimpleNamespace(notice=lambda label, detail="": (label, detail)),
+                        _overlay=lambda _oid, rendered, ttl: notices.append(rendered),
+                        _sync_osd_size=lambda: None,
+                        _decode_props=lambda *_a: {}, _start_history=lambda _s: None)
+    p._apply_subtitles = lambda: Player._apply_subtitles(p)
+
+    Player._apply_subtitles(p)
+    assert sets == [], "off, and the file was loaded with none: nothing to do"
+
+    Player._toggle_subtitles(p)
+    assert p.subtitles and ("sid", 3) in sets and p.subtitle_track["lang"] == "eng"
+    assert notices[-1] == ("SUBTITLES ON", "")
+
+    sets.clear()
+    Player._apply_subtitles(p)
+    assert sets == [], "the settings reload must not reselect the track every minute"
+
+    monkeypatch.setattr(controller_mod, "decode_options", lambda *_a, **_k: {"hwdec": "no", "deinterlace": "no"})
+    Player._load(p, {"id": 5, "kind": "programme", "title": "Next"}, {"id": 1}, "/c/next.mkv", "cache", 0.0)
+    assert loaded["sid"] == "no" and p.subtitle_track is None
+
+    tracks[:] = [{"id": 1, "type": "video"}]
+    Player._apply_subtitles(p)
+    assert p.subtitle_track is None
+    Player._toggle_subtitles(p)
+    Player._toggle_subtitles(p)
+    assert notices[-1] == ("SUBTITLES ON", "None with this programme")
+
+
+def test_subtitles_is_a_remote_key_and_its_language_is_checked():
+    import pytest
+
+    from pitv.player.controller import validate_control
+    from pitv.settings_rules import SettingError, check_setting
+
+    assert validate_control({"cmd": "key", "key": "subtitles"}) == ("key", "subtitles")
+    assert check_setting("subtitle_language", " EN ") == "en"
+    for bad in ("english", "", "e1", 5):
+        with pytest.raises(SettingError):
+            check_setting("subtitle_language", bad)
+
+
+def test_the_subtitles_setting_is_the_switch_at_start_and_when_it_is_changed():
+    """The remote's switch lasts until the player next starts. What an unattended set does is
+    the configuration's to say, so a change to the setting moves the switch at once, and a
+    reload that finds the setting unchanged leaves the viewer's choice alone."""
+    from types import SimpleNamespace
+
+    from pitv.player.controller import Player
+
+    sets: list[tuple] = []
+    settings = {"subtitles_default": False, "subtitle_font_size": 40, "osd_safe_margin": 0.07, "keymap": {}}
+    mpv = SimpleNamespace(args=["x"], set=lambda name, value: sets.append((name, value)))
+    applied: list[bool] = []
+    p = SimpleNamespace(settings=dict(settings), subtitles=True, mpv=mpv, tz=None,
+                        station=SimpleNamespace(settings=lambda: dict(settings), timezone=lambda: None),
+                        evdev=SimpleNamespace(set_keymap=lambda _k: None), _load_channels=lambda: None,
+                        _mpv_args=lambda: ["x"], _apply_subtitles=lambda: applied.append(p.subtitles))
+    p._style_subtitles = lambda: Player._style_subtitles(p)
+
+    Player._reload_settings(p)
+    assert applied == [True], "the viewer switched them on and the setting has not changed"
+    assert ("sub-font-size", 40) in sets and ("sub-margin-y", 50) in sets
+
+    settings["subtitles_default"] = True
+    p.subtitles = False
+    Player._reload_settings(p)
+    assert applied[-1] is True, "switching the setting on switches subtitles on"

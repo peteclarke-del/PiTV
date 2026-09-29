@@ -217,6 +217,18 @@ SECTIONS: tuple[tuple[str, str, tuple[dict[str, Any], ...]], ...] = (
            " last frame, as a broadcast does at a junction; only a real gap gets the continuity"
            " card, so one never flashes up between two short items too briefly to read.",
            min=1, max=120),
+        _f("subtitles_default", "basic", "Subtitles on", "bool",
+           "Whether subtitles are on when the player starts, and at once when this is changed. The"
+           " remote's Subtitles button switches them until the player next starts. A programme"
+           " with no subtitles plays without."),
+        _f("subtitle_font_size", "standard", "Subtitle font size", "int",
+           "Measured against a screen 720 high whatever the real one is, so 34 gives about 21 lines"
+           " to the screen. Picture subtitles from a disc keep the size they were drawn at.",
+           min=16, max=80),
+        _f("subtitle_language", "standard", "Subtitle language", "text",
+           "The two-letter code of the language subtitles are shown in (en, fr, de). With subtitles"
+           " switched on from the remote, a programme shows its track in this language, or one with"
+           " no language label; a track labelled in another language is not shown."),
     )),
     ("player", "Remote", (
         _f("nav_keys_change_channel", "basic", "Up and down change channel", "bool",

@@ -1,6 +1,6 @@
 <script>
   import { player } from '../lib/stores.svelte.js';
-  import { playbackIssue } from '../lib/playback.js';
+  import { playbackIssue, subtitleNote } from '../lib/playback.js';
   let s = $derived(player.state);
 </script>
 
@@ -13,6 +13,7 @@
     {#if s.paused}<span class="badge warn">Paused</span>{/if}
     {#if s.behind_live}<span class="badge info">Behind live</span>{/if}
     {#if s.muted}<span class="badge">Muted</span>{:else if s.volume !== null}<span class="sep">·</span><span>Vol {s.volume}</span>{/if}
+    {#if s.subtitles}<span class="badge" title={subtitleNote(s)}>{s.subtitle_track ? 'Subtitles' : 'Subtitles: none'}</span>{/if}
     {#if s.hwdec}<span class="badge ok" title="Hardware decoder in use">{s.hwdec}</span>{/if}
     {#if s.error}{@const issue = playbackIssue(s.error)}<span class="badge {issue.cls}" title={s.error}>{issue.label}</span>{/if}
   {:else}

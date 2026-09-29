@@ -481,6 +481,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "nav_keys_change_volume": True,    # left/right = volume when the guide is closed
     "badge_seconds": 5,
     "card_after_seconds": 15,          # shorter gaps hold the last frame; only a real one gets the card
+    "subtitles_default": False,        # the subtitles switch when the player starts; the remote changes it until the next start
+    "subtitle_font_size": 34,          # in mpv's units of a screen 720 high, so about 21 lines to the screen
+    "subtitle_language": "en",         # the language of the subtitle track shown; tracks in another are not
     "osd_safe_margin": 0.07,           # fraction of the screen kept clear on every edge (CRT overscan)
     "osd_scale": 1.25,                 # text size multiplier; 1.25 suits a small 4:3 CRT at 576 lines
     "drm_connector": "",               # e.g. "Composite-1" or "HDMI-A-1"; empty = mpv default

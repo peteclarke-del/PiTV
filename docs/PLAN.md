@@ -1010,6 +1010,22 @@ The OSMC remote has no number, channel or mute keys, so the defaults are:
 | Stop | Mute / unmute | Closes the guide and mutes |
 | Vol + / - | Volume with an on-screen bar | Closes the guide and adjusts |
 | Rewind (or `r`) | Restart the current programme from its beginning | |
+| Subtitle (or `s`) | Subtitles on or off, confirmed on screen | Closes the guide and switches |
+
+Subtitles are a switch. `subtitles_default` sets it when the player starts and at once when
+the setting is changed; the remote changes it until the player next starts, so an unattended
+set always comes up as configured. While they are on, every programme that carries a subtitle track shows it, and one
+that carries none plays without: the confirmation on screen and the web remote both say "none
+with this programme" so an empty screen is not mistaken for a fault. The player chooses the
+track from mpv's track list (`pitv/player/subtitles.py`) and leaves mpv's own selection off,
+because that follows the default flag a file's author happened to set. The order is the
+language in `subtitle_language`, then a track with no language label, with a forced track
+(foreign dialogue only) last; a track labelled in another language is never shown. Each file
+is loaded with no track selected, since a track number means something different in the next
+file. Text subtitles take the OSD's overscan margin; their size is `subtitle_font_size`, separate from the
+OSD's text scale, which made three wrapped lines fill half a 4:3 picture. A subtitle file beside the
+programme with the same name is read as a track of it. The channel streams (section 6.5)
+carry no subtitles.
 
 Number keys on any remote tune channels 1 to 9 directly, guide open or not.
 
