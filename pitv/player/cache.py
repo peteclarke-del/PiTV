@@ -216,8 +216,12 @@ class MediaCache:
                 free = shutil.disk_usage(self.dir).free
             except OSError:
                 free = None
-            usage = {"enabled": True, "dir": str(self.dir), "files": len(files),
-                     "used": sum(_size(p) for p in files), "max": self.max_bytes, "free": free,
+            # `used` is the whole folder, which is what the cap is on and what pitv_content
+            # measures. It was the copies alone, so the admin showed 550 GB of 700 while the
+            # folder stood at its cap with 155 GiB of fetched material beside them.
+            copies = sum(_size(p) for p in files)
+            usage = {"enabled": True, "dir": str(self.dir), "files": len(files), "copies": copies,
+                     "used": max(copies, tree_bytes(self.dir)), "max": self.max_bytes, "free": free,
                      "tool_running": self.content_tool_running()}
             with self._lock:
                 self._usage = usage

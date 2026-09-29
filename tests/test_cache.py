@@ -51,14 +51,19 @@ def test_make_room_evicts_least_recently_played_first(tmp_path):
     assert played.exists() and not older.exists() and not newer.exists()
 
 
-def test_usage_counts_only_settled_copies(tmp_path):
+def test_usage_counts_settled_copies_and_measures_the_whole_folder(tmp_path):
+    """The copies are counted as copies, and `used` is the folder the cap is on. With `used` the
+    copies alone, the admin showed 550 GB of 700 while the folder stood at its cap, the rest of
+    it fetched material kept beside them."""
     cache_dir = tmp_path / "cache"
     _file(cache_dir / "1_a.mp4")
     _file(cache_dir / "2_b.mp4.part")
     _file(cache_dir / STATUS_FILE)
     _file(cache_dir / "notes.txt")
+    _file(cache_dir / "acquired" / "tvshows" / "Fetched - S01E01.mp4")
     usage = MediaCache(cache_dir, max_bytes=10 ** 9).usage()
-    assert usage["files"] == 1 and usage["used"] == 1000 and usage["tool_running"] is False
+    assert usage["files"] == 1 and usage["copies"] == 1000 and usage["tool_running"] is False
+    assert usage["used"] == 5000, "every file under the folder counts towards the cap"
 
 
 def test_make_room_keeps_what_was_encoded_until_the_copies_have_gone(tmp_path):

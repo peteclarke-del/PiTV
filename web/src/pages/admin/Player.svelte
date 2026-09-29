@@ -112,7 +112,7 @@
         {:else if !cache.enabled}<p class="muted small">Local cache disabled. Set a cache folder under Settings, Cache and pitv_content.</p>
         {:else}
           <ProgressBar value={cacheFrac} />
-          <p class="small muted" style="margin:.4rem 0 0">{fmtBytes(cache.used)} of {fmtBytes(cache.max)} used · {cache.files} files{cache.free != null ? ` · ${fmtBytes(cache.free)} free on disk` : ''}</p>
+          <p class="small muted" style="margin:.4rem 0 0">{fmtBytes(cache.used)} of {fmtBytes(cache.max)} used{cache.copies != null ? `: ${fmtBytes(cache.copies)} in ${cache.files} copies, ${fmtBytes(Math.max(0, cache.used - cache.copies))} fetched and kept` : ` · ${cache.files} files`}{cache.free != null ? ` · ${fmtBytes(cache.free)} free on disk` : ''}</p>
           <p class="tiny muted mono" style="margin:0">{cache.dir}</p>
           {#if cache.tool_running}<div class="mt"><span class="badge info">pitv_content running</span> <span class="tiny muted">filling the cache now</span></div>{/if}
         {/if}
