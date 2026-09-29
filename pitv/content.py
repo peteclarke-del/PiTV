@@ -51,6 +51,44 @@ MAX_WANTED_ATTEMPTS = 3
 # attempt. Everything else in a message is a fault, and the doctor tells the two apart by this
 # same prefix, so the rule is written once rather than guessed at in two places.
 MISS_PREFIX = "not found yet"
+# How many requests must hold one cause before it is taken to be about none of them. A missing
+# cookie store failed 4,098 requests three times each in two days, every one then given up on
+# for a fault in the machine's configuration, and none was asked for again once it was mended.
+SHARED_FAULT = 20
+_ERROR_MARK = "ERROR: "
+_SITE_AND_ID = re.compile(r"^\[[^\]]{1,40}\] \S{1,80}: ")
+
+
+def fault_cause(message: str | None) -> str:
+    """What went wrong, without which request it went wrong for. pitv_content's messages name
+    the candidate that failed ("candidates did not process: <id>: download failed: ERROR: ..."),
+    so a thousand requests stopped by one fault carry a thousand different messages, and
+    counting them by message found no fault at all. The cause is what follows the last error
+    mark, less the site and id a downloader puts in front; a message with neither is its own."""
+    text = (message or "").strip()
+    if _ERROR_MARK in text:
+        text = text.rsplit(_ERROR_MARK, 1)[1].strip()
+    return _SITE_AND_ID.sub("", text)
+
+
+def held_by(cause: str, held: str) -> bool:
+    """Whether a request holding `held` is stopped by `cause`. A stored message is cut at 300
+    characters, which after a long candidate name leaves only the first words of the cause, so
+    the beginning of a cause counts as that cause. It is one way only: a longer cause that
+    merely starts the same is a different fault."""
+    return bool(held) and (held == cause or (len(held) >= 8 and cause.startswith(held)))
+
+
+def _shared_fault(conn: sqlite3.Connection, message: str) -> bool:
+    """Whether `SHARED_FAULT` other requests already hold this message's cause."""
+    cause = fault_cause(message)
+    if not cause:
+        return False
+    held = conn.execute("SELECT COUNT(*) FROM (SELECT 1 FROM wanted WHERE message IS NOT NULL"
+                        " AND substr(message, -length(?)) = ? LIMIT ?)", (cause, cause, SHARED_FAULT)).fetchone()[0]
+    return held >= SHARED_FAULT
+
+
 # The start of the message on a request the owner has withdrawn: kept, failed and fully tried, so
 # its number stays taken and it is never asked for again, and not a fault anybody need act on.
 WITHDRAWN_PREFIX = "withdrawn by the owner"
@@ -503,9 +541,12 @@ def _fail_wanted(conn: sqlite3.Connection, wid: int, message: str) -> None:
         if ended.group(1):
             conn.execute("UPDATE lineup SET episode_count = ?, updated_at = ? WHERE id = (SELECT lineup_id FROM wanted WHERE id = ?)",
                          (int(ended.group(1)), now_ts(), wid))
-    elif "bot check" in msg.lower() or "rate limit" in msg.lower() or msg.lower().startswith(MISS_PREFIX):
-        # The provider, not the request, was the problem, or nothing on offer today says it is the
-        # episode wanted (uploads are retitled and new ones appear): retry without using up an attempt.
+    elif ("bot check" in msg.lower() or "rate limit" in msg.lower() or msg.lower().startswith(MISS_PREFIX)
+          or _shared_fault(conn, msg)):
+        # The provider or the machine, not the request, was the problem, or nothing on offer today
+        # says it is the episode wanted (uploads are retitled and new ones appear): retry without
+        # using up an attempt. The doctor names a shared fault with its count, so it is not
+        # retried in silence.
         conn.execute("UPDATE wanted SET status = 'queued', message = ?, updated_at = ? WHERE id = ?", (msg, now_ts(), wid))
     else:
         conn.execute("UPDATE wanted SET status = CASE WHEN attempts + 1 >= ? THEN 'failed' ELSE 'queued' END,"

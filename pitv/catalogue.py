@@ -49,7 +49,7 @@ from .db import (
 )
 from .lineup import generate, restore_if_empty
 from .player.hwdec import PI_HW_CODECS
-from .scheduler.horizon import refill_empty_days
+from .scheduler.horizon import refill_empty_days, replace_retired
 from .scheduler.rules import keyword_pattern, names_a_product, normalise_cert
 
 log = logging.getLogger("pitv.catalogue")
@@ -87,13 +87,14 @@ def index_file(settings: dict[str, Any]) -> Path | None:
 
 def fetch_index(settings: dict[str, Any], reindex: bool = False) -> tuple[dict[str, Any] | None, str]:
     """The current index from pitv_content's API, or from the file it writes when the API is
-    down. Returns (document or None, where it came from or why it failed)."""
+    down. Returns (document or None, where it came from or why it failed). When a re-index was
+    asked for and did not produce this document, the origin says so: the import that follows
+    succeeds, and without the note it would read as though the sources had just been walked."""
     base = tool_client.base_url(settings)
-    if reindex:
-        _reindex(base)
+    stale = _reindex(base) if reindex else ""
     status, payload = tool_client.request(base, "GET", "library", timeout=60)
     if status == 200 and isinstance(payload, dict):
-        return payload, f"pitv_content API at {base}"
+        return payload, f"pitv_content API at {base}" + (f"; {stale}" if stale else "")
     path = index_file(settings)
     if path is not None and path.exists():
         try:
@@ -104,10 +105,46 @@ def fetch_index(settings: dict[str, Any], reindex: bool = False) -> tuple[dict[s
     return None, f"no index: API {reason}; file {path or '(no cache_dir)'} absent"
 
 
-def _reindex(base: str, timeout: float = REINDEX_TIMEOUT) -> None:
+NOT_REINDEXED = "the sources were not re-indexed first"
+
+
+def sources_read_in_full(settings: dict[str, Any], doc: dict[str, Any]) -> frozenset[str]:
+    """The NAS sources whose whole listing `doc` carries, by index source id.
+
+    pitv_content publishes an index as incomplete whenever a delivery is outstanding, to protect
+    the files that delivery is still filing, and with fetching never idle that is every index:
+    for three days nothing was retired, and a share reorganised in that time was in the
+    catalogue twice, once at paths that no longer existed. The protection is for the folders
+    pitv_content writes to. A share it only reads is listed whole whenever it was read, and
+    pitv_content says per source whether it was (contract section 4, `health`).
+
+    A source counts only when its health is readable with no error and names as many items as
+    the document lists for it, which ties the health to the scan this document came from. An
+    unreachable share, a scan that left files out and any disagreement all leave it out, and
+    nothing of it is retired."""
+    status, payload = tool_client.request(tool_client.base_url(settings), "GET", "sources", timeout=15)
+    if status != 200 or not isinstance(payload, list):
+        return frozenset()
+    listed: dict[str, int] = {}
+    for item in doc.get("items") or []:
+        if isinstance(item, dict) and as_text(item.get("source")):
+            listed[item["source"]] = listed.get(item["source"], 0) + 1
+    whole = set()
+    for src in payload:
+        health = src.get("health") if isinstance(src, dict) else None
+        if not isinstance(health, dict) or src.get("location") != "nas" or not as_bool(src.get("enabled"), True):
+            continue
+        sid = as_text(src.get("id"))
+        if (sid and health.get("readable") is True and not health.get("error") and health.get("last_indexed_ts")
+                and listed.get(sid, 0) > 0 and health.get("items") == listed[sid]):
+            whole.add(sid)
+    return frozenset(whole)
+
+
+def _reindex(base: str, timeout: float = REINDEX_TIMEOUT) -> str:
     """Start a re-index and wait for that job to finish, so the import that follows reads the
-    new index rather than the one it replaces. A failure or timeout is logged; the current index
-    is imported regardless.
+    new index rather than the one it replaces. Returns "" when it did, and otherwise why the
+    index in hand is the old one; that index is imported regardless.
 
     Three things can be waited on and only one of them is worth waiting for. An index that is
     running is nearly done, and gets `REINDEX_TIMEOUT`. One that is queued has not started and
@@ -123,7 +160,7 @@ def _reindex(base: str, timeout: float = REINDEX_TIMEOUT) -> None:
     job_id = started.get("job_id") if status == 200 and isinstance(started, dict) else None
     if not job_id:
         log.warning("re-index not started (HTTP %s): %s", status, started.get("error", "") if isinstance(started, dict) else "")
-        return
+        return f"{NOT_REINDEXED}: pitv_content did not start one (HTTP {status})"
     start = time.monotonic()
     deadline = start + timeout
     seen = False
@@ -137,21 +174,23 @@ def _reindex(base: str, timeout: float = REINDEX_TIMEOUT) -> None:
                 log.warning("re-index %s is not in pitv_content's job list%s; importing the index in hand",
                             job_id, " (it was deduplicated against an older request)"
                             if isinstance(started, dict) and started.get("deduplicated") else "")
-                return
+                return f"{NOT_REINDEXED}: the request is not in pitv_content's job list"
             time.sleep(REINDEX_POLL)
             continue
         seen = True
         if job.get("finished_ts"):
             if job.get("status") != "ok":
                 log.warning("re-index %s ended %s, no new index: %s", job_id, job.get("status"), job.get("summary", ""))
-            return
+                return f"{NOT_REINDEXED}: the re-index ended {job.get('status')}"
+            return ""
         if not job.get("started_ts") and waited > REINDEX_QUEUED:
             # Queued behind other work. That queue is not PiTV's to wait on, and the index it
             # would replace is minutes old.
             log.info("re-index %s is queued behind pitv_content's other work; importing the index in hand", job_id)
-            return
+            return f"{NOT_REINDEXED}: the re-index is queued behind pitv_content's other work and is imported when it finishes"
         time.sleep(REINDEX_POLL)
     log.warning("re-index %s still running after %ds; importing the current index", job_id, timeout)
+    return f"{NOT_REINDEXED}: the re-index was still running after {int(timeout)} seconds and is imported when it finishes"
 
 
 
@@ -220,9 +259,13 @@ def _records(doc: dict[str, Any], key: str) -> list[Any]:
     return value
 
 
-def import_index(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, Any]:
+def import_index(conn: sqlite3.Connection, doc: dict[str, Any],
+                 read_in_full: frozenset[str] = frozenset()) -> dict[str, Any]:
     """Apply a library index in one transaction. Idempotent; returns counts for the run log and
-    `rejects`, a description of the first REJECTS_KEPT records that could not be used."""
+    `rejects`, a description of the first REJECTS_KEPT records that could not be used.
+
+    A complete index retires everything it does not list. An incomplete one retires only what
+    is absent from the sources named in `read_in_full` (see `sources_read_in_full`)."""
     if not isinstance(doc, dict) or doc.get("schema") != SCHEMA:
         got = doc.get("schema") if isinstance(doc, dict) else type(doc).__name__
         raise IndexFormatError(f"expected a schema {SCHEMA} library index, got schema {got}")
@@ -352,10 +395,12 @@ def import_index(conn: sqlite3.Connection, doc: dict[str, Any]) -> dict[str, Any
             seen.add(uid)
 
         assign_ident_channels(conn)
-        if complete:
+        whole = {s["id"] for uid, s in sources.items() if uid in read_in_full and s["location"] == "nas"}
+        if complete or whole:
             # Online material is managed through delivery reports, not the index.
-            gone = [(r["id"],) for r in conn.execute("SELECT id, uid FROM media WHERE missing = 0 AND origin != 'online'")
-                    .fetchall() if r["uid"] not in seen]
+            gone = [(r["id"],) for r in conn.execute(
+                "SELECT id, uid, source_id FROM media WHERE missing = 0 AND origin != 'online'").fetchall()
+                if r["uid"] not in seen and (complete or r["source_id"] in whole)]
             conn.executemany("UPDATE media SET missing = 1 WHERE id = ?", gone)
             counts["missing"] = len(gone)
             conn.execute("UPDATE shows SET missing = 1 WHERE missing = 0 AND id NOT IN"
@@ -380,14 +425,15 @@ def local_path(path: str, root: str, mount: str | None) -> str:
     return mount.rstrip("/") + path[len(root.rstrip("/")):]
 
 
-def import_and_place(conn: sqlite3.Connection, doc: dict[str, Any], origin: str = "") -> dict[str, Any]:
+def import_and_place(conn: sqlite3.Connection, doc: dict[str, Any], origin: str = "",
+                     read_in_full: frozenset[str] = frozenset()) -> dict[str, Any]:
     """Import, then place new series and films into line-ups and refresh the JSON mirror.
     Logged as a `catalogue` run; a failed import is logged as an error and re-raised."""
     run_id = run_log_start(conn, "catalogue")
     # Every step is inside the try: a mirror or refill that raised once left its run "running"
     # for good, a failure nobody was told about.
     try:
-        counts = import_index(conn, doc)
+        counts = import_index(conn, doc, read_in_full)
         restore_if_empty(conn)
         placed = generate(conn)
         write_mirror(conn)
@@ -395,14 +441,20 @@ def import_and_place(conn: sqlite3.Connection, doc: dict[str, Any], origin: str 
         # inside strict bands. Revisit those gaps now so fetched material is on the schedule
         # before airtime rather than merely present in the catalogue.
         refill = refill_empty_days(conn)
+        retired = replace_retired(conn)
     except Exception as exc:
         run_log_finish(conn, run_id, "error", str(exc), [str(exc)])
         raise
     summary = (f"{counts['items']} items ({counts['new']} new, {counts['missing']} now missing,"
                f" {counts['rejected']} rejected) from {counts['sources']} sources; line-ups: {placed['assigned']} placed,"
                f" {placed['unmatched']} matched no channel; {refill['summary']}")
+    if retired["summary"]:
+        summary += f"; {retired['summary']}"
+    if NOT_REINDEXED in origin:
+        summary += f"; {origin.split('; ', 1)[1]}"
     details = ([f"source: {origin}"] if origin else []) + [f"rejected {r}" for r in counts["rejects"]]
-    run_log_finish(conn, run_id, "warning" if counts["rejected"] or placed["unmatched"] else "ok", summary, details)
+    run_log_finish(conn, run_id, "warning" if counts["rejected"] or placed["unmatched"] or retired["failed"] else "ok",
+                   summary, details)
     log.info("catalogue import: %s", summary)
     return {**counts, **{f"lineup_{k}": v for k, v in placed.items()}, "refilled_days": refill["days"],
             "summary": summary, "run_id": run_id}
@@ -686,8 +738,10 @@ def refresh(conn: sqlite3.Connection, reindex: bool = False) -> dict[str, Any]:
         run_log_finish(conn, run_id, "error", origin, [origin])
         log.error("catalogue refresh failed: %s", origin)
         return {"status": "error", "summary": origin}
+    whole = frozenset() if doc.get("complete", True) or not origin.startswith("pitv_content API") \
+        else sources_read_in_full(all_settings(conn), doc)
     try:
-        result = import_and_place(conn, doc, origin)
+        result = import_and_place(conn, doc, origin, whole)
     except IndexFormatError as exc:
         log.error("catalogue refresh failed: %s: %s", origin, exc)
         return {"status": "error", "summary": f"{origin}: {exc}"}
