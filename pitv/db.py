@@ -801,6 +801,19 @@ def _migrate_steps(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS transcode_queue")
     _migrate_break_switches(conn)
     _migrate_music_blocks(conn)
+    _music_titles_name_the_artist(conn)
+
+
+def _music_titles_name_the_artist(conn: sqlite3.Connection) -> None:
+    """Slots already built for a music video or a concert carry its bare title; they take the
+    artist as new ones do (`slots.music_title`). Only a slot still titled exactly as its file is
+    changed, so an edit made in the schedule editor stands, and a second run finds nothing."""
+    from .scheduler.slots import music_title
+    rows = conn.execute(
+        "SELECT s.id, s.title, m.artist FROM schedule s JOIN media m ON m.id = s.media_id"
+        " WHERE m.kind = 'music' AND m.artist IS NOT NULL AND m.artist != '' AND s.title = m.title").fetchall()
+    changed = [(new, r["id"]) for r in rows if (new := music_title(r["title"], r["artist"])) != r["title"]]
+    conn.executemany("UPDATE schedule SET title = ? WHERE id = ?", changed)
 
 
 def _migrate_break_switches(conn: sqlite3.Connection) -> None:
