@@ -54,7 +54,12 @@ def check(conn: sqlite3.Connection, *, now: int | None = None, days: int = 1, su
         "SELECT s.id AS slot_id, s.channel_id, s.start_ts, s.title, s.wanted_id, c.name AS channel_name,"
         " m.id, m.path, m.cache_path, m.origin"
         " FROM schedule s LEFT JOIN media m ON m.id = s.media_id JOIN channels c ON c.id = s.channel_id"
-        " WHERE s.kind != 'filler' AND s.replay = 0 AND s.start_ts >= ? AND s.start_ts < ? ORDER BY s.start_ts",
+        # The overnight replay is a copy of the day and is put right by putting the day right, so
+        # it is not checked itself. A slot still waiting for its file is checked whatever it is
+        # marked: a second airing of an episode not yet fetched is marked as a replay too, and
+        # passing over those left the documentary channel showing its card for hours a day.
+        " WHERE s.kind != 'filler' AND (s.replay = 0 OR (s.media_id IS NULL AND s.wanted_id IS NOT NULL))"
+        " AND s.end_ts > ? AND s.start_ts < ? ORDER BY s.start_ts",
         (now, horizon)))
     run_id = run_log_start(conn, "readiness")
     missing: dict[int, list[dict[str, Any]]] = {}   # channel_id -> slots
@@ -107,6 +112,42 @@ def check(conn: sqlite3.Connection, *, now: int | None = None, days: int = 1, su
     log.info("readiness: %s", summary)
     return {"status": status, "summary": summary, "notes": notes, "missing": n_missing,
             "substituted": substituted, "checked": len(rows), "nas_fallback": nas_only}
+
+
+DUE_SOON_SECONDS = 2 * 3600   # how near its slot an unfetched programme is given up on and replaced
+
+
+def replace_unfetched(conn: sqlite3.Connection, *, now: int | None = None, within: int = DUE_SOON_SECONDS) -> dict[str, Any]:
+    """Replace every programme due within `within` seconds, or on air, whose file has not come.
+
+    The full check runs at set hours, and the schedule is rebuilt between them: each delivery
+    report and each hour's retry of the gaps may book an episode not yet fetched, in the hope
+    that it arrives. One that has not arrived two hours before its slot is not going to be
+    encoded in time, and a channel showing its card for an hour and a half is worse than one
+    showing something else. Run on every maintenance pass; it costs one query when there is
+    nothing to do, and is logged as a readiness run only when it replaced something."""
+    now = now or now_ts()
+    rows = rows_to_dicts(conn.execute(
+        "SELECT s.channel_id, s.start_ts, s.title, s.wanted_id, c.name AS channel_name FROM schedule s"
+        " JOIN channels c ON c.id = s.channel_id WHERE s.kind = 'programme' AND s.media_id IS NULL"
+        " AND s.wanted_id IS NOT NULL AND s.end_ts > ? AND s.start_ts < ? ORDER BY s.start_ts", (now, now + within)))
+    if not rows:
+        return {"status": "ok", "replaced": 0, "summary": ""}
+    settings = all_settings(conn)
+    tz = tz_of(conn)
+    cache = MediaCache.from_settings(settings)
+    playable = playable_media(conn, cache, bool(settings.get("nas_fallback", True)))
+    run_id = run_log_start(conn, "readiness")
+    notes = [f"NOT FETCHED {_slot_label(r, tz)} (wanted #{r['wanted_id']})" for r in rows]
+    for channel_id in dict.fromkeys(r["channel_id"] for r in rows):
+        first = min(r["start_ts"] for r in rows if r["channel_id"] == channel_id)
+        result = rebuild_from(conn, channel_id, first, now=now, allow_external=False, only_media_ids=playable)
+        name = next(r["channel_name"] for r in rows if r["channel_id"] == channel_id)
+        notes.append(f"REBUILT {name} from {_hhmm(max(first, now), tz)}: {result.get('summary')}")
+    summary = f"{len(rows)} programme(s) due within {within // 3600} hours had not been fetched and were replaced"
+    run_log_finish(conn, run_id, "warning", summary, notes)
+    log.warning("readiness: %s", summary)
+    return {"status": "warning", "replaced": len(rows), "summary": summary}
 
 
 def _hhmm(ts: int, tz: ZoneInfo) -> str:

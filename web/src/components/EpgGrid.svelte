@@ -96,6 +96,8 @@
     return c.join(' ');
   }
   const slotTitle = (s) => s.kind === 'filler' ? (s.title || 'Filler') : s.kind === 'advert' ? (s.title || 'Advert') : s.kind === 'ident' ? 'Ident' : s.title;
+  /** The programme on in a band at `t`: the last of its parts to have started. */
+  const onNow = (s, t) => (s.parts ?? []).findLast((p) => p.start_ts <= t);
   const slotSub = (s) => (s.block && s.items > 1 ? ` · ${plural(s.items, 'programme')}` : s.subtitle ? ` · ${s.subtitle}` : s.block ? ` · ${s.block}` : '');
 </script>
 
@@ -126,6 +128,10 @@
               <span class="inner">
                 <span class="t truncate">{#if s.locked}<span class="lock" aria-label="Locked">🔒</span>{/if}{slotTitle(s)}</span>
                 {#if w > 70}<span class="st truncate">{fmtTime(s.start_ts)}{slotSub(s)}</span>{/if}
+                {#if w > 70 && s.items > 1 && s.start_ts <= now && s.end_ts > now}
+                  {@const part = onNow(s, now)}
+                  {#if part}<span class="st on truncate">Now: {part.title}{part.subtitle ? ` · ${part.subtitle}` : ''}</span>{/if}
+                {/if}
                 {#if roomy && w > 150 && s.kind === 'programme' && !s.block}<span class="st truncate">until {fmtTime(s.end_ts)}{s.certificate ? ` · ${s.certificate}` : ''}</span>{/if}
               </span>
             </button>
@@ -168,6 +174,7 @@
   .slot .inner { position: sticky; left: var(--chw); display: flex; flex-direction: column; padding: .3rem .45rem; max-width: 100%; }
   .slot .t { font-size: .84rem; line-height: 1.2; }
   .slot .st { font-size: .72rem; color: var(--fg-muted); }
+  .slot .st.on { color: var(--fg); }
   /* A taller row has room for larger type and a title on two lines. */
   .tall .slot .inner { padding: .45rem .6rem; gap: .1rem; }
   .tall .slot .t { font-size: .95rem; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; }

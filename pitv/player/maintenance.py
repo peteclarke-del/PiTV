@@ -22,6 +22,7 @@ from ..content import apply_report_files, protect_manifest, push_screen
 from ..db import all_settings, connect, now_ts, tx
 from ..lineup import evict_fetched, remove_aired_transients
 from ..readiness import check as readiness_check
+from ..readiness import replace_unfetched
 from ..scheduler.horizon import build_horizon, needs_rebuild, refill_empty_days
 from ..scheduler.rules import tz_of
 from ..wanted import band_needs, queue_gaps, request_all_band_material, withdraw_gaps
@@ -199,6 +200,8 @@ class Maintenance:
             self.status["last_readiness"] = {"at": now_ts(), "status": result["status"], "summary": result["summary"]}
             if result["substituted"]:
                 self.on_schedule_changed()
+        elif replace_unfetched(conn, now=now)["replaced"]:
+            self.on_schedule_changed()
         self._first_pass = False
 
         if self._pruned_on != today:   # daily: nothing here ages by the ten-minute pass

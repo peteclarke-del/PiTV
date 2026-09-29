@@ -72,7 +72,12 @@ def collapse_blocks(slots: list[dict[str, Any]], feature: int = ITEM_MINUTES * 6
     the band's underneath: a concert that fills its band reads as the concert, and a band of
     several long programmes lists each of them. Merging those into one entry named after the
     longest billed "The Bearded Mechanic" for three hours while two other series played in it.
-    Captions inside a band (a stretch it could not fill) are not programmes."""
+    Captions inside a band (a stretch it could not fill) are not programmes.
+
+    A stretch of short items takes a programme's name only when every programme in it has that
+    name and together they fill half of it. It used to take the name of any one item that
+    filled half, so twenty minutes of three comedy acts were billed as the third of them while
+    the first two played."""
     out: list[dict[str, Any]] = []
     for sl in slots:
         prev = out[-1] if out else None
@@ -88,21 +93,21 @@ def collapse_blocks(slots: list[dict[str, Any]], feature: int = ITEM_MINUTES * 6
                 prev["items"] += 1
                 if not prev.get("video_title"):
                     prev["video_title"] = sl["title"]
-                _note_longest(prev, sl)
+                _note_programme(prev, sl)
             continue
         entry = dict(sl)
         if sl.get("block"):
             entry["items"] = 1 if sl["kind"] == "programme" else 0
             entry["video_title"] = sl["title"] if sl["kind"] == "programme" else ""
-            entry["_longest"] = ("", 0)
+            entry["_billed"] = {}
             if sl["kind"] == "programme":
-                _note_longest(entry, sl)
+                _note_programme(entry, sl)
         out.append(entry)
     for entry in out:
         if entry.pop("_own", False) or not entry.get("block"):
             continue
-        title, seconds = entry.pop("_longest", ("", 0))
-        # A stretch of short items that one of them fills half of is billed as that item.
+        billed = entry.pop("_billed", {})
+        title, seconds = next(iter(billed.items())) if len(billed) == 1 else ("", 0)
         leads = bool(title) and seconds * 2 >= entry["end_ts"] - entry["start_ts"]
         entry["title"] = title if leads else entry["block"]
         if leads:
@@ -116,8 +121,9 @@ def collapse_blocks(slots: list[dict[str, Any]], feature: int = ITEM_MINUTES * 6
     return out
 
 
-def _note_longest(entry: dict[str, Any], slot: dict[str, Any]) -> None:
-    """Remember the longest programme in a band, which may be what the band is really billing."""
-    seconds = slot["end_ts"] - slot["start_ts"]
-    if seconds > entry["_longest"][1]:
-        entry["_longest"] = (slot["title"], seconds)
+def _note_programme(entry: dict[str, Any], slot: dict[str, Any]) -> None:
+    """Add a programme's length to its title's share of the stretch, and list it in `parts`,
+    which is how a guide drawn once can say what is on in a band at any moment after."""
+    entry.setdefault("parts", []).append({"start_ts": slot["start_ts"], "title": slot["title"],
+                                          "subtitle": slot.get("subtitle") or ""})
+    entry["_billed"][slot["title"]] = entry["_billed"].get(slot["title"], 0) + slot["end_ts"] - slot["start_ts"]
