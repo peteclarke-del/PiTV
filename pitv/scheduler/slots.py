@@ -143,7 +143,8 @@ def episode_subtitle(item: dict[str, Any]) -> str:
 
 def slot_titles(item: dict[str, Any], show_title: str | None = None) -> tuple[str, str]:
     """Guide title and subtitle for a programme. Episodes: the series name over the episode
-    title (never the SxxEyy code). Films: '(year) certificate'. Music videos: '(year) genres'."""
+    title (never the SxxEyy code). Films: '(year) certificate'. Music videos: the artist and the
+    title, over '(year) genres'."""
     year = f"({item['year']})" if item.get("year") else ""
     if item.get("kind") == "episode":
         # A band places an episode with no series beside it, so the series name travels on the
@@ -151,9 +152,21 @@ def slot_titles(item: dict[str, Any], show_title: str | None = None) -> tuple[st
         return show_title or item.get("show_title") or item["title"], episode_subtitle(item)
     if item.get("kind") == "music":
         detail = ", ".join(json_field(item.get("genres")) or [])
+        return music_title(item.get("title") or "", item.get("artist")), " ".join(x for x in (year, detail) if x)
     else:
         detail = item.get("certificate") or ""
     return item["title"], " ".join(x for x in (year, detail) if x)
+
+
+def music_title(title: str, artist: str | None) -> str:
+    """'Artist - Title' for a music video or a concert. The artist is kept apart from the title
+    in the catalogue, so the guide billed an evening of concerts as "Live at Rockpalast" and
+    "Live After Death" with nothing to say whose. A title that already names the artist is left
+    as it is."""
+    artist = (artist or "").strip()
+    if not artist or artist.casefold() in title.casefold():
+        return title
+    return f"{artist} - {title}" if title else artist
 
 
 def parse_day(value: str) -> date:

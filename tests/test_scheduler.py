@@ -587,6 +587,11 @@ def test_slot_titles():
     assert slot_titles({"kind": "music", "title": "Queen - Radio Ga Ga", "year": 1984, "genres": '["Pop", "Rock"]'}) == \
         ("Queen - Radio Ga Ga", "(1984) Pop, Rock")
     assert slot_titles({"kind": "music", "title": "X", "genres": ["Pop"]}) == ("X", "Pop")
+    # The artist is billed with the title, unless the title already names them.
+    assert slot_titles({"kind": "music", "title": "Live After Death", "artist": "Iron Maiden", "year": 1985})[0] == \
+        "Iron Maiden - Live After Death"
+    assert slot_titles({"kind": "music", "title": "Queen - Radio Ga Ga", "artist": "Queen"})[0] == "Queen - Radio Ga Ga"
+    assert slot_titles({"kind": "music", "title": "", "artist": "Yes"})[0] == "Yes"
 
 
 def test_family_safe_adverts_on_cartoon_channel(conn):
