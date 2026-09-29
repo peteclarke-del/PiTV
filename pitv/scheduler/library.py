@@ -59,6 +59,9 @@ class Library:
         self.now = now
         self.rebuild: Rebuild = rebuild or {}
         self.exclude_media_ids: set[int] = set(exclude_media_ids or ())
+        # Files in slots a rebuild is keeping: they air later the same day, so a gap is not
+        # filled with one of them. Unlike the excluded, nothing is wrong with them.
+        self.billed_media_ids: set[int] = set()
         # When set, only these files may be placed (readiness substitutes with what is playable now).
         self.only_media_ids = only_media_ids
         self.allow_external = allow_external
@@ -80,7 +83,8 @@ class Library:
     # --- loading -------------------------------------------------------------------
 
     def allowed(self, media_id: int) -> bool:
-        return media_id not in self.exclude_media_ids and (self.only_media_ids is None or media_id in self.only_media_ids)
+        return (media_id not in self.exclude_media_ids and media_id not in self.billed_media_ids
+                and (self.only_media_ids is None or media_id in self.only_media_ids))
 
     def playable(self, kind: str, tail: str = "", usable: str = USABLE) -> list[dict[str, Any]]:
         """Every file of `kind` this build may place, with admin overrides applied."""

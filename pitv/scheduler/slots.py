@@ -35,6 +35,8 @@ class Slot:
     wanted_spec: dict[str, Any] | None = None   # external entry placed; a wanted row is created on save
     parts: tuple[tuple[int, int], ...] = ()     # (media id, seconds) per part of a split episode; saved as one row each
     # not persisted
+    row_id: int | None = None                   # the schedule row a kept slot was read from
+    billed: bool = False                        # kept by a rebuild because the guide already shows it
     show_id: int | None = None
     genres: list[str] = field(default_factory=list)
     year: int | None = None

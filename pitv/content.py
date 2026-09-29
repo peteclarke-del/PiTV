@@ -726,7 +726,7 @@ def apply_report(conn: sqlite3.Connection, report: dict[str, Any]) -> dict[str, 
     # PiTV Toons carried six-minute holes on four days after one Battle of the Planets delivery.
     for (channel_id, _day), from_ts in sorted(refill.items(), key=lambda kv: kv[1]):
         if from_ts > now_ts():
-            rebuild_from(conn, channel_id, from_ts)
+            rebuild_from(conn, channel_id, from_ts, keep_billed=True)
     if counts["created"]:
         write_mirror(conn)   # new catalogue entries
     return counts

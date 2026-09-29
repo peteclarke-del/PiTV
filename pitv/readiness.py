@@ -94,7 +94,7 @@ def check(conn: sqlite3.Connection, *, now: int | None = None, days: int = 1, su
             first = min(s["start_ts"] for s in slots)
             exclude = {s["id"] for s in slots if s["id"] is not None}
             result = rebuild_from(conn, channel_id, first, now=now, exclude_media_ids=exclude,
-                                  allow_external=False, only_media_ids=playable)
+                                  allow_external=False, only_media_ids=playable, keep_billed=True)
             substituted += len(slots)
             log.warning("rebuilt %s from %s replacing %d programme(s): %s", slots[0]["channel_name"],
                         _hhmm(first, tz), len(slots), result.get("summary"))
@@ -141,7 +141,8 @@ def replace_unfetched(conn: sqlite3.Connection, *, now: int | None = None, withi
     notes = [f"NOT FETCHED {_slot_label(r, tz)} (wanted #{r['wanted_id']})" for r in rows]
     for channel_id in dict.fromkeys(r["channel_id"] for r in rows):
         first = min(r["start_ts"] for r in rows if r["channel_id"] == channel_id)
-        result = rebuild_from(conn, channel_id, first, now=now, allow_external=False, only_media_ids=playable)
+        result = rebuild_from(conn, channel_id, first, now=now, allow_external=False, only_media_ids=playable,
+                              keep_billed=True)
         name = next(r["channel_name"] for r in rows if r["channel_id"] == channel_id)
         notes.append(f"REBUILT {name} from {_hhmm(max(first, now), tz)}: {result.get('summary')}")
     summary = f"{len(rows)} programme(s) due within {within // 3600} hours had not been fetched and were replaced"
