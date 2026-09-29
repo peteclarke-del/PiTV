@@ -473,8 +473,13 @@ class Builder:
                 slack = max(tol, next_day_start - day_end)
 
             next_fixed = fixed_queue[0][2] if fixed_queue else None
-            next_show_id = (next_fixed.show_id if isinstance(next_fixed, Slot)
-                            else next_fixed[1].id if next_fixed else None)
+            # The programme that follows, looking past the idents and adverts kept in front of
+            # it: with only the next kept thing looked at, a hole was filled with the series
+            # billed straight after it, an ident between the two.
+            following = next((p for _, _, p in fixed_queue
+                              if not (isinstance(p, Slot) and p.kind != "programme")), None)
+            next_show_id = (following.show_id if isinstance(following, Slot)
+                            else following[1].id if following and following[0] == "anchor" else None)
             barred = {x for x in (w.last_show_id, next_show_id) if x}
             choice = None
             for tok, relax in attempts(token):
