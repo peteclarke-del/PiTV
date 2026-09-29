@@ -21,8 +21,8 @@
       <DayNav days={view.days} day={view.day} onpick={view.pick} />
       <button class="small primary" onclick={view.goNow}>Now</button>
       <span class="btn-group">
-        <button class="small" onclick={() => view.grid?.scrollByMinutes(-120)} aria-label="Earlier">−2h</button>
-        <button class="small" onclick={() => view.grid?.scrollByMinutes(120)} aria-label="Later">+2h</button>
+        <button class="small" onclick={() => { view.following = false; view.grid?.scrollByMinutes(-120); }} aria-label="Earlier">−2h</button>
+        <button class="small" onclick={() => { view.following = false; view.grid?.scrollByMinutes(120); }} aria-label="Later">+2h</button>
       </span>
     </div>
   </div>
@@ -33,7 +33,7 @@
     <div class="empty">No schedule has been built yet. Build one from <a href="#/admin">Admin</a>.</div>
   {:else if view.bounds}
     <EpgGrid bind:this={view.grid} channels={view.data?.channels ?? []} slots={view.data?.slots ?? []}
-             start={view.bounds.start} end={view.bounds.end} now={clock.ts} loading={view.loading}
+             start={view.bounds.start} end={view.bounds.end} now={clock.ts} loading={view.loading} follow={view.following}
              selectedId={selected?.id ?? null} onselect={(s) => (selected = s)} />
     <p class="tiny muted mt">Dashed blocks are overnight replays. Times are local.</p>
   {:else}

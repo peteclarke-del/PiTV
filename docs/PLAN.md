@@ -1110,6 +1110,12 @@ large monitor, between three and nine pixels a minute) and whether the channel c
 for names or shows numbers alone; the height left in the window is shared between the rows,
 from 54 to 104 pixels, and a taller row carries larger type and a title on two lines.
 
+A guide open on today stays on today. When the broadcast day turns over, the day list is asked
+for again and the view moves to the new day; while it is on today the grid keeps the present
+in sight, moving on when the now-line reaches the last fifth of what is visible, but never
+within ninety seconds of somebody touching it. Choosing another day, or stepping two hours
+either way, ends the following, and Now resumes it.
+
 ### 6.3 Admin area (`#/admin`)
 
 The admin is organised into two labelled sections, PiTV and pitv_content, so it is obvious

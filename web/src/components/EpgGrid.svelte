@@ -10,7 +10,7 @@
   import ChannelBadge from './ChannelBadge.svelte';
 
   let { channels = [], slots = [], start = 0, end = 0, now = 0, selectedId = null,
-        editable = false, onselect, loading = false } = $props();
+        editable = false, onselect, loading = false, follow = false } = $props();
 
   const MIN_PPM = 3, MAX_PPM = 9;          // pixels per minute: below, titles do not fit; above, a film fills the screen
   const ROW_MIN = 54, ROW_MAX = 104;       // pixels: two lines of text, up to a wrapped title and its details
@@ -58,6 +58,19 @@
   let nowX = $derived(now >= start && now <= end ? x(now) : null);
   let nowCoarse = $derived(Math.floor(now / 30) * 30);
 
+  // With `follow`, the present stays in sight: when the now-line has gone off either side, or
+  // into the last fifth of what is visible, the grid moves on. Never while somebody is using
+  // it: a grid that scrolls under a reader's finger is worse than one that falls behind.
+  const IDLE_SECONDS = 90;
+  let touched = 0;
+  const touch = () => { touched = Date.now(); };
+  $effect(() => {
+    nowCoarse;
+    if (!follow || !el || nowX === null || Date.now() - touched < IDLE_SECONDS * 1000) return;
+    const visible = el.clientWidth - chW;
+    if (nowX < el.scrollLeft || nowX > el.scrollLeft + visible * 0.8) scrollTo(now, Math.round(visible * 0.15));
+  });
+
   export function scrollTo(ts, pad = 40) {
     if (el) el.scrollTo({ left: Math.max(0, x(ts) - pad), behavior: 'smooth' });
   }
@@ -88,7 +101,8 @@
 
 <svelte:window bind:innerHeight={winH} />
 
-<div class="epg" bind:this={el} bind:clientWidth={boxW} class:loading class:tall class:hasnow={nowX !== null}
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="epg" bind:this={el} bind:clientWidth={boxW} onpointerdown={touch} onwheel={touch} ontouchstart={touch} onkeydown={touch} class:loading class:tall class:hasnow={nowX !== null}
      style="--chw:{chW}px;--rowh:{rowH}px;--nowx:{nowX ?? 0}px;{gridStyle}">
   <div class="head">
     <div class="corner"></div>
