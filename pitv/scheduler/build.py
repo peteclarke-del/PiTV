@@ -149,11 +149,17 @@ def _rows_of(s: Slot) -> list[tuple[int, int | None, int, int]]:
     return rows
 
 
+# The most a billed programme comes forward to close a hole before it. Tried on the live
+# schedule at fifteen minutes, a two hour film replaced by one of a hundred minutes left a
+# seventeen minute card in front of a programme that could simply have started.
+PULL_FORWARD_SECONDS = 45 * 60
+
+
 class Builder:
     def __init__(self, conn: sqlite3.Connection, *, now: int | None = None,
                  seed: int | None = None, exclude_media_ids: set[int] | None = None,
                  rebuild: Rebuild | None = None, allow_external: bool = True,
-                 only_media_ids: set[int] | None = None) -> None:
+                 only_media_ids: set[int] | None = None, keep_billed: bool = False) -> None:
         self.conn = conn
         self.settings = all_settings(conn)
         self.tz = tz_of(conn)
@@ -178,6 +184,13 @@ class Builder:
         self.runs = Runs(self.policy, self.library)
         # (channel, day) -> time from which save() replaces unlocked slots; None adds only.
         self._cuts: dict[tuple[int, str], int | None] = {}
+        # A rebuild that mends a day keeps what the guide already bills after the hole, and
+        # fills the hole. Rebuilding the rest of the day instead changed the afternoon's
+        # programmes each time a gap earlier in it was retried, thirty-three times in one day,
+        # so what a viewer read in the guide at lunchtime was not what was on at tea.
+        self.keep_billed = keep_billed
+        # (channel, day) -> the billed slots kept, as they stand after any were moved in time
+        self._billed: dict[tuple[int, str], list[Slot]] = {}
         # (lineup_id, episode) -> wanted id, so every placement of one request in this build
         # shares a row (a film's later airings, a placeholder's overnight replay).
         self._requests: dict[tuple[int, int | None], int] = {}
@@ -203,7 +216,7 @@ class Builder:
             (channel_id, day)).fetchall()
         return [Slot(channel_id=r["channel_id"], day=r["day"], start_ts=r["start_ts"], end_ts=r["end_ts"],
                      media_id=r["media_id"], offset=r["offset"], kind=r["kind"], title=r["title"],
-                     subtitle=r["subtitle"], replay=r["replay"], locked=r["locked"],
+                     subtitle=r["subtitle"], replay=r["replay"], locked=r["locked"], row_id=r["id"],
                      block=r["block"], wanted_id=r["wanted_id"], show_id=r["show_id"],
                      genres=json_field(r["mgenres"]) or [], year=r["myear"])
                 for r in rows]
@@ -253,9 +266,22 @@ class Builder:
             # A file the caller has ruled out (readiness: not playable) is not kept from the cut on,
             # locked or promised: `rebuild_from` deletes those rows when it saves.
             gone = self.library.exclude_media_ids
-            return [replace(s, end_ts=cut) if s.kind == "filler" and not s.locked and s.end_ts > cut else s
+            kept = [replace(s, end_ts=cut) if s.kind == "filler" and not s.locked and s.end_ts > cut else s
                     for s in existing if (s.locked or s.start_ts < cut or self._promised(s))
                     and not (s.media_id in gone and s.start_ts >= cut)]
+            if self.keep_billed and from_ts is not None:
+                held = {s.row_id for s in kept}
+                # A file that has left the library, or that the owner has withdrawn, is a hole
+                # however recently it was billed.
+                withdrawn = {r["id"] for r in self.conn.execute("SELECT id FROM media WHERE excluded = 1 OR missing = 1")}
+                billed = [replace(s, billed=True) for s in existing
+                          if s.row_id not in held and s.start_ts >= cut and s.kind != "filler"
+                          and s.media_id is not None and s.media_id not in withdrawn
+                          and self.library.allowed(s.media_id)]
+                self._billed[(channel_id, day_str)] = billed
+                self.library.billed_media_ids |= {s.media_id for s in billed if s.kind == "programme"}
+                kept = sorted(kept + billed, key=lambda s: s.start_ts)
+            return kept
         if existing and max(s.end_ts for s in existing) >= day_end - 60:
             return None
         self._cuts[(channel_id, day_str)] = None
@@ -356,6 +382,11 @@ class Builder:
             # A fixed item starting now (or that we have run into)?
             if fixed_queue and w.t >= fixed_queue[0][0] - 60:
                 fs, fe, payload = fixed_queue.popleft()
+                if isinstance(payload, Slot) and payload.billed and w.t != fs:
+                    # Seconds early, or run into by what now stands before it (a delivered file
+                    # longer than its slot): it airs when its turn comes, as billed.
+                    payload = self._retime(w, payload, w.t)
+                    fs, fe = payload.start_ts, payload.end_ts
                 if w.t < fs:
                     self._fill_to(w, fs)
                 if isinstance(payload, Slot):
@@ -442,8 +473,13 @@ class Builder:
                 slack = max(tol, next_day_start - day_end)
 
             next_fixed = fixed_queue[0][2] if fixed_queue else None
-            next_show_id = (next_fixed.show_id if isinstance(next_fixed, Slot)
-                            else next_fixed[1].id if next_fixed else None)
+            # The programme that follows, looking past the idents and adverts kept in front of
+            # it: with only the next kept thing looked at, a hole was filled with the series
+            # billed straight after it, an ident between the two.
+            following = next((p for _, _, p in fixed_queue
+                              if not (isinstance(p, Slot) and p.kind != "programme")), None)
+            next_show_id = (following.show_id if isinstance(following, Slot)
+                            else following[1].id if following and following[0] == "anchor" else None)
             barred = {x for x in (w.last_show_id, next_show_id) if x}
             choice = None
             for tok, relax in attempts(token):
@@ -451,6 +487,12 @@ class Builder:
                                                barred, relax=relax, slack=slack)
                 if choice is not None:
                     break
+            if choice is None and isinstance(next_fixed, Slot) and next_fixed.billed and not next_fixed.block \
+                    and gap <= PULL_FORWARD_SECONDS:
+                # Nothing fits what is left of the hole, and what follows is billed: it comes
+                # forward to close it, in its order, rather than a card being put in front of it.
+                fixed_queue[0] = (w.t, w.t + next_fixed.duration, self._retime(w, next_fixed, w.t))
+                continue
             if choice is None:
                 # Eligibility changes later in the day: certificate watersheds and daypart
                 # weights can make a sparse channel viable even though nothing fits now.  Do
@@ -515,6 +557,14 @@ class Builder:
             return w.new_slots + self._overnight_from_pool(channel, day, day_end, next_day_start, w.all_slots,
                                                            filler, day_bands)
         return w.new_slots + self._overnight(channel, day, day_end, next_day_start, w.all_slots)
+
+    def _retime(self, w: Walk, slot: Slot, start: int) -> Slot:
+        """A billed slot moved to `start`, in the walk's record and in what `save` will write."""
+        moved = replace(slot, start_ts=start, end_ts=start + slot.duration)
+        w.all_slots[:] = [moved if s is slot else s for s in w.all_slots]
+        key = (slot.channel_id, slot.day)
+        self._billed[key] = [moved if s.row_id == slot.row_id else s for s in self._billed.get(key, [])]
+        return moved
 
     def _fill_to(self, w: Walk, target: int, note: bool = False) -> None:
         """Close the gap up to `target` with adverts or idents, then a caption, so the
@@ -786,6 +836,7 @@ class Builder:
         and every unlocked slot from the build's cut point, then insert the new slots."""
         day_str = day.isoformat()
         cut = self._cuts.pop((channel_id, day_str), None)
+        billed = self._billed.pop((channel_id, day_str), [])
         conn = self.conn
         with tx(conn):
             conn.execute("DELETE FROM schedule WHERE channel_id = ? AND day = ? AND replay = 1",
@@ -798,8 +849,12 @@ class Builder:
                 keep_until = self.now + self.policy.integer("external_lead_hours") * 3600 if self.library.allow_external else 0
                 conn.execute("DELETE FROM schedule WHERE channel_id = ? AND day = ? AND locked = 0"
                              " AND start_ts >= ? AND replay = 0"
-                             " AND NOT (wanted_id IS NOT NULL AND kind = 'programme' AND start_ts < ?)",
+                             " AND NOT (wanted_id IS NOT NULL AND kind = 'programme' AND start_ts < ?)"
+                             # "-1" when nothing is kept: NOT IN (NULL) is never true, and nothing would be deleted
+                             f" AND id NOT IN ({','.join(str(int(s.row_id)) for s in billed) or '-1'})",
                              (channel_id, day_str, cut, keep_until))
+                conn.executemany("UPDATE schedule SET start_ts = ?, end_ts = ? WHERE id = ?",
+                                 [(s.start_ts, s.end_ts, s.row_id) for s in billed])
             self._raise_wanted(slots)
             conn.executemany(
                 "INSERT INTO schedule(channel_id, day, start_ts, end_ts, media_id, offset, kind, part,"

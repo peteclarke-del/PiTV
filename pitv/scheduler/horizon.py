@@ -251,7 +251,7 @@ def refill_empty_days(conn: sqlite3.Connection, now: int | None = None) -> dict[
     ).fetchall()
     days = programmes = failed = 0
     for row in rows:
-        result = rebuild_from(conn, row["channel_id"], int(row["first_ts"]), now=now)
+        result = rebuild_from(conn, row["channel_id"], int(row["first_ts"]), now=now, keep_billed=True)
         if result["status"] == "error":
             failed += 1
             log.error("refill: channel %s on %s could not be rebuilt: %s", row["channel_id"], row["day"],
@@ -283,7 +283,7 @@ def replace_retired(conn: sqlite3.Connection, now: int | None = None) -> dict[st
         " GROUP BY s.channel_id, s.day ORDER BY first_ts, s.channel_id", (now,)).fetchall()
     slots = failed = 0
     for row in rows:
-        result = rebuild_from(conn, row["channel_id"], int(row["first_ts"]), now=now)
+        result = rebuild_from(conn, row["channel_id"], int(row["first_ts"]), now=now, keep_billed=True)
         if result["status"] == "error":
             failed += 1
             log.error("retired files: channel %s on %s could not be rebuilt: %s", row["channel_id"], row["day"],
@@ -330,11 +330,13 @@ def _day_stamp(conn: sqlite3.Connection, channel_id: int, day: str) -> tuple[Any
 def rebuild_from(conn: sqlite3.Connection, channel_id: int, from_ts: int, *,
                  now: int | None = None, seed: int | None = None,
                  exclude_media_ids: set[int] | None = None, allow_external: bool = True,
-                 only_media_ids: set[int] | None = None) -> dict[str, Any]:
+                 only_media_ids: set[int] | None = None, keep_billed: bool = False) -> dict[str, Any]:
     """Rebuild one channel from a point in time to the end of that broadcast day.
 
     Used by the admin schedule editor after a slot is removed, replaced or inserted, and by
-    the readiness check to substitute programmes whose files are not available."""
+    the readiness check to substitute programmes whose files are not available. With
+    `keep_billed`, what the guide already shows after that point stays, in its order, and only
+    the holes are filled: the way of every rebuild that mends a day, as against one asked for."""
     settings = all_settings(conn)
     tz = tz_of(conn)
     now = now or now_ts()
@@ -350,7 +352,8 @@ def rebuild_from(conn: sqlite3.Connection, channel_id: int, from_ts: int, *,
     # again rather than saved over.
     for _ in range(REBUILD_ATTEMPTS):
         builder = Builder(conn, now=now, seed=seed, exclude_media_ids=exclude_media_ids, allow_external=allow_external,
-                          only_media_ids=only_media_ids, rebuild={channel_id: (from_ts, day_bounds(day, settings, tz)[2])})
+                          only_media_ids=only_media_ids, keep_billed=keep_billed,
+                          rebuild={channel_id: (from_ts, day_bounds(day, settings, tz)[2])})
         channel = next((c for c in builder.channels if c["id"] == channel_id), None)
         if channel is None:
             return {"status": "error", "summary": "channel not found or disabled", "programmes": 0, "notes": []}

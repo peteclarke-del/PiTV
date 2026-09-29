@@ -381,6 +381,18 @@ that sends no `faults`, PiTV makes the same count from the report's entries.
 A request stopped by a cause that twenty or more requests hold uses none of its attempts
 (section 2), so it is asked for again once the cause is mended.
 
+### An episode that does not say which it is
+
+When uploads of a series are found and none says which episode it is, pitv_content takes one
+that names no episode (its setting `take_unnumbered_episodes`, on unless the owner turns it
+off). The delivery is `done`, filed under the season and episode asked for, with the upload's
+own title in place of the episode list's and the message "taken as episode N: the upload does
+not say which episode it is". An upload that names a different episode is never taken, and one
+already filed is not taken twice. A series delivered this way may air out of order, which the
+owner has accepted in exchange for its airing at all. With the setting off, the request fails
+as a miss: "not found yet: no upload says it is this episode (N of the series did not say which
+they were)".
+
 ### Work a run never reached, and work it held back
 
 Two fields, because these are two facts and reporting them as one made either impossible to

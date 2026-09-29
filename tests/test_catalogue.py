@@ -720,7 +720,7 @@ def test_a_genre_a_source_has_withdrawn_does_not_stay(tmp_path, monkeypatch):
     conn.close()
 
 
-def test_a_share_read_in_full_retires_what_it_no_longer_lists(ctx, monkeypatch):
+def test_a_share_read_in_full_retires_what_it_no_longer_lists(tmp_path, monkeypatch):
     """pitv_content publishes every index as incomplete while a delivery is outstanding, which
     with fetching never idle is always, so for three days nothing was retired: a share
     reorganised in that time stood in the catalogue twice, once at paths that were gone, and
@@ -729,6 +729,7 @@ def test_a_share_read_in_full_retires_what_it_no_longer_lists(ctx, monkeypatch):
     every other source is left alone, and so is a share whose health disagrees with the index."""
     from pitv import catalogue, tool_client
 
+    ctx = make_library(tmp_path / "shares", max_episodes=2)   # its own: it retires rows, and the shared one is read by others
     conn, doc = ctx["conn"], ctx["lib"]["index"]
     by_source: dict[str, list] = {}
     for it in doc["items"]:

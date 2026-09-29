@@ -2303,3 +2303,76 @@ def test_a_rebuild_does_not_hold_the_database_while_it_works_out_a_day(tmp_path,
     assert all(b["start_ts"] >= a["end_ts"] for a, b in pairwise(rows)), "no overlap"
     other.close()
     c.close()
+
+
+def test_a_rebuild_that_mends_a_day_keeps_what_is_billed_after_the_hole(tmp_path):
+    """Every rebuild started at the first hole in a day and replaced everything after it, and
+    there were thirty-three in one day: what the guide billed for the afternoon at lunchtime
+    was not what was on at tea. A rebuild that mends a day fills the hole and keeps what follows
+    it, in its order, brought forward by minutes at most; only a rebuild asked for by name
+    replaces the rest of the day."""
+    from conftest import make_library
+
+    from pitv.scheduler.build import PULL_FORWARD_SECONDS
+    from pitv.scheduler.horizon import replace_retired
+
+    c = make_library(tmp_path / "billed", max_episodes=6)["conn"]
+    day = parse_day("2026-09-14")
+    tz = tz_of(c)
+    now = local_ts(day, "09:00", tz)
+    build_horizon(c, start_day=day, days=1, now=now, seed=11)
+    ch = c.execute("SELECT id FROM channels WHERE number = 1").fetchone()["id"]
+
+    def programmes():
+        return [dict(r) for r in c.execute(
+            "SELECT id, start_ts, end_ts, media_id, title FROM schedule WHERE channel_id = ? AND day = ? AND replay = 0"
+            " AND kind = 'programme' AND start_ts > ? ORDER BY start_ts", (ch, day.isoformat(), now))]
+
+    before = programmes()
+    assert len(before) >= 6, "the fixture has an afternoon to keep"
+    lost = before[1]
+    with dbm.tx(c):
+        c.execute("UPDATE media SET missing = 1 WHERE id = ?", (lost["media_id"],))
+    assert replace_retired(c, now=now)["slots"] >= 1
+
+    after = programmes()
+    assert lost["media_id"] not in {p["media_id"] for p in after}
+    kept = [p for p in before if p["media_id"] != lost["media_id"]]
+    by_row = {p["id"]: p for p in after}
+    assert all(p["id"] in by_row for p in kept), "every programme billed after the hole is still there"
+    assert [p["id"] for p in after if p["id"] in {k["id"] for k in kept}] == [p["id"] for p in kept], "in its order"
+    moved = [p["start_ts"] - by_row[p["id"]]["start_ts"] for p in kept]
+    assert all(0 <= m <= PULL_FORWARD_SECONDS for m in moved), f"and brought forward by minutes at most: {moved}"
+    rows = c.execute("SELECT start_ts, end_ts, kind FROM schedule WHERE channel_id = ? AND day = ? AND replay = 0"
+                     " AND end_ts > ? ORDER BY start_ts", (ch, day.isoformat(), now)).fetchall()
+    assert all(b["start_ts"] - a["end_ts"] in range(2) for a, b in pairwise(rows)), "the day is still contiguous"
+
+    rebuild_from(c, ch, lost["start_ts"], now=now, seed=99)
+    assert [p["media_id"] for p in programmes()] != [p["media_id"] for p in after], "asked for by name, the day is rebuilt"
+
+
+def test_an_episode_still_being_looked_for_is_booked_once(tmp_path):
+    """The last resort before a holding card brought a remote series round again with the
+    episode it had already asked for, and did so every day: one episode nobody had found was
+    booked nine times in a week, each a slot the readiness check had to fill on the morning. An
+    episode is booked once while its request is open, and its overnight replay is its repeat."""
+    from pitv import lineup as lineup_mod
+
+    c = make_library(tmp_path, 1)["conn"]    # one episode a series: a library thin enough to reach the last resort
+    now = local_ts(parse_day("2026-09-14"), "07:00", tz_of(c))
+    with dbm.tx(c):
+        dbm.set_setting(c, "nas_only", False)
+        dbm.set_setting(c, "external_weight", 50.0)
+        dbm.set_setting(c, "external_new_per_day", 40)
+    for ch in [r[0] for r in c.execute("SELECT id FROM channels WHERE enabled = 1")]:
+        lineup_mod.add(c, ch, title=f"Remote {ch}", kind="show", genres=["Drama"], episode_minutes=30,
+                       match={"source": "elsewhere", "id": f"r{ch}", "url": f"https://example.invalid/r{ch}"})
+    build_horizon(c, start_day=parse_day("2026-09-14"), days=7, now=now, seed=5, force=True)
+    booked = c.execute("SELECT wanted_id, SUM(replay = 0) AS first, SUM(replay = 1) AS again, COUNT(DISTINCT day) AS days"
+                       " FROM schedule WHERE wanted_id IS NOT NULL AND media_id IS NULL AND kind = 'programme'"
+                       " GROUP BY wanted_id").fetchall()
+    assert booked, "remote episodes are placed"
+    assert all(r["first"] == 1 and r["days"] == 1 for r in booked), \
+        [(r["wanted_id"], r["first"], r["again"], r["days"]) for r in booked if r["first"] != 1 or r["days"] != 1]
+    assert all(r["again"] <= 1 for r in booked), "and repeated overnight at most"
+    c.close()

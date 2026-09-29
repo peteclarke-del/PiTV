@@ -20,7 +20,8 @@ def test_every_future_gap_rebuilds_from_the_first_gap_only(monkeypatch):
 
     calls = []
 
-    def fake_rebuild(_conn, channel_id, from_ts, *, now):
+    def fake_rebuild(_conn, channel_id, from_ts, *, now, keep_billed):
+        assert keep_billed, "a gap is mended, the rest of the day kept"
         calls.append((channel_id, from_ts, now))
         return {"status": "ok", "summary": "2 programmes", "programmes": 2}
 

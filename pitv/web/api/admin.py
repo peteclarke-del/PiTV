@@ -912,8 +912,11 @@ def _require_channel(conn: sqlite3.Connection, channel_id: int) -> None:
         raise HTTPException(404, "channel not found")
 
 
-def _rebuild(request: Request, conn: sqlite3.Connection, channel_id: int, from_ts: int) -> dict[str, Any]:
-    result = rebuild_from(conn, channel_id, from_ts)
+def _rebuild(request: Request, conn: sqlite3.Connection, channel_id: int, from_ts: int, *,
+             keep_billed: bool = True) -> dict[str, Any]:
+    """Rebuild after an edit to one slot, keeping what is billed after it. Only a rebuild the
+    owner asks for by name replaces the rest of the day."""
+    result = rebuild_from(conn, channel_id, from_ts, keep_billed=keep_billed)
     _schedule_changed(request.app)
     return result
 
@@ -988,7 +991,7 @@ def rebuild(request: Request, body: dict[str, Any] = Body(...), conn: sqlite3.Co
     except (KeyError, ValueError, TypeError) as exc:
         raise HTTPException(400, "channel_id and from_ts required") from exc
     _require_channel(conn, channel_id)
-    return _rebuild(request, conn, channel_id, from_ts)
+    return _rebuild(request, conn, channel_id, from_ts, keep_billed=False)
 
 
 # --- system ---------------------------------------------------------------------------------------------
