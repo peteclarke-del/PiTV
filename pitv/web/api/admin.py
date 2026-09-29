@@ -398,8 +398,18 @@ def _update_row(conn: sqlite3.Connection, table: str, row_id: int, fields: dict[
             dbm.update_row(conn, table, row_id, fields)
 
 
+def _moved(request: Request, conn: sqlite3.Connection, table: str, row_id: int, before: int | None) -> None:
+    """A title that has changed channel leaves the schedule of the one it left and is offered to
+    the one it joined. Retyping a film moved its line-up entry and nothing else: it went on
+    airing on its old channel for every day already built."""
+    after = conn.execute(f"SELECT home_channel_id FROM {table} WHERE id = ?", (row_id,)).fetchone()["home_channel_id"]
+    if after != before:
+        _config_changed(request, conn, "a title changed channel", channel_ids=[before, after])
+
+
 @router.put("/shows/{sid}")
-def update_show(sid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
+def update_show(sid: int, request: Request, body: dict[str, Any] = Body(...),
+                conn: sqlite3.Connection = Depends(admin_conn)):
     row = conn.execute("SELECT * FROM shows WHERE id = ?", (sid,)).fetchone()
     if not row:
         raise HTTPException(404, "show not found")
@@ -428,6 +438,7 @@ def update_show(sid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Connec
         lineup_mod.place_again(conn, show_id=sid)     # what it is decides where it belongs
     elif home:
         lineup_mod.add(conn, home, show_id=sid)
+    _moved(request, conn, "shows", sid, row["home_channel_id"])
     return get_show(sid, conn)
 
 
@@ -492,7 +503,8 @@ def get_media(mid: int, conn: sqlite3.Connection = Depends(admin_conn)):
 
 
 @router.put("/media/{mid}")
-def update_media(mid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Connection = Depends(admin_conn)):
+def update_media(mid: int, request: Request, body: dict[str, Any] = Body(...),
+                 conn: sqlite3.Connection = Depends(admin_conn)):
     row = conn.execute("SELECT * FROM media WHERE id = ?", (mid,)).fetchone()
     if not row:
         raise HTTPException(404, "media not found")
@@ -519,6 +531,7 @@ def update_media(mid: int, body: dict[str, Any] = Body(...), conn: sqlite3.Conne
         lineup_mod.place_again(conn, media_id=mid)
     elif home and row["kind"] == "movie":
         lineup_mod.add(conn, home, media_id=mid)
+    _moved(request, conn, "media", mid, row["home_channel_id"])
     return get_media(mid, conn)
 
 

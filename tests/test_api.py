@@ -1300,3 +1300,27 @@ def test_a_schedule_change_made_by_the_player_reaches_open_pages():
     assert not changed({"online": True, "schedule_rev": 4}, {"online": True, "schedule_rev": 4})
     assert not changed({"online": False}, {"online": True, "schedule_rev": 0}), "a player just back is a starting point"
     assert not changed({"online": True, "schedule_rev": 4}, {"online": False})
+
+
+def test_a_title_that_changes_channel_rebuilds_the_one_it_left_and_the_one_it_joined(client, env):
+    """A film its tags called a documentary was retyped as a film. Its line-up entry moved and
+    nothing else did: six slots already built went on airing it on the documentary channel."""
+    conn = dbm.connect(env.db_path)
+    film = conn.execute("SELECT m.id, m.home_channel_id FROM media m WHERE m.kind = 'movie' AND m.missing = 0"
+                        " AND m.home_channel_id IS NOT NULL LIMIT 1").fetchone()
+    other = conn.execute("SELECT id, number FROM channels WHERE id != ? AND enabled = 1 ORDER BY number LIMIT 1",
+                         (film["home_channel_id"],)).fetchone()
+    was = conn.execute("SELECT number FROM channels WHERE id = ?", (film["home_channel_id"],)).fetchone()["number"]
+    asked: list[tuple] = []
+    rebuild = client.app.state.config_rebuild
+    original, rebuild.request = rebuild.request, lambda numbers, reason: asked.append((sorted(numbers), reason))
+    try:
+        assert client.put(f"/api/media/{film['id']}", json={"home_channel_id": other["id"]}).status_code == 200
+        assert asked == [(sorted([was, other["number"]]), "a title changed channel")]
+        asked.clear()
+        assert client.put(f"/api/media/{film['id']}", json={"plot": "An edit that moves nothing."}).status_code == 200
+        assert asked == [], "an edit that leaves the channel alone rebuilds nothing"
+    finally:
+        rebuild.request = original
+        client.put(f"/api/media/{film['id']}", json={"home_channel_id": film["home_channel_id"], "plot": ""})
+        conn.close()
