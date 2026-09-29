@@ -558,6 +558,27 @@ def test_a_band_of_long_programmes_lists_each_by_its_own_name():
     assert merged[1]["start_ts"] == t + 103 * 60, "each starts when it starts"
 
 
+def test_a_stretch_of_several_acts_is_billed_as_the_band_not_as_one_of_them():
+    """Twenty minutes of three comedy acts were billed as the third, which filled half the
+    stretch, while the first two played. A stretch takes a programme's name only when every
+    programme in it has that name."""
+    from pitv.guide import collapse_blocks
+
+    def slot(n, start, seconds, title):
+        return {"id": n, "channel_id": 8, "start_ts": start, "end_ts": start + seconds, "kind": "programme",
+                "block": "Lunchtime Laughs", "replay": 0, "title": title, "subtitle": ""}
+    t = 1_790_681_598
+    acts = [slot(1, t, 376, "First Act"), slot(2, t + 376, 150, "Second Act"), slot(3, t + 526, 676, "Third Act")]
+    merged = collapse_blocks(acts, feature=15 * 60)
+    assert [(e["title"], e["items"]) for e in merged] == [("Lunchtime Laughs", 3)]
+    assert [(p["start_ts"] - t, p["title"]) for p in merged[0]["parts"]] == [
+        (0, "First Act"), (376, "Second Act"), (526, "Third Act")], "the guide can say which is on"
+
+    series = [slot(1, t, 376, "One Series"), slot(2, t + 376, 150, "One Series"), slot(3, t + 526, 676, "One Series")]
+    merged = collapse_blocks(series, feature=15 * 60)
+    assert [(e["title"], e["subtitle"], e["items"]) for e in merged] == [("One Series", "Lunchtime Laughs", 3)]
+
+
 def test_slot_titles():
     assert slot_titles({"kind": "episode", "title": "The Beach", "episode": 5}, "Minder") == ("Minder", "The Beach")
     assert slot_titles({"kind": "episode", "title": "", "episode": 5}, "Minder") == ("Minder", "Episode 5")

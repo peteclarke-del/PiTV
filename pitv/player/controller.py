@@ -128,6 +128,7 @@ class Player:
         # until the player next starts, so the configuration decides what an unattended set does.
         self.subtitles = bool(self.settings["subtitles_default"])
         self.subtitle_track: dict[str, Any] | None = None   # the track on screen, None when there is none
+        self.schedule_rev = 0                   # how many times maintenance has changed the schedule
         self.guide_open = False
         self.guide_highlight = 0
         self.guide_cursor = 0
@@ -1102,6 +1103,9 @@ class Player:
         return {"ok": True} if self._submit_input(item) else {"ok": False, "error": "player busy"}
 
     def _schedule_changed(self) -> None:
+        """The player's own maintenance changed the schedule. The count goes out with the state,
+        which is how the web service, a separate process, hears of it and tells open pages."""
+        self.schedule_rev += 1
         self.actions.put(("schedule-changed", None))
 
     def state(self) -> dict[str, Any]:
@@ -1121,6 +1125,7 @@ class Player:
             "position": pos, "paused": self.paused, "behind_live": self.behind_live, "standby": self.standby,
             "volume": self.volume, "muted": self.muted, "guide_open": self.guide_open,
             "subtitles": self.subtitles, "subtitle_track": self.subtitle_track,
+            "schedule_rev": self.schedule_rev,
             "playing": playing, "testcard": path == TESTCARD,
             "hwdec": hwdec, "on_pi": self.on_pi, "last_key": self.last_key, "error": self.last_error,
             "cache": self.cache.usage(), "maintenance": dict(self.maintenance.status),

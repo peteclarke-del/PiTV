@@ -359,7 +359,8 @@ def test_skip_in_progress_is_neither_done_nor_failed(conn):
     counts = apply_report(conn, {"schema": 2, "items": [
         {"request_id": f"w:{wid}", "wanted_id": wid, "status": "skipped", "message": "being written by another process", "file": None},
         {"request_id": "m:1", "media_id": 1, "status": "skipped", "message": "being written by another process", "file": None}]})
-    assert counts == {"items_done": 0, "items_failed": 0, "wanted_done": 0, "wanted_failed": 0, "created": 0}
+    assert counts == {"items_done": 0, "items_failed": 0, "wanted_done": 0, "wanted_failed": 0, "wanted_missed": 0,
+                      "created": 0}
     row = conn.execute("SELECT status, attempts FROM wanted WHERE id = ?", (wid,)).fetchone()
     assert (row["status"], row["attempts"]) == ("queued", 0)
     with dbm.tx(conn):
@@ -1191,3 +1192,47 @@ def test_a_delivery_booked_on_several_days_leaves_no_hole_on_any(tmp_path):
         holes = [(a["end_ts"], b["start_ts"]) for a, b in pairwise(rows) if b["start_ts"] - a["end_ts"] > 1]
         assert not holes, f"{d} was left with {len(holes)} hole(s) after the delivery"
     conn.close()
+
+
+def test_an_episode_not_fetched_by_its_slot_is_replaced_whatever_the_slot_is_marked(tmp_path):
+    """A second airing of an episode not yet fetched is marked as a replay, as the overnight
+    copy of the day is, and the readiness check passed over everything so marked: the
+    documentary channel showed its card for seven hours of a day. A slot waiting for its file
+    is checked whatever it is marked, one already on air included, and between the full checks
+    anything due within two hours is replaced on every maintenance pass."""
+    from conftest import make_library
+
+    from pitv import db as dbm
+    from pitv.readiness import check, replace_unfetched
+    from pitv.scheduler.horizon import build_horizon
+    from pitv.scheduler.rules import local_ts, tz_of
+    from pitv.scheduler.slots import parse_day
+
+    conn = make_library(tmp_path / "unfetched", max_episodes=4)["conn"]
+    day = parse_day("2026-09-14")
+    now = local_ts(day, "12:00", tz_of(conn))
+    build_horizon(conn, start_day=day, days=2, now=now - 3 * 3600, seed=5)
+    ch = conn.execute("SELECT id FROM channels WHERE number = 1").fetchone()["id"]
+
+    def waiting() -> int:
+        return conn.execute("SELECT COUNT(*) FROM schedule WHERE channel_id = ? AND media_id IS NULL"
+                            " AND wanted_id IS NOT NULL AND end_ts > ?", (ch, now)).fetchone()[0]
+
+    def unfetch(where: str, *args) -> None:
+        with dbm.tx(conn):
+            wid = conn.execute("INSERT INTO wanted(kind, title, status, attempts, created_at) VALUES"
+                               " ('episode', 'Not Yet', 'queued', 0, 1)").lastrowid
+            slot = conn.execute(f"SELECT id FROM schedule WHERE channel_id = ? AND kind = 'programme' AND replay = 0 AND {where}"
+                                " ORDER BY start_ts LIMIT 1", (ch, *args)).fetchone()
+            conn.execute("UPDATE schedule SET media_id = NULL, wanted_id = ?, replay = 1, title = 'Not Yet' WHERE id = ?",
+                         (wid, slot["id"]))
+
+    unfetch("start_ts <= ? AND end_ts > ?", now, now)           # on air
+    unfetch("start_ts > ? AND start_ts < ?", now + 1800, now + 7200)
+    assert waiting() == 2
+    assert replace_unfetched(conn, now=now)["replaced"] == 2 and waiting() == 0
+    assert replace_unfetched(conn, now=now) == {"status": "ok", "replaced": 0, "summary": ""}
+
+    unfetch("start_ts > ?", now + 5 * 3600)
+    assert replace_unfetched(conn, now=now)["replaced"] == 0, "five hours away, it may still arrive"
+    assert check(conn, now=now, days=1)["missing"] >= 1 and waiting() == 0, "the full check replaces it"

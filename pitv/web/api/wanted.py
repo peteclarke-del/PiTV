@@ -56,16 +56,19 @@ def retry_many(body: dict[str, Any] = Body(default={}), conn: sqlite3.Connection
 
     A fault in pitv_content stops every request it touches at once, so the remedy has to work at
     that scale too: a single import error left 1,650 rows carrying the same message, and clearing
-    them one at a time is not a remedy anybody would use. `message` retries exactly the rows
-    holding that message, which is the class the doctor names; `given_up` takes the ones that
-    reached the attempt limit. Both count what they changed so the admin can say so."""
+    them one at a time is not a remedy anybody would use. `message` retries the rows held by
+    that cause (`content.fault_cause`), which is the class the doctor names, whichever
+    candidate each row's own message goes on to name; `given_up` takes the ones that reached
+    the attempt limit. Both count what they changed so the admin can say so."""
     message, given_up = body.get("message"), bool(body.get("given_up"))
     if not isinstance(message, str) and not given_up:
         raise HTTPException(400, "say which requests to retry: a message, or given_up")
+    from ...content import fault_cause, held_by
     clauses, args = [], []
     if isinstance(message, str):
-        clauses.append("message = ?")
-        args.append(message)
+        held = [r["id"] for r in conn.execute("SELECT id, message FROM wanted WHERE message IS NOT NULL AND message != ''")
+                if held_by(fault_cause(message), fault_cause(r["message"]))]
+        clauses.append(f"id IN ({','.join(map(str, held)) or 'NULL'})")
     if given_up:
         from ...content import MAX_WANTED_ATTEMPTS
         clauses.append("attempts >= ?")

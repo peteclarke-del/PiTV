@@ -268,6 +268,36 @@ def refill_empty_days(conn: sqlite3.Connection, now: int | None = None) -> dict[
             "failed": failed, "summary": summary}
 
 
+def replace_retired(conn: sqlite3.Connection, now: int | None = None) -> dict[str, Any]:
+    """Rebuild from each channel-day's first slot that names a file no longer in the library.
+
+    A file retired by an import stays in every slot already built for it. The readiness check
+    replaces those it meets, but it looks one day ahead: a share reorganised on a Monday left
+    thirty-four slots across the week naming files that were gone, each to be found the day
+    before it aired. Replaced at the import, the week is right at once, and what is put in
+    their place is chosen while the whole library is still there to choose from."""
+    now = now or now_ts()
+    rows = conn.execute(
+        "SELECT s.channel_id, s.day, MIN(s.start_ts) AS first_ts, COUNT(*) AS n FROM schedule s"
+        " JOIN media m ON m.id = s.media_id WHERE m.missing = 1 AND s.start_ts > ? AND s.replay = 0"
+        " GROUP BY s.channel_id, s.day ORDER BY first_ts, s.channel_id", (now,)).fetchall()
+    slots = failed = 0
+    for row in rows:
+        result = rebuild_from(conn, row["channel_id"], int(row["first_ts"]), now=now)
+        if result["status"] == "error":
+            failed += 1
+            log.error("retired files: channel %s on %s could not be rebuilt: %s", row["channel_id"], row["day"],
+                      result["summary"])
+            continue
+        slots += int(row["n"])
+    summary = f"{slots} slot(s) on retired files replaced" if slots or failed else ""
+    if failed:
+        summary += f"; {failed} channel-day(s) could not be rebuilt"
+    if summary:
+        log.info("retired files: %s", summary)
+    return {"status": "ok" if not failed else "warning", "slots": slots, "failed": failed, "summary": summary}
+
+
 def _first_gap(conn: sqlite3.Connection, channel_id: int, now: int, from_ts: int) -> int:
     """Where a rebuild asked to start at `from_ts` must start: the first stretch with no slot
     between now and then, if there is one.

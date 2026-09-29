@@ -718,3 +718,105 @@ def test_a_genre_a_source_has_withdrawn_does_not_stay(tmp_path, monkeypatch):
     enriched = json.loads(conn.execute("SELECT enriched FROM media WHERE id = ?", (film,)).fetchone()["enriched"])
     assert enriched["genres"] == ["Comedy", "Fantasy"], "the withdrawn genre is gone"
     conn.close()
+
+
+def test_a_share_read_in_full_retires_what_it_no_longer_lists(ctx, monkeypatch):
+    """pitv_content publishes every index as incomplete while a delivery is outstanding, which
+    with fetching never idle is always, so for three days nothing was retired: a share
+    reorganised in that time stood in the catalogue twice, once at paths that were gone, and
+    the schedule went on naming them. The protection is for the folders pitv_content files
+    into. A share it only reads, and says it read whole, retires what it no longer lists;
+    every other source is left alone, and so is a share whose health disagrees with the index."""
+    from pitv import catalogue, tool_client
+
+    conn, doc = ctx["conn"], ctx["lib"]["index"]
+    by_source: dict[str, list] = {}
+    for it in doc["items"]:
+        by_source.setdefault(it["source"], []).append(it)
+    share, other = [s for s in by_source if len(by_source[s]) > 1][:2]
+    gone, kept = by_source[share][0], by_source[other][0]
+    partial = copy.deepcopy(doc)
+    partial["complete"] = False
+    partial["items"] = [it for it in doc["items"] if it["uid"] not in (gone["uid"], kept["uid"])]
+
+    def health(sid, items, **extra):
+        return {"id": sid, "location": "nas", "enabled": True,
+                "health": {"readable": True, "error": "", "last_indexed_ts": 5, "items": items, **extra}}
+
+    answers = [health(share, len(by_source[share]) - 1),
+               health(other, len(by_source[other]) - 1, error="3 unreadable file(s) left out")]
+    monkeypatch.setattr(tool_client, "request", lambda *a, **k: (200, answers))
+    whole = catalogue.sources_read_in_full({"content_tool_url": "http://x"}, partial)
+    assert whole == {share}, "a scan that left files out does not speak for its share"
+
+    assert import_index(conn, partial, whole)["missing"] == 1
+    missing = {r["uid"]: r["missing"] for r in conn.execute("SELECT uid, missing FROM media WHERE uid IN (?, ?)",
+                                                            (gone["uid"], kept["uid"]))}
+    assert missing == {gone["uid"]: 1, kept["uid"]: 0}
+
+    answers[0]["health"]["items"] += 5
+    assert not catalogue.sources_read_in_full({"content_tool_url": "http://x"}, partial), \
+        "health that counts differently from the index describes another scan"
+    answers[0]["location"] = "cache"
+    answers[0]["health"]["items"] -= 5
+    assert not catalogue.sources_read_in_full({"content_tool_url": "http://x"}, partial), \
+        "a folder pitv_content files into is never retired from an incomplete index"
+    monkeypatch.setattr(tool_client, "request", lambda *a, **k: (503, {"offline": True}))
+    assert not catalogue.sources_read_in_full({"content_tool_url": "http://x"}, partial)
+
+    # An index that says per source whether it is complete is believed, and nothing is asked.
+    def never(*_a, **_k):
+        raise AssertionError("the index said; health is not asked for")
+
+    monkeypatch.setattr(tool_client, "request", never)
+    partial["sources"] = [{"id": share, "location": "nas", "complete": True},
+                          {"id": other, "location": "nas", "complete": False},
+                          {"id": "acquired", "location": "cache", "complete": True}]
+    assert catalogue.sources_read_in_full({"content_tool_url": "http://x"}, partial) == {share}
+
+
+def test_an_import_says_when_the_reindex_asked_for_did_not_happen(ctx, monkeypatch):
+    """A re-index queued behind other work is not waited for and the index in hand is imported.
+    The run was reported "ok" with nothing to say the sources had not been walked, so a share
+    reorganised an hour before looked imported and was not."""
+    from pitv import catalogue, tool_client
+
+    monkeypatch.setattr(catalogue, "REINDEX_QUEUED", 0.02)
+    monkeypatch.setattr(catalogue, "REINDEX_POLL", 0.01)
+    doc = ctx["lib"]["index"]
+
+    def fake_request(base, method, path, query="", body=None, timeout=15):
+        if path == "index":
+            return 200, {"ok": True, "job_id": "j1"}
+        if path == "jobs":
+            return 200, [{"job_id": "j1", "status": "queued"}]
+        return (200, doc) if path == "library" else (200, [])
+
+    monkeypatch.setattr(tool_client, "request", fake_request)
+    result = catalogue.refresh(ctx["conn"], reindex=True)
+    assert result["status"] == "ok" and "not re-indexed" in result["summary"] and "queued" in result["summary"]
+    assert "not re-indexed" not in catalogue.refresh(ctx["conn"])["summary"]
+
+
+def test_a_retired_file_leaves_the_schedule_at_the_import(tmp_path):
+    """A file retired by an import stayed in every slot built for it until the readiness check
+    met it, a day before it aired: thirty-four slots across a week named files that were gone."""
+    from pitv.db import tx
+    from pitv.scheduler.horizon import build_horizon, replace_retired
+    from pitv.scheduler.rules import local_ts, tz_of
+    from pitv.scheduler.slots import parse_day
+
+    conn = make_library(tmp_path / "retired", max_episodes=4)["conn"]
+    day = parse_day("2026-09-14")
+    now = local_ts(day, "09:00", tz_of(conn))
+    build_horizon(conn, start_day=day, days=2, now=now, seed=5)
+    slot = conn.execute("SELECT media_id FROM schedule WHERE media_id IS NOT NULL AND replay = 0"
+                        " AND kind = 'programme' AND start_ts > ? ORDER BY start_ts DESC LIMIT 1", (now,)).fetchone()
+    with tx(conn):
+        conn.execute("UPDATE media SET missing = 1 WHERE id = ?", (slot["media_id"],))
+    result = replace_retired(conn, now=now)
+    assert result["slots"] >= 1 and not result["failed"]
+    left = conn.execute("SELECT COUNT(*) FROM schedule WHERE media_id = ? AND start_ts > ? AND replay = 0",
+                        (slot["media_id"], now)).fetchone()[0]
+    assert left == 0
+    assert replace_retired(conn, now=now)["summary"] == "", "nothing to replace, nothing to say"

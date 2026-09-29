@@ -333,3 +333,97 @@ def test_a_request_the_owner_withdrew_is_not_a_fault(tmp_path):
     wanted = doctor._wanted(conn)
     assert not wanted["faults"] and wanted["given_up"] == 0
     conn.close()
+
+
+def test_a_fault_shared_by_many_requests_is_counted_once_and_costs_no_attempts(tmp_path):
+    """pitv_content's messages name the candidate that failed, so one missing cookie store was
+    4,098 different messages: the doctor, which counted by message, saw no fault, every request
+    used its three attempts on it in two days, and none was asked for again once it was mended.
+    Faults are counted by cause, and a cause that many requests hold is about none of them."""
+    from conftest import make_library
+
+    from pitv import content
+    from pitv.db import tx
+    from pitv.doctor import _wanted
+
+    conn = make_library(tmp_path / "shared", max_episodes=1)["conn"]
+    fault = "candidates did not process: {}: download failed: ERROR: could not find the cookies database"
+    assert content.fault_cause(fault.format("abc")) == content.fault_cause(fault.format("xyz")) \
+        == "could not find the cookies database"
+    assert content.fault_cause("ERROR: [site] a1B2c3: Video unavailable") == "Video unavailable"
+    assert content.fault_cause("one plain fault") == "one plain fault"
+    assert content.held_by("could not find the cookies database", "could not"), "a message cut short"
+    assert not content.held_by("could not", "could not find the cookies database"), "one way only"
+    assert not content.held_by("could not find the cookies database", "Video unavailable")
+    assert not content.held_by("could not find the cookies database", "")
+
+    with tx(conn):
+        conn.execute("DELETE FROM wanted")
+        for n in range(content.SHARED_FAULT + 1):
+            conn.execute("INSERT INTO wanted(kind, title, status, attempts, created_at) VALUES ('episode', ?, 'queued', 0, 1)",
+                         (f"Shared {n}",))
+        conn.execute("INSERT INTO wanted(kind, title, status, attempts, created_at) VALUES ('episode', 'Alone', 'queued', 0, 1)")
+    ids = [r["id"] for r in conn.execute("SELECT id FROM wanted WHERE title LIKE 'Shared %' ORDER BY id")]
+    alone = conn.execute("SELECT id FROM wanted WHERE title = 'Alone'").fetchone()["id"]
+    with tx(conn):
+        for _ in range(content.MAX_WANTED_ATTEMPTS + 1):
+            for n, wid in enumerate(ids):
+                content._fail_wanted(conn, wid, fault.format(f"video{n}"))
+            content._fail_wanted(conn, alone, "ERROR: [site] gone1: Video unavailable")
+
+    rows = conn.execute("SELECT status, attempts FROM wanted WHERE title LIKE 'Shared %' ORDER BY id").fetchall()
+    assert all(r["status"] == "queued" for r in rows[content.SHARED_FAULT:]), \
+        "once enough requests hold the cause, the rest are asked for again"
+    assert max(r["attempts"] for r in rows) < content.MAX_WANTED_ATTEMPTS, "and none is given up on for it"
+    assert conn.execute("SELECT status FROM wanted WHERE id = ?", (alone,)).fetchone()["status"] == "failed", \
+        "a request's own fault still uses its attempts"
+
+    with tx(conn):
+        conn.execute("UPDATE wanted SET message = ? WHERE id = ?",
+                     ("candidates did not process: a very long name: download failed: ERROR: could not", ids[0]))
+    faults = _wanted(conn)["faults"]
+    assert faults[0]["message"] == "could not find the cookies database" and faults[0]["n"] == len(ids), \
+        "a message cut short is counted with the cause it begins, under the whole cause"
+
+
+def test_a_run_stopped_by_one_cause_is_an_error_that_names_it(tmp_path):
+    """Every download failed for two days on a missing cookie store and each of 199 reports was
+    recorded as a warning with a count, as an ordinary night is. A run in which one cause stops
+    several requests is an error, its summary names the cause, and its details carry the remedy
+    pitv_content gives. A search that found nothing is counted apart and is not a failure."""
+    from conftest import make_library
+
+    from pitv.content import REPORT_FAULT, apply_report
+    from pitv.db import tx
+
+    conn = make_library(tmp_path / "faults", max_episodes=1)["conn"]
+    with tx(conn):
+        for n in range(REPORT_FAULT + 2):
+            conn.execute("INSERT INTO wanted(kind, title, status, attempts, created_at) VALUES ('episode', ?, 'queued', 0, 1)",
+                         (f"Wanted {n}",))
+    ids = [r["id"] for r in conn.execute("SELECT id FROM wanted ORDER BY id")]
+    fault = "candidates did not process: v{}: download failed: ERROR: could not find the cookies database"
+    items = [{"request_id": f"w:{w}", "wanted_id": w, "status": "failed", "message": fault.format(w), "file": None}
+             for w in ids[:REPORT_FAULT]]
+    items += [{"request_id": f"w:{w}", "wanted_id": w, "status": "failed", "miss": True,
+               "message": "not found yet: nothing matched", "file": None} for w in ids[REPORT_FAULT:]]
+
+    def last():
+        return conn.execute("SELECT status, summary, details FROM run_log WHERE kind = 'content' ORDER BY id DESC LIMIT 1").fetchone()
+
+    counts = apply_report(conn, {"schema": 2, "items": items, "run": {"tool": "pitv-content 9.9", "started_ts": 1_000,
+                                                                      "finished_ts": 1_060}})
+    assert counts["wanted_failed"] == REPORT_FAULT and counts["wanted_missed"] == 2
+    row = last()
+    assert row["status"] == "error" and "could not find the cookies database" in row["summary"]
+    assert "2 not found yet" in row["summary"]
+
+    apply_report(conn, {"schema": 2, "items": items, "run": {
+        "tool": "pitv-content 9.9", "started_ts": 2_000, "finished_ts": 2_060,
+        "faults": [{"cause": "no cookie store", "requests": REPORT_FAULT, "remedy": "name a cookies file"}]}})
+    row = last()
+    assert row["status"] == "error" and "To mend it: name a cookies file" in row["details"]
+
+    apply_report(conn, {"schema": 2, "items": items[REPORT_FAULT:], "run": {"tool": "pitv-content 9.9", "started_ts": 3_000,
+                                                                            "finished_ts": 3_060, "faults": []}})
+    assert last()["status"] == "ok", "a night of searches that found nothing is not a failure"

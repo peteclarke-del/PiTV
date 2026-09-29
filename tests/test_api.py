@@ -1234,6 +1234,12 @@ def test_a_whole_class_of_failed_requests_is_retried_at_once(client, env):
                             " WHERE title IN ('R1', 'R2', 'R3')").fetchall()
         assert all(row["status"] == "queued" and row["attempts"] == 0 and row["message"] is None for row in rows)
         assert client.post("/api/wanted/retry", json={}).status_code == 400, "it must say which requests"
+        # A cause is retried across the candidates each request's message names.
+        with dbm.tx(conn):
+            for n, title in enumerate(("R1", "R2", "R3")):
+                conn.execute("UPDATE wanted SET status = 'failed', attempts = 3, message = ? WHERE title = ?",
+                             (f"candidates did not process: v{n}: download failed: ERROR: no cookie store", title))
+        assert client.post("/api/wanted/retry", json={"message": "no cookie store"}).json()["retried"] == 3
     finally:
         with dbm.tx(conn):
             conn.execute("DELETE FROM wanted WHERE title IN ('R1', 'R2', 'R3')")
@@ -1282,3 +1288,15 @@ def test_edits_in_a_run_are_rebuilt_together_once_they_stop():
     real(rebuild, None, "day start")
     time_mod.sleep(0.4)
     assert submitted[1] == "Rebuild every channel after a settings change"
+
+
+def test_a_schedule_change_made_by_the_player_reaches_open_pages():
+    """The player's maintenance builds, imports and replaces what has not been fetched in its own
+    process, and an open guide showed the old schedule until it was reloaded. The player counts
+    its changes in its state, and the web service announces one when the count moves."""
+    from pitv.web.app import schedule_changed_by_player as changed
+
+    assert changed({"online": True, "schedule_rev": 3}, {"online": True, "schedule_rev": 4})
+    assert not changed({"online": True, "schedule_rev": 4}, {"online": True, "schedule_rev": 4})
+    assert not changed({"online": False}, {"online": True, "schedule_rev": 0}), "a player just back is a starting point"
+    assert not changed({"online": True, "schedule_rev": 4}, {"online": False})

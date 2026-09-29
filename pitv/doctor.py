@@ -293,14 +293,33 @@ def _wanted(conn: sqlite3.Connection) -> dict[str, Any]:
         MAX_WANTED_ATTEMPTS,
         MISS_PREFIX,
         WITHDRAWN_PREFIX,
+        fault_cause,
+        held_by,
     )
     by_status = [dict(r) for r in conn.execute(
         "SELECT kind, status, auto, COUNT(*) AS n FROM wanted GROUP BY kind, status, auto ORDER BY n DESC")]
-    faults = [dict(r) for r in conn.execute(
-        "SELECT message, COUNT(*) AS n, MAX(updated_at) AS last_at, MIN(id) AS example FROM wanted"
-        f" WHERE status IN ('queued', 'failed') AND message IS NOT NULL AND message != ''"
-        f" AND message NOT LIKE '{MISS_PREFIX}%' AND message NOT LIKE '{WITHDRAWN_PREFIX}%'"
-        " GROUP BY message ORDER BY n DESC LIMIT 10")]
+    # Counted by cause, not by message: a message names the candidate that failed, so one fault
+    # across a thousand requests is a thousand messages held by one request each.
+    causes: dict[str, dict[str, Any]] = {}
+    for r in conn.execute(
+            "SELECT message, COUNT(*) AS n, MAX(updated_at) AS last_at, MIN(id) AS example FROM wanted"
+            f" WHERE status IN ('queued', 'failed') AND message IS NOT NULL AND message != ''"
+            f" AND message NOT LIKE '{MISS_PREFIX}%' AND message NOT LIKE '{WITHDRAWN_PREFIX}%'"
+            " GROUP BY message"):
+        cause = fault_cause(r["message"])
+        held = causes.setdefault(cause, {"message": cause, "n": 0, "last_at": 0, "example": r["example"]})
+        held["n"] += r["n"]
+        held["last_at"] = max(held["last_at"], r["last_at"] or 0)
+        held["example"] = min(held["example"], r["example"])
+    # A cause cut short by the message's length joins the most common whole cause it begins.
+    for cut in sorted(causes, key=len):
+        whole = max((c for c in causes if c != cut and held_by(c, cut)), key=lambda c: causes[c]["n"], default=None)
+        if whole is not None:
+            part = causes.pop(cut)
+            causes[whole]["n"] += part["n"]
+            causes[whole]["last_at"] = max(causes[whole]["last_at"], part["last_at"])
+            causes[whole]["example"] = min(causes[whole]["example"], part["example"])
+    faults = sorted(causes.values(), key=lambda f: -f["n"])[:10]
     misses = conn.execute(
         f"SELECT COUNT(*) FROM wanted WHERE status = 'queued' AND message LIKE '{MISS_PREFIX}%'").fetchone()[0]
     given_up = conn.execute("SELECT COUNT(*) FROM wanted WHERE attempts >= ? AND COALESCE(message, '') NOT LIKE ?",
@@ -607,9 +626,10 @@ def _findings(doc: dict[str, Any]) -> list[str]:
                    "has not, so that work may never be done.")
     requests = doc.get("wanted") if isinstance(doc.get("wanted"), dict) else {}
     for fault in requests.get("faults") or []:
-        out.append(f"{fault['n']} request(s) are failing with the same error and will not come right on their own: "
-                   f"\"{fault['message']}\". This is pitv_content's to fix; once it is, clear them with Retry on "
-                   f"the Wanted page, which puts every request carrying this message back in the queue.")
+        out.append(f"{fault['n']} request(s) are failing for the same cause: \"{fault['message']}\". Those not yet "
+                   "given up on are asked for again on every run and succeed once the cause is mended, in "
+                   "pitv_content or in its settings (Content, Settings). Retry on the Wanted page puts every "
+                   "request held by this cause back in the queue, given up on or not.")
     if given_up := requests.get("given_up"):
         out.append(f"{given_up} request(s) have been given up on after {MAX_ATTEMPTS} attempts and will not be asked "
                    f"for again. Wanted, Retry asks once more; anything genuinely unavailable is better deleted.")
