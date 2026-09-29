@@ -24,8 +24,6 @@ export class ScheduleDay {
   data = $state(null);      // GET /api/schedule for the chosen day: {channels, slots}
   loading = $state(false);
   grid = $state(null);      // the EpgGrid instance, for scrolling
-  /** EPG pixels per minute: a little tighter on phones. */
-  ppm = window.matchMedia('(max-width: 600px)').matches ? 3 : 4;
   bounds = $derived(dayBounds(this.days, this.day));
   channelById = $derived(new Map((this.data?.channels ?? []).map((c) => [c.id, c])));
   #seq = 0;

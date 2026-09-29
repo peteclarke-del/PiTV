@@ -14,7 +14,7 @@
   let isCurrent = $derived(selected && selected.start_ts <= clock.ts && selected.end_ts > clock.ts);
 </script>
 
-<div class="page">
+<div class="page guide">
   <div class="page-head">
     <h1>Guide</h1>
     <div class="row">
@@ -33,7 +33,7 @@
     <div class="empty">No schedule has been built yet. Build one from <a href="#/admin">Admin</a>.</div>
   {:else if view.bounds}
     <EpgGrid bind:this={view.grid} channels={view.data?.channels ?? []} slots={view.data?.slots ?? []}
-             start={view.bounds.start} end={view.bounds.end} now={clock.ts} ppm={view.ppm} loading={view.loading}
+             start={view.bounds.start} end={view.bounds.end} now={clock.ts} loading={view.loading}
              selectedId={selected?.id ?? null} onselect={(s) => (selected = s)} />
     <p class="tiny muted mt">Dashed blocks are overnight replays. Times are local.</p>
   {:else}
@@ -68,3 +68,8 @@
     </div>
   {/if}
 </Drawer>
+
+<style>
+  /* The guide is a timetable: it takes the window's width, as the admin's tables do. */
+  .guide { width: 100%; max-width: none; padding-inline: clamp(12px, 2vw, 32px); padding-bottom: 1rem; }
+</style>

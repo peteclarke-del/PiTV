@@ -1104,6 +1104,12 @@ streams are what a phone wants.
 | `#/guide` | EPG grid, channels as rows and time across, one broadcast day at a time with a day picker across the built horizon, a now-line and "Now" button, and a details drawer (episode, year, certificate, plot) |
 | `#/remote` | Virtual remote: channels, channel and volume steps, mute, pause, guide keys, plus the player's status. Disabled while the player is offline |
 
+The guide's grid (`EpgGrid.svelte`, also the admin's schedule editor) sizes itself to the space
+it has. The width decides how many hours are across the screen (two on a phone, up to six on a
+large monitor, between three and nine pixels a minute) and whether the channel column has room
+for names or shows numbers alone; the height left in the window is shared between the rows,
+from 54 to 104 pixels, and a taller row carries larger type and a title on two lines.
+
 ### 6.3 Admin area (`#/admin`)
 
 The admin is organised into two labelled sections, PiTV and pitv_content, so it is obvious

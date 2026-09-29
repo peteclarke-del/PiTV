@@ -131,7 +131,7 @@
     <div class="empty">No schedule built yet. Use Build schedule on the dashboard.</div>
   {:else if view.bounds}
     <EpgGrid bind:this={view.grid} channels={view.data?.channels ?? []} slots={view.data?.slots ?? []} start={view.bounds.start} end={view.bounds.end}
-             now={clock.ts} ppm={view.ppm} loading={view.loading} editable selectedId={selected?.id ?? null} onselect={(s) => (selected = s)} />
+             now={clock.ts} loading={view.loading} editable selectedId={selected?.id ?? null} onselect={(s) => (selected = s)} />
     <p class="tiny muted">Click a future slot to lock, replace, remove or rebuild from it. Past and current slots and overnight replays are read-only.</p>
   {:else}
     <div class="skeleton" style="height:300px"></div>
