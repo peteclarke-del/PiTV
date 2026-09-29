@@ -1,12 +1,13 @@
 // Mirror of pitv/player/input.py: the remote-control actions and their built-in evdev key names.
 export const ACTIONS = ['up', 'down', 'left', 'right', 'ok', 'back', 'guide', 'info', 'pause', 'mute',
-  'vol_up', 'vol_down', 'ch_up', 'ch_down', 'restart', 'power',
+  'vol_up', 'vol_down', 'ch_up', 'ch_down', 'restart', 'subtitles', 'power',
   ...Array.from({ length: 9 }, (_, i) => `channel_${i + 1}`)];
 
 export const ACTION_LABELS = {
   up: 'Up', down: 'Down', left: 'Left', right: 'Right', ok: 'OK / select', back: 'Back', guide: 'Guide',
   info: 'Info', pause: 'Play / pause', mute: 'Mute', vol_up: 'Volume up', vol_down: 'Volume down',
-  ch_up: 'Channel up', ch_down: 'Channel down', restart: 'Restart programme', power: 'Power',
+  ch_up: 'Channel up', ch_down: 'Channel down', restart: 'Restart programme', subtitles: 'Subtitles on / off',
+  power: 'Power',
 };
 for (let n = 1; n <= 9; n++) ACTION_LABELS[`channel_${n}`] = `Channel ${n}`;
 
@@ -23,6 +24,7 @@ export const DEFAULT_KEYMAP = {
   ch_up: ['KEY_CHANNELUP', 'KEY_PAGEUP', 'KEY_NEXTSONG'],
   ch_down: ['KEY_CHANNELDOWN', 'KEY_PAGEDOWN', 'KEY_PREVIOUSSONG'],
   restart: ['KEY_REWIND', 'KEY_R'],
+  subtitles: ['KEY_SUBTITLE', 'KEY_S'],
   power: ['KEY_POWER', 'KEY_SLEEP'],
 };
 for (let n = 1; n <= 9; n++) DEFAULT_KEYMAP[`channel_${n}`] = [`KEY_${n}`, `KEY_KP${n}`, `KEY_NUMERIC_${n}`];

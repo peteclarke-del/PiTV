@@ -23,6 +23,7 @@ HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 # What an ALSA device name, a DRM connector, an mpv hwdec list or an aspect ratio may contain.
 _DEVICE_TOKEN = re.compile(r"^[A-Za-z0-9_.:,/=+-]{0,200}$")
 _TZ_NAME = re.compile(r"^[A-Za-z0-9_+/-]{1,64}$")
+_LANGUAGE = re.compile(r"^[a-z]{2}$")
 _PATH_KEYS = ("cache_dir", "acquire_dir")
 _DEVICE_KEYS = ("audio_device", "drm_connector", "pi_hwdec", "display_aspect", "display_profile")
 _HHMM_KEYS = ("day_start", "day_end", "kids_cutoff")
@@ -107,6 +108,10 @@ def check_setting(key: str, value: Any) -> Any:
             ZoneInfo(value)
         except (KeyError, ValueError, OSError) as exc:
             raise SettingError(f"unknown timezone {value}") from exc
+    elif key == "subtitle_language":
+        if not isinstance(value, str) or not _LANGUAGE.match(value.strip().lower()):
+            raise SettingError("subtitle_language must be a two-letter language code, such as en")
+        return value.strip().lower()
     elif key in _HHMM_KEYS:
         if not isinstance(value, str) or not HHMM.match(value):
             raise SettingError(f"{key} must be HH:MM")

@@ -235,6 +235,23 @@ class Renderer:
         path, iw, ih = self._save(img, "volume")
         return path, iw, ih, (self.width - w) // 2, self.height - h - self.my
 
+    def notice(self, label: str, detail: str = "") -> Rendered:
+        """A short confirmation of a key press, where the volume bar sits: the two share an
+        overlay, so the later one replaces the earlier."""
+        s = self.scale
+        w, pad = min(int(420 * s), self.safe_width), int(14 * s)
+        lh_small = int(self.f_small.getbbox("Ag")[3] * 1.2)
+        h = int(56 * s) + (lh_small if detail else 0)
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        d.rounded_rectangle((0, 0, w - 1, h - 1), radius=int(10 * s), fill=(0, 0, 0, 200))
+        d.text((pad, int(12 * s)), _fit(d, label, self.f_med, w - 2 * pad), font=self.f_med, fill=(255, 255, 0, 255))
+        if detail:
+            d.text((pad, int(44 * s)), _fit(d, detail, self.f_small, w - 2 * pad), font=self.f_small,
+                   fill=(0, 255, 255, 255))
+        path, iw, ih = self._save(img, "notice")
+        return path, iw, ih, (self.width - w) // 2, self.height - h - self.my
+
     # --- message ---------------------------------------------------------------------------
 
     def message(self, text: str, sub: str = "") -> Rendered:

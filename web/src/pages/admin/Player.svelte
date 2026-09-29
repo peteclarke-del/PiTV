@@ -9,7 +9,7 @@
   import ChannelBadge from '../../components/ChannelBadge.svelte';
   import AppBadge from '../../components/AppBadge.svelte';
   import DataTable from '../../components/DataTable.svelte';
-  import { playbackIssue } from '../../lib/playback.js';
+  import { playbackIssue, subtitleNote } from '../../lib/playback.js';
   import KeymapEditor from './KeymapEditor.svelte';
 
   let channels = $state([]);
@@ -69,6 +69,7 @@
             {#if s.behind_live}<span class="badge info">Behind live</span>{/if}
             {#if s.guide_open}<span class="badge">Guide open</span>{/if}
             {#if s.muted}<span class="badge">Muted</span>{/if}
+            {#if s.subtitles}<span class="badge" title={subtitleNote(s)}>{s.subtitle_track ? `Subtitles ${s.subtitle_track.lang ?? ''}` : 'Subtitles: none'}</span>{/if}
             {#if s.volume !== null}<span class="badge">Vol {s.volume}</span>{/if}
             <span class="badge {s.hwdec ? 'ok' : 'warn'}">{s.hwdec ? `hwdec ${s.hwdec}` : 'software decode'}</span>
             {#if s.on_pi}<span class="badge">on Pi</span>{:else}<span class="badge">desktop</span>{/if}
